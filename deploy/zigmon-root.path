@@ -1,0 +1,17 @@
+# /etc/systemd/system/zigmon-root.path (5.18)
+#
+# Watches for what the dashboard asks of root: the zigmon service lays a
+# request down in /var/lib/zigmon/root/ - the certificate, who may reach which
+# page, the firewall, a backup of the whole installation - or asks to be told
+# what is in place now (look.ask), and this starts zigmon-root.service, which
+# checks every value as root and does that and nothing else.
+[Unit]
+Description=zigmon - what the dashboard asks of root
+
+[Path]
+PathExists=/var/lib/zigmon/root/request.json
+PathExists=/var/lib/zigmon/root/look.ask
+Unit=zigmon-root.service
+
+[Install]
+WantedBy=multi-user.target
