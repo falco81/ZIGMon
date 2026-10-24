@@ -1,0 +1,14 @@
+# /etc/systemd/system/zigmon-root.service (5.18)
+#
+# Started by zigmon-root.path, never by hand: deploy/zigmon_root.py, which
+# takes one request from /var/lib/zigmon/root/, checks everything in it and
+# writes what it did back for the dashboard.
+[Unit]
+Description=zigmon - TLS, page access, the firewall and whole backups, as asked on the dashboard
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/zigmon/zigmon_root.py
+# making DH parameters of 4096 bits, or a backup of a big database, takes minutes
+TimeoutStartSec=30min
