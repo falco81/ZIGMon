@@ -1,0 +1,73 @@
+[Unit]
+Description=Zigbee sensor monitoring daemon (MQTT subscriber, history, localhost API)
+Documentation=file:/usr/local/lib/zigmon/INSTALL.md
+After=network-online.target mosquitto.service
+Wants=network-online.target
+# Never give up restarting: the broker may be down for a long time.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/zigmon/zigmon.py
+# Reloading reopens the log file after logrotate; the daemon handles SIGHUP.
+ExecReload=/bin/kill -HUP $MAINPID
+# paho reconnects to the broker by itself; a restart here is only for a crash
+# of the daemon itself, and together with StartLimitIntervalSec=0 above it
+# keeps trying every 10 s for as long as it takes.
+Restart=always
+RestartSec=10
+
+# Nothing here needs privilege: the daemon only opens a TCP connection to the
+# broker and writes its own database. It runs as its own user, and the web
+# server reaches it through the localhost API, never through the filesystem.
+User=zigmon
+Group=zigmon
+
+# /run/zigmon is recreated on every boot, which is where the API token lives.
+# 0750 plus nginx being a member of the zigmon group is what lets PHP read it.
+RuntimeDirectory=zigmon
+RuntimeDirectoryMode=0750
+StateDirectory=zigmon
+StateDirectoryMode=0750
+LogsDirectory=zigmon
+LogsDirectoryMode=0750
+ReadWritePaths=/var/lib/zigmon /var/log/zigmon
+# The broker's ACL, so "Add them for me" can put the missing lines in. Nothing
+# else under /etc is writable; drop this line if you would rather edit the
+# file by hand, and the dashboard will print the block to paste instead.
+ReadWritePaths=-/etc/mosquitto
+
+# The daemon is what turns a button press into a relay click and a report
+# into a dashboard update, so it gets the CPU and the disk when it asks: a
+# CPU quota or an idle I/O class here stretched a fraction of a second of
+# work into several seconds whenever something else was busy. The memory
+# cap is a backstop only (about 80 MB is normal with 15 devices).
+MemoryMax=300M
+# Every dashboard request is answered on a thread of its own, and glibc gives
+# each thread that allocates its own malloc arena; over a day that looked like
+# a slow leak (a few MB an hour of RSS that never came back) though nothing
+# was actually held. Two arenas is plenty for this daemon.
+Environment=MALLOC_ARENA_MAX=2
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+
+# It reads one config file (and possibly a CA file) and writes one directory.
+# Everything else is closed.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
