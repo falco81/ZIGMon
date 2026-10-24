@@ -1,0 +1,85 @@
+# /etc/logrotate.d/ntfy -- on the server that faces the internet
+#
+# ntfy's own two files: the log it writes about callers it could not get a
+# request from, and the feed it appends every address it has refused often
+# enough to judge. Both are read by the house - Settings -> The server that
+# faces the internet -> And ntfy's own two files - so this is written to keep
+# them readable rather than only small.
+#
+# Three choices in here are not the defaults, and each is deliberate:
+#
+#   copytruncate    ntfy holds both files open and is never told to reopen
+#                   them. Moving a file it is writing to leaves it writing to
+#                   a file with no name, and the new one stays empty for ever.
+#                   So the file is copied and then emptied in place, which
+#                   ntfy does not have to know about. The cost is a moment
+#                   between the copy and the emptying where a line can be
+#                   lost; for a log that is read for patterns rather than for
+#                   every word, that is the right trade.
+#
+#   delaycompress   the house reads the rotated copy to pick up whatever was
+#                   written between its last reading and the rotation. It
+#                   reads it with tail, so the most recent one has to be plain
+#                   text. With delaycompress, ntfy.log.1 is never compressed
+#                   and everything older is.
+#
+#   su ntfy ntfy    /var/lib/ntfy is drwxr-x--- and owned by ntfy, so
+#                   logrotate has to work as that user to see into it at all.
+#
+# After putting this in place:
+#
+#     logrotate -d /etc/logrotate.d/ntfy      # says what it would do
+#     logrotate -f /etc/logrotate.d/ntfy      # does it, once, now
+
+/var/lib/ntfy/ntfy.log {
+    su ntfy ntfy
+    weekly
+    rotate 8
+    size 20M
+    copytruncate
+    delaycompress
+    compress
+    missingok
+    notifempty
+    create 0600 ntfy ntfy
+}
+
+# The ban feed grows by one line per address refused often enough, so it is
+# small and slow - but it is append-only and nothing ever shortens it. Kept
+# longer than the log, because a year of who was refused is worth having and
+# costs almost nothing.
+/var/lib/ntfy/ban.log {
+    su ntfy ntfy
+    monthly
+    rotate 12
+    copytruncate
+    delaycompress
+    compress
+    missingok
+    notifempty
+    create 0600 ntfy ntfy
+}
+
+# ---------------------------------------------------------------------------
+# The full logs, wherever you have put them. These hold bodies and every
+# header worth naming, so they are the biggest of the lot and the ones most
+# worth keeping to root. They are nginx's, not ntfy's, so no su line and no
+# copytruncate: nginx reopens its logs when it is told to.
+#
+# Put this part in /etc/logrotate.d/nginx-zigmon instead if you would rather
+# keep the two apart.
+/var/log/nginx/zigmon-tap-full.log /var/log/nginx/ntfy-full.log {
+    daily
+    rotate 14
+    size 50M
+    delaycompress
+    compress
+    missingok
+    notifempty
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        # the newest copy stays plain for the house to read with tail
+        [ -f /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)"
+    endscript
+}
