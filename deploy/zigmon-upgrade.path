@@ -1,0 +1,15 @@
+# /etc/systemd/system/zigmon-upgrade.path (5.18)
+#
+# Watches for a new version asked for on the dashboard: the zigmon service
+# lays a signed package and request.json down in /var/lib/zigmon/upgrade/,
+# and this starts zigmon-upgrade.service, which checks the package as root
+# and runs its install.sh --upgrade. Nothing else can be asked for this way.
+[Unit]
+Description=zigmon - a new version asked for on the dashboard
+
+[Path]
+PathExists=/var/lib/zigmon/upgrade/request.json
+Unit=zigmon-upgrade.service
+
+[Install]
+WantedBy=multi-user.target
