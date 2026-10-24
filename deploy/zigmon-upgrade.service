@@ -1,0 +1,17 @@
+# /etc/systemd/system/zigmon-upgrade.service (5.18)
+#
+# Started by zigmon-upgrade.path, never by hand: it puts in the package the
+# dashboard asked for - only one signed by a release key in
+# /usr/local/lib/zigmon/release-keys/, after checking every file in it, after
+# a backup of the whole installation, and with the program as it was kept to
+# go back to when the new version does not answer. It runs apart from
+# zigmon.service, which the upgrade restarts.
+[Unit]
+Description=zigmon - putting in a new version asked for on the dashboard
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/zigmon/zigmon_upgrade.py
+TimeoutStartSec=25min
+PrivateTmp=no
