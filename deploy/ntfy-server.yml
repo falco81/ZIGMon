@@ -1,0 +1,244 @@
+# /etc/ntfy/server.yml -- a private ntfy, behind the nginx that faces the
+# internet. Nothing anonymous, no web app, no attachments, one topic pattern.
+#
+# After editing:
+#     chown root:ntfy /etc/ntfy/server.yml && chmod 640 /etc/ntfy/server.yml
+#     systemctl restart ntfy && systemctl status ntfy --no-pager
+#
+# Every option below is one ntfy documents; nothing here is invented. What is
+# left out is left out on purpose - Firebase, SMTP, Twilio, Stripe, web push,
+# metrics - because a feature that is not configured is a feature that cannot
+# be got at.
+
+# ---- where it is, and where it listens ---------------------------------------
+
+# The name it is reached by, from outside. It goes into the links it writes,
+# so it has to be the public one rather than the loopback it listens on.
+base-url: "https://ntfy.falco81.net"
+
+# The loopback and nothing else. This is what stops it fighting nginx for
+# port 80, and it means the only thing that can reach ntfy is this machine.
+listen-http: "127.0.0.1:2586"
+
+# Behind nginx, so the caller's address comes from the header nginx sets.
+# Without this every visitor is rate-limited as though they were one visitor -
+# namely nginx - and one noisy phone would silence the house.
+behind-proxy: true
+proxy-forwarded-header: "X-Forwarded-For"
+
+# ---- waking a phone ----------------------------------------------------------
+
+# THE IPHONE WILL NOT RING WITHOUT THIS.
+#
+# Apple only wakes an app through APNS, and APNS only talks to servers that
+# are registered with it - ntfy.sh is, a server of your own is not. So a
+# self-hosted ntfy has no way to make an iPhone ring at all: messages sit
+# there until the app is opened by hand.
+#
+# What this does instead: for every message that arrives, this server sends
+# ntfy.sh a "poll_request" carrying THE MESSAGE ID AND NOTHING ELSE. ntfy.sh
+# wakes the phone through APNS, the phone comes here and fetches the message
+# itself. Neither ntfy.sh nor Apple ever sees a word of what was said.
+#
+# Android does not need it: the app holds its own connection to this server
+# and is woken by that. Leave it set anyway if there is an iPhone in the
+# house - it costs one small request per message and nothing else.
+upstream-base-url: "https://ntfy.sh"
+# upstream-access-token:    # only if ntfy.sh starts rate-limiting the polls
+
+# ---- what it keeps -----------------------------------------------------------
+
+# Messages are kept this long so a phone that was out of signal can catch up.
+# Twelve hours is the usual; a day if somebody's phone is often off.
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "12h"
+
+# Attachments are OFF: naming no directory is how. No upload road, no disk to
+# fill, no file served to anybody. zigmon's own alerts carry a picture by URL
+# where they carry one at all, which the phone fetches itself.
+# attachment-cache-dir:
+
+# ---- who may do what ---------------------------------------------------------
+
+# The user database, and the rule for everybody not in it: nothing. Every
+# request, read or write, has to say who it is.
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"
+
+# Cache the access decisions rather than asking the database for every message
+# of a long subscription.
+auth-access-cache: true
+
+# Names nobody may use, whatever their access says. The web app is off below,
+# but these read like pages and are worth keeping free either way.
+disallowed-topics:
+  - docs
+  - static
+  - file
+  - app
+  - settings
+  - login
+  - signup
+  - account
+  - v1
+
+# ---- the web app, and signing up ---------------------------------------------
+
+# No web app at all: no login page, no /static, no account pages. What is left
+# is the API, which is what a phone and a daemon use. This is the single
+# biggest cut in what is reachable from outside.
+web-root: "disable"
+
+# Nobody signs up, nobody reserves a topic, and nobody logs in with a password
+# over the API either - the phone and the daemon carry tokens instead, which
+# can be given a life and taken away one at a time.
+enable-signup: false
+enable-login: false
+enable-reservations: false
+
+# ---- how much anybody may ask for --------------------------------------------
+
+# A message is small. Four kilobytes is ntfy's own default and is plenty for a
+# sentence about a freezer.
+message-size-limit: "4k"
+
+# Requests: a bucket of 20, refilled one every five seconds. A phone opening a
+# subscription uses one; a script working through a token list runs dry in
+# twenty and waits from then on.
+visitor-request-limit-burst: 20
+visitor-request-limit-replenish: "5s"
+
+# At most this many messages a day from one address, and at most this many
+# subscriptions held open at once.
+visitor-message-daily-limit: 500
+visitor-subscription-limit: 30
+
+# Nothing on this machine is rate-limited: the daemon publishes from here.
+visitor-request-limit-exempt-hosts: "127.0.0.1,::1"
+
+# ---- what to do about somebody trying it on ----------------------------------
+
+# ntfy writes the addresses it has refused into a file of its own, so
+# something else can act on them without reading the whole access log. Point
+# "The server that faces the internet" at nginx's error log, and fail2ban or
+# zigmon's own counting has this as well.
+ban-file: "/var/lib/ntfy/ban.log"
+ban-window: "1m"
+ban-threshold: 60
+ban-weights:
+  - "42909:10"       # a flood of failed authentications: banned in six
+  - "403:5"          # asking for a topic they have no access to
+  - "42908:0"        # the daily quota, which is a real user being a real user
+
+# ---- what it says about itself -----------------------------------------------
+
+log-level: info
+log-format: text
+
+# A log of its own, because the house reads it: name this same path under
+# "The server that faces the internet" -> "And ntfy's own two files" -> "Its
+# own log", and what ntfy says about callers it could not get a request from
+# is weighed with everything else. journald has it all as well
+# (journalctl -u ntfy); this is the copy something else can read.
+#
+# It MUST be somewhere the ntfy user can write, which is /var/lib/ntfy and
+# not /var/log. Naming one it cannot open is fatal at startup: "open ...: no
+# such file or directory", then "permission denied", and systemd gives up
+# after five tries with "start request repeated too quickly", which says
+# nothing about what was actually wrong. So:
+#
+#     install -d -o ntfy -g ntfy -m 0750 /var/lib/ntfy
+#
+# and rotate it, or it grows for ever - /etc/logrotate.d/ntfy:
+#
+#     /var/lib/ntfy/ntfy.log /var/lib/ntfy/ban.log {
+#         weekly
+#         rotate 4
+#         compress
+#         missingok
+#         notifempty
+#         copytruncate
+#     }
+#
+# copytruncate because ntfy holds the file open and is not told to reopen it.
+log-file: "/var/lib/ntfy/ntfy.log"
+
+# Off. Nothing about this server's insides needs to be readable from anywhere.
+enable-metrics: false
+
+# ---- and then, once, on the command line -------------------------------------
+#
+#     install -d -o ntfy -g ntfy -m 0750 /var/lib/ntfy /var/cache/ntfy
+#
+# Both of those must exist AND belong to the ntfy user before the first start:
+# the unit runs as User=ntfy, and a directory it cannot write is a startup
+# failure rather than a warning. If it still will not start, ask as ntfy
+# itself rather than guessing:
+#
+#     sudo -u ntfy touch /var/lib/ntfy/probe && echo it can write
+#     journalctl -u ntfy -n 20 --no-pager
+#     ausearch -m avc -ts recent          # if SELinux is the one saying no
+#
+#     ntfy user add zigmon                  # the daemon
+#     ntfy user add falco                   # you, on the phone
+#     ntfy access zigmon 'zigmon-*' write   # publishes, can never read
+#     ntfy access falco  'zigmon-*' read    # reads, can never publish
+#
+#     ntfy token add --label="the house" zigmon     # the daemon takes a token
+#
+# The phone signs in as its own user with the password it was given above -
+# ntfy user add asked for one - so it needs no token of its own. Change it
+# whenever you like with: ntfy user change-pass falco
+#
+# The daemon that cannot read cannot be made to hand your notifications back;
+# the phone that cannot write cannot be used to send a fake one. Neither
+# token is the password to its account, and either can be taken away alone:
+#
+#     ntfy token list
+#     ntfy token remove zigmon tk_...
+#
+# In zigmon, Control -> Alerts -> Notification channels -> ntfy topic URL:
+#
+#     https://:tk_the-house-token@ntfy.falco81.net/zigmon-house
+#
+# In the phone app: Settings -> Add server -> https://ntfy.falco81.net, and
+# the phone's token under Access tokens. Then subscribe to zigmon-house.
+#
+# IF NOTHING ARRIVES ON THE PHONE
+#
+# First find out which half is quiet. In one window, hold a subscription open
+# by hand; in another, publish:
+#
+#     curl -u :tk_the-phone-token -s https://ntfy.falco81.net/zigmon-house/json
+#     curl -u :tk_the-house-token -d "test" https://ntfy.falco81.net/zigmon-house
+#
+# If the first window prints the message, the server, nginx and the tokens are
+# all right and it is the app. Then:
+#
+#   iPhone  - upstream-base-url above, and restart ntfy. Without it there is
+#             no way for the phone to be woken, and the message is only seen
+#             when the app is opened.
+#
+#   Android - the app keeps its own connection, which Android will kill to
+#             save battery unless it is told not to: Settings -> Apps -> ntfy
+#             -> Battery -> Unrestricted. In the app, the subscription's
+#             "instant delivery" must be on; the F-Droid build has it always.
+#
+#   Both    - the app may want a USER AND PASSWORD rather than a token; the
+#             iOS one does. That works: a name and password sent on the
+#             request itself are checked against the user database directly.
+#             enable-login only shuts the login endpoint the web app uses to
+#             swap a password for a token, which an app doing its own Basic
+#             auth never touches. So give the phone the password of its user
+#             and keep the token for the daemon, which does take one.
+#
+# A look, from somewhere else:
+#
+#     curl -u :tk_the-house-token -d "hello" https://ntfy.falco81.net/zigmon-house
+#     curl -sS https://ntfy.falco81.net/zigmon-house/json?poll=1      # 401
+#
+# The first should be taken; the second should be refused, because it said
+# nothing about who it was. If the second succeeds, auth-default-access did
+# not take - check that the file above is the one ntfy is reading:
+#
+#     systemctl show ntfy -p ExecStart
