@@ -1,0 +1,25 @@
+# /etc/logrotate.d/zigmon
+#
+# The daemon writes its own log alongside the journal. Rotated daily, two
+# weeks kept; a sensor network produces a few kilobytes a day at most.
+
+/var/log/zigmon/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+
+    # Rotation runs as root, but the files belong to the daemon's own user;
+    # su tells logrotate to work as that user so ownership stays correct.
+    su zigmon zigmon
+    create 0640 zigmon zigmon
+
+    # The daemon holds the file open, so after logrotate renames it every
+    # further line would go to the renamed file. SIGHUP makes it reopen.
+    postrotate
+        /usr/bin/systemctl kill -s HUP zigmon.service 2>/dev/null || true
+    endscript
+}
