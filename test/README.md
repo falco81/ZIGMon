@@ -251,6 +251,23 @@ whether it answers; the program as it was put back by itself when it does
 not, or when install.sh fails; nothing changed at all when the backup before
 it fails.
 
+## online.py
+
+`python3 test/online.py` - a new version from the web (5.20), with nothing
+leaving the machine: `_online_get` is replaced by fixtures, and urlopen
+itself where its own checks are the point. A GitHub folder through the
+contents API and through its page when the API refuses, an nginx folder
+listing, a JSON list, one package's address and a GitHub `/blob/` page read
+as the raw file - newest first, plain http links never offered; http
+refused, and a redirect to http; an answer too big refused, a package
+streamed to disk. A newer version said once; a package signed by the test's
+own key fetched into exactly the state of one sent by hand (the same
+package.json, the same `zigmon_upgrade.py --inspect`), and unsigned, older,
+equal or mislabelled ones refused with nothing left behind; the API an
+administrator's only and refused during an upgrade; the daily look switched
+off, once a day, and again when the address changed; `upgrade_url` https
+only, with no password in it.
+
 ## admin.py
 
 `python3 test/admin.py` - the same, the whole way through the API with its

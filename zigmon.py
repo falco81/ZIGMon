@@ -515,7 +515,12 @@ DEFAULTS = {
     'reboot_auto': 'off',         # a regular restart of the machine: off, daily, weekly
     'reboot_at': '04:30',         # local HH:MM
     'reboot_day': 7,              # weekly: 1 Monday - 7 Sunday
-    'backup_zigbee': 1,           # 1 = also ask Zigbee2MQTT for its coordinator backup
+    # where new versions are published, looked at once a day (5.20): a
+    # GitHub folder, a folder listing, or one package's own address. Only
+    # ever offered on the dashboard - nothing is put in by itself
+    'upgrade_check': 1,
+    'upgrade_url': 'https://github.com/falco81/ZIGMon/tree/main/release',
+    'backup_zigbee': 1,          # 1 = also ask Zigbee2MQTT for its coordinator backup
     'chart_outages': 0,            # 1 = shade stretches where a chatty source went quiet, on every chart
     'link_plugs': 1,               # 1 = a plug's name / chart button opens its history
     'link_sensors': 1,             # 1 = clicking a sensor card opens its history
@@ -7413,6 +7418,157 @@ def php_now(force=False):
 
 
 # ---------------------------------------------------------------------------
+# New versions from the web (5.20)
+#
+# Settings - Upgrades - upgrade_url is asked once a day (upgrade_check) and
+# whenever Look now is pressed, for zigmon-X.Y.Z.tar.gz: a GitHub folder
+# through GitHub's API, any other page by the links in it, or one package's
+# own address. The newest one newer than what runs here is offered on the
+# dashboard; one click fetches it, and from then on it is a package exactly as
+# though it had been sent by hand - the same zigmon_upgrade.py --inspect, the
+# same signature, the same Upgrade button, root checking it all again from
+# scratch. Nothing is put in by itself, and nothing is trusted because of
+# where it came from: HTTPS only keeps the look honest, the release key is
+# what the package is believed on.
+# ---------------------------------------------------------------------------
+ONLINE_PKG_RE = re.compile(r'(?:^|/)(zigmon-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)')
+ONLINE_EVERY_S = 86400
+# One look and one fetch at a time, whichever of the chores, the page or the
+# command line asked for it.
+ONLINE_WORK = {'busy': False, 'fetching': False, 'at': 0.0}
+ONLINE_LOCK = threading.Lock()
+# A folder listing is a page or two of JSON; a package is the program, the
+# page and the helpers. Both are bounded, so an address that answers with an
+# endless stream fills neither memory nor the disk.
+ONLINE_PAGE_MOST = 4 * 1024 * 1024
+UPGRADE_MOST = 64 * 1024 * 1024
+
+
+def _online_get(url, limit=ONLINE_PAGE_MOST, accept='*/*', timeout=30, into=None):
+    """(bytes, content type, final address) of an https:// address.
+
+    With `into`, the answer is written to that file a piece at a time and
+    the bytes come back as None: the service runs with MemoryMax=300M, and a
+    package read whole into memory is a fifth of that before anything else
+    has happened. The address it ends at after redirects is checked as well
+    as the one asked - a redirect to plain http would otherwise undo the
+    whole point of asking over https."""
+    import urllib.request
+    if not str(url).startswith('https://'):
+        raise ValueError('only https:// addresses are asked: %s' % str(url)[:200])
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'zigmon/%s (+upgrade check)' % __version__, 'Accept': accept})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+        final = r.geturl()
+        if not str(final).startswith('https://'):
+            raise ValueError('it was sent on to an address that is not https: %s' % str(final)[:200])
+        ct = r.headers.get('Content-Type') or ''
+        if into is None:
+            data = r.read(limit + 1)
+            if len(data) > limit:
+                raise ValueError('the answer from %s is bigger than %d MB' % (url, limit >> 20))
+            return data, ct, final
+        got = 0
+        with open(str(into), 'wb') as fh:
+            while True:
+                piece = r.read(256 * 1024)
+                if not piece:
+                    break
+                got += len(piece)
+                if got > limit:
+                    raise ValueError('the answer from %s is bigger than %d MB' % (url, limit >> 20))
+                fh.write(piece)
+        return None, ct, final
+
+
+def _online_ver(text):
+    try:
+        return tuple(int(x) for x in str(text).split('.')[:3])
+    except ValueError:
+        return (0, 0, 0)
+
+
+def online_list(url):
+    """The packages at `url`: [{'name', 'version', 'url', 'bytes'}], newest first.
+
+    Three kinds of address are understood. One package's own (a GitHub page
+    of a file is read as the file itself, from raw.githubusercontent.com); a
+    GitHub folder, asked through GitHub's contents API and, when that
+    refuses - sixty questions an hour without an account - through the
+    folder's own page, read for the names; and any other page, as a JSON
+    list or as the links in it, which is what nginx's and Apache's folder
+    listings are. A link that is not https is never offered."""
+    import html
+    import urllib.parse
+    url = str(url or '').strip()
+    if not url:
+        raise ValueError('there is no address to look at (Settings - Upgrades)')
+    if not url.startswith('https://'):
+        raise ValueError('only https:// addresses are asked: %s' % url[:200])
+    found = {}
+
+    def add(name, link, size=None):
+        m = ONLINE_PKG_RE.search('/' + str(name))
+        if not m or not str(link).startswith('https://'):
+            return
+        version = '%d.%d.%d' % tuple(int(x) for x in m.group(2, 3, 4))
+        found[m.group(1)] = {'name': m.group(1), 'version': version, 'url': str(link),
+                             'bytes': size if isinstance(size, int) else None}
+
+    gh = re.match(r'^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)'
+                  r'(?:/tree/([^/?#]+)(?:/([^?#]*?))?)?/?$', url)
+    one = ONLINE_PKG_RE.search(urllib.parse.urlparse(url).path)
+    if one:
+        link = url
+        b = re.match(r'^https://github\.com/([^/]+)/([^/]+)/blob/([^?#]+)', url)
+        if b:
+            link = 'https://raw.githubusercontent.com/%s/%s/%s' % b.groups()
+        add(one.group(1), link)
+    elif gh:
+        owner, repo, ref, folder = gh.group(1), gh.group(2), gh.group(3), (gh.group(4) or '').strip('/')
+        api = 'https://api.github.com/repos/%s/%s/contents/%s' % (owner, repo, urllib.parse.quote(folder))
+        if ref:
+            api += '?ref=' + urllib.parse.quote(ref)
+        try:
+            data, _ct, _final = _online_get(api, accept='application/vnd.github+json')
+            items = json.loads(data.decode('utf-8'))
+        except Exception as e:                          # noqa: BLE001 - the page is asked instead
+            try:
+                data, _ct, _final = _online_get(url)
+            except Exception:                           # noqa: BLE001
+                raise ValueError('GitHub did not answer: %s' % (getattr(e, 'reason', None) or e))
+            base = 'https://raw.githubusercontent.com/%s/%s/%s/%s' % (
+                owner, repo, ref or 'HEAD', (folder + '/') if folder else '')
+            items = [{'type': 'file', 'name': n, 'download_url': base + n}
+                     for n in sorted(set(re.findall(r'zigmon-\d+\.\d+\.\d+\.tar\.gz',
+                                                    data.decode('utf-8', 'replace'))))]
+        if isinstance(items, dict):
+            items = [items]
+        for it in items if isinstance(items, list) else []:
+            if isinstance(it, dict) and it.get('type') == 'file' and it.get('download_url'):
+                add(str(it.get('name') or ''), str(it['download_url']), it.get('size'))
+    else:
+        data, ct, final = _online_get(url)
+        text = data.decode('utf-8', 'replace')
+        try:
+            items = json.loads(text) if 'json' in ct or text.lstrip()[:1] in ('[', '{') else None
+        except ValueError:
+            items = None
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict):
+                    link = str(it.get('download_url') or it.get('url') or '')
+                    add(str(it.get('name') or link), urllib.parse.urljoin(final, link), it.get('size'))
+        else:
+            for href in re.findall(r'''href\s*=\s*["']([^"']+)["']''', text, re.I):
+                link = urllib.parse.urljoin(final, html.unescape(href))
+                m = ONLINE_PKG_RE.search(urllib.parse.urlparse(link).path)
+                if m:
+                    add(m.group(1), link)
+    return sorted(found.values(), key=lambda x: _online_ver(x['version']), reverse=True)
+
+
+# ---------------------------------------------------------------------------
 # The daemon
 # ---------------------------------------------------------------------------
 class Daemon(object):
@@ -9195,6 +9351,7 @@ class Daemon(object):
         'full_backup_nightly': (0, 1), 'full_backup_keep': (1, 60),
         'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
         'reboot_auto': 'str', 'reboot_at': 'str', 'reboot_day': (1, 7),
+        'upgrade_check': (0, 1), 'upgrade_url': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
         'session_idle_min': (0, 43200), 'session_hours': (1, 8760),
         'chart_outages': (0, 1), 'link_plugs': (0, 1), 'link_sensors': (0, 1), 'link_buttons': (0, 1),
@@ -9295,6 +9452,14 @@ class Daemon(object):
                 raw = ', '.join(self.unmask_phones(raw, CONFIG.get(key) or ''))
             if spec == 'str':
                 value = str(raw or '').strip()[:200]
+                # where new versions are looked for: https or nothing, because
+                # a look over plain http could be answered by anybody between
+                if key == 'upgrade_url' and not value.startswith('https://'):
+                    raise ValueError('upgrade_url must start with https://')
+                # ...and with no name and password in it, which would be
+                # written into every event that says where a version came from
+                if key == 'upgrade_url' and '@' in urlsplit(value).netloc:
+                    raise ValueError('upgrade_url takes no name or password')
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
                 if key in ('backup_time', 'reboot_at') and \
@@ -13321,8 +13486,8 @@ class Daemon(object):
          'the dashboard\u2019s certificate (and the broker\u2019s, when it reads the same one) at 21 '
          'days left, at 7 and the day before', 'System', ''),
         ('upgrade', 'A new version',
-         'a package sent to the dashboard, an upgrade started, put in, or taken back because the new '
-         'version did not answer', 'System', ''),
+         'a newer one found on the web, a package sent to the dashboard or fetched, an upgrade '
+         'started, put in, or taken back because the new version did not answer', 'System', ''),
         ('root', 'What root put in place',
          'the certificate, who may reach the pages, the firewall, a backup of the whole '
          'installation made, put back or refused', 'System', 'level'),
@@ -15241,14 +15406,36 @@ class Daemon(object):
             raise ValueError('bigger than any version of zigmon')
         if part < of:
             return {'received': part, 'of': of}
+        return {'received': part, 'of': of, 'package': self.upgrade_take(tmp, who)}
+
+    def upgrade_take(self, tmp, who='', source=None, want=None):
+        """A package in the upgrade folder checked, and made the one waiting.
+
+        One sent in pieces from the page and one fetched from the web (5.20)
+        both end here, so from this point on they are the same thing: the
+        same zigmon_upgrade.py --inspect, the same package.json, the same
+        Upgrade button. `source` is the address a fetched one came from, and
+        `want` the version it was fetched as - a file called 5.21.0 that holds
+        something else is not taken on its name. What is refused is deleted.
+        The hash is read a piece at a time: a package can be 64 MB, and the
+        service is not given much more than four times that to live in."""
         info = self.upgrade_inspect(tmp)
+        why = None
         if not info.get('ok'):
-            tmp.unlink()
-            raise ValueError(info.get('said') or 'the package was refused')
-        if info.get('older'):
-            tmp.unlink()
-            raise ValueError('%s is older than %s, which runs here: going back is done on the '
-                             'command line' % (info['version'], __version__))
+            why = info.get('said') or 'the package was refused'
+        elif info.get('older'):
+            why = ('%s is older than %s, which runs here: going back is done on the '
+                   'command line' % (info['version'], __version__))
+        elif want and info.get('version') != want:
+            why = 'it was offered as %s and holds %s' % (want, info.get('version'))
+        elif source and _online_ver(info.get('version')) <= _online_ver(__version__):
+            why = '%s is not newer than %s, which runs here' % (info.get('version'), __version__)
+        if why:
+            try:
+                Path(str(tmp)).unlink()
+            except OSError:
+                pass
+            raise ValueError(why)
         for old in self.upgrade_dir().glob('zigmon-*.tar.gz'):
             try:
                 old.unlink()
@@ -15256,15 +15443,151 @@ class Daemon(object):
                 pass
         name = 'zigmon-%s.tar.gz' % info['version']
         os.replace(str(tmp), str(self.upgrade_dir(name)))
-        sha = hashlib.sha256(self.upgrade_dir(name).read_bytes()).hexdigest()
+        digest = hashlib.sha256()
+        with open(str(self.upgrade_dir(name)), 'rb') as fh:
+            for piece in iter(lambda: fh.read(1024 * 1024), b''):
+                digest.update(piece)
         pkg = {'file': name, 'version': info['version'], 'signed_by': info.get('signed_by'),
-               'bytes': info.get('bytes'), 'changelog': info.get('changelog') or '', 'sha': sha,
-               'at': int(time.time()), 'by': who or 'the dashboard', 'newer': info.get('newer')}
+               'bytes': info.get('bytes'), 'changelog': info.get('changelog') or '',
+               'sha': digest.hexdigest(), 'at': int(time.time()), 'by': who or 'the dashboard',
+               'newer': info.get('newer')}
+        if source:
+            pkg['source'] = str(source)[:300]
         with open(str(self.upgrade_dir('package.json')), 'w') as f:
             json.dump(pkg, f)
-        self.say_event('control', 'a new version sent to the dashboard: zigmon %s, signed by %s'
-                       % (info['version'], info.get('signed_by')), 'info', about='upgrade')
-        return {'received': part, 'of': of, 'package': pkg}
+        if source:
+            self.say_event('control', 'zigmon %s fetched from %s, signed by %s - ready to be put in'
+                           % (info['version'], str(source)[:200], info.get('signed_by')), 'info',
+                           about='upgrade')
+        else:
+            self.say_event('control', 'a new version sent to the dashboard: zigmon %s, signed by %s'
+                           % (info['version'], info.get('signed_by')), 'info', about='upgrade')
+        return pkg
+
+    # ---- new versions from the web (5.20) -------------------------------------------
+    # What upgrade_url had when it was last asked is kept in the database
+    # (upgrade_online), so the card says the same after a restart and the
+    # daily look is a day after the last one rather than after every start.
+    def online_row(self):
+        try:
+            got = json.loads(self.store.get_meta('upgrade_online') or '{}')
+        except ValueError:
+            got = {}
+        return got if isinstance(got, dict) else {}
+
+    @staticmethod
+    def online_url():
+        return str(CONFIG.get('upgrade_url') or '').strip()
+
+    @staticmethod
+    def online_on():
+        try:
+            return bool(int(CONFIG.get('upgrade_check') or 0))
+        except (TypeError, ValueError):
+            return False
+
+    def online_look(self, by=''):
+        """Ask upgrade_url now. A newer version than what runs here is said
+        once - as an event and by the roads chosen for "A new version" - and
+        not again on every daily look while it stays the newest there."""
+        url = self.online_url()
+        was = self.online_row()
+        row = {'at': int(time.time()), 'url': url, 'by': by or '', 'here': __version__,
+               'told': was.get('told')}
+        try:
+            got = online_list(url)
+            row['packages'] = got[:10]
+            row['newest'] = got[0] if got else None
+            row['newer'] = bool(got and _online_ver(got[0]['version']) > _online_ver(__version__))
+        except Exception as e:                           # noqa: BLE001 - said on the card instead
+            row['error'] = str(getattr(e, 'reason', None) or e).split('\n')[0][:300]
+        if row.get('newer') and row['newest']['version'] != was.get('told'):
+            row['told'] = row['newest']['version']
+            self.say_event('control', 'zigmon %s is out (%s) - Control, Upgrades'
+                           % (row['newest']['version'], url[:200]), 'info', about='upgrade',
+                           title='A new version', dedup='upgrade-online-%s' % row['newest']['version'])
+        self.store.set_meta('upgrade_online', json.dumps(row, default=str))
+        return row
+
+    def online_tick(self):
+        """From the half-minute chores: a real look once the address has
+        changed, or a day after the last one - never while looking every day
+        is switched off. Asked at most every five minutes, and in a thread of
+        its own, because a slow server abroad has no business holding up the
+        certificate's check or an upgrade's end being told."""
+        if not self.online_on() or not self.online_url():
+            return
+        if time.time() - ONLINE_WORK['at'] < 300:
+            return
+        ONLINE_WORK['at'] = time.time()
+        last = self.online_row()
+        if last.get('url') == self.online_url() and \
+                time.time() - float(last.get('at') or 0) < ONLINE_EVERY_S:
+            return
+        with ONLINE_LOCK:
+            if ONLINE_WORK['busy']:
+                return
+            ONLINE_WORK['busy'] = True
+
+        def go():
+            try:
+                self.online_look()
+            except Exception as e:                       # noqa: BLE001
+                log('looking for a new version: %s' % e, 'warn')
+            finally:
+                ONLINE_WORK['busy'] = False
+        threading.Thread(target=go, name='upgrade-online', daemon=True).start()
+
+    def online_view(self):
+        row = self.online_row()
+        if row:
+            newest = row.get('newest') or {}
+            row['newer'] = bool(newest and _online_ver(newest.get('version')) > _online_ver(__version__))
+            row['here'] = __version__
+        return {'online': row, 'url': self.online_url(), 'check': self.online_on(),
+                'busy': bool(ONLINE_WORK['busy'] or ONLINE_WORK['fetching'])}
+
+    def online_fetch(self, version, who=''):
+        """The package of `version`, fetched from where it was found and taken
+        as one sent by hand would be. It is streamed into the upgrade folder
+        under a name of its own, never held whole in memory, and what is left
+        of it is deleted whatever happens."""
+        version = str(version or '').strip()
+        if not re.match(r'^\d+\.\d+\.\d+$', version):
+            raise ValueError('which version? (X.Y.Z)')
+        st = self.upgrade_state()
+        if st['running'] or st['asked']:
+            raise ValueError('not while an upgrade is going on')
+        url = self.online_url()
+        found = [p for p in online_list(url) if p['version'] == version]
+        if not found:
+            raise ValueError('zigmon %s is not at %s' % (version, url[:200]))
+        if _online_ver(version) <= _online_ver(__version__):
+            raise ValueError('zigmon %s is not newer than %s, which runs here' % (version, __version__))
+        with ONLINE_LOCK:
+            if ONLINE_WORK['fetching']:
+                raise ValueError('a version is being fetched already')
+            ONLINE_WORK['fetching'] = True
+        tmp = None
+        try:
+            self.root_folders()
+            tmp = self.upgrade_dir('.online-%s.part' % secrets.token_hex(8))
+            _data, _ct, final = _online_get(found[0]['url'], limit=UPGRADE_MOST, timeout=120,
+                                            into=tmp)
+            try:
+                return self.upgrade_take(tmp, who or 'the dashboard', source=final, want=version)
+            except ValueError as e:
+                self.say_event('control', 'zigmon %s from %s was refused: %s'
+                               % (version, str(final)[:200], e), 'warn', about='upgrade',
+                               title='A fetched version was refused')
+                raise ValueError('the package from %s was refused: %s' % (str(final)[:200], e))
+        finally:
+            ONLINE_WORK['fetching'] = False
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def upgrade_status(self):
         try:
@@ -15293,7 +15616,7 @@ class Daemon(object):
         return {'ok': True, 'version': __version__, 'package': pkg, 'ready': bool(pkg) and not not_ready
                 and helper and not running, 'not_ready': not_ready, 'helper': helper,
                 'path_unit': helper, 'status': st, 'running': running,
-                'asked': self.upgrade_asked(),
+                'asked': self.upgrade_asked(), 'web': self.online_view(),
                 'log': lines, 'node': socket.gethostname().split('.')[0],
                 'nodes': [{'name': socket.gethostname().split('.')[0] or 'this machine', 'me': True,
                            'alive': True, 'version': __version__, 'at': int(time.time()),
@@ -15490,7 +15813,8 @@ class Daemon(object):
         certificate's end looked at, an upgrade's end told, old hand-overs
         cleared - each one never in the way of the next."""
         for name, job in (('drift', self.root_drift), ('certificate', self.check_certificate),
-                          ('upgrade', self.upgrade_told), ('tidy', self.full_tidy)):
+                          ('upgrade', self.upgrade_told), ('tidy', self.full_tidy),
+                          ('new version', self.online_tick)):
             try:
                 job()
             except Exception as e:                       # noqa: BLE001 - the next one still runs
@@ -28551,7 +28875,7 @@ class Daemon(object):
     # out, the PIN and every password, token and key.
     SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|never_block|block|blacklist|'
                                  r'public_view|session|allow|trusted|duo|mikrotik|proxy_|intel_|feeds?\b|'
-                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_',
+                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_|upgrade_',
                                  re.I)
 
     OBJECT_CACHE_S = 2.0
@@ -37186,6 +37510,27 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'forget':
                 d.upgrade_forget()
                 return dict(d.upgrade_state(), message='the package is gone')
+            # a new version from the web (5.20): looked for, or fetched and
+            # checked as one sent by hand - and put in only when asked to
+            if act in ('online_look', 'online_get'):
+                st = d.upgrade_state()
+                if st['running'] or st['asked']:
+                    raise ValueError('not while an upgrade is going on')
+            if act == 'online_look':
+                row = d.online_look(who)
+                words = (('could not look: %s' % row['error']) if row.get('error') else
+                         ('zigmon %s is there' % row['newest']['version']) if row.get('newer') else
+                         ('nothing newer than %s' % __version__) if row.get('newest') else
+                         'no zigmon package there')
+                return dict(d.upgrade_state(), message=words)
+            if act == 'online_get':
+                pkg = d.online_fetch(body.get('version'), who)
+                if body.get('start'):
+                    d.upgrade_start(who)
+                    return dict(d.upgrade_state(), message='zigmon %s fetched and checked - root is '
+                                'putting it in' % pkg['version'])
+                return dict(d.upgrade_state(), message='zigmon %s fetched, signed by %s - ready below'
+                            % (pkg['version'], pkg.get('signed_by')))
         if path == '/api/upgrade/upload':
             got = d.upgrade_upload(body.get('part') or 1, body.get('of') or 1, body.get('data'),
                                    body.get('upload_id'), who)
@@ -44416,6 +44761,9 @@ HELP_LINES = [
     ('zigmon --root-status', 'what root last did for the dashboard, and what it saw'),
     ('sudo zigmon --console', 'menus for everything here, on a full screen; q leaves'),
     ('sudo zigmon --console-at-login off', 'whether root signing in lands in it: on, off, status'),
+    ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
+    ('sudo zigmon --upgrade-online --yes',
+     'fetch the newest (or a VERSION), check its signature, put it in and follow it'),
     ('#', 'The machine itself'),
     ('zigmon --changes', 'a new network or a firewall change waiting to be kept'),
     ('zigmon --change-keep net', 'keep it (net or fw); not kept in time, it goes back by itself'),
@@ -44641,6 +44989,11 @@ def build_parser():
     a.add_argument('--root-status', action='store_true',
                    help='what root last did for the dashboard: the certificate, the firewall, the '
                         'page lists, the whole backups, the last upgrade')
+    a.add_argument('--upgrade-check', action='store_true',
+                   help='(root) look at upgrade_url now for a newer zigmon (as Control, Upgrades, Look now)')
+    a.add_argument('--upgrade-online', nargs='?', const='newest', metavar='VERSION',
+                   help='(root) fetch the newest zigmon (or VERSION) from upgrade_url, check its '
+                        'signature, put it in and follow it here (--yes: without asking)')
     a.add_argument('--run-script', metavar='NAME',
                    help='run one of the little scripts; --text ip=1.2.3.4 gives it its names')
     a.add_argument('--proxy', action='store_true',
@@ -44869,6 +45222,112 @@ def _thing_main(thing, argv):
         return done(cmd_zigbee_word(args, pal))
     args.modem = args.what
     return done(cmd_modem(args, pal))
+
+def _upgrade_ask(pal, body=None, timeout=60.0):
+    """/api/upgrade, read or asked, with the command line's own key. It is an
+    administrator's road, so without root's key it is refused - and said so
+    in words a person can act on rather than as a 403."""
+    code, out = api_call('/api/upgrade', 'POST' if body else 'GET', body, timeout=timeout)
+    if code == 200 and isinstance(out, dict):
+        return out
+    why = (out or {}).get('error') if isinstance(out, dict) else None
+    if code in (401, 403):
+        print(pal.crit('refused: %s (as root: sudo zigmon %s)' % (why or code, ' '.join(sys.argv[1:]))))
+    elif code == 0:
+        print(pal.crit('daemon not reachable: %s' % (why or 'no answer')))
+    else:
+        print(pal.crit('refused: %s' % (why or code)))
+    return None
+
+
+def cmd_upgrade_check(args, pal):
+    """Look at upgrade_url now, as Control - Upgrades - Look now does."""
+    out = _upgrade_ask(pal, {'action': 'online_look'}, timeout=90.0)
+    if out is None:
+        return 2
+    row = (out.get('web') or {}).get('online') or {}
+    if args.json:
+        print(json.dumps(row, indent=2, default=str))
+        return 0 if not row.get('error') else 1
+    print(pal.title('looked at %s' % row.get('url')))
+    if row.get('error'):
+        print(pal.crit('  ' + row['error']))
+        return 1
+    for pk in row.get('packages') or []:
+        mark = pal.ok('newer') if _online_ver(pk['version']) > _online_ver(__version__) else pal.dim('not newer')
+        print('  %-26s %-10s %s' % (pk['name'], mark, pal.dim(pk['url'])))
+    newest = row.get('newest')
+    if not newest:
+        print(pal.warn('  no zigmon package there'))
+    elif row.get('newer'):
+        print(pal.ok('  zigmon %s is there - this server runs %s: zigmon --upgrade-online'
+                     % (newest['version'], __version__)))
+    else:
+        print(pal.ok('  nothing newer than %s' % __version__))
+    return 0
+
+
+def cmd_upgrade_online(args, pal):
+    """Fetch the newest version (or the one named) from upgrade_url, have it
+    checked exactly as a package sent on the dashboard is, put it in, and
+    follow it here until it has ended - the daemon restarts on the way, so
+    a few questions going unanswered is expected, not a failure."""
+    out = _upgrade_ask(pal, {'action': 'online_look'}, timeout=90.0)
+    if out is None:
+        return 2
+    row = (out.get('web') or {}).get('online') or {}
+    if row.get('error'):
+        print(pal.crit('%s: %s' % (row.get('url'), row['error'])))
+        return 1
+    want = str(args.upgrade_online or 'newest')
+    pk = row.get('newest') if want == 'newest' else next(
+        (x for x in row.get('packages') or [] if x.get('version') == want), None)
+    if not pk:
+        print(pal.crit('%s is not at %s' % ('no zigmon package' if want == 'newest' else want, row.get('url'))))
+        return 1
+    if _online_ver(pk['version']) <= _online_ver(__version__):
+        print(pal.ok('nothing newer than %s at %s' % (__version__, row.get('url'))))
+        return 0
+    print(pal.title('zigmon %s -> %s' % (__version__, pk['version'])) + pal.dim('  from %s' % pk['url']))
+    print('  a backup of the whole installation first; then it is put in and zigmon restarts -')
+    print('  the house stops following its sensors for a minute or so. If the new version does')
+    print('  not answer, the old one is put back by itself.')
+    if not args.yes:
+        try:
+            ok = input('  go on? (y/N) ').strip().lower() in ('y', 'yes')
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            print('  nothing done')
+            return 1
+    print(pal.dim('  fetching it and checking its signature...'))
+    out = _upgrade_ask(pal, {'action': 'online_get', 'version': pk['version'], 'start': True}, timeout=600.0)
+    if out is None:
+        return 1
+    print(pal.ok('  ' + str(out.get('message') or 'asked')))
+    said, misses, ends = None, 0, time.time() + 1800
+    while time.time() < ends:
+        time.sleep(3)
+        code, st = api_call('/api/upgrade', timeout=10.0)
+        if code != 200 or not isinstance(st, dict):
+            misses += 1
+            if misses == 1:
+                print(pal.dim('  zigmon is restarting - asking again...'))
+            continue
+        now = st.get('status') or {}
+        line = '%s %s' % (now.get('state'), now.get('step') or '')
+        if line != said:
+            said = line
+            print('  ' + (now.get('step') or now.get('state') or '?'))
+        if now.get('state') == 'done':
+            print(pal.ok('  zigmon %s is in and answers' % (st.get('version') or pk['version'])))
+            return 0
+        if now.get('state') == 'failed':
+            print(pal.crit('  %s%s' % (now.get('said') or 'it failed',
+                                       ' - the old version was put back' if now.get('rolled_back') else '')))
+            return 1
+    print(pal.warn('  still going after half an hour: zigmon --root-status says where it is'))
+    return 1
 
 
 def root_status_main():
@@ -47120,6 +47579,10 @@ def _dispatch(args, pal):
         return cmd_sessions(args, pal)
     if getattr(args, 'backup', None) is not None:
         return cmd_backup(args, pal)
+    if getattr(args, 'upgrade_check', False):
+        return cmd_upgrade_check(args, pal)
+    if getattr(args, 'upgrade_online', None):
+        return cmd_upgrade_online(args, pal)
     if getattr(args, 'run_script', None):
         return cmd_run_script(args, pal)
     if getattr(args, 'unblock', None):

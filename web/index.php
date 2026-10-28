@@ -4669,6 +4669,19 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <h2>This server</h2>
       <div id="up-nodes"></div>
     </div>
+    <div class="card full ot" data-sec="sys-upgrade" id="up-web-card">
+      <h2>From the web</h2>
+      <p class="note">Where new versions are published &ndash; the address below &ndash; is looked at once a day. A newer zigmon found there is offered here, and put in with one click: fetched, its signature checked exactly as a package sent by hand is, a backup of the whole installation made first, and the old version put back by itself when the new one does not answer. Nothing is put in by itself.</p>
+      <div id="up-web"></div>
+    </div>
+    <div class="card full set-card" data-sec="sys-upgrade">
+      <h2>Settings</h2>
+      <div class="set-host" id="set-host-sys-upgrade" data-for="sys-upgrade"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-new-card">
       <h2>A new version</h2>
       <p class="note">The package as it is released: <code>zigmon-X.Y.Z.tar.gz</code>, signed. Its signature is checked against the keys installed with zigmon before anything else is looked at; a package that is not signed, or not by one of them, or changed after it was signed, is refused. Going back to an older version is done on the command line.</p>
@@ -17520,7 +17533,7 @@ function energyResetTail(st, host, plugs) {
 
 // ---- the tunable slice of config.json ----------------------------------------------
 var SETTINGS = { dirty: false };
-var SETTINGS_BOOL = { chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, public_view: 1, silence_alert_buttons: 1,
+var SETTINGS_BOOL = { chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, upgrade_check: 1, public_view: 1, silence_alert_buttons: 1,
                       watchdog: 1, route_watch: 1, mqtt_only: 1, debug: 1, debug_events: 1 };
 var SETTINGS_TIME = { backup_time: 1 };
 var SETTINGS_STEP = { price_per_kwh: '0.01', standing_charge_month: '0.01', heating_enforce_delta: '0.1', latitude: '0.000001', longitude: '0.000001', plug_min_request_gap: '0.05', plug_command_gap: '0.01' };
@@ -17987,6 +18000,17 @@ var SETTINGS_LAYOUT = [
     ['backup_zigbee', 'Include Zigbee2MQTT'],
     ['full_backup_nightly', 'Also the whole installation'],
     ['full_backup_keep', 'Whole backups kept'],
+  ]],
+  ['Looking for new versions', [
+    ['|', 'where new versions come from'],
+    ['upgrade_check', 'Look for a new version every day',
+     'Look for a new version every day — at the address below. A newer one is offered under From the web '
+     + 'and said once, as A new version among the alerts; it is never put in by itself. Look now asks once '
+     + 'whether this is on or off'],
+    ['upgrade_url', 'Where new versions are looked for',
+     'Where new versions are looked for — https:// only. A GitHub folder (github.com/OWNER/REPO/tree/BRANCH/FOLDER), '
+     + 'a folder listing of a web server of your own, or one package’s own address. Whatever it is, a package '
+     + 'is taken only when it is signed by a release key installed with zigmon'],
   ]],
   ['Notification channels', [
     ['|', 'where messages go'],
@@ -18494,7 +18518,8 @@ var SETTINGS_WHERE = {
   'The second factor': 'msg-taps', 'Keeping addresses out': 'sec-block',
   'The server that faces the internet': 'sec-front', 'The router that carries the list': 'sec-front',
   'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access',
-  'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power'
+  'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power',
+  'Looking for new versions': 'sys-upgrade'
 };
 function settingsHosts() {
   var out = [];
@@ -26311,6 +26336,65 @@ function upBar(pc, kind, words, wide) {
   if (words) box.appendChild(el('div', 'says', words));
   return box;
 }
+/* New versions from the web (5.20): what upgrade_url had when it was last
+   asked, and one click to put the newest in. Every word that came from the
+   address - a version, a link, an error a server sent back - is escaped: it
+   is somebody else's text, written into this page. */
+function drawUpWeb(d) {
+  var host = $('up-web');
+  if (!host) return;
+  var w = d.web || {}, o = w.online || {};
+  var here = esc(o.here || d.version || '?');
+  host.innerHTML = '';
+  var p = el('p', 'note' + (o.error ? ' bad' : (o.newer ? ' good' : '')));
+  if (!o.at) p.innerHTML = w.check ? 'Not looked at yet &ndash; within minutes, or press Look now.'
+    : 'Not looked at: looking every day is switched off below. Look now asks once.';
+  else if (o.error) p.innerHTML = 'Looked ' + esc(ago(o.at)) + ': ' + esc(o.error);
+  else if (o.newer) p.innerHTML = 'zigmon <b>' + esc(o.newest.version) + '</b> is there &ndash; this server runs '
+    + here + ' (looked ' + esc(ago(o.at)) + ')';
+  else if (o.newest) p.innerHTML = 'Nothing newer: the newest there is ' + esc(o.newest.version)
+    + ' and this server runs ' + here + ' (looked ' + esc(ago(o.at)) + ')';
+  else p.innerHTML = 'No zigmon package there (looked ' + esc(ago(o.at)) + ')';
+  host.appendChild(p);
+  var at = el('p', 'small muted');
+  at.innerHTML = '<code>' + esc(w.url || o.url || '–') + '</code>';
+  host.appendChild(at);
+  var row = el('div', 'btnrow');
+  var look = cmdButton('Look now', 'refresh', '');
+  look.disabled = !!(d.running || w.busy);
+  look.onclick = function () {
+    zbusy(look, true);
+    rootPost('upgrade-do', {action: 'online_look'}).then(function (x) { toast(x.message, true); drawUpgrade(x); }, zoops)
+      .then(function () { zbusy(look, false); });
+  };
+  row.appendChild(look);
+  if (o.newer && !d.running && !d.asked) {
+    var v = String(o.newest.version);
+    var up = cmdButton('Upgrade to ' + v + ' now', 'play', 'primary');
+    up.onclick = function () {
+      zconfirm('Upgrade to zigmon ' + v + '?', 'It is fetched from ' + String(o.newest.url || w.url || '') + ', its signature '
+        + 'checked, and this server is upgraded: first a backup of the whole installation, then zigmon restarts - the '
+        + 'house stops following its sensors for a minute or so. If the new version does not answer, the old one is put '
+        + 'back by itself.', 'Upgrade', function () {
+          zbusy(up, true);
+          rootPost('upgrade-do', {action: 'online_get', version: v, start: true}).then(function (x) {
+            toast(x.message, true); drawUpgrade(x);
+          }, zoops).then(function () { zbusy(up, false); });
+        }, false);
+    };
+    row.appendChild(up);
+    var only = cmdButton('Only fetch it', 'download', '');
+    explain(only, 'Fetched and checked, and left ready below — put in when Upgrade is pressed.');
+    only.onclick = function () {
+      zbusy(only, true);
+      rootPost('upgrade-do', {action: 'online_get', version: v}).then(function (x) {
+        toast(x.message, true); drawUpgrade(x);
+      }, zoops).then(function () { zbusy(only, false); });
+    };
+    row.appendChild(only);
+  }
+  host.appendChild(row);
+}
 function drawUpgrade(d) {
   UP.last = d;
   var host = $('up-nodes');
@@ -26327,6 +26411,7 @@ function drawUpgrade(d) {
     tr.appendChild(st);
     return tr;
   }, 'plain'));
+  drawUpWeb(d);
   var pk = $('up-pkg');
   pk.innerHTML = '';
   if (d.package) {
@@ -26335,7 +26420,7 @@ function drawUpgrade(d) {
     box.style.marginTop = '12px';
     box.appendChild(el('b', '', 'zigmon ' + p.version));
     box.appendChild(el('div', 'small', 'signed by ' + (p.signed_by || '?') + ' · ' + sizeText(p.bytes || 0)
-      + ' · sent by ' + (p.by || '?') + ' · ' + ago(p.at)));
+      + (p.source ? ' · fetched from ' + p.source + ' by ' : ' · sent by ') + (p.by || '?') + ' · ' + ago(p.at)));
     pk.appendChild(box);
     if (p.changelog) {
       var det = el('details', 'zfold');
