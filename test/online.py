@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A new version from the web (5.20): upgrade_url looked at, a package fetched
+"""A new version from the web (5.21): upgrade_url looked at, a package fetched
 and taken exactly as one sent by hand is. Nothing leaves the machine - the
 one function that asks the network, _online_get, is replaced by fixtures, and
 where its own checks are what is being tested, urllib's urlopen is.

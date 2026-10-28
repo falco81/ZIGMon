@@ -386,6 +386,24 @@ simply keeps working.
 /var/lib/zigmon/history.db ".backup /root/history.db"` while the daemon runs)
 and `/etc/zigmon/config.json`.
 
+**Backups to other machines** (5.21) — Control → Backup sends the backup of
+the whole installation to an FTP, FTPS, SFTP, SCP or SMB server, on a
+schedule or with *Back up now*. Set *The password of the backups* first:
+nothing is sent unlocked. Each one arrives as
+`zigmon-full-HOST-STAMP.tar.gz.enc` with a `.sha256` and a `-RESTORE.txt`
+beside it; it opens with the password alone:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in FILE.tar.gz.enc -out FILE.tar.gz
+sudo zigmon --full-restore FILE.tar.gz.enc --passphrase-file /root/backup-password
+```
+
+SFTP and SCP need `openssh-clients`, SMB needs `samba-client`
+(`install.sh` installs both when it can). A folder on this machine is not a
+destination: the daemon may write only into its own folders. Reach a NAS as
+SMB or SFTP instead. `zigmon --rbackup-status` and `zigmon --rbackup-now` do
+the same from the command line.
+
 **Size** — `zigmon --diag` shows it. A dozen sensors reporting every few
 minutes come to roughly 20 MB a year; the hourly roll-up runs inside the
 daemon every hour, nothing to schedule.

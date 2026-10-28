@@ -31,6 +31,24 @@ Needs nothing running; it reads the two files. It exists because *Put back*
 once shipped answering "no such endpoint": the handler had been written into
 the read branch while the page posted to it.
 
+## rbackup.py
+
+`python3 test/rbackup.py` (as root, like `admin.py`) — the backups to other
+machines, the whole way round. A daemon on a port of its own, root's helper
+run straight away (`ZIGMON_ROOT_RUN`) over a folder that stands in for the
+machine, and a small FTP server started in the same process. It checks that
+a destination is refused when a tool on the way would read it as more than a
+value (`;`, `"`, a leading `-`, `..`, a line break), that only this
+machine's old backups are taken away (never the newest, their `.sha256` and
+`-RESTORE.txt` with them, nothing of another machine's or put there by hand),
+the schedule with a clock of its own (once a day, also across a restart),
+that nothing goes out without the password, that no password, key or
+passphrase is in `GET /api/rbackup`, the log or the events, a whole run (the
+copy that arrives opens with `openssl` and the password), Backups there,
+Download, Delete, and Put this back through root's `full_put`. SFTP is tried
+against an `sshd -D` started on a port of its own only where this machine
+has one; otherwise it says it skipped it.
+
 ## mocksms.py
 
 `python3 test/mocksms.py 18110 [user] [password]` — a Teltonika-lookalike SMS

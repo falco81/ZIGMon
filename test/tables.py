@@ -24,6 +24,9 @@ for name in ('KEY_INFO', 'WEATHER_WORDS', 'NOTIFY_PRESETS'):
 
 names = re.findall(r'^    def (\w+)\(', source, re.M)
 inner = {'__init__', 'snapshots', 'reset', 'stop', 'value', 'paint'}   # each in a class of its own
+# the transports of the backups to other machines (5.21) share one interface
+# on purpose: open, put, get, list, delete, close - and ftplib's own connect
+inner |= {'open', 'put', 'get', 'list', 'delete', 'close', '_cd', '_run', 'connect'}
 dupes = [n for n, c in Counter(names).items() if c > 1 and n not in inner]
 print('%-16s %3d methods%s' % ('classes', len(names), '' if not dupes else '  <-- defined twice: ' + ', '.join(dupes)))
 if bad or dupes:
