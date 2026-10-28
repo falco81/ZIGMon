@@ -50,6 +50,23 @@ if _missing:
     raise SystemExit(1)
 print('%d name(s) the page calls, all of them served' % len(_called))
 
+# Every name the POST map forwards must be let through the list in front of
+# it: the check above counts the map itself as serving a name, and in 5.21
+# the network's, the clock's and the restart's names were in the map and not
+# in the list - every press of theirs answered "unknown endpoint".
+_post = _re.search(r"in_array\(\$what, \[([^\]]*)\], true\) && \$_SERVER\['REQUEST_METHOD'\] === 'POST'\)", _src, _re.S)
+_map = _re.search(r"\$paths = \[(.*?)\];", _src, _re.S)
+if _post and _map:
+    _let = set(_re.findall(r"'([a-z0-9-]+)'", _post.group(1)))
+    _mapped = set(_re.findall(r"'([a-z0-9-]+)' => '/api", _map.group(1)))
+    _shut = sorted(_mapped - _let)
+    if _shut:
+        print('the relay maps names its POST list does not let through:')
+        for _name in _shut:
+            print('   %s' % _name)
+        raise SystemExit(1)
+    print('%d name(s) the POST map forwards, every one let through' % len(_mapped))
+
 # ?ask has to survive every hop. It is dropped in two ways that look like
 # nothing at all: an nginx rewrite whose replacement holds a ? throws the
 # original query away, and a relay that rebuilds the path leaves it behind.
