@@ -311,6 +311,31 @@ install_packages() {
     good "installed"
 }
 
+# The backups to other machines (5.20) reach SFTP and SCP servers with
+# OpenSSH's own programs and SMB shares with smbclient. Neither is needed for
+# anything else, so neither stops the install: missing, the page says which
+# kinds cannot be used here, and FTP and FTPS (Python's own) still can.
+install_backup_tools() {
+    step "Tools for the backups to other machines"
+    local wanted=(openssh-clients samba-client) missing=() package
+    for package in "${wanted[@]}"; do
+        rpm -q "$package" >/dev/null 2>&1 || missing+=("$package")
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        good "ssh, sftp, scp and smbclient are there"
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+        note "[would run] dnf install -y ${missing[*]}"
+        return 0
+    fi
+    if dnf install -y -q "${missing[@]}" >/dev/null 2>&1; then
+        good "installed: ${missing[*]}"
+    else
+        warn "could not install ${missing[*]}: backups to SFTP, SCP or SMB servers will not work until they are (FTP and FTPS do)"
+    fi
+}
+
 create_user() {
     step "Service user"
     if id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -905,6 +930,7 @@ do_upgrade() {
     install_service          # the unit changes with the program; a reload is cheap
     install_helpers
     allow_broker_reload
+    install_backup_tools     # 5.20: ssh and smbclient for the backups to other machines
     [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && {
         step "Dashboard files"
         run install -m 644 "$SOURCE_DIR/web/index.php" "$WEB_DIR/index.php"
@@ -1114,6 +1140,7 @@ main() {
     preflight
     gather_answers
     install_packages
+    install_backup_tools
     create_user
     install_program
     write_config
