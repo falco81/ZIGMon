@@ -503,6 +503,26 @@ install_service() {
     good "$UNIT_FILE and $LOGROTATE_FILE"
 }
 
+# The zigmon console at login (5.21): root signing in at the machine's own
+# screen or over SSH lands in `zigmon --console`; q leaves it for the shell. On
+# unless switched off (`zigmon --console-at-login off`), which an upgrade
+# leaves as it is. The switch is kept in /etc itself, where only root writes -
+# not in /etc/zigmon, whose group is the service's: a flag the service could
+# replace would be a link or a pipe for root's login to follow.
+install_console() {
+    step "The console at login"
+    if [[ -n "$DRY_RUN" ]]; then note "[would write] /etc/profile.d/zz-zigmon-console.sh"; return 0; fi
+    install -m 0644 "$SOURCE_DIR/deploy/zz-zigmon-console.sh" /etc/profile.d/zz-zigmon-console.sh
+    local flag=/etc/zigmon-console-login
+    # a link or anything else not a plain file is taken away, never followed
+    if [[ -L "$flag" || ( -e "$flag" && ! -f "$flag" ) ]]; then rm -rf "$flag"; fi
+    if [[ ! -f "$flag" ]]; then
+        printf 'on\n' > "$flag"
+        chmod 0644 "$flag"
+    fi
+    good "the zigmon console at login: $(head -c 4 "$flag" | tr -cd 'onf') (zigmon --console-at-login on|off)"
+}
+
 install_web() {
     [[ -n "$WITH_WEB" ]] || return 0
     step "Dashboard files"
@@ -904,6 +924,7 @@ do_upgrade() {
     install_program
     install_service          # the unit changes with the program; a reload is cheap
     install_helpers
+    install_console
     allow_broker_reload
     [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && {
         step "Dashboard files"
@@ -1095,6 +1116,7 @@ do_uninstall() {
     run rm -f /etc/systemd/system/zigmon-root.path /etc/systemd/system/zigmon-root.service \
         /etc/systemd/system/zigmon-upgrade.path /etc/systemd/system/zigmon-upgrade.service
     run rm -f /etc/sudoers.d/zigmon
+    run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login
     run rm -f "$UNIT_FILE" "$LOGROTATE_FILE" "$BIN_LINK"
     run rm -rf "$LIB_DIR" "$WEB_DIR"
     if [[ -f "$NGINX_CONF" ]]; then
@@ -1121,6 +1143,7 @@ main() {
     allow_broker_reload
     install_service
     install_helpers
+    install_console
     install_web
     check_certificate
     configure_nginx

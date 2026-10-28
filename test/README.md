@@ -286,3 +286,22 @@ and the page's own (a request with `&t=` skipping the check for another site,
 a room's name put into a dialogue as HTML, a countdown by the browser's
 clock). Fails on 5.19.2 in 33 places. Root's half of it - an uploaded backup
 choosing where root writes, and with which mode - is in `test/root.py`.
+
+## console.py
+
+`python3 test/console.py` - the console (5.21) and its start at root's login.
+The login hook from `deploy/zz-zigmon-console.sh`, sourced by a real
+interactive bash on a pseudo-terminal with its two paths pointed at a stub
+that writes down that it was started (and a stub `id` on PATH saying who is
+signing in): started for root with the flag on, and not with the flag
+missing, a link or "off", a command run over SSH, ZIGMON_NO_CONSOLE, a shell
+opened from the console, a user who is not root, or no terminal.
+`--console-at-login` refused to anybody but root (run as nobody where it can
+be), a link or a pipe planted where the flag goes replaced rather than
+followed or waited on; `--console` without a terminal refused. The keys a
+terminal sends as raw escape sequences, the live view's grep taking a broken
+regular expression as plain words, and the two-digit jump in a menu of
+eleven, driven directly; then the console itself on a pseudo-terminal: its
+menu, a submenu and Esc back, `!` opening a shell told ZIGMON_CONSOLE=1, the
+live log filtered as it is typed, and q closing it. Touches nothing on the
+machine. Fails on 5.20.0.
