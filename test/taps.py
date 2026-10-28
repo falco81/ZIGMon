@@ -1828,7 +1828,7 @@ d.forget_anomaly()
 # in the trouble line where a reading should have been.
 zigmon.CONFIG.update({'proxy_host': 'p', 'proxy_log': '/var/log/nginx/zigmon-tap.log',
                       'proxy_error_log': '/var/log/nginx/zigmon-tap-error.log'})
-_now_stamp = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - 60))
+_now_stamp = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - 60))
 _files = {'/var/log/nginx/zigmon-tap.log':
           '45.9.148.7 - - [%s] "GET /.env HTTP/1.1" 404 1 "-" "-"\n' % _now_stamp,
           '/var/log/nginx/zigmon-tap-error.log':
@@ -1888,7 +1888,7 @@ print('what earned a block is kept with the block, and survives the counters bei
 # When a log is rotated, whatever was written between the last reading and
 # the rotation is in the rotated copy, not the new file. Without reading that
 # copy's tail first, the last minutes of every day went unread.
-_now_line = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime())
+_now_line = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime())
 _mk = lambda ip, path: '%s - - [%s] "GET %s HTTP/1.1" 404 0 "-" "-"\n' % (ip, _now_line, path)
 _logs = {'/var/log/nginx/zigmon-tap.log': _mk('1.1.1.1', '/a') * 10}
 
@@ -1987,7 +1987,7 @@ def _shape(ip, request, status, many=1):
     d.forget_anomaly(ip)
     _lines = []
     for _i in range(many):
-        _when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - 120 + _i * 5))
+        _when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - 120 + _i * 5))
         _lines.append('%s - - [%s] "%s" %s 0 "-" "-"' % (ip, _when, request, status))
     d.proxy_weigh(_lines)
     _c = [x for x in d.anomaly_state() if x['ip'] == ip]
@@ -2071,7 +2071,8 @@ d.store.set_meta('pressed_from', '[]')
 print('a link pressed, and working, from somewhere new is said out loud once')
 # The full log: one line of JSON per request, with the body and the headers.
 # What it shows that an ordinary log cannot - and what it must NOT show.
-_now_iso = time.strftime('%Y-%m-%dT%H:%M:%S+02:00', time.localtime())
+_now_iso = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime()) + \
+    (lambda z: z[:3] + ':' + z[3:])(time.strftime('%z', time.localtime()))
 
 
 def _full(**kw):
@@ -2260,7 +2261,7 @@ print('a press is weighed where it arrives, every header of it, and none of it w
 # Suricata's eve.json: it watches the packets this house never sees, says
 # what it recognised and how sure it is, and the keeping out is still done
 # here by the same weighing and the same ladder.
-_eve_now = time.strftime('%Y-%m-%dT%H:%M:%S.000000+0200', time.localtime())
+_eve_now = time.strftime('%Y-%m-%dT%H:%M:%S.000000%z', time.localtime())
 
 
 def _eve(ip, sev, sig, cat='Attempted Administrator Privilege Gain', kind='alert'):
@@ -2547,7 +2548,7 @@ for _req, _status, _kind in (
     _ip = '45.9.149.%d' % (abs(hash(_req)) % 200 + 20)
     d.store.unblock(_ip)
     d.forget_anomaly(_ip)
-    _when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime())
+    _when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime())
     d.proxy_weigh(['%s - - [%s] "%s" %s 0 "-" "-"' % (_ip, _when, _req, _status)])
     _c = [x for x in d.anomaly_state() if x['ip'] == _ip]
     _got = _c[0]['kinds'][0]['kind'] if _c and _c[0]['kinds'] else 'nothing'
@@ -2587,7 +2588,7 @@ d._feed_said, d._geo_said, d._geo_any = {}, {}, False
 _was_bar = zigmon.CONFIG.get('block_score')
 zigmon.CONFIG.update({'block_score': 999, 'never_block': '', 'block_private': 'never',
                       'proxy_host': 'p'})
-_walk_when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime())
+_walk_when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime())
 d.proxy_weigh(['20.%d.%d.%d - - [%s] "GET /.env HTTP/1.1" 404 0 "-" "-"'
                % (_i // 65536 % 256, _i // 256 % 256, _i % 256, _walk_when)
                for _i in range(6000)])
@@ -2794,7 +2795,7 @@ zigmon.CONFIG.update({'blacklist': 1, 'block_score': 15, 'block_sensitivity': 'n
 def _knocks(ip, many, apart, status='405'):
     _out = []
     for _i in range(many):
-        _when = time.strftime('%d/%b/%Y:%H:%M:%S +0200',
+        _when = time.strftime('%d/%b/%Y:%H:%M:%S %z',
                               time.localtime(time.time() - 400 + _i * apart))
         _out.append('%s - - [%s] "GET /tap HTTP/2.0" %s 0 "-" "-"' % (ip, _when, status))
     return _out
@@ -2834,7 +2835,7 @@ d.store.db.commit()
 
 
 def _asked(ip, path, status='404', ago=0):
-    _when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - ago))
+    _when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - ago))
     return '%s - - [%s] "GET %s HTTP/1.1" %s 0 "-" "-"' % (ip, _when, path, status)
 
 
@@ -2967,7 +2968,7 @@ d._geo_said = {}
 d.store.unblock()
 d.forget_anomaly()
 d.store.put_feed('firehol1', [_r for _r in (zigmon.range_of('89.24.0.0/16'),) if _r])
-_when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime())
+_when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime())
 d.proxy_weigh(['89.24.57.142 - - [%s] "GET /.env HTTP/1.1" 404 0 "-" "-"' % _when])
 _one = d.address_story('89.24.57.142')
 assert _one['country'] == 'CZ', 'the story does not say which country: %r' % _one['country']
@@ -4544,7 +4545,7 @@ assert '64.89.161.85' in [r['ip'] for r in d.blocked_list()], \
 # ...and its access log, when that is the one read
 d.forget_anomaly()
 zigmon.CONFIG.update({'proxy_full_watch': 0})
-_stamp = lambda s: time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(s))
+_stamp = lambda s: time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(s))
 d.ntfy_weigh(['146.148.34.218 - - [%s] "GET /.git/config HTTP/1.1" 404 51 "-" "Mozilla/5.0"' % _stamp(_now - 20)])
 assert any(k == 'proxy-secret-hunt' for _t, k, _d in d._anomaly.get('146.148.34.218', [])), \
     'the notification server access log was not weighed for a hunt for secrets'
@@ -5781,7 +5782,7 @@ print('an own command sure of a message answers it; one that only found its word
 zigmon.CONFIG.update({'blacklist': 1, 'block_score': 15, 'block_sensitivity': 'normal',
                       'never_block': '', 'block_ladder': '', 'block_private': 'never',
                       'proxy_full_watch': 1, 'proxy_full_log': '/nonexistent-full.log'})
-_stamp = lambda s: time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(s))
+_stamp = lambda s: time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(s))
 _now = time.time()
 _kept = lambda ip: ip in [r['ip'] for r in d.blocked_list()]
 
@@ -6052,7 +6053,7 @@ d.forget_anomaly()
 # kept out: every one of them was "the same thing again within a breath", and
 # so all fifty-eight counted as one.
 _now2 = time.time()
-_when2 = lambda back: time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(_now2 - back))
+_when2 = lambda back: time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(_now2 - back))
 _burst = ['213.209.159.154 - - [%s] "GET / HTTP/1.1" 444 0 "-" "Mozilla/5.0"' % _when2(300 - (_i // 12))
           for _i in range(58)]
 _weighed = d.proxy_weigh(_burst)
@@ -6163,7 +6164,7 @@ d._bursts = {}
 def _ntfy_lines(ip, request, status, many, every=0.2, back=600):
     out = []
     for _i in range(many):
-        when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - back + _i * every))
+        when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - back + _i * every))
         out.append('%s - - [%s] "%s" %d 512 "-" "Mozilla/5.0 (Windows NT 10.0) Chrome/152"'
                    % (ip, when, request, status))
     return out
@@ -6211,7 +6212,7 @@ def _probe(ip, request, status, many=1):
     d.forget_anomaly(ip)
     lines = []
     for i in range(many):
-        when = time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - 120 + i * 5))
+        when = time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - 120 + i * 5))
         lines.append('%s - - [%s] "%s" %s 0 "-" "-"' % (ip, when, request, status))
     d.proxy_weigh(lines)
     one = [x for x in d.anomaly_state() if x['ip'] == ip]
@@ -6252,7 +6253,7 @@ d.store.unblock()
 d.forget_anomaly()
 d._bursts = {}
 _same = ['45.9.203.9 - - [%s] "GET /auth.html HTTP/1.1" 444 0 "-" "-"'
-         % time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(time.time() - 300))
+         % time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(time.time() - 300))
          for _ in range(45)]
 d.proxy_weigh(_same)
 _one = [x for x in d.anomaly_state() if x['ip'] == '45.9.203.9']
@@ -6273,14 +6274,14 @@ d._bursts = {}
 _rdp = "\\x03\\x00\\x00,'\\xE0\\x00\\x00\\x00\\x00\\x00Cookie: mstshash=Domain"
 _now3 = time.time() - 240
 _knock = ['194.165.16.97 - - [%s] "%s" 400 150 "-" "-"'
-          % (time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(_now3)), _rdp) for _ in range(3)]
+          % (time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(_now3)), _rdp) for _ in range(3)]
 d.proxy_weigh(_knock)
 assert '194.165.16.97' in [r['ip'] for r in d.blocked_list()], \
     'three Remote Desktop handshakes at the web port in one second were counted as one'
 # ...and the address next door, doing the same thing minutes later, is one
 # tool with two addresses
 d.proxy_weigh(['194.165.16.124 - - [%s] "%s" 400 150 "-" "-"'
-               % (time.strftime('%d/%b/%Y:%H:%M:%S +0200', time.localtime(_now3 + 60)), _rdp)])
+               % (time.strftime('%d/%b/%Y:%H:%M:%S %z', time.localtime(_now3 + 60)), _rdp)])
 assert '194.165.16.124' in [r['ip'] for r in d.blocked_list()], \
     'the address next door doing the same thing a minute later was not read as one tool'
 d.store.unblock()
