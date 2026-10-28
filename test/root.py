@@ -522,6 +522,67 @@ check(st.get('state') == 'failed' and digest(NGINX_CONF) == changed,
       'nginx refused the restored files and they were left in: %r' % st.get('said'))
 check('start zigmon' in SERVICE_LOG.read_text(), 'a failed restore left zigmon stopped')
 
+# ---- a backup from elsewhere may not choose where root writes (5.20) -----------------
+# An uploaded config.json set db_file to any path; the next uploaded
+# "database" was then written there by root, any bytes at all. And the owner
+# and the mode came from the upload's own list, so config.json came back 0666.
+print('a backup from elsewhere chooses no path and no mode')
+
+
+def crafted(name, files, mode='666'):
+    top = 'zigmon-full-other-1'
+    man = {'kind': 'zigmon-full', 'format': 1, 'files': []}
+    out = W / name
+    with tarfile.open(out, 'w:gz') as t:
+        for part, dest, data in files:
+            arc = '%s/%s/%s' % (top, part, dest.lstrip('/'))
+            ti = tarfile.TarInfo(arc)
+            ti.size = len(data)
+            t.addfile(ti, io.BytesIO(data))
+            man['files'].append({'part': part, 'path': dest, 'archive': arc, 'mode': mode,
+                                 'owner': 'root', 'group': 'root',
+                                 'sha256': hashlib.sha256(data).hexdigest()})
+        body = json.dumps(man).encode()
+        ti = tarfile.TarInfo(top + '/MANIFEST.json')
+        ti.size = len(body)
+        t.addfile(ti, io.BytesIO(body))
+    return out
+
+
+def uploaded(src, n):
+    (STATE / 'root' / 'in').mkdir(exist_ok=True)
+    shutil.copy(src, STATE / 'root' / 'in' / ('upload-%s.bin' % n))
+    st = ask({'kind': 'full_put', 'id': n, 'file': 'upload-%s.bin' % n})
+    return (st.get('inspected') or {}).get('file')
+
+
+CONF = ETC / 'zigmon' / 'config.json'
+conf_before = json.loads(CONF.read_text())
+os.chmod(CONF, 0o640)
+far = W / 'etc' / 'ld.so.preload'
+f1 = uploaded(crafted('other-config.tgz', [('config', str(CONF), json.dumps(
+    {'db_file': str(far), 'state_dir': '/', 'pin': '4321'}).encode())]), 'o1')
+st = ask({'kind': 'full_restore', 'id': 'o1r', 'file': f1, 'parts': ['config']})
+now = json.loads(CONF.read_text())
+check(st.get('state') == 'done' and now.get('pin') == '4321', 'the configuration from elsewhere was not put back: %r'
+      % st.get('said'))
+check(now.get('db_file') == conf_before.get('db_file') and 'state_dir' not in now,
+      'a configuration from elsewhere chose where the database is: %r' % now)
+check((CONF.stat().st_mode & 0o777) == 0o640, 'the mode of config.json came from the upload: %o'
+      % (CONF.stat().st_mode & 0o777))
+f2 = uploaded(crafted('other-db.tgz', [('database', '/x.db', b'not a database at all\n')]), 'o2')
+st = ask({'kind': 'full_restore', 'id': 'o2r', 'file': f2, 'parts': ['database']})
+check(st.get('state') == 'failed' and not far.exists(), 'something that is not a database was put back as one')
+CONF.write_text(json.dumps(dict(conf_before, db_file=str(far))))
+f3 = uploaded(crafted('other-db2.tgz', [('database', '/x.db', DB.read_bytes())]), 'o3')
+st = ask({'kind': 'full_restore', 'id': 'o3r', 'file': f3, 'parts': ['database']})
+check(st.get('state') == 'failed' and not far.exists(),
+      'a database outside the state folder was written from the dashboard: %r' % st.get('said'))
+CONF.write_text(json.dumps(conf_before))
+src = HELPER.read_text()
+check('os.chown(tmp' not in src and 'os.chmod(tmp' not in src,
+      'root still sets an owner or a mode by name in a folder zigmon may change')
+
 # ---- the folder the request lies in -------------------------------------------------
 print('the request itself')
 (STATE / 'root' / 'request.json').unlink(missing_ok=True)

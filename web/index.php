@@ -103,7 +103,9 @@ function zigmon_foreign_request(): bool
 }
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
         && !in_array((string) ($_GET['api'] ?? ''), ['tap', 'sms-incoming', 'presence-report'], true)
-        && !isset($_GET['t'])
+        // a one-tap link (?t= alone) is let through; ?api=...&t= is not one,
+        // and the t on the end of it let any request past this check
+        && !(isset($_GET['t']) && !isset($_GET['api']))
         && zigmon_foreign_request()) {
     http_response_code(403);
     header('Content-Type: application/json; charset=utf-8');
@@ -4850,12 +4852,18 @@ function el(tag, cls, text) {
 function esc(s) { return String(s).replace(/[&<>"']/g, function (c) {
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 function isNum(v) { return typeof v === 'number' && isFinite(v); }
+// the date on this machine's calendar - toISOString is UTC, and a file saved
+// after midnight was named for the day before
+function localDay(d) {
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+}
 function fmt(v, digits) {
   if (v === null || v === undefined) return '–';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (!isNum(v)) return String(v);
   if (digits === undefined) digits = Math.abs(v) >= 100 ? 0 : (Math.abs(v) >= 10 ? 1 : 2);
   var s = v.toFixed(digits);
+  if (+s === 0) s = s.replace('-', '');          // -0.004 is "0", not "-0"
   return s.indexOf('.') >= 0 ? s.replace(/\.?0+$/, '') : s;
 }
 function ago(ts) {
@@ -10357,7 +10365,7 @@ function renderHeating(st) {
     if (live.why === 'by hand') {
       var back = el('button', 'btn small needs-unlock', ICON.plan + ' Back to the plan now'); back.type = 'button'; back.style.marginTop = '6px';
       back.onclick = function () {
-        withPin('Back to the plan', room.name + ' follows its plan again.', function (pin) {
+        withPin('Back to the plan', esc(room.name) + ' follows its plan again.', function (pin) {
           return post('target-set', {target: 'heat:room:' + room.id, do: 'set:' + (room.mode || 'plan'), pin: pin}).then(function (r) {
             if (!r.ok) throw new Error(r.error || 'could not'); forgetSig('heating-tab'); return room.name + ' is back on the plan';
           });
@@ -14373,6 +14381,9 @@ document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$
 function signedInAs(who) {
   var was = LOCK.who ? LOCK.who.name + '|' + LOCK.who.role + '|' + !!LOCK.who.must_change : '';
   LOCK.who = who && who.name ? who : null;
+  // the end of a PIN's while on this browser's own clock, from the seconds
+  // the daemon says are left - its "until" is by the server's clock
+  if (LOCK.who && typeof LOCK.who.left === 'number' && LOCK.who.ends === undefined) LOCK.who.ends = Date.now() / 1000 + LOCK.who.left;
   if (who && who.pin !== undefined) window.ZIGMON_PIN = {pin: who.pin, pin_length: who.pin_length};
   var now = LOCK.who ? LOCK.who.name + '|' + LOCK.who.role + '|' + !!LOCK.who.must_change : '';
   renderLock();
@@ -14478,7 +14489,7 @@ function renderLock() {
   document.body.classList.toggle('not-admin', !admin);
   var pill = $('lockpill');
   var byPin = !!(who && who.kind === 'pin' && who.until);
-  var left = byPin ? Math.max(0, Math.floor(who.until - Date.now() / 1000)) : 0;
+  var left = byPin ? Math.max(0, Math.floor((who.ends || who.until) - Date.now() / 1000)) : 0;
   var mm = Math.floor(left / 60), ss = left % 60, hh = Math.floor(mm / 60);
   var clock = (hh ? hh + ':' + (mm % 60 < 10 ? '0' : '') + (mm % 60) : mm) + ':' + (ss < 10 ? '0' : '') + ss;
   // Unlocked with a PIN: the pill and the card read as they always did -
@@ -14547,7 +14558,7 @@ function unlockFlow(then, otherwise) {
       return;
     }
     VIEWLOCK.declined = false;
-    toast(LOCK.who.kind === 'pin' ? 'Editing unlocked until ' + new Date(LOCK.who.until * 1000).toTimeString().slice(0, 5)
+    toast(LOCK.who.kind === 'pin' ? 'Editing unlocked until ' + new Date((LOCK.who.ends || LOCK.who.until) * 1000).toTimeString().slice(0, 5)
                                   : 'Signed in as ' + LOCK.who.name, true);
     if (then && (LOCK.who && !LOCK.who.must_change)) then();
   });
@@ -14723,7 +14734,6 @@ var ICONS = {
   chart: '<path d="M4 19h16"/><path d="M5 15l4-5 4 3 6-8"/>',
   unlock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
-  bell: '<path d="M18 16v-5a6 6 0 1 0-12 0v5l-2 3h16z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
   hand: '<path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M12 11V4.5a1.5 1.5 0 0 1 3 0V11"/><path d="M15 11V6.5a1.5 1.5 0 0 1 3 0V13c0 4-2.5 7-6 7s-6-2.5-6-6v-3a1.5 1.5 0 0 1 3 0"/>',
   wifi: '<path d="M2 8.5a16 16 0 0 1 20 0"/><path d="M5 12a11 11 0 0 1 14 0"/><path d="M8.5 15.5a6 6 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
   person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-5.5 7-5.5s7 1.9 7 5.5"/>',
@@ -15165,10 +15175,23 @@ function makeReorderable(node, host, kind, key) {
     } else {
       ORDER.local[kind] = keys;
     }
-    var payload = { plugs: savedOrder('plugs'), devices: savedOrder('devices'),
-                    sensors: savedOrder('sensors'), buttons: savedOrder('buttons'), groups: savedGroupsAll() };
-    post('order', payload).then(function () { toast('Layout saved', true); },
-      function (e2) { toast('Layout not saved: ' + (e2.message || e2), false); ORDER.local = {}; tick(true); });
+    // Only the list that was dragged goes across, and once the daemon has it
+    // the page reads the order from the daemon again. Every list used to be
+    // sent from what this page last had, and the page's own copy was kept
+    // for good: a second tab reordering the sockets was undone by the first
+    // the next time a card was moved there.
+    var payload = {};
+    if (kind.indexOf('grp:') === 0) payload.groups = savedGroupsAll();
+    else payload[kind] = keys;
+    post('order', payload).then(function (r) {
+      toast('Layout saved', true);
+      if (r && STATE.status && Array.isArray(r.plugs)) {
+        STATE.status.order = {plugs: r.plugs, devices: r.devices || [], sensors: r.sensors || [],
+                              buttons: r.buttons || [], groups: r.groups || {}};
+        if (kind.indexOf('grp:') === 0) delete (ORDER.local.groups || {})[kind.slice(4)];
+        else delete ORDER.local[kind];
+      }
+    }, function (e2) { toast('Layout not saved: ' + (e2.message || e2), false); ORDER.local = {}; tick(true); });
   });
 }
 
@@ -19913,7 +19936,7 @@ $('db-upload-file').onchange = function () {
 // A database job on a large file takes long enough that silence reads as a
 // dead button. Show that it is running, how long for, and what the daemon
 // says about it while it works.
-var DBRUN = {timer: null, poll: null, since: ''};
+var DBRUN = {};
 function dbRunStart(what, prefix) {
   prefix = prefix || 'db';
   var box = $(prefix + '-run');
@@ -19930,23 +19953,32 @@ function dbRunStart(what, prefix) {
   var ticker = DBRUN[prefix + 'Timer'] = setInterval(function () {
     $(prefix + '-run-time').textContent = ((Date.now() - began) / 1000).toFixed(1) + ' s';
   }, 100);
-  DBRUN.since = '';
+  // where the log was read up to, per job as the timers are - and one
+  // reading at a time: during a VACUUM an answer can take longer than the
+  // 900 ms between two, and both brought the same lines from the same place
+  var sinceKey = prefix + 'Since', busyKey = prefix + 'Pulling';
+  DBRUN[sinceKey] = '';
+  DBRUN[busyKey] = false;
   var pull = function () {
-    api('log&lines=40' + (DBRUN.since ? '&since=' + encodeURIComponent(DBRUN.since) : '')).then(function (r) {
+    if (DBRUN[busyKey]) return;
+    DBRUN[busyKey] = true;
+    var since = DBRUN[sinceKey];
+    api('log&lines=40' + (since ? '&since=' + encodeURIComponent(since) : '')).then(function (r) {
       var lines = (r && r.lines) || [];
       if (!lines.length) return;
-      DBRUN.since = lines[lines.length - 1];
+      DBRUN[sinceKey] = lines[lines.length - 1];
       var pre = $(prefix + '-run-log');
       pre.textContent = (pre.textContent + (pre.textContent ? '\n' : '') + lines.join('\n')).split('\n').slice(-200).join('\n');
       pre.scrollTop = pre.scrollHeight;
-    }, function () {});
+    }, function () {}).then(function () { DBRUN[busyKey] = false; });
   };
   pull();
   clearInterval(DBRUN[prefix + 'Poll']);
   var poller = DBRUN[prefix + 'Poll'] = setInterval(pull, 900);
   return function finish(ok, text) {
     clearInterval(ticker); clearInterval(poller);
-    setTimeout(pull, 300);                       // catch the last thing it logged
+    // catch the last thing it logged, after any reading still on its way
+    setTimeout(function last() { if (DBRUN[busyKey]) setTimeout(last, 200); else pull(); }, 300);
     box.classList.add(ok ? 'done' : 'failed');
     $(prefix + '-run-what').textContent = text;
     $(prefix + '-run-time').textContent = 'took ' + ((Date.now() - began) / 1000).toFixed(1) + ' s';
@@ -24815,7 +24847,7 @@ function downloadExport(withSecrets) {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'zigmon-settings' + (withSecrets ? '-with-secrets' : '')
-      + '-' + new Date().toISOString().slice(0, 10) + '.json';
+      + '-' + localDay(new Date()) + '.json';
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
   }, function (e) { toast(e.message || String(e), false); });

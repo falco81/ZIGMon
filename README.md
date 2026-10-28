@@ -2016,7 +2016,72 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.19.2**
+Current version: **5.20.0**
+
+5.20.0 — a read through the whole application, and what it found.
+
+Every part was read again - the daemon, the root helper, the relay and the
+page - and each fault found was proved first and is now checked by
+`test/review.py` (which fails on 5.19.2 in 33 places) or, for root's side, by
+a new block in `test/root.py`.
+
+**Safety**
+
+* **A backup made elsewhere chooses no path and no mode.** An uploaded
+  backup could put back a `config.json` whose `db_file` pointed anywhere,
+  and the database of the next one was then written there by root - any
+  bytes, any file. A configuration from elsewhere now keeps this machine's
+  own paths and port (`db_file`, `state_dir`, `log_file`, `token_file`,
+  `api_host`, `api_port`, `log_to_journal`), a database put back must be an
+  SQLite database, one outside the state folder is put back by root on the
+  command line only, and the owner and the mode of a file are no longer the
+  upload's to say (`config.json` came back 0666).
+* **Root sets an owner and a mode on the open file**, never by its name: in
+  a folder zigmon may change, the name could be swapped for a link to any
+  file while the data was being written.
+* **A PIN account made without a PIN** was given the PIN "None".
+* **The blocked list stays an administrator's.** `address :1.2.3.4` (or in
+  capitals) was not refused like `address:1.2.3.4`; the House and Blocking
+  objects and the message preview told anybody the dashboard is shown to who
+  is kept out and why, and the numbers alerts go to. They now say
+  *(sign in)* to everybody but an administrator.
+* **`?api=…&t=…`** skipped the check for a request sent by another site.
+* **A room's name** went into the PIN dialogue as HTML.
+* **The login settings** (`login_tries`, `login_wait_min`) are locked like
+  every other security setting: a script or a text cannot change them.
+* **Ending one sign-in** by an id of a letter or two ended every sign-in
+  starting with it; the whole id is needed now.
+* A PIN account's name answered a password five times faster than any other
+  name, which told which names were PINs; `minutes` of infinity on an unlock
+  was an internal error.
+
+**The house**
+
+* Rules that must hold for a while ("no motion for ten minutes") stopped for
+  good once the rules had fallen far enough behind to drop the oldest.
+* A **Shelly PM Mini (pm1)** was never read.
+* A balance written with thousands - "1 247,50 Kc", "1.247,50" - read as
+  247.50.
+* `2h14m` and `1h30min` read as 14 and 30 minutes; `.thousands` dropped the
+  decimals after a comma; `.round1` said "-0"; `{x.nth:0}` said the first
+  item; a `{repeat}` or `{for}` of more than 200 never said its last turn.
+* A condition in Czech quotes, „like this“, did not compare.
+* An SMS of emoji or of `{}[]~|^` was counted as fewer parts than it is; a
+  nine-digit national number was sent to the CGI gateway as `00777…`.
+* UniFi's `na` (802.11n on 5 GHz) was called WiFi 2; an ntfy address with an
+  IPv6 host lost its brackets.
+
+**The page**
+
+* *Editing 14:25* counted down by the browser's clock against the server's
+  end: a browser a quarter of an hour fast locked itself again at once.
+* Moving a card sent every list from the page's own old copy, so a second
+  tab's order was undone; only the list moved goes now.
+* The live log of a database job could repeat lines; `-0` is shown as `0`;
+  a settings export after midnight was named for the day before.
+
+`test/taps.py` wrote its log lines as `+0200` whatever the machine's zone was,
+and failed in winter and on a machine in UTC.
 
 5.19.2 — the frame of a card being rearranged shows on every side.
 

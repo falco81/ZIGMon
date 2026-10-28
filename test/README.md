@@ -274,3 +274,15 @@ SameSite=Strict cookie, the token never handed to the page, a session sent
 by the page itself ignored, and only a sign-in page when the house is not
 public; a database put back - by the daemon or by root - keeping the
 accounts.
+
+## review.py
+
+`python3 test/review.py` — the faults the 5.20 read through the whole
+application found, each proved on its own: a backlog that stopped the rules
+which must hold for a while, a PIN account made with the PIN "None", the
+blocked list and the alert numbers told to a visitor through the House and
+Blocking objects and the message preview, money and lengths of time misread,
+and the page's own (a request with `&t=` skipping the check for another site,
+a room's name put into a dialogue as HTML, a countdown by the browser's
+clock). Fails on 5.19.2 in 33 places. Root's half of it - an uploaded backup
+choosing where root writes, and with which mode - is in `test/root.py`.

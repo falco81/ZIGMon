@@ -204,10 +204,15 @@ def write_root(path, data, mode, owner=None):
         uid, gid, m = 0, 0, mode
     fd, tmp = tempfile.mkstemp(prefix='.zigmon-', dir=folder)
     try:
+        # owner and mode set on the open file, never by its name: the folder
+        # may be zigmon's own (the backups, the Zigbee2MQTT data), and a name
+        # swapped for a link to /etc/shadow while the data was written gave
+        # that file zigmon's owner and the mode the backup asked for
         with os.fdopen(fd, 'wb') as f:
             f.write(data if isinstance(data, bytes) else data.encode('utf-8'))
-        os.chown(tmp, uid, gid)
-        os.chmod(tmp, m)
+            f.flush()
+            os.fchown(f.fileno(), uid, gid)
+            os.fchmod(f.fileno(), m)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -247,10 +252,11 @@ def put_back(snap):
                 pass
             continue
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p) or '.')
-        with os.fdopen(fd, 'wb') as f:
+        with os.fdopen(fd, 'wb') as f:          # by the open file, as write_root does
             f.write(was[0])
-        os.chown(tmp, was[2], was[3])
-        os.chmod(tmp, was[1])
+            f.flush()
+            os.fchown(f.fileno(), was[2], was[3])
+            os.fchmod(f.fileno(), was[1])
         os.replace(tmp, p)
         relabel(p)
 
@@ -1075,12 +1081,13 @@ def ipt_apply(f, said):
                 fd, tmp = tempfile.mkstemp(prefix='.zigmon-fw-', dir=os.path.dirname(path))
                 with os.fdopen(fd, 'w') as fh:
                     fh.write(new if new.endswith('\n') else new + '\n')
+                    fh.flush()
+                    os.fchmod(fh.fileno(), os.stat(path).st_mode & 0o777)
                 test = subprocess.run([restore, '--test', tmp], capture_output=True, text=True)
                 if test.returncode != 0:
                     os.unlink(tmp)
                     raise Refused('%s would not take the file, so it was left as it was: %s' % (
                         FW_TOOLS[fam][1], fw_said(test.stderr)))
-                os.chmod(tmp, os.stat(path).st_mode & 0o777)
                 os.replace(tmp, path)
                 relabel(path)
                 said.append('%s: kept over a reboot' % path)
@@ -1188,7 +1195,8 @@ def own_write(name, data):
     fd, tmp = tempfile.mkstemp(dir=OWN_DIR)
     with os.fdopen(fd, 'w') as f:
         f.write(json.dumps(data))
-    os.chmod(tmp, 0o600)
+        f.flush()
+        os.fchmod(f.fileno(), 0o600)
     os.replace(tmp, path)
 
 
@@ -1335,6 +1343,36 @@ def config_values():
 def db_file():
     p = str(config_values().get('db_file') or '').strip()
     return p if p.startswith('/') else os.path.join(STATE_DIR, 'history.db')
+
+
+# What in config.json belongs to this machine rather than to the house - the
+# daemon's own FILE_LOCAL. A backup from elsewhere does not bring them: a
+# db_file of /etc/ld.so.preload, put back from an uploaded file, made the
+# next database put back a file root wrote anywhere it was told.
+CONFIG_LOCAL = ('db_file', 'log_file', 'token_file', 'log_to_journal', 'api_host', 'api_port',
+                'state_dir')
+SQLITE_HEAD = b'SQLite format 3\x00'
+
+
+def config_kept_local(data):
+    """An uploaded config.json with this machine's own paths and port kept
+    as they are now."""
+    got = json.loads(data.decode('utf-8') if isinstance(data, bytes) else data)
+    if not isinstance(got, dict):
+        raise Refused('the configuration in the backup is not a JSON object')
+    now = config_values()
+    for key in CONFIG_LOCAL:
+        if key in now:
+            got[key] = now[key]
+        else:
+            got.pop(key, None)
+    return (json.dumps(got, indent=2) + '\n').encode('utf-8')
+
+
+def db_file_ours(path):
+    """The database is in the state folder, by its real path."""
+    real = os.path.realpath(path)
+    return os.path.dirname(real) == os.path.realpath(STATE_DIR)
 
 
 def owner_names(st):
@@ -1880,6 +1918,9 @@ def full_restore(path, parts, from_page=True, passphrase='', before=True, say=No
             note('zigmon stopped')
         dests = [f['path'] for f in chosen if f['part'] != 'database']
         live_db = db_file()
+        if 'database' in parts and from_page and not db_file_ours(live_db):
+            raise Refused('the database is not in %s (db_file is %s), so it is put back by root on '
+                          'the command line only' % (STATE_DIR, live_db))
         if 'database' in parts:
             dests += [live_db, live_db + '-wal', live_db + '-shm']
         snap = snapshot(dests)
@@ -1888,6 +1929,8 @@ def full_restore(path, parts, from_page=True, passphrase='', before=True, say=No
             with open(src, 'rb') as fh:
                 data = fh.read()
             if f['part'] == 'database':
+                if not data.startswith(SQLITE_HEAD):
+                    raise Refused('the database in the backup is not an SQLite database')
                 kept = accounts_of(live_db)
                 for extra in (live_db + '-wal', live_db + '-shm'):
                     try:
@@ -1905,9 +1948,22 @@ def full_restore(path, parts, from_page=True, passphrase='', before=True, say=No
                     len(data) // 1048576, ', the accounts of the dashboard kept as they were' if kept else ''))
                 continue
             uid, gid = owner_ids(f['owner'], f['group'])
+            mode = int(f['mode'], 8) & 0o777
             if f['part'] == 'zigbee':
                 uid, gid = owner_ids(SERVICE_USER, SERVICE_USER)
-            write_root(f['path'], data, int(f['mode'], 8) & 0o777, owner=(uid, gid))
+            if from_page and not info['trusted']:
+                # who owns it and who may read it are not the uploaded list's
+                # to say: it made config.json 0666, and the private key
+                # anybody's. The file there now keeps its own; a new one is
+                # nobody's but its owner's.
+                mode &= 0o640
+                if f['part'] == 'config':
+                    data = config_kept_local(data)
+                if f['part'] != 'zigbee':
+                    write_root(f['path'], data, 0o600)
+                    note('%s put back' % f['path'])
+                    continue
+            write_root(f['path'], data, mode, owner=(uid, gid))
             note('%s put back' % f['path'])
         if {'web', 'tls'} & set(parts):
             t = subprocess.run(NGINX_TEST, capture_output=True, text=True)

@@ -3462,7 +3462,8 @@ const { JSDOM } = require('jsdom');
       w.renderLock();
       const pill = d.getElementById('lockpill-text').textContent;
       if (!/^Editing \d+:\d\d$/.test(pill.trim())) errors.push('unlocked with a PIN, the header does not count down: ' + pill);
-      w.LOCK.who.until = Date.now() / 1000 - 1; w.renderLock(); await wait(300);
+      // the end as this browser's clock has it (5.20), from the seconds left
+      w.LOCK.who.ends = w.LOCK.who.until = Date.now() / 1000 - 1; w.renderLock(); await wait(300);
       if (w.LOCK.who || !/Locked/.test(d.getElementById('lockpill-text').textContent)) errors.push('the unlock goes on when its time is up');
       // a dialogue closed at once must not leave a hidden box holding the focus,
       // which reads as somebody typing and holds every repaint back

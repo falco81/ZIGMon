@@ -31,12 +31,13 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.19.2'
+__version__ = '5.20.0'
 
 import argparse
 import base64
 import calendar
 import collections
+import contextlib
 import errno
 import getpass
 import hashlib
@@ -1168,7 +1169,8 @@ def normalise_shelly_status(flat):
     for key, value in flat.items():
         if isinstance(value, (dict, list)):
             continue
-        m = re.match(r'^([a-z_]+):(\d+)\.(.+)$', key)
+        # a component's name may carry a digit: pm1 (the PM Mini) was never read
+        m = re.match(r'^([a-z_][a-z0-9_]*):(\d+)\.(.+)$', key)
         if m:
             component, index, rest = m.group(1), m.group(2), m.group(3)
             if rest in ('id', 'source') or 'by_minute' in rest or 'minute_ts' in rest:
@@ -1328,6 +1330,12 @@ def numeric(value):
     return None
 
 
+# A sum of money as operators write it. Thousands may be grouped - "1 247,50
+# Kc", "1.247,50" - and reading only the last group under-reported a balance
+# by a thousand.
+MONEY_FIGURE = r'(-?\d{1,3}(?:[ \u00a0\u202f.]\d{3})+(?:,\d{1,2})?(?![\d.])|-?\d{1,7}(?:[.,]\d{1,2})?)'
+
+
 def credit_from(text, pattern=None):
     """The money in what the operator wrote. Taking the first number in the
     line took a phone number or a date as often as a balance, so a figure has
@@ -1342,7 +1350,7 @@ def credit_from(text, pattern=None):
                 return numeric((found.group(1) if found.groups() else found.group(0)).replace(',', '.'))
         except re.error:
             log('sms_credit_pattern is not a pattern I can read', 'warn')
-    money = r'(-?\d{1,7}(?:[.,]\d{1,2})?)'
+    money = MONEY_FIGURE
     currency = r'(?:K\u010d|Kc|CZK|EUR|\u20ac|\$)'
     for shape in (money + r'\s*' + currency,                       # 247.50 Kc
                   currency + r'\s*' + money,                       # CZK 247.50
@@ -1350,8 +1358,18 @@ def credit_from(text, pattern=None):
                   r'(-?\d{1,7}[.,]\d{1,2})(?!\s*(?:GB|MB|kB|%))'):   # decimals, but not data or a percentage
         found = re.search(shape, text, re.I)
         if found:
-            return numeric(found.group(1).replace(',', '.'))
+            return numeric(_ungrouped(found.group(1)))
     return None
+
+
+def _ungrouped(figure):
+    """A sum as the operator wrote it, as a number Python reads: the groups
+    of thousands joined up ("1 247,50" and "1.247,50" are 1247.50) and the
+    decimal comma made a point."""
+    figure = re.sub(r'[\s\u00a0\u202f]', '', figure)
+    if re.match(r'^-?\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?$', figure):
+        figure = figure.replace('.', '')
+    return figure.replace(',', '.')
 
 
 def credit_parts(text):
@@ -1360,15 +1378,15 @@ def credit_parts(text):
     out. T-Mobile says both amounts in one line - reporting only the first
     would have the house think it had a hundred crowns less than it has."""
     text = str(text or '')
-    money = r'(-?\d{1,7}(?:[.,]\d{1,2})?)\s*(?:K\u010d|Kc|CZK|EUR|\u20ac)'
+    money = MONEY_FIGURE + r'\s*(?:K\u010d|Kc|CZK|EUR|\u20ac)'
     out = {}
     bonus = re.search(r'bonus\w*\s+\w*\s*' + money, text, re.I)
     if bonus:
-        out['credit_bonus'] = numeric(bonus.group(1).replace(',', '.'))
+        out['credit_bonus'] = numeric(_ungrouped(bonus.group(1)))
         # the main amount is the first one that is not the bonus
         for found in re.finditer(money, text, re.I):
             if found.start() != bonus.start(1):
-                out['credit'] = numeric(found.group(1).replace(',', '.'))
+                out['credit'] = numeric(_ungrouped(found.group(1)))
                 break
     if 'credit' not in out:
         main = credit_from(text)
@@ -2264,11 +2282,20 @@ def _fact_join(items, word):
     return '%s %s %s' % (', '.join(items[:-1]), word, items[-1])
 
 
+def _fact_nth(items, n):
+    """The n-th of a list, counted from 1; no number is the first. Zero was
+    read as no number at all, so {x.nth:0} said the first item, not nothing."""
+    n = 1 if n is None else int(n)
+    return items[n - 1] if 0 < n <= len(items) else ''
+
+
 def _fact_round(text, places=0):
     try:
         number = float(str(text).replace(',', '.').split()[0])
     except (ValueError, IndexError):
         return str(text or '')
+    # + 0.0 turns the -0.0 a small negative rounds to into 0, not "-0"
+    number = round(number, places) + 0.0
     return ('%.*f' % (places, number)).rstrip('0').rstrip('.') if places else '%d' % round(number)
 
 
@@ -2303,9 +2330,11 @@ def _fact_thousands(text):
         return str(text or '')
     said = str(text or '').strip()
     rest = ''
-    if '.' in said and _fact_number(said.split('.', 1)[0]) is not None:
-        rest = '.' + said.split('.', 1)[1]
-    whole = '%d' % abs(int(number)) if not rest else said.split('.', 1)[0].lstrip('-+').strip()
+    # the decimal comma is a decimal point too, as _fact_number reads it
+    point = '.' if '.' in said else ','
+    if point in said and _fact_number(said.split(point, 1)[0]) is not None:
+        rest = point + said.split(point, 1)[1]
+    whole = '%d' % abs(int(number)) if not rest else said.split(point, 1)[0].lstrip('-+').strip()
     if not whole.isdigit():
         whole = '%d' % abs(int(number))
         rest = ''
@@ -2352,7 +2381,7 @@ def _fact_seconds(text):
     if re.match(r'^[-+]?\d+(\.\d+)?$', raw.replace(',', '.')):
         return float(raw.replace(',', '.'))
     total, found = 0.0, False
-    for number, unit in re.findall(r'(\d+(?:[.,]\d+)?)\s*(d|h|m(?:in)?|s|day|days|hour|hours|minute|minutes|second|seconds)\b', raw):
+    for number, unit in re.findall(r'(\d+(?:[.,]\d+)?)\s*(d|h|m(?:in)?|s|day|days|hour|hours|minute|minutes|second|seconds)(?![a-z])', raw):
         value = float(number.replace(',', '.'))
         total += value * {'d': 86400, 'day': 86400, 'days': 86400, 'h': 3600, 'hour': 3600,
                           'hours': 3600, 'm': 60, 'min': 60, 'minute': 60, 'minutes': 60,
@@ -2557,10 +2586,12 @@ def _cond_tokens(text):
             out.append(ch)
             i += 1
             continue
-        if ch in '"“”\'':
-            closers = {'"': '"', "'": "'", '“': '”', '”': '”'}
-            end = text.find(closers[ch], i + 1)
-            end = len(text) if end < 0 else end
+        if ch in '"“”„\'':
+            # Czech quotes open low and close high, „like this“; English ones
+            # open “ and close ”, and either closing mark is taken for both
+            closers = {'"': '"', "'": "'", '“': '“”', '”': '”', '„': '“”'}
+            ends = [e for e in (text.find(c, i + 1) for c in closers[ch]) if e >= 0]
+            end = min(ends) if ends else len(text)
             out.append(('str', text[i + 1:end]))
             i = end + 1
             continue
@@ -2823,12 +2854,15 @@ def render_blocks(text, resolve, fill, depth=0):
             elif kind == 'repeat':
                 times = _fact_number(fill(what if '{' in what else '{%s}' % what, scope)) \
                     or _fact_number(what)
-                for number in range(1, max(0, min(200, int(times or 0))) + 1):
+                # the turns actually gone round, so loop_n and loop_last are
+                # about them: past 200 the last turn never said it was last
+                times = max(0, min(200, int(times or 0)))
+                for number in range(1, times + 1):
                     inner = dict(scope or {})
                     inner['loop_i'] = str(number)
-                    inner['loop_n'] = str(int(times or 0))
+                    inner['loop_n'] = str(times)
                     inner['loop_first'] = 'yes' if number == 1 else ''
-                    inner['loop_last'] = 'yes' if number == int(times or 0) else ''
+                    inner['loop_last'] = 'yes' if number == times else ''
                     turn = build(branches[0], inner)
                     out.append(turn)
                     if not spend(turn):
@@ -2841,8 +2875,8 @@ def render_blocks(text, resolve, fill, depth=0):
                 stands = resolve(over.strip('{} '), scope)
                 # a list written out on the spot is a list too:
                 # {for p in Plug-UPS, Plug-TV}
-                items = _fact_items(stands if stands is not None else over)
-                for number, item in enumerate(items[:200], 1):
+                items = _fact_items(stands if stands is not None else over)[:200]
+                for number, item in enumerate(items, 1):
                     inner = dict(scope or {})
                     inner[name.lower()] = item
                     inner['loop_i'] = str(number)
@@ -2904,8 +2938,7 @@ FACT_TURNS_WITH = {
     'join': lambda t, a: a.join(_fact_items(t)),
     'head': lambda t, a: ', '.join(_fact_items(t)[:max(0, int(_fact_number(a) or 0))]),
     'tail': lambda t, a: ', '.join(_fact_items(t)[-max(0, int(_fact_number(a) or 0)):]) if _fact_number(a) else '',
-    'nth': lambda t, a: (_fact_items(t)[int(_fact_number(a) or 1) - 1]
-                         if 0 < int(_fact_number(a) or 1) <= len(_fact_items(t)) else ''),
+    'nth': lambda t, a: _fact_nth(_fact_items(t), _fact_number(a)),
     'has': lambda t, a: ('yes' if a.strip().lower() in [x.lower() for x in _fact_items(t)] else 'no'),
     'without': lambda t, a: ', '.join(x for x in _fact_items(t) if x.lower() != a.strip().lower()),
 
@@ -3458,7 +3491,7 @@ def unifi_clients(cfg):
 
 UNIFI_BANDS = {'ng': '2.4', 'na': '5', '6e': '6', 'ax': '6'}
 UNIFI_GENERATIONS = {'a': 'WiFi 2', 'b': 'WiFi 1', 'g': 'WiFi 3', 'n': 'WiFi 4', 'ng': 'WiFi 4',
-                     'ac': 'WiFi 5', 'ax': 'WiFi 6', 'be': 'WiFi 7'}
+                     'na': 'WiFi 4', 'ac': 'WiFi 5', 'ax': 'WiFi 6', 'be': 'WiFi 7'}
 
 
 def unifi_band(radio, channel=None):
@@ -3477,7 +3510,9 @@ def unifi_band(radio, channel=None):
 
 def unifi_generation(proto):
     name = str(proto or '').lower()
-    for key in ('be', 'ax', 'ac', 'ng', 'n', 'g', 'b', 'a'):
+    if name in UNIFI_GENERATIONS:
+        return UNIFI_GENERATIONS[name]          # "na" is 802.11n on 5 GHz, not "a"
+    for key in ('be', 'ax', 'ac', 'ng', 'na', 'n', 'g', 'b', 'a'):
         if name.endswith(key) or name == key:
             return UNIFI_GENERATIONS[key]
     return ''
@@ -9733,6 +9768,10 @@ class Daemon(object):
             return number
         if number.startswith('0'):                 # a national number: leave it be
             return number
+        if len(number) <= 9:
+            # 777 123 456 is a national number too - nine digits carry no
+            # country code, and 00777... is a country that does not exist
+            return number
         return '00' + number
 
     def sms_queue_add(self, number, text, why, send_after=0):
@@ -9922,9 +9961,16 @@ class Daemon(object):
         text = str(text or '')
         wide = any(ord(c) > 127 for c in text)
         one, more = (70, 67) if wide else (160, 153)
-        if len(text) <= one:
+        # counted in what the network counts: UCS-2 units, where an emoji
+        # beyond the first plane is two, and GSM septets, where {}[]~\|^
+        # take an escape and are two as well
+        if wide:
+            size = len(text.encode('utf-16-le')) // 2
+        else:
+            size = len(text) + sum(1 for c in text if c in '{}[]~\\|^')
+        if size <= one:
             return 1
-        return (len(text) + more - 1) // more
+        return (size + more - 1) // more
 
     def _sms_send_now(self, number, text, why='alert', queue=True):
         """One SMS through the gateway. Teltonika's boxes speak two dialects:
@@ -10867,7 +10913,8 @@ class Daemon(object):
                 # still means something on the next turn - which is how a
                 # while loop is meant to move at all
                 inner = scope if scope is not None else {}
-                for number, item in enumerate(items[:self.SCRIPT_TURNS_MOST], 1):
+                items = items[:self.SCRIPT_TURNS_MOST]     # loop_last on the last turn gone round
+                for number, item in enumerate(items, 1):
                     inner[name] = item
                     if not one_turn(branches, loop_marks(inner, number, len(items))):
                         return
@@ -27468,7 +27515,7 @@ class Daemon(object):
     # out, the PIN and every password, token and key.
     SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|never_block|block|blacklist|'
                                  r'public_view|session|allow|trusted|duo|mikrotik|proxy_|intel_|feeds?\b|'
-                                 r'feed_|sms_to$|sms_user|api_|sms_objects', re.I)
+                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_', re.I)
 
     OBJECT_CACHE_S = 2.0
     # which kind a bare name means when two kinds share it
@@ -27955,6 +28002,38 @@ class Daemon(object):
             out.append(one)
         return out
 
+    # Facts an administrator reads and a visitor does not: who is kept out
+    # and why, who is never kept out, and the numbers alerts go to. The
+    # house object and the message preview handed them to anybody the
+    # dashboard is shown to, while /api/blocked asks for an administrator.
+    PRIVATE_FACTS = re.compile(r'^(blocked_(list|last|last_why|last_country|last_feed|last_ago)|near_block|'
+                               r'never_block|sms_to|sms_from|sms_number|tap_phones|duo_user)$')
+    PRIVATE_KINDS = ('address', 'smslog', 'session')
+    _HIDING = threading.local()
+
+    @contextlib.contextmanager
+    def hiding_private(self, hide=True):
+        """While this lasts, on this thread, every fact and object member
+        an administrator alone reads says "(sign in)" instead - whichever
+        road it is reached by: the object itself, {Blocking.blocked_list}
+        or {house.sms_to} in a preview."""
+        was = getattr(self._HIDING, 'on', False)
+        self._HIDING.on = bool(hide) or was
+        try:
+            yield
+        finally:
+            self._HIDING.on = was
+
+    def hides_private(self):
+        return bool(getattr(self._HIDING, 'on', False))
+
+    def private_masked(self, facts):
+        """The facts with what is an administrator's own put out of sight."""
+        if not self.hides_private():
+            return facts
+        return {k: ('(sign in)' if self.PRIVATE_FACTS.match(str(k)) and v not in (None, '') else v)
+                for k, v in facts.items()}
+
     def object_detail(self, who, reveal=False):
         found = self.object_find(who)
         if not found:
@@ -27978,6 +28057,8 @@ class Daemon(object):
         key = str(key or '').strip()
         if not key:
             return None
+        if self.hides_private() and kind in self.PRIVATE_KINDS:
+            return '(sign in)'
         called = re.match(r'^([A-Za-z_]+)\((.*)\)$', key)
         if called:
             return self.object_function(kind, oid, item, called.group(1), called.group(2))
@@ -29358,6 +29439,7 @@ class Daemon(object):
                 self._house_fact_names = (time.time(), sorted(facts))
             else:
                 facts = {}
+            facts = self.private_masked(facts)
             for key in self._house_fact_names[1]:
                 func(key, facts.get(key), use='{%s}' % key)
             return out
@@ -29804,7 +29886,7 @@ class Daemon(object):
             proc('release', 'client:%s.release()' % oid, 'belong to nobody', direct=True)
             return out
         if kind == 'blocking':
-            facts = self.message_facts('the object view') if (values or only) else {}
+            facts = self.private_masked(self.message_facts('the object view') if (values or only) else {})
             for key in ('blocked_count', 'blocked_today', 'blocked_list', 'blocked_last', 'blocked_last_why'):
                 func(key, facts.get(key), use='{Blocking.%s}' % key)
             func('lists', [n for n in self.feed_wanted()] if values else None, vtype='list',
@@ -33898,7 +33980,11 @@ class Daemon(object):
                     said[which] = True
                     log('the %s rules are %d readings behind; the oldest are being dropped - '
                         'something a rule waits on is not answering' % (which, len(queue)), 'warn')
-                queue.popleft()
+                # the clock's "check the rules that must hold for a while"
+                # marker may be the oldest: dropped with its flag still up,
+                # the clock never queued another and those rules never ran again
+                if queue.popleft()[0] == '__for__':
+                    self._for_queued = False
             elif len(queue) < self.RULE_BACKLOG // 2:
                 said[which] = False
             queue.append((device_id, name, values))
@@ -35268,8 +35354,12 @@ class Daemon(object):
         a = self.accounts.get(name.lower())
         if a and (a.get('kind') or '') == 'pin':
             # a PIN account signs in with its PIN alone, never as a name and
-            # a password: the short secret is guarded by the PIN's own count
-            password_ok(password, a['pw'])
+            # a password: the short secret is guarded by the PIN's own count.
+            # Weighed against a password's hash, not the PIN's: the PIN's is
+            # five times quicker, and the time told which names were PINs.
+            if DUMMY_PW_HASH is None:
+                DUMMY_PW_HASH = password_hash(secrets.token_urlsafe(18))
+            password_ok(password, DUMMY_PW_HASH)
             ok = False
         elif a:
             ok = password_ok(password, a['pw'])
@@ -35338,6 +35428,10 @@ class Daemon(object):
                'must_change': bool(a.get('must_change')), 'kind': a.get('kind') or 'password'}
         if row is not None and out['kind'] == 'pin':
             out['until'] = int(row['expires'])       # unlocked until, as the PIN always was
+            # and how long that is from now, by this machine's clock: the page
+            # counted down to "until" on its own, and a browser a quarter of
+            # an hour fast locked itself again the moment it was unlocked
+            out['left'] = max(0, int(row['expires'] - time.time()))
         return out
 
     def login_pin(self, pin, minutes=15, ip='', agent=''):
@@ -35402,7 +35496,7 @@ class Daemon(object):
             self.forget_anomaly(ip)
         try:
             minutes = max(1, min(720, int(minutes or 15)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):     # 1e999 is a float too
             minutes = 15
         hours = max(1, int(CONFIG.get('session_hours') or 720))
         token = secrets.token_urlsafe(32)
@@ -35559,7 +35653,9 @@ class Daemon(object):
                     continue
                 if name is not None and str(r['name']).lower() != str(name).lower():
                     continue
-                if ident is not None and not h.startswith(str(ident)):
+                # the id the list gives, whole: a prefix of one letter ended
+                # every sign-in starting with it, the asker's own among them
+                if ident is not None and (len(str(ident)) < 16 or not h.startswith(str(ident))):
                     continue
                 self.signins.pop(h, None)
                 gone.append(h)
@@ -35727,6 +35823,8 @@ def ntfy_address(url):
     if not bits.username and not bits.password:
         return str(url or ''), None
     host = bits.hostname or ''
+    if ':' in host:
+        host = '[%s]' % host          # an IPv6 address keeps its brackets
     if bits.port:
         host = '%s:%d' % (host, bits.port)
     plain = urlunsplit((bits.scheme, host, bits.path, bits.query, bits.fragment))
@@ -36320,11 +36418,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # needs it here too; without it the member is there, its value
                 # says "(PIN)"
                 reveal = d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')
-                if not reveal and str(q.get('ref') or '').strip().lower().startswith('address:'):
+                # asked of the object found, not of how the ref was spelled:
+                # "address :1.2.3.4" and "ADDRESS:1.2.3.4" are the same line
+                # of the blocked list, and only "address:" was refused
+                found = d.object_find(str(q.get('ref') or ''))
+                if not reveal and found and found[0] == 'address':
                     # the blocked list is an administrator's to read, and one
                     # line of it is no different
                     return self._error(403, 'the blocked list is read by an administrator - sign in')
-                one = d.object_detail(str(q.get('ref') or ''), reveal=reveal)
+                with d.hiding_private(not reveal):
+                    one = d.object_detail(str(q.get('ref') or ''), reveal=reveal)
                 if one is None:
                     return self._error(404, 'there is nothing here called that')
                 return self._send(200, {'ok': True, 'object': one, 'revealed': bool(reveal)})
@@ -36695,14 +36798,18 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path == '/api/message-preview':
                 # what a message would read right now; nothing is sent and
                 # nothing is changed, so no PIN - the editor asks on every keystroke
-                facts = d.message_facts('rule: a test', {'device': 'PIR-Chodba', 'key': 'occupancy',
-                                                         'value': 1, 'target': 'the hall light',
-                                                         'action': 'on', 'person': 'you'})
-                filled = d.fill_message(str(q.get('text') or ''), facts)
+                # ...and so it is open to whoever the house is shown to: what
+                # only an administrator reads stays out of sight here as well
+                with d.hiding_private(not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    facts = d.private_masked(d.message_facts('rule: a test', {
+                        'device': 'PIR-Chodba', 'key': 'occupancy', 'value': 1, 'target': 'the hall light',
+                        'action': 'on', 'person': 'you'}))
+                    filled = d.fill_message(str(q.get('text') or ''), facts)
+                    title = d.fill_message(str(q.get('title') or ''), facts)
                 # the length and what it costs, worked out here rather than in
                 # the page: a diacritic halves what fits in one message, and
                 # only the daemon knows that rule
-                return self._send(200, {'ok': True, 'title': d.fill_message(str(q.get('title') or ''), facts),
+                return self._send(200, {'ok': True, 'title': title,
                                         'text': filled, 'chars': len(filled),
                                         'parts': Daemon.sms_parts(filled)})
             if path == '/api/history-multi':
@@ -37071,8 +37178,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 try:
                     if act == 'add':
                         kind = 'pin' if str(body.get('kind') or '') == 'pin' else 'password'
+                        # a PIN not sent is no PIN - str(None) made "None" of it, a
+                        # PIN of letters anybody could type to be let in
+                        secret = body.get('pin') if kind == 'pin' else body.get('password')
                         d.account_add(name, str(body.get('role') or 'viewer'),
-                                      str(body.get('pin') if kind == 'pin' else body.get('password') or ''),
+                                      '' if secret is None else str(secret),
                                       must_change=bool(body.get('must_change', True)),
                                       note=str(body.get('note') or ''), by=by, kind=kind)
                         message = 'the account %s is made' % name
