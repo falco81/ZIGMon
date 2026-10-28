@@ -327,13 +327,16 @@ for codes, name in (([27, ord('['), ord('B')], 'down'), ([27, ord('O'), ord('A')
     got = con._getkey()
     check(got == name, 'curses gave %r, read as %r rather than %r' % (codes, got, name))
 
+_had = list(zigmon.CONSOLE_MORE['main'])
+del zigmon.CONSOLE_MORE['main'][:]
 zigmon.CONSOLE_MORE['main'].append(('Network, time and power', lambda c: None))
 zigmon.CONSOLE_MORE['main'].append(('Something else', lambda c: None))
 rows = con._numbered([('One', None), ('Two', None)], 'main')
 check([r[0] for r in rows] == ['1', '2', '3', '4'] and rows[2][1] == 'Network, time and power',
       'what another part adds to a menu is not numbered on from the console\'s own: %r'
       % [r[:2] for r in rows])
-del zigmon.CONSOLE_MORE['main'][:]
+zigmon.CONSOLE_MORE['main'][:] = _had
+check(any(r[0] == 'Network, time and power' for r in _had), 'the console offers nothing for the network, time and power')
 
 # ---- the console itself, on a pseudo-terminal ----------------------------------
 cfg = W / 'config.json'

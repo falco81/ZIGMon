@@ -27,6 +27,9 @@ inner = {'__init__', 'snapshots', 'reset', 'stop', 'value', 'paint'}   # each in
 # the transports of the backups to other machines (5.21) share one interface
 # on purpose: open, put, get, list, delete, close - and ftplib's own connect
 inner |= {'open', 'put', 'get', 'list', 'delete', 'close', '_cd', '_run', 'connect'}
+# the console (5.21) is a class of its own, and runs, reads a key, notes and
+# adds as the daemon, the palette and the backups' lists do in theirs
+inner |= {'run', 'key', 'note', 'add'}
 dupes = [n for n, c in Counter(names).items() if c > 1 and n not in inner]
 print('%-16s %3d methods%s' % ('classes', len(names), '' if not dupes else '  <-- defined twice: ' + ', '.join(dupes)))
 if bad or dupes:

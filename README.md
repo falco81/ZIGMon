@@ -1643,6 +1643,68 @@ sudo zigmon --full-restore FILE --parts database,config,web,tls,broker,firewall,
 zigmon --root-status                      # what root last did, and what it saw
 ```
 
+**Network** (Control - Network, 5.21). The machine's address - set by hand or
+from DHCP - its gateway, DNS servers, search domains, IPv6 and host name, put
+in by root through NetworkManager with this machine's line in `/etc/hosts`,
+and then the whole machine restarts, so nothing is ever half changed. Back
+up, it checks that it has its new address and waits `net_confirm_min`
+minutes (10) to be kept: press **Keep it** on the banner at the top of every
+page once the dashboard answers at the new address, or run
+`zigmon --change-keep net` on the machine. Not kept in time - or come up
+without the address at all - the network it had comes back by itself, with
+another restart. What knows the house by its old address is not told: the
+Shelly boxes reporting here, Zigbee2MQTT, the server in front, the router's
+reservation, a certificate naming the address. The firewall and who may reach
+the pages are kept on trial the same way, for `fw_confirm_min` minutes (5):
+not kept, what was there before comes back by itself.
+
+**Time** (Control - Time). The clock as chrony keeps it - how far off the
+time servers, what it follows, every source - and the time servers zigmon
+sets for it, between marks of its own in `/etc/chrony.conf` (the file's own
+lines commented out while it does, put back as they were when it stops):
+`iburst`, preferred, NTS, how far it may step and when, how many sources must
+agree, who may ask this machine for the time, and the time zone. A clock out
+of step is said as an alert: every schedule, sunrise scene and one-tap code
+runs on it. **Step it now** sets it at once.
+
+**Restart and power off** (Control - Restart and power off). The machine
+restarted or switched off now, or at an hour of its own clock up to a month
+ahead (called off as easily), and a regular restart daily or weekly
+(`reboot_auto`, `reboot_at`, `reboot_day`). The page follows it down and up
+again.
+
+**Backups to other machines** (Control - Backup). The backup of the whole
+installation, locked with the password of the backups, sent to an FTP, FTPS,
+SFTP, SCP or SMB server on a schedule or with *Back up now*, old ones taken
+away by count and age; listed, downloaded and put back from there.
+
+**A new version from the web** (Control - Upgrades). `upgrade_url` - by
+default this project's release folder on GitHub - is looked at once a day; a
+newer zigmon found there is offered, fetched and checked exactly like a
+package dropped on the page. Nothing is put in by itself.
+
+### Console
+
+`sudo zigmon --console` opens menus for everything the command line does:
+arrows and Enter, digits to jump, Esc back, `/` to filter a list, `!` for a
+shell, `q` to leave. Live views (the log, the journal, the broker) follow new
+lines; Up pauses, End follows again, and typing filters like `grep -i`. Root
+lands in it at login, at the machine's own screen or over SSH, unless
+`zigmon --console-at-login off` is set; a command run over SSH, scp/sftp, or
+`ssh -t host ZIGMON_NO_CONSOLE=1 bash -l` gets the plain shell. The install
+sets it on, an upgrade keeps your choice, and `install.sh --uninstall` removes
+`/etc/profile.d/zz-zigmon-console.sh` and the flag `/etc/zigmon-console-login`.
+
+```bash
+zigmon --changes                          # a new network or firewall change waiting to be kept
+zigmon --change-keep net                  # keep it (net or fw)
+zigmon --change-back fw                   # put the old one back now
+sudo zigmon --upgrade-check               # is there a newer zigmon at upgrade_url?
+sudo zigmon --upgrade-online --yes        # fetch it, check it, put it in
+zigmon --rbackup-status                   # how the backups to other machines went
+zigmon --rbackup-now                      # one now
+```
+
 ## Command line
 
 ```bash
@@ -2016,7 +2078,55 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.20.0**
+Current version: **5.21.0**
+
+5.21.0 — the machine itself, from the dashboard and its console.
+
+Ported from otp 1.0.138, which looks after a machine the same way, with the
+same pages and words where they fit:
+
+* **Network** (Control - Network): the address by hand or from DHCP, the
+  gateway, DNS, IPv6 and the host name, put in by root through
+  NetworkManager with a restart of the machine - **on trial**: not kept
+  within `net_confirm_min` minutes of coming back up (on the banner, or
+  `zigmon --change-keep net`), or come up without its new address, the old
+  network comes back by itself. The page follows the server to its new
+  address.
+* **The firewall on trial**: saving it, or who may reach the pages, is kept
+  only when somebody says so within `fw_confirm_min` minutes; otherwise what
+  was there before comes back by itself.
+* **Time** (Control - Time): chrony's state and sources, the time servers
+  (iburst, preferred, NTS), stepping, who may ask for the time, the time
+  zone; an alert when the clock is out of step. install.sh installs chrony.
+* **Restart and power off**: now, at an hour of its own clock (called off as
+  easily), or regularly (`reboot_auto`).
+* **A new version from the web** (Control - Upgrades): looked for once a day
+  at `upgrade_url`, offered, fetched and checked exactly like a package
+  dropped on the page; `zigmon --upgrade-check`, `--upgrade-online`.
+* **Backups to other machines** (Control - Backup): FTP, FTPS, SFTP, SCP and
+  SMB, locked with the password of the backups, on a schedule, with
+  retention, listed and put back from there; `zigmon --rbackup-now`.
+* **The console**: `zigmon --console`, menus for everything the command line
+  does, opened by itself when root signs in at the machine or over SSH
+  (`zigmon --console-at-login on|off`).
+* **The Settings menu** in groups as otp has it: Security, *Server* (Network,
+  Time, Certificates, Restart and power off), *Data* (Backup, Data &
+  database, Energy & charts) and *Monitoring and updates* (Diagnostics,
+  Upgrades, All other settings, All values).
+
+Root answers the network, the clock and restarting in files of their own
+(`root/net.ask`, `root/ntp.ask`), never behind a backup that holds
+`request.json` for minutes; `zigmon-root.path` watches them after
+`install.sh --upgrade`.
+
+Also mended: run as `/usr/local/bin/zigmon` - a link to the program - `sudo
+zigmon --full-backup`, `--full-inspect` and `--full-restore` looked for root's
+helper beside the link and found none. And the relay let a name through only
+when it was on its list as well as in its map: `test/endpoints.py` now checks
+the two agree.
+
+Checked by `test/system.py`, `test/online.py`, `test/rbackup.py` and
+`test/console.py`, each new, each failing on 5.20.0.
 
 5.20.0 — a read through the whole application, and what it found.
 

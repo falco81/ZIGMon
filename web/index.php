@@ -18091,6 +18091,7 @@ var SETTINGS_LAYOUT = [
      'Where new versions are looked for — https:// only. A GitHub folder (github.com/OWNER/REPO/tree/BRANCH/FOLDER), '
      + 'a folder listing of a web server of your own, or one package’s own address. Whatever it is, a package '
      + 'is taken only when it is signed by a release key installed with zigmon'],
+  ]],
   ['When, how many, and the password', [
     ['|', 'backups to other machines'],
     ['rbackup', 'Backups to the destinations on a schedule',
@@ -27738,14 +27739,14 @@ function rbEdit(t) {
     RB.tryOut = out;
     body.appendChild(out);
   }, [{words: 'Close', close: true},
-      {words: 'Try it', icon: 'play', go: function (b) { rbTry(t, rbFormData(cur.kind), b, true, cur); }},
+      {words: 'Try it', icon: 'play', go: function (b) { rbTry(t, rbFields(cur.kind), b, true, cur); }},
       {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
         zbusy(b, true);
         rbSaveForm(cur).then(function () { zbusy(b, false); toast('saved', true); closeZModal(); loadRb(true); })
           .catch(function (e) { zbusy(b, false); zoops(e); });
       }}], 'medium');
 }
-function rbFormData(kind) {
+function rbFields(kind) {
   var f = RB.form || {};
   var d = {kind: kind};
   ['name', 'host', 'port', 'path', 'user', 'share', 'domain', 'ca', 'pin', 'ssh_cert'].forEach(function (k) {
@@ -27758,7 +27759,7 @@ function rbFormData(kind) {
   return d;
 }
 function rbSaveForm(cur) {
-  return rootPost('rbackup-do', {action: 'save', id: cur.id || '', target: rbFormData(cur.kind)}).then(function (x) {
+  return rootPost('rbackup-do', {action: 'save', id: cur.id || '', target: rbFields(cur.kind)}).then(function (x) {
     cur.id = x.target.id;
     return x.target;
   });
@@ -27776,7 +27777,7 @@ function rbPanel(note) {
 function rbTryButton(t, cur) {
   var b = cmdButton('Try reaching it', 'pulse', 'primary small');
   b.title = 'Sign in, write a small file, find it in the list and take it away again - with what is typed above, saved or not.';
-  b.onclick = function () { rbTry(t, rbFormData(cur.kind), b, true, cur); };
+  b.onclick = function () { rbTry(t, rbFields(cur.kind), b, true, cur); };
   return b;
 }
 function rbSshBlock(body, t, f, cur) {
@@ -27990,7 +27991,7 @@ function rbTry(t, data, button, inEditor, cur) {
               toast('trusted', true);
               if (RB.paintHost) RB.paintHost(y.fingerprints);
               if (!inEditor) loadRb(true);
-              rbTry(s2, inEditor ? rbFormData(t.kind) : null, button, inEditor, cur);
+              rbTry(s2, inEditor ? rbFields(t.kind) : null, button, inEditor, cur);
             });
           }).catch(zoops);
         };

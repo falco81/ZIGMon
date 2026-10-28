@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.20.0'
+__version__ = '5.21.0'
 
 import argparse
 import base64
@@ -13514,6 +13514,15 @@ class Daemon(object):
         ('root', 'What root put in place',
          'the certificate, who may reach the pages, the firewall, a backup of the whole '
          'installation made, put back or refused', 'System', 'level'),
+        ('network', 'A new network',
+         'the machine\u2019s network being changed, waiting to be kept, and gone back by itself '
+         'when it was not', 'System', ''),
+        ('restart', 'A restart or a power-off',
+         'the machine restarted or switched off from the dashboard, planned for an hour, or by the '
+         'regular restart', 'System', ''),
+        ('time', 'The clock',
+         'the clock not synchronised to a time server, or seconds off it; the time servers or the '
+         'zone changed', 'System', ''),
         ('host', 'The machine itself',
          'its disk nearly full, memory running out, or the processor running hot (limits in Settings)',
          'System', ''),
@@ -16501,7 +16510,7 @@ class Daemon(object):
         what = 'restart' if how == 'reboot' else 'power-off'
         self.say_event('control', '%s asked for a %s of the server%s' % (
             by, what, (' at %s' % time.strftime('%Y-%m-%d %H:%M', time.localtime(at))) if at else ''),
-            'warn', about='power')
+            'warn', about='restart')
         self._net_kick.set()
         return plan
 
@@ -16515,7 +16524,7 @@ class Daemon(object):
         self._mj_put('power:plan', p, bump=True)
         self.say_event('control', '%s called off the %s planned for %s' % (
             by, 'restart' if p.get('how') == 'reboot' else 'power-off',
-            time.strftime('%Y-%m-%d %H:%M', time.localtime(float(p['when'])))), 'info', about='power')
+            time.strftime('%Y-%m-%d %H:%M', time.localtime(float(p['when'])))), 'info', about='restart')
         return 'called off'
 
     def _power_put(self, row, state, words=''):
@@ -16533,7 +16542,7 @@ class Daemon(object):
             self.notify('The server %s in a few seconds, asked by %s.' % (
                 'restarts' if plan['how'] == 'reboot' else 'is switched off', plan.get('by') or 'zigmon'),
                 'warn', dedup='power-%s' % plan['id'], title='The server %s' % (
-                    'restarts' if plan['how'] == 'reboot' else 'is switched off'), about='power')
+                    'restarts' if plan['how'] == 'reboot' else 'is switched off'), about='restart')
             try:
                 self.store.flush(5.0)
             except Exception:                           # noqa: BLE001
@@ -16543,7 +16552,7 @@ class Daemon(object):
         except Exception as e:                          # noqa: BLE001
             self._power_put(row, 'failed', str(e))
             self.say_event('control', 'the %s was not done: %s' % (
-                'restart' if plan['how'] == 'reboot' else 'power-off', e), 'warn', about='power')
+                'restart' if plan['how'] == 'reboot' else 'power-off', e), 'warn', about='restart')
 
     def power_tick(self):
         plan = self.power_plan()
@@ -16552,7 +16561,7 @@ class Daemon(object):
             if self.boot_time() > float(row.get('boot') or 0) + 1:
                 self._power_put(row, 'back', 'up again')
                 self.say_event('control', 'the server is up again after the %s' % (
-                    'restart' if row.get('how') == 'reboot' else 'power-off'), 'info', about='power')
+                    'restart' if row.get('how') == 'reboot' else 'power-off'), 'info', about='restart')
             elif time.time() - float(row.get('moved') or 0) > 900:
                 self._power_put(row, 'failed', 'it did not go down in 15 minutes')
             return
@@ -16571,7 +16580,7 @@ class Daemon(object):
                                'passed when it could be' % (
                                    'restart' if plan.get('how') == 'reboot' else 'power-off',
                                    time.strftime('%H:%M', time.localtime(float(plan['when'])))),
-                               'warn', about='power')
+                               'warn', about='restart')
                 return
         elif time.time() - float(plan.get('at') or 0) > self.POWER_LIVE_S:
             return
@@ -16616,7 +16625,7 @@ class Daemon(object):
         try:
             self.power_ask('reboot', 'the regular restart (%s)' % how)
         except ValueError as e:
-            self.say_event('control', 'the regular restart was not done: %s' % e, 'warn', about='power')
+            self.say_event('control', 'the regular restart was not done: %s' % e, 'warn', about='restart')
 
     def power_view(self):
         plan = self.power_plan()
@@ -49060,6 +49069,49 @@ def console_at_login_set(on):
     return ('the zigmon console opens when root signs in at the console or over SSH (q leaves '
             'it for the shell)' if on else 'root signs in to the ordinary shell; '
             '`zigmon --console` opens the console')
+
+
+# What 5.21 brought, in the console's menus: the network, the clock and
+# restarting kept or put back from here - where somebody is when the new
+# network does not answer on the page - backups to other machines, and a new
+# version from the web. Each is the same command run on the command line.
+def _console_machine(c):
+    def ask(kind, act, title, words, danger):
+        if c.confirm(title, words, 'Yes' if not danger else title, danger=danger):
+            c.act('--change-%s' % act, kind)
+    return c.sub('Network, time and power', [
+        ('What waits to be kept (a new network, a firewall change)', lambda: c.act('--changes')),
+        ('Keep the new network', lambda: ask('net', 'keep', 'Keep the new network',
+                                             'The new network stays as it is.', False)),
+        ('Put the old network back now', lambda: ask('net', 'back', 'Put the old network back',
+                                                     'The machine goes back to its old network and '
+                                                     'restarts.', True)),
+        ('Keep the change of the firewall', lambda: ask('fw', 'keep', 'Keep the firewall',
+                                                        'The firewall and who may reach the pages '
+                                                        'stay as they are.', False)),
+        ('Put the old firewall back now', lambda: ask('fw', 'back', 'Put the old firewall back',
+                                                      'The firewall and who may reach the pages go '
+                                                      'back to what they were.', True)),
+        ('What root last did (and the clock, the network it saw)', lambda: c.act('--root-status')),
+    ], 'machine')
+
+
+def _console_upgrade_online(c):
+    if c.confirm('Upgrade from the web', 'The newest zigmon at upgrade_url is fetched, its '
+                 'signature checked, the whole installation backed up and this machine upgraded - '
+                 'the dashboard is away for a minute.', 'Upgrade'):
+        c.act('--upgrade-online', '--yes')
+
+
+CONSOLE_MORE['main'].append(('Network, time and power', _console_machine))
+CONSOLE_MORE['backups'].extend([
+    ('Backups to other machines: how they went', lambda c: c.act('--rbackup-status')),
+    ('Backups to other machines: one now', lambda c: c.act('--rbackup-now')),
+])
+CONSOLE_MORE['upgrades'].extend([
+    ('Look for a new version on the web now', lambda c: c.act('--upgrade-check')),
+    ('Upgrade from the web', _console_upgrade_online),
+])
 
 
 def console_cli(arguments):
