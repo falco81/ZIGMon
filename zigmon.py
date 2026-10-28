@@ -14401,7 +14401,10 @@ class Daemon(object):
     def helper_file(name):
         """A helper beside this program (installed), or in deploy/ beside it
         (the source folder, and the checks)."""
-        here = Path(os.path.abspath(__file__)).parent
+        # realpath, not abspath: the command is /usr/local/bin/zigmon, a link
+        # to the program, and beside the link there is no helper - so sudo
+        # zigmon --full-backup, --full-inspect and --full-restore found none
+        here = Path(os.path.realpath(__file__)).parent
         for p in (here / name, here / 'deploy' / name):
             if p.is_file():
                 return p

@@ -454,6 +454,19 @@ unit = (HERE / 'deploy' / 'zigmon-root.path').read_text()
 check('PathExists=/var/lib/zigmon/root/net.ask' in unit and 'PathExists=/var/lib/zigmon/root/ntp.ask' in unit,
       'zigmon-root.path does not start root for net.ask and ntp.ask')
 
+# the command is a link to the program (install.sh puts /usr/local/bin/zigmon
+# there): root's helper is found beside the program, not beside the link
+LINKDIR = W / 'linkbin'
+LINKDIR.mkdir()
+os.symlink(str(HERE / 'zigmon.py'), str(LINKDIR / 'zigmon'))
+import subprocess                                         # noqa: E402
+got = subprocess.run([sys.executable, '-c', 'import sys, runpy; sys.argv=[%r]; '
+                      'g = runpy.run_path(%r, run_name="x"); print(g["Daemon"].helper_file("zigmon_root.py"))'
+                      % (str(LINKDIR / 'zigmon'), str(LINKDIR / 'zigmon'))],
+                     capture_output=True, text=True, timeout=60)
+check(got.stdout.strip().endswith('deploy/zigmon_root.py') and os.path.isfile(got.stdout.strip()),
+      'run through a link, the program looks for root\'s helper beside the link: %r' % (got.stdout + got.stderr)[-300:])
+
 d.store.flush(3.0)
 sys.stdout.flush()
 if bad:
