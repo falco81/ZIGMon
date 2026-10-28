@@ -508,6 +508,13 @@ DEFAULTS = {
     # the firewall, the units - made by root into /var/backups/zigmon
     'full_backup_nightly': 1,
     'full_backup_keep': 7,
+    # a change that could cut the house off (5.21) is on trial: kept within
+    # this many minutes, or what was there before comes back by itself
+    'net_confirm_min': 10,        # a new network, counted from the machine back up
+    'fw_confirm_min': 5,          # the firewall and who may reach the pages
+    'reboot_auto': 'off',         # a regular restart of the machine: off, daily, weekly
+    'reboot_at': '04:30',         # local HH:MM
+    'reboot_day': 7,              # weekly: 1 Monday - 7 Sunday
     'backup_zigbee': 1,           # 1 = also ask Zigbee2MQTT for its coordinator backup
     'chart_outages': 0,            # 1 = shade stretches where a chatty source went quiet, on every chart
     'link_plugs': 1,               # 1 = a plug's name / chart button opens its history
@@ -7524,12 +7531,18 @@ class Daemon(object):
         self.file_keys |= {k for k in DEFAULTS if os.environ.get('ZIGMON_' + k.upper()) is not None}
         self.apply_config_overrides()
         apply_gil_switch()
+        # the machine itself (5.21): its network, a restart, the firewall on
+        # trial, the clock - each asked of root on a road of its own
+        self._net_kick = threading.Event()
+        self._net_work = {'read_at': 0.0}
+        self._ntp_work = {'read_at': 0.0}
         threading.Thread(target=self.backup_loop, name='backup', daemon=True).start()
         # ...and the version of PHP the dashboard is served by, which is the
         # only thing standing between a caller and the two holes of 21
         # October 2026. Nothing in this program can mend it; saying so until
         # somebody does is the whole job.
         threading.Thread(target=self.php_loop, name='php', daemon=True).start()
+        threading.Thread(target=self.system_loop, name='system', daemon=True).start()
         # always on: gateway_configs() covers both config.json and dashboard
         # entries, and simply does nothing on an empty list either way
         threading.Thread(target=self.gateway_loop, name='gateway', daemon=True).start()
@@ -9180,6 +9193,8 @@ class Daemon(object):
         'latitude': (-90, 90, True), 'longitude': (-180, 180, True),
         'backup_enabled': (0, 1), 'backup_keep': (1, 365), 'backup_zigbee': (0, 1),
         'full_backup_nightly': (0, 1), 'full_backup_keep': (1, 60),
+        'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
+        'reboot_auto': 'str', 'reboot_at': 'str', 'reboot_day': (1, 7),
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
         'session_idle_min': (0, 43200), 'session_hours': (1, 8760),
         'chart_outages': (0, 1), 'link_plugs': (0, 1), 'link_sensors': (0, 1), 'link_buttons': (0, 1),
@@ -9282,8 +9297,11 @@ class Daemon(object):
                 value = str(raw or '').strip()[:200]
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
-                if key == 'backup_time' and not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
-                    raise ValueError('backup_time must look like 03:30')
+                if key in ('backup_time', 'reboot_at') and \
+                        not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
+                    raise ValueError('%s must look like 03:30' % key)
+                if key == 'reboot_auto' and value not in ('off', 'daily', 'weekly'):
+                    raise ValueError('reboot_auto is off, daily or weekly')
                 if key == 'tap_mode' and value not in ('link', 'both', 'header'):
                     raise ValueError('tap_mode is one of link, both, header')
                 if key == 'tap_factor' and value not in ('totp', 'duo'):
@@ -9398,6 +9416,10 @@ class Daemon(object):
     TUNABLE_SECRETS = ('duo_skey', 'mikrotik_password', 'proxy_password', 'intel_shodan_key')
 
     TUNABLE_CHOICES = {
+        'reboot_auto': [('off', 'never by itself'), ('daily', 'every day'),
+                        ('weekly', 'once a week')],
+        'reboot_day': [('1', 'Monday'), ('2', 'Tuesday'), ('3', 'Wednesday'), ('4', 'Thursday'),
+                       ('5', 'Friday'), ('6', 'Saturday'), ('7', 'Sunday')],
         'mikrotik_every': [('change', 'only when something changes here'),
                            ('1', 'and look again every minute'),
                            ('2', 'and look again every two minutes'),
@@ -9456,7 +9478,7 @@ class Daemon(object):
                        ('15', 'every 15 seconds'), ('30', 'every 30 seconds'), ('60', 'every minute'),
                        ('300', 'every five minutes')],
     }
-    TUNABLE_TIMES = ('backup_time', 'digest_at', 'sms_quiet_from', 'sms_quiet_to')
+    TUNABLE_TIMES = ('backup_time', 'reboot_at', 'digest_at', 'sms_quiet_from', 'sms_quiet_to')
     TUNABLE_PHONES = ('sms_to', 'sms_allow')     # a keypad rather than a keyboard
 
     def runtime_config(self, reveal=False):
@@ -14809,6 +14831,9 @@ class Daemon(object):
         if new['on'] and not self.root_installed():
             raise ValueError('root has not been given the firewall to look after on this machine '
                              'yet: run install.sh --upgrade once')
+        # kept on trial (5.21): what is there now comes back by itself unless
+        # this is kept within fw_confirm_min minutes
+        trial = self.fw_trial_begin(who or 'the dashboard')
         self.store.set_meta('firewall', json.dumps(new))
         if new['on'] or conf['on']:
             self.store.set_meta('firewall_ever', '1')
@@ -14817,10 +14842,12 @@ class Daemon(object):
         self.say_event('control', 'the firewall and who may reach the pages saved (%s, %d rule(s) of '
                        'your own)' % ('looked after' if new['on'] else 'left alone', len(rules)),
                        'info', about='root')
+        kept = (' - on trial: keep it within %d min (the banner at the top), or it goes back by '
+                'itself' % trial['min']) if trial else ''
         if self.root_installed():
             self.root_apply()
-            return 'Saved - root is putting it in'
-        return 'Saved - it is put in once root has been given this to do (install.sh --upgrade)'
+            return 'Saved - root is putting it in' + kept
+        return 'Saved - it is put in once root has been given this to do (install.sh --upgrade)' + kept
 
     # ---- the certificate and how TLS is spoken ---------------------------------
     TLS_PRESETS = {
@@ -15465,6 +15492,1012 @@ class Daemon(object):
                 job()
             except Exception as e:                       # noqa: BLE001 - the next one still runs
                 log('root chores (%s): %s' % (name, e), 'debug')
+
+    # ---- the machine itself: its network, its clock, restarting it (5.21) ------
+    #
+    # Ported from otp 1.0.137, where the same three are looked after the same
+    # way. root does every one of them (deploy/zigmon_root.py, asked in
+    # root/net.ask and root/ntp.ask, beside request.json and never behind a
+    # backup laid down in it); this side decides what to ask, follows it
+    # through a restart of the whole machine, and keeps a change that could
+    # cut the house off on trial: unless somebody presses Keep it - on the
+    # banner of every page, or  zigmon --change-keep net  on the command line -
+    # within net_confirm_min minutes of the machine coming back up, the network
+    # it had comes back by itself. The firewall and who may reach the pages
+    # are kept on trial the same way, for fw_confirm_min minutes.
+    NET_READ_S = 300                # how often the network is read again by itself
+    NET_JOB_LIVE_S = 1800           # a job not moving for this long is over
+    POWER_LIVE_S = 1800
+    NTP_READ_S = 60
+    NTP_DEFAULT = {'manage': False, 'servers': [], 'allow': [], 'makestep': [1.0, 3],
+                   'minsources': 1, 'timezone': ''}
+    NTP_PICKS = ('cz.pool.ntp.org', 'pool.ntp.org', 'time.cloudflare.com', 'tik.cesnet.cz',
+                 'tak.cesnet.cz')
+    HOST_RE = re.compile(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+                         r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$')
+
+    def _mj(self, key):
+        try:
+            got = json.loads(self.store.get_meta(key) or 'null')
+        except ValueError:
+            return None
+        return got if isinstance(got, dict) else None
+
+    def _mj_put(self, key, value, bump=False):
+        self.store.set_meta(key, json.dumps(value))
+        if bump:
+            # what the banner and the network, time and power cards show: a
+            # page waiting on /api/wait hears of it now, not at its next look
+            self.bump()
+
+    @staticmethod
+    def boot_time():
+        """When this machine started (the kernel's btime): a restart of the
+        service is not a restart of the machine."""
+        fake = os.environ.get('ZIGMON_BTIME_FILE')         # the checks: a reboot without one
+        if fake:
+            try:
+                return float(Path(fake).read_text().strip() or 0)
+            except (OSError, ValueError):
+                pass
+        try:
+            with open('/proc/stat') as f:
+                for line in f:
+                    if line.startswith('btime '):
+                        return float(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            pass
+        return 0.0
+
+    def root_call(self, ask, answer, data, wait=60):
+        """One question to root on a road of its own (net.ask, ntp.ask) and
+        its answer - the network or the clock read, or a change made - never
+        behind a backup that holds request.json for ten minutes."""
+        if not self.root_installed():
+            raise ValueError('root has not been given this to do on this machine yet: run '
+                             'install.sh --upgrade once, which installs zigmon-root.path')
+        self.root_folders()
+        ask_id = secrets.token_hex(8)
+        tmp = self.root_dir('.%s.%d.%d' % (ask, os.getpid(), threading.get_ident() % 100000))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(dict(data, id=ask_id)))
+        os.replace(str(tmp), str(self.root_dir(ask)))
+        run = os.environ.get('ZIGMON_ROOT_RUN')
+        if run:                                   # the checks: root answers at once
+            subprocess.run(run.split() if ' ' in run else [run], capture_output=True, timeout=600)
+        end = time.time() + wait
+        while True:
+            got = self.root_read(answer)
+            if got.get('id') == ask_id:
+                if not got.get('ok'):
+                    raise ValueError(got.get('said') or 'root said no')
+                return got.get('data') or {}
+            if time.time() > end:
+                break
+            time.sleep(0.4)
+        busy = self.root_busy()
+        raise ValueError('root did not answer in %d s%s' % (
+            wait, ' - it is still at what was asked before (a backup takes minutes)' if busy
+            else ' - is zigmon-root.path running?  systemctl status zigmon-root.path'))
+
+    # -- the network ----------------------------------------------------------
+    def net_publish(self):
+        data = self.root_call('net.ask', 'net.json', {'do': 'read'}, 30)
+        now = {'at': time.time(), 'data': data, 'boot': self.boot_time()}
+        self._mj_put('net:now', now)
+        self._net_work['read_at'] = time.time()
+        return now
+
+    @staticmethod
+    def _net_list(v, most=4):
+        if isinstance(v, str):
+            v = re.split(r'[\s,;]+', v)
+        return [str(x).strip() for x in (v or []) if str(x).strip()][:most]
+
+    @staticmethod
+    def net_current_ip(now):
+        """This machine's IPv4 address as NetworkManager has it, or the one on
+        its default route (where it came from DHCP)."""
+        d = (now or {}).get('data') or {}
+        for a in (d.get('conf') or {}).get('ipv4_addresses') or []:
+            return str(a)
+        dev = d.get('dev')
+        for a in (d.get('live') or {}).get('addrs4') or []:
+            if not dev or a.get('dev') == dev:
+                return str(a.get('addr') or '')
+        return ''
+
+    def net_check(self, want):
+        """What the page asked for, made whole and checked against the machine
+        as it last said it is; with the plan in words. Raises ValueError."""
+        now = self._mj('net:now') or {}
+        d = now.get('data') or {}
+        if not d:
+            raise ValueError('the network has not been read yet - press Read it again and wait '
+                             'a few seconds')
+        if not d.get('nm'):
+            raise ValueError('NetworkManager (nmcli) is not on this machine: its network is set '
+                             'by hand')
+        want = want if isinstance(want, dict) else {}
+        con = str(want.get('con') or d.get('con') or '')
+        if not con or con not in [x.get('con') for x in d.get('devices') or []]:
+            raise ValueError('which connection? There are: %s' % (', '.join(
+                '%s (%s)' % (x.get('con'), x.get('dev')) for x in d.get('devices') or []
+                if x.get('con')) or 'none'))
+        v4 = want.get('ipv4') or {}
+        method = 'auto' if str(v4.get('method') or 'manual') == 'auto' else 'manual'
+        a4, gw = None, ''
+        if method == 'manual':
+            try:
+                a4 = ipaddress.ip_interface(str(v4.get('addr') or '').strip())
+            except ValueError:
+                raise ValueError('the IPv4 address is an address with its prefix: 192.168.1.20/24')
+            if a4.version != 4 or '/' not in str(v4.get('addr')):
+                raise ValueError('the IPv4 address is an address with its prefix: 192.168.1.20/24')
+            if (a4.ip.is_loopback and not os.environ.get('ZIGMON_NET_LOOPBACK_OK')) or \
+                    a4.ip.is_multicast or a4.ip.is_unspecified or \
+                    a4.ip == a4.network.network_address or a4.ip == a4.network.broadcast_address:
+                raise ValueError('%s cannot be the address of a machine in %s' % (a4.ip, a4.network))
+            gw = str(v4.get('gw') or '').strip()
+            if gw:
+                try:
+                    g = ipaddress.ip_address(gw)
+                except ValueError:
+                    raise ValueError('the gateway is one IPv4 address')
+                if g.version != 4 or g not in a4.network or g == a4.ip:
+                    raise ValueError('the gateway %s is not another address in %s' % (g, a4.network))
+        dns = self._net_list(v4.get('dns'))
+        for x in dns:
+            try:
+                if ipaddress.ip_address(x).version != 4:
+                    raise ValueError
+            except ValueError:
+                raise ValueError('%r is not the IPv4 address of a DNS server' % x)
+        search = self._net_list(v4.get('search'), 6)
+        for x in search:
+            if not self.HOST_RE.match(x.lower()):
+                raise ValueError('%r is not a domain' % x)
+        v6 = want.get('ipv6') or {}
+        on6 = bool(v6.get('on'))
+        mode6, a6, g6 = 'off', None, ''
+        if on6:
+            mode6 = 'manual' if str(v6.get('mode') or 'auto') == 'manual' else 'auto'
+            if mode6 == 'manual':
+                try:
+                    a6 = ipaddress.ip_interface(str(v6.get('addr') or '').strip())
+                except ValueError:
+                    raise ValueError('the IPv6 address is an address with its prefix: 2001:db8::10/64')
+                if a6.version != 6 or a6.ip.is_link_local or '/' not in str(v6.get('addr')):
+                    raise ValueError('the IPv6 address is a global one with its prefix: 2001:db8::10/64')
+            g6 = str(v6.get('gw') or '').strip()
+            if g6:
+                try:
+                    if ipaddress.ip_address(g6).version != 6:
+                        raise ValueError
+                except ValueError:
+                    raise ValueError('the IPv6 gateway is one IPv6 address')
+        dns6 = self._net_list(v6.get('dns')) if on6 else []
+        for x in dns6:
+            try:
+                if ipaddress.ip_address(x).version != 6:
+                    raise ValueError
+            except ValueError:
+                raise ValueError('%r is not the IPv6 address of a DNS server' % x)
+        host = str(want.get('hostname') or d.get('hostname') or '').strip().rstrip('.').lower()
+        if not self.HOST_RE.match(host) or '.' not in host:
+            raise ValueError('the host name is the whole name: zigmon.example.cz')
+        old_ip = self.net_current_ip(now).split('/')[0]
+        new_ip = str(a4.ip) if a4 else ''
+        conf = d.get('conf') or {}
+        was_auto = conf.get('ipv4_method') == 'auto'
+        ip_changed = (method == 'auto') != was_auto or (bool(old_ip) and old_ip != new_ip
+                                                         and method == 'manual')
+        host_old = str(d.get('hostname') or '')
+        was6 = conf.get('ipv6_method') not in (None, '', 'disabled', 'ignore')
+        plan = []
+        if method == 'auto':
+            plan.append('NetworkManager (%s): an address from DHCP%s' % (
+                con, (', DNS %s' % ', '.join(dns)) if dns else ', DNS from DHCP too'))
+        else:
+            plan.append('NetworkManager (%s): %s via %s, DNS %s' % (
+                con, a4, gw or 'no gateway', ', '.join(dns) or 'none'))
+        if on6 != was6 or on6:
+            plan.append('IPv6 %s' % ('off' if not on6 else ('automatic' if mode6 == 'auto' else str(a6))))
+        if host != host_old:
+            plan.append('the host name %s → %s, and this machine\'s line in /etc/hosts' % (
+                host_old or '?', host))
+        if ip_changed and old_ip and str(CONFIG.get('mqtt_host') or '') == old_ip:
+            plan.append('config.json names the broker by %s (mqtt_host): it has to be changed by '
+                        'hand to %s - or to 127.0.0.1, which never moves' % (
+                            old_ip, new_ip or 'the address DHCP gives'))
+        if ip_changed:
+            plan.append('what knows this machine by %s is not told: the Shelly boxes set up to '
+                        'report here, Zigbee2MQTT and a coordinator on the network, the server '
+                        'in front, a reservation on the router - and a certificate that names '
+                        'the address' % (old_ip or 'its address'))
+        plan.append('a restart of the machine; back up, it checks the new address%s' % (
+            ' and waits %d min to be kept - or goes back by itself' % self.net_trial_min()
+            if self.net_trial_min() else ''))
+        return {'con': con, 'dev': next((x.get('dev') for x in d.get('devices') or []
+                                         if x.get('con') == con), ''),
+                'ipv4': {'method': method, 'addr': str(a4) if a4 else '', 'gw': gw, 'dns': dns,
+                         'search': search},
+                'ipv6': {'on': on6, 'mode': mode6, 'addr': str(a6) if a6 else '', 'gw': g6,
+                         'dns': dns6},
+                'hostname': host, 'old_ip': old_ip, 'new_ip': new_ip, 'old_hostname': host_old,
+                'ip_changed': ip_changed, 'was6': was6, 'plan': plan}
+
+    @staticmethod
+    def net_job_active(job):
+        return bool(job) and job.get('state') in ('asked', 'running', 'rebooting', 'going back') \
+            and time.time() - float(job.get('moved') or job.get('at') or 0) < Daemon.NET_JOB_LIVE_S
+
+    def net_ask(self, want, by, rollback=False):
+        """The page asks; the job is done by the network thread, which follows
+        it through the restart. `rollback`: the old network asked back by the
+        machine itself - never put on trial again."""
+        if self.net_job_active(self._mj('net:job')):
+            raise ValueError('the network is being changed already')
+        if self.power_busy():
+            raise ValueError('a restart or a power-off is under way')
+        checked = self.net_check(want)
+        ask = {'id': secrets.token_hex(6), 'want': checked, 'by': by, 'at': time.time(),
+               'rollback': bool(rollback)}
+        self._mj_put('net:want', ask)
+        self.say_event('control', '%s asked for a new network: %s' % (by, '; '.join(checked['plan'])),
+                       'warn', about='network')
+        self._net_kick.set()
+        return ask
+
+    def _job_put(self, job, words=None, pct=None, ok=True, state=None):
+        if words:
+            job.setdefault('steps', []).append({'at': time.time(), 'what': str(words)[:400],
+                                                'ok': bool(ok)})
+            log('network: %s' % words, 'info' if ok else 'warn')
+        if pct is not None:
+            job['pct'] = int(pct)
+        if state:
+            job['state'] = state
+        job['moved'] = time.time()
+        self._mj_put('net:job', job, bump=True)
+
+    def net_back_want(self, now):
+        """What the machine has now, as a request for the network would say it
+        - what it goes back to. From DHCP as well: back to DHCP."""
+        d = (now or {}).get('data') or {}
+        conf = d.get('conf') or {}
+        m4 = conf.get('ipv4_method')
+        if m4 == 'manual' and conf.get('ipv4_addresses'):
+            v4 = {'method': 'manual', 'addr': conf['ipv4_addresses'][0],
+                  'gw': conf.get('ipv4_gateway') or ''}
+        elif m4 == 'auto':
+            v4 = {'method': 'auto'}
+        else:
+            return None, 'the old network is neither set by hand nor from DHCP (%s) - it ' \
+                         'cannot be put back by itself' % (m4 or '?')
+        v4.update(dns=list(conf.get('ipv4_dns') or []), search=list(conf.get('ipv4_search') or []))
+        m6 = conf.get('ipv6_method')
+        on6 = m6 not in (None, '', 'disabled', 'ignore')
+        return {'con': d.get('con') or '', 'ipv4': v4,
+                'ipv6': {'on': on6, 'mode': 'manual' if m6 == 'manual' else 'auto',
+                         'addr': (conf.get('ipv6_addresses') or [''])[0] if m6 == 'manual' else '',
+                         'gw': conf.get('ipv6_gateway') or '', 'dns': list(conf.get('ipv6_dns') or [])},
+                'hostname': str(d.get('hostname') or '')}, ''
+
+    @staticmethod
+    def net_trial_min():
+        return max(0, min(120, int(CONFIG.get('net_confirm_min') or 0)))
+
+    def net_job_run(self, ask):
+        w = ask['want']
+        by = '%s (network)' % (ask.get('by') or 'zigmon')
+        job = {'id': ask['id'], 'state': 'running', 'at': time.time(), 'pct': 0,
+               'by': ask.get('by'), 'want': w, 'steps': [], 'boot': self.boot_time(),
+               'rollback': bool(ask.get('rollback'))}
+        if self.net_trial_min() and not ask.get('rollback'):
+            job['back'], job['back_why'] = self.net_back_want(self._mj('net:now'))
+            job['trial_min'] = self.net_trial_min() if job['back'] else 0
+        try:
+            self._job_put(job, 'started - %s' % '; '.join(w['plan'][:2]), 3)
+            if job.get('trial_min'):
+                self._job_put(job, 'on trial: unless it is kept within %d min of coming back up, '
+                              'the network it has now comes back by itself' % job['trial_min'], 4)
+            elif job.get('back_why'):
+                self._job_put(job, job['back_why'], 4, ok=False)
+            if w['ip_changed'] and w['old_ip'] and str(CONFIG.get('mqtt_host') or '') == w['old_ip']:
+                # config.json is root's, not this daemon's to write
+                self._job_put(job, 'config.json names the broker as %s (mqtt_host): put %s there '
+                              'once the machine is back, or 127.0.0.1' % (
+                                  w['old_ip'], w['new_ip'] or 'its new address'), 30, ok=False)
+            # the database written down before the machine goes: a reading
+            # taken a second before the restart is not lost with it
+            try:
+                self.store.flush(5.0)
+            except Exception:                           # noqa: BLE001
+                pass
+            job['down_at'] = time.time()
+            self._job_put(job, 'NetworkManager, the host name and /etc/hosts', 70, state='rebooting')
+            got = self.root_call('net.ask', 'net.json', {
+                'do': 'apply', 'con': w['con'], 'ipv4': w['ipv4'],
+                'ipv6': {'mode': w['ipv6']['mode'] if w['ipv6']['on'] else 'off',
+                         'addr': w['ipv6']['addr'], 'gw': w['ipv6']['gw'], 'dns': w['ipv6']['dns']},
+                'hostname': w['hostname'], 'old': [w['old_ip']] if w['old_ip'] else [],
+                'old_hostname': w['old_hostname'], 'reboot_in': 8}, 90)
+            job['before'] = got.get('before') or {}
+            job['down_at'] = time.time() + 8
+            self._job_put(job, '; '.join(got.get('said') or []) or 'set', 80)
+            self._job_put(job, 'restarting - back in a minute or two at %s' % (
+                w['new_ip'] or 'the address DHCP gives'), 85)
+            self.notify('The server restarts with a new network%s, asked by %s.' % (
+                (' (%s)' % w['new_ip']) if w['new_ip'] else ' (an address from DHCP)',
+                ask.get('by') or 'zigmon'), 'warn', dedup='net-change-%s' % job['id'],
+                title='The network is being changed', about='network')
+        except Exception as e:                          # noqa: BLE001
+            job['error'] = str(e)[:400]
+            self._job_put(job, 'stopped: %s - nothing of the network was changed' % e
+                          if job.get('state') != 'rebooting' else 'stopped: %s' % e, job.get('pct'),
+                          ok=False, state='failed')
+            self.say_event('control', 'the new network was not put in: %s' % e, 'warn', about='network')
+
+    def net_job_after(self, job):
+        """Back up after the restart: is it what was asked."""
+        w = job.get('want') or {}
+        by = '%s (network)' % (job.get('by') or 'zigmon')
+        self._job_put(job, 'back up', 88)
+        try:
+            now = self.net_publish()
+        except Exception as e:                          # noqa: BLE001
+            now = {}
+            self._job_put(job, 'the network could not be read: %s' % e, 89, ok=False)
+        live = ((now.get('data') or {}).get('live') or {})
+        have = [a.get('addr', '').split('/')[0] for a in live.get('addrs4') or []] + \
+               [a.get('addr', '').split('/')[0] for a in live.get('addrs6') or []]
+        if w.get('ipv4', {}).get('method') == 'auto':
+            missing = not [a for a in have if '.' in a]
+            what = 'an IPv4 address from DHCP'
+        else:
+            missing = bool(w.get('new_ip')) and w['new_ip'] not in have
+            what = w.get('new_ip')
+        if missing:
+            if job.get('trial_min') and job.get('back'):
+                # not even the address: back at once, not after the trial
+                self._job_put(job, 'came up without %s (it has %s)' % (
+                    what, ', '.join(have) or 'none'), 90, ok=False)
+                self.net_go_back(job, 'it came up without its new address')
+                return
+            self._job_put(job, 'came up without %s (it has %s) - look at its console' % (
+                what, ', '.join(have) or 'none'), 90, ok=False, state='failed')
+            self.say_event('control', 'the server came up without its new address %s' % what,
+                           'crit', about='network')
+            return
+        words = ['at %s' % (', '.join(a for a in have if '.' in a) or '?')]
+        if (w.get('ipv6') or {}).get('on'):
+            words.append('IPv6: %s' % (', '.join(a for a in have if ':' in a) or 'none yet'))
+        if w.get('hostname') and socket.gethostname().split('.')[0] != w['hostname'].split('.')[0]:
+            words.append('the host name is %s, not %s' % (socket.gethostname(), w['hostname']))
+        self._job_put(job, '; '.join(words), 92)
+        # what root put in before the restart (the firewall, who may reach the
+        # pages) asked for again, now that the machine has its new address
+        try:
+            if self.root_installed():
+                self.root_apply(quiet=True)
+        except Exception:                               # noqa: BLE001
+            pass
+        if job.get('trial_min') and job.get('back'):
+            self.net_trial_start(job, by)
+            return
+        self._job_put(job, 'done', 100, state='done')
+        self.say_event('control', 'the network is changed: %s' % '; '.join(words), 'warn',
+                       about='network')
+
+    def net_trial_start(self, job, by):
+        n = int(job.get('trial_min') or 0)
+        job['trial_until'] = time.time() + n * 60
+        self._job_put(job, 'it waits to be kept: Keep it within %d min (the banner on every '
+                      'page, Control - Network, or  zigmon --change-keep net), or the old network '
+                      'comes back by itself at %s' % (
+                          n, time.strftime('%H:%M', time.localtime(job['trial_until']))),
+                      99, state='trial')
+        self.notify('The new network is on trial: keep it within %d min on the dashboard, or the '
+                    'server goes back to %s by itself.' % (
+                        n, (job.get('want') or {}).get('old_ip') or 'the old one'),
+                    'warn', dedup='net-trial-%s' % job.get('id'), title='Keep the new network?',
+                    about='network')
+
+    def net_go_back(self, job, why):
+        """The old network asked for - the same job the other way round."""
+        back = job.get('back')
+        job['back_asked'] = time.time()
+        if not back:
+            self._job_put(job, 'not kept (%s), and it cannot go back by itself: %s' % (
+                why, job.get('back_why') or '?'), job.get('pct'), ok=False, state='failed')
+            return
+        try:
+            self.net_publish()
+        except Exception as e:                          # noqa: BLE001
+            log('network: read before going back: %s' % e, 'warn')
+        self._job_put(job, 'not kept: %s - the old network (%s) comes back' % (
+            why, (back.get('ipv4') or {}).get('addr') or 'DHCP'), job.get('pct'), ok=False,
+            state='going back')
+        try:
+            ask = self.net_ask_back(back, 'zigmon (%s)' % why)
+            self.net_job_run(ask)
+        except Exception as e:                          # noqa: BLE001
+            self._job_put(job, 'the old network could not be asked for: %s' % e, job.get('pct'),
+                          ok=False, state='failed')
+            self.say_event('control', 'the old network could not be put back: %s' % e, 'crit',
+                           about='network')
+
+    def net_ask_back(self, back, by):
+        checked = self.net_check(back)
+        ask = {'id': secrets.token_hex(6), 'want': checked, 'by': by, 'at': time.time(),
+               'rollback': True}
+        self._mj_put('net:want', ask)
+        self.say_event('control', 'the old network asked back: %s' % '; '.join(checked['plan'][:1]),
+                       'warn', about='network')
+        return ask
+
+    def net_trial_tick(self, job):
+        keep = self._mj('net:keep') or {}
+        back = self._mj('net:back') or {}
+        if keep.get('id') == job.get('id'):
+            job['kept'] = keep.get('by')
+            self._job_put(job, 'kept by %s' % keep.get('by'), 100, state='done')
+            self.say_event('control', '%s kept the new network' % keep.get('by'), 'info',
+                           about='network')
+            return
+        if back.get('id') == job.get('id'):
+            self.net_go_back(job, 'put back by %s' % back.get('by'))
+            return
+        if time.time() > float(job.get('trial_until') or 0):
+            self.net_go_back(job, 'not kept within %d min' % int(job.get('trial_min') or 0))
+
+    def net_trial_answer(self, act, by):
+        job = self._mj('net:job') or {}
+        if job.get('state') != 'trial':
+            raise ValueError('the network is not waiting to be kept')
+        self._mj_put('net:%s' % ('keep' if act == 'keep' else 'back'),
+                     {'id': job.get('id'), 'by': by, 'at': time.time()})
+        self._net_kick.set()
+        return ('kept' if act == 'keep' else
+                'the old network comes back - the server restarts with it')
+
+    def net_tick(self):
+        """Every few seconds: a job to start, to finish after the restart, or
+        on trial; the network read again now and then."""
+        job = self._mj('net:job')
+        ask = self._mj('net:want')
+        if job and job.get('state') == 'trial':
+            self.net_trial_tick(job)
+            return
+        if job and job.get('state') == 'rebooting':
+            if self.boot_time() > float(job.get('boot') or 0) + 1:
+                self.net_job_after(job)
+            elif time.time() - float(job.get('moved') or 0) > 900:
+                self._job_put(job, 'the machine did not restart in 15 minutes - restart it by '
+                              'hand; the network starts as set', job.get('pct'), ok=False,
+                              state='failed')
+            return
+        if ask and (not job or job.get('id') != ask.get('id')) and \
+                time.time() - float(ask.get('at') or 0) < 600:
+            self.net_job_run(ask)
+            return
+        if job and job.get('state') == 'running' and time.time() - float(job.get('moved') or 0) > 300:
+            self._job_put(job, 'it stopped half way (the service restarted?)', job.get('pct'),
+                          ok=False, state='failed')
+        wanted = float(self.store.get_meta('net:read') or 0)
+        if self.root_installed() and (time.time() - self._net_work['read_at'] > self.NET_READ_S
+                                      or wanted > self._net_work['read_at']):
+            try:
+                self.net_publish()
+            except Exception as e:                      # noqa: BLE001
+                self._net_work['read_at'] = time.time()
+                log('network: %s' % e, 'debug')
+
+    def net_view(self):
+        job = self._mj('net:job') or {}
+        if job and job.get('state') in ('done', 'failed'):
+            keep = 6 * 3600 if job.get('state') == 'done' else 86400
+            if self.store.get_meta('net:seen') == str(job.get('id')) or \
+                    time.time() - float(job.get('moved') or job.get('at') or 0) > keep:
+                job = {}
+        return {'now': self._mj('net:now') or {}, 'job': job, 'at': time.time(),
+                'trial_min': self.net_trial_min(), 'helper': self.root_installed()}
+
+    def net_post(self, body, by):
+        act = str(body.get('action') or '')
+        if act == 'read':
+            self.store.set_meta('net:read', repr(time.time()))
+            self._net_kick.set()
+            return {'message': 'asked - read again within a few seconds'}
+        if act == 'plan':
+            got = self.net_check(body.get('want') or {})
+            return {'plan': got['plan'], 'want': got}
+        if act == 'apply':
+            ask = self.net_ask(body.get('want') or {}, by)
+            return {'message': 'asked - the server does it now', 'id': ask['id']}
+        if act == 'hide':
+            job = self._mj('net:job') or {}
+            if self.net_job_active(job) or job.get('state') == 'trial':
+                raise ValueError('it is not over yet')
+            self.store.set_meta('net:seen', str(job.get('id') or ''))
+            return {'message': 'hidden'}
+        raise ValueError('read, plan, apply or hide')
+
+    # -- the firewall and who may reach the pages, on trial -------------------
+    @staticmethod
+    def fw_trial_min():
+        return max(0, min(120, int(CONFIG.get('fw_confirm_min') or 0)))
+
+    def fw_trial_begin(self, by):
+        """Before a change of the firewall or of who may reach the pages: what
+        is there now kept, for going back to. A second change in the same
+        trial moves its end on and keeps what was there before the first."""
+        n = self.fw_trial_min()
+        if not n:
+            return None
+        t = time.time()
+        trial = self._mj('fw:trial') or {}
+        if not trial or trial.get('done'):
+            trial = {'id': secrets.token_hex(6), 'was': self.store.get_meta('firewall') or '',
+                     'access': self.store.get_meta('web_access') or '', 'at': t, 'by': by}
+        trial.update(until=t + n * 60, last_by=by, min=n)
+        self._mj_put('fw:trial', trial, bump=True)
+        return trial
+
+    def fw_trial_answer(self, act, by):
+        trial = self._mj('fw:trial') or {}
+        if not trial or trial.get('done'):
+            raise ValueError('no change of the firewall waits to be kept')
+        if act == 'keep':
+            trial.update(done='kept', done_by=by, done_at=time.time())
+            self._mj_put('fw:trial', trial, bump=True)
+            self.say_event('control', '%s kept the change of the firewall and access' % by, 'info',
+                           about='root')
+            return 'kept'
+        self.fw_put_back(trial, 'put back by %s' % by)
+        return 'what was there before comes back - root puts it in within a few seconds'
+
+    def fw_put_back(self, trial, why):
+        for key, was in (('firewall', trial.get('was')), ('web_access', trial.get('access'))):
+            if was:
+                self.store.set_meta(key, was)
+            else:
+                self.store.set_meta(key, '')
+        trial.update(done='back', done_by=why, done_at=time.time())
+        self._mj_put('fw:trial', trial, bump=True)
+        self.say_event('control', 'the firewall and access went back to what they were before '
+                       '%s: %s' % (time.strftime('%H:%M', time.localtime(trial.get('at') or 0)), why),
+                       'warn', about='root')
+        try:
+            if self.root_installed():
+                self.root_apply(quiet=True)
+        except Exception as e:                          # noqa: BLE001
+            log('the firewall going back could not be handed to root: %s' % e, 'warn')
+
+    def fw_trial_tick(self):
+        trial = self._mj('fw:trial') or {}
+        if trial and not trial.get('done') and time.time() > float(trial.get('until') or 0):
+            self.fw_put_back(trial, 'not kept within %d min' % int(trial.get('min') or 0))
+
+    def changes_view(self):
+        """What waits to be kept, for the banner of every page and --status."""
+        out = []
+        job = self._mj('net:job') or {}
+        if job.get('state') == 'trial':
+            w = job.get('want') or {}
+            out.append({'kind': 'net', 'until': float(job.get('trial_until') or 0),
+                        'by': job.get('by'),
+                        'words': 'the new network (%s)' % (w.get('new_ip') or 'from DHCP'),
+                        'back': w.get('old_ip') or ''})
+        trial = self._mj('fw:trial') or {}
+        if trial and not trial.get('done'):
+            out.append({'kind': 'fw', 'until': float(trial.get('until') or 0),
+                        'by': trial.get('last_by') or trial.get('by'),
+                        'words': 'the change of the firewall and who may reach the pages',
+                        'back': ''})
+        return out
+
+    def change_answer(self, kind, act, by):
+        if act not in ('keep', 'back'):
+            raise ValueError('keep or back')
+        if kind == 'net':
+            return self.net_trial_answer(act, by)
+        if kind == 'fw':
+            return self.fw_trial_answer(act, by)
+        raise ValueError('net or fw')
+
+    # -- restarting and switching off -----------------------------------------
+    def power_plan(self):
+        return self._mj('power:plan') or {}
+
+    def power_busy(self):
+        p = self.power_plan()
+        if not p or p.get('done') or time.time() - float(p.get('at') or 0) > self.POWER_LIVE_S:
+            return False
+        if p.get('when') and float(p['when']) > time.time() + 60:
+            return False                                # one waiting for its hour stands aside
+        row = self._mj('power:row') or {}
+        return row.get('id') != p.get('id') or row.get('state') in ('asked', 'going')
+
+    def power_ask(self, how, by, when=None):
+        """A restart or a power-off now, or at a moment of the house's own
+        clock - waiting there until then, and called off as easily."""
+        if how not in ('reboot', 'poweroff'):
+            raise ValueError('reboot or poweroff')
+        if self.power_busy():
+            raise ValueError('a restart or a power-off is under way already')
+        if self.net_job_active(self._mj('net:job')) or (self._mj('net:job') or {}).get('state') == 'trial':
+            raise ValueError('the network is being changed - finish that first')
+        at = None
+        if when:
+            m = re.match(r'^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$', str(when).strip())
+            if not m:
+                raise ValueError('when is a day and a time: 2026-11-02 04:30')
+            try:
+                at = time.mktime((int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                  int(m.group(4)), int(m.group(5)), 0, 0, 0, -1))
+            except (OverflowError, ValueError):
+                raise ValueError('that is not a moment on the calendar')
+            if at < time.time() + 60:
+                raise ValueError('that moment is not in the future')
+            if at > time.time() + 31 * 86400:
+                raise ValueError('a month ahead at the most')
+        plan = {'id': secrets.token_hex(6), 'how': how, 'by': by, 'at': time.time(),
+                'when': at}
+        self._mj_put('power:plan', plan, bump=True)
+        what = 'restart' if how == 'reboot' else 'power-off'
+        self.say_event('control', '%s asked for a %s of the server%s' % (
+            by, what, (' at %s' % time.strftime('%Y-%m-%d %H:%M', time.localtime(at))) if at else ''),
+            'warn', about='power')
+        self._net_kick.set()
+        return plan
+
+    def power_cancel(self, by):
+        p = self.power_plan()
+        if not p or p.get('done') or not p.get('when'):
+            raise ValueError('no restart or power-off waits for its hour')
+        if float(p['when']) <= time.time() + 10:
+            raise ValueError('it is under way already')
+        p.update(done='called off', done_by=by)
+        self._mj_put('power:plan', p, bump=True)
+        self.say_event('control', '%s called off the %s planned for %s' % (
+            by, 'restart' if p.get('how') == 'reboot' else 'power-off',
+            time.strftime('%Y-%m-%d %H:%M', time.localtime(float(p['when'])))), 'info', about='power')
+        return 'called off'
+
+    def _power_put(self, row, state, words=''):
+        row.update(state=state, moved=time.time())
+        if words:
+            row['said'] = str(words)[:300]
+        self._mj_put('power:row', row, bump=True)
+
+    def power_go(self, plan):
+        row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': self.boot_time(),
+               'by': plan.get('by')}
+        try:
+            row['down_at'] = time.time() + 5
+            self._power_put(row, 'going', 'going down')
+            self.notify('The server %s in a few seconds, asked by %s.' % (
+                'restarts' if plan['how'] == 'reboot' else 'is switched off', plan.get('by') or 'zigmon'),
+                'warn', dedup='power-%s' % plan['id'], title='The server %s' % (
+                    'restarts' if plan['how'] == 'reboot' else 'is switched off'), about='power')
+            try:
+                self.store.flush(5.0)
+            except Exception:                           # noqa: BLE001
+                pass
+            self.root_call('net.ask', 'net.json', {'do': 'power', 'how': plan['how'], 'in': 5}, 30)
+            log('%s in 5 s, asked by %s' % (plan['how'], plan.get('by')), 'warn')
+        except Exception as e:                          # noqa: BLE001
+            self._power_put(row, 'failed', str(e))
+            self.say_event('control', 'the %s was not done: %s' % (
+                'restart' if plan['how'] == 'reboot' else 'power-off', e), 'warn', about='power')
+
+    def power_tick(self):
+        plan = self.power_plan()
+        row = self._mj('power:row') or {}
+        if row.get('state') == 'going':
+            if self.boot_time() > float(row.get('boot') or 0) + 1:
+                self._power_put(row, 'back', 'up again')
+                self.say_event('control', 'the server is up again after the %s' % (
+                    'restart' if row.get('how') == 'reboot' else 'power-off'), 'info', about='power')
+            elif time.time() - float(row.get('moved') or 0) > 900:
+                self._power_put(row, 'failed', 'it did not go down in 15 minutes')
+            return
+        if not plan or plan.get('done') or row.get('id') == plan.get('id'):
+            self.power_auto_tick()
+            return
+        if plan.get('when'):
+            if time.time() < float(plan['when']):
+                return
+            if time.time() - float(plan['when']) > 900:
+                # the machine was off, or this daemon was, when its hour came:
+                # a restart an hour late is not what anybody asked for
+                plan.update(done='missed')
+                self._mj_put('power:plan', plan)
+                self.say_event('control', 'the %s planned for %s was not done: the moment had '
+                               'passed when it could be' % (
+                                   'restart' if plan.get('how') == 'reboot' else 'power-off',
+                                   time.strftime('%H:%M', time.localtime(float(plan['when'])))),
+                               'warn', about='power')
+                return
+        elif time.time() - float(plan.get('at') or 0) > self.POWER_LIVE_S:
+            return
+        self.power_go(plan)
+
+    def power_auto_next(self, now=None):
+        """When the regular restart set under Settings comes next, or None."""
+        how = str(CONFIG.get('reboot_auto') or 'off')
+        if how not in ('daily', 'weekly'):
+            return None
+        try:
+            hh, mm = [int(x) for x in str(CONFIG.get('reboot_at') or '04:30').split(':')]
+        except ValueError:
+            return None
+        now = time.time() if now is None else now
+        lt = time.localtime(now)
+        for add in range(0, 9):
+            at = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + add, hh, mm, 0, 0, 0, -1))
+            if at <= now:
+                continue
+            if how == 'weekly' and time.localtime(at).tm_wday + 1 != int(CONFIG.get('reboot_day') or 7):
+                continue
+            return at
+        return None
+
+    def power_auto_tick(self):
+        """The regular restart: when its minute has come, once on that day -
+        claimed in the database, so a restart of this daemon in the same
+        minute does not restart the machine twice."""
+        how = str(CONFIG.get('reboot_auto') or 'off')
+        if how not in ('daily', 'weekly'):
+            return
+        nxt = self.power_auto_next(time.time() - 120)
+        if nxt is None or not (nxt <= time.time() < nxt + 120):
+            return
+        day = time.strftime('%Y-%m-%d', time.localtime(nxt))
+        if self.store.get_meta('power:auto_day') == day:
+            return
+        self.store.set_meta('power:auto_day', day)
+        if self.boot_time() > nxt - 3600:
+            return                                      # it has just been restarted anyway
+        try:
+            self.power_ask('reboot', 'the regular restart (%s)' % how)
+        except ValueError as e:
+            self.say_event('control', 'the regular restart was not done: %s' % e, 'warn', about='power')
+
+    def power_view(self):
+        plan = self.power_plan()
+        row = self._mj('power:row') or {}
+        seen = self.store.get_meta('power:seen') == str(plan.get('id') or '')
+        live = plan and not seen and (time.time() - float(plan.get('at') or 0) < self.POWER_LIVE_S
+                                      or (plan.get('when') and not plan.get('done')))
+        nxt = self.power_auto_next()
+        return {'plan': plan if live else {}, 'row': row if row.get('id') == plan.get('id') else {},
+                'now': time.time(), 'busy': self.power_busy(), 'boot': self.boot_time(),
+                'started': getattr(self, 'started_at', None) or self.__dict__.get('_started'),
+                'version': __version__, 'host': socket.gethostname(),
+                'auto': {'how': str(CONFIG.get('reboot_auto') or 'off'),
+                         'next': nxt}, 'helper': self.root_installed()}
+
+    def power_post(self, body, by):
+        act = str(body.get('action') or '')
+        if act == 'hide':
+            self.store.set_meta('power:seen', str(self.power_plan().get('id') or ''))
+            return {'message': 'hidden'}
+        if act == 'cancel':
+            return {'message': self.power_cancel(by)}
+        how = str(body.get('how') or '')
+        plan = self.power_ask(how, by, body.get('when') or None)
+        return {'message': 'asked' if not plan.get('when') else 'planned', 'plan': plan}
+
+    # -- the clock ------------------------------------------------------------
+    def ntp_conf(self):
+        c = dict(self.NTP_DEFAULT)
+        c.update(self._mj('ntp:conf') or {})
+        return c
+
+    def ntp_desired(self):
+        c = self.ntp_conf()
+        return {'manage': bool(c.get('manage')), 'servers': c.get('servers') or [],
+                'allow': c.get('allow') or [], 'makestep': c.get('makestep') or [1.0, 3],
+                'minsources': c.get('minsources') or 1, 'timezone': c.get('timezone') or ''}
+
+    def ntp_hash(self):
+        return hashlib.sha256(json.dumps(self.ntp_desired(), sort_keys=True).encode()).hexdigest()[:24]
+
+    def ntp_checked(self, b):
+        """The settings from the page, made whole - root checks them again."""
+        b = b if isinstance(b, dict) else {}
+        out = dict(self.NTP_DEFAULT)
+        out['manage'] = bool(b.get('manage'))
+        servers = []
+        for x in list(b.get('servers') or [])[:12]:
+            if not isinstance(x, dict):
+                continue
+            host = str(x.get('host') or '').strip().lower().rstrip('.')
+            if not host:
+                continue
+            try:
+                host = str(ipaddress.ip_address(host))
+            except ValueError:
+                if not self.HOST_RE.match(host):
+                    raise ValueError('%r is not a host name or an address' % host)
+            servers.append({'host': host, 'pool': bool(x.get('pool')),
+                            'iburst': bool(x.get('iburst', True)), 'prefer': bool(x.get('prefer')),
+                            'nts': bool(x.get('nts'))})
+        if out['manage'] and not servers:
+            raise ValueError('at least one time server - or let the machine keep its own')
+        out['servers'] = servers
+        allow = []
+        raw = b.get('allow')
+        for a in re.split(r'[\s,;]+', raw if isinstance(raw, str) else ' '.join(str(x) for x in (raw or []))):
+            if not a:
+                continue
+            try:
+                allow.append(str(ipaddress.ip_network(a, strict=False)))
+            except ValueError:
+                raise ValueError('%r is not a network (192.168.1.0/24)' % a)
+        out['allow'] = allow[:20]
+        try:
+            th = float(b.get('step_s', 1.0))
+            lim = int(b.get('step_n', 3))
+        except (TypeError, ValueError):
+            raise ValueError('the step: seconds, and how many updates')
+        if not (0.001 <= th <= 3600) or not (-1 <= lim <= 1000):
+            raise ValueError('the step: 0.001 to 3600 s; -1 (always) to 1000 updates')
+        out['makestep'] = [th, lim]
+        try:
+            out['minsources'] = max(1, min(10, int(b.get('minsources') or 1)))
+        except (TypeError, ValueError):
+            raise ValueError('how many sources have to agree is a number')
+        tz = str(b.get('timezone') or '').strip()
+        if tz and not re.match(r'^[A-Za-z0-9_+-]{1,40}(/[A-Za-z0-9_+-]{1,40}){0,3}\Z', tz):
+            raise ValueError('%r is not a time zone' % tz)
+        out['timezone'] = tz
+        return out
+
+    def ntp_save(self, b, by):
+        c = self.ntp_checked(b)
+        c.update(at=time.time(), by=by)
+        self._mj_put('ntp:conf', c)
+        what = ('the servers %s' % ', '.join(x['host'] for x in c['servers'])) if c['manage'] \
+            else 'the machine keeps its own servers'
+        if c['timezone']:
+            what += '; time zone %s' % c['timezone']
+        self.say_event('control', '%s set the time: %s' % (by, what), 'info', about='time')
+        self._net_kick.set()
+        return c
+
+    def ntp_publish(self, zones=False):
+        data = self.root_call('ntp.ask', 'ntp.json', {'do': 'read', 'zones': bool(zones)}, 30)
+        now = {'at': time.time(), 'data': {k: v for k, v in data.items() if k != 'zones'}}
+        self._mj_put('ntp:now', now)
+        self._ntp_work['read_at'] = time.time()
+        if zones and data.get('zones'):
+            self.store.set_meta('ntp:zones', json.dumps(data['zones']))
+        self.ntp_problem_say(now)
+        return now
+
+    def ntp_apply(self):
+        want = self.ntp_desired()
+        row = {'hash': self.ntp_hash(), 'at': time.time()}
+        try:
+            got = self.root_call('ntp.ask', 'ntp.json', dict(want, do='apply'), 300)
+            row.update(ok=True, said='; '.join(got.get('said') or []) or 'as it was')
+            log('the time: %s' % row['said'])
+            if want.get('timezone') and 'time zone' in row['said']:
+                # the zone this process reads its local time in: Python asks the
+                # system again only when told to, and every schedule, sunrise
+                # and backup hour of the house is in local time
+                os.environ.pop('TZ', None)
+                time.tzset()
+        except ValueError as e:
+            row.update(ok=False, said=str(e)[:300])
+            log('the time servers could not be set: %s' % e, 'warn')
+        self._mj_put('ntp:applied', row)
+        try:
+            self.ntp_publish()
+        except Exception:                               # noqa: BLE001
+            pass
+
+    def ntp_sync(self):
+        got = self.root_call('ntp.ask', 'ntp.json', {'do': 'sync'}, 60)
+        self.say_event('control', 'the clock stepped to the time servers now (%s)' % (
+            '; '.join(got.get('said') or [])), 'info', about='time')
+        time.sleep(3)
+        self.ntp_publish()
+
+    def ntp_tick(self):
+        if not self.root_installed():
+            return
+        if self._mj('ntp:conf'):
+            done = self._mj('ntp:applied') or {}
+            if done.get('hash') != self.ntp_hash() and time.time() - float(done.get('at') or 0) > 30:
+                self.ntp_apply()
+                return
+        sync_at = float(self.store.get_meta('ntp:sync') or 0)
+        if sync_at > float(self._ntp_work.get('synced') or 0) and time.time() - sync_at < 300:
+            self._ntp_work['synced'] = sync_at
+            self.ntp_sync()
+            return
+        wanted = float(self.store.get_meta('ntp:read') or 0)
+        if time.time() - self._ntp_work['read_at'] > self.NTP_READ_S or wanted > self._ntp_work['read_at']:
+            try:
+                self.ntp_publish(wanted > self._ntp_work['read_at'] or not self.store.get_meta('ntp:zones'))
+            except Exception as e:                      # noqa: BLE001
+                self._ntp_work['read_at'] = time.time()
+                log('the time: %s' % e, 'debug')
+
+    @staticmethod
+    def ntp_problem(now):
+        """Words for when this machine's clock is not to be trusted - every
+        schedule, sunrise scene and one-tap code of the house runs on it."""
+        d = (now or {}).get('data') or {}
+        if not d or time.time() - float((now or {}).get('at') or 0) > 600:
+            return ''
+        t = d.get('tracking') or {}
+        if d.get('chrony') and t:
+            if t.get('leap') == 'Not synchronised' or not t.get('stratum'):
+                return ('the clock is not synchronised to a time server (chrony) - the schedules, '
+                        'sunrise and the one-tap codes run on it: Control - Time')
+            if abs(float(t.get('offset') or 0)) > 1.0:
+                return ('the clock is %.1f s off the time servers: Control - Time'
+                        % abs(float(t['offset'])))
+        elif d.get('ntpsynchronized') == 'no':
+            return 'the clock is not synchronised (timedatectl): Control - Time'
+        return ''
+
+    def ntp_problem_say(self, now):
+        words = self.ntp_problem(now)
+        was = self._ntp_work.get('problem') or ''
+        self._ntp_work['problem'] = words
+        if words and not was:
+            self.notify('The server\'s %s.' % words, 'warn', dedup='clock-%s' % time.strftime('%Y-%m-%d'),
+                        title='The clock is not right', about='time')
+
+    def ntp_view(self):
+        try:
+            zones = json.loads(self.store.get_meta('ntp:zones') or '[]')
+        except ValueError:
+            zones = []
+        return {'now': self._mj('ntp:now') or {}, 'applied': self._mj('ntp:applied') or {},
+                'conf': self.ntp_conf(), 'zones': zones, 'picks': list(self.NTP_PICKS),
+                'hash': self.ntp_hash() if self._mj('ntp:conf') else '', 'at': time.time(),
+                'problem': self._ntp_work.get('problem') or '', 'helper': self.root_installed()}
+
+    def ntp_post(self, body, by):
+        act = str(body.get('action') or '')
+        if act == 'save':
+            self.ntp_save(body.get('conf') or {}, by)
+            return {'message': 'saved - root sets the time servers within seconds'}
+        if act in ('read', 'sync'):
+            self.store.set_meta('ntp:%s' % act, repr(time.time()))
+            if act == 'sync':
+                self.say_event('control', '%s asked for the clock to be stepped now' % by, 'info',
+                               about='time')
+            self._net_kick.set()
+            return {'message': 'asked'}
+        raise ValueError('save, read or sync')
+
+    def system_loop(self):
+        """Every few seconds, on a thread of its own so that the clock thread
+        that makes a lamp come on is never behind it: the network, a restart,
+        the firewall on trial, the clock."""
+        while getattr(self, '_stop', None) is None:
+            time.sleep(0.5)
+        if self._stop.wait(5):
+            return
+        while not self._stop.is_set():
+            for name, job in (('network', self.net_tick), ('power', self.power_tick),
+                              ('firewall on trial', self.fw_trial_tick), ('time', self.ntp_tick)):
+                try:
+                    job()
+                except Exception as e:                  # noqa: BLE001 - the next one still runs
+                    log('%s: %s' % (name, e), 'debug')
+            self._net_kick.wait(5)
+            self._net_kick.clear()
 
     def php_loop(self):
         """Is the PHP serving the dashboard one of the broken ones?
@@ -27515,7 +28548,8 @@ class Daemon(object):
     # out, the PIN and every password, token and key.
     SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|never_block|block|blacklist|'
                                  r'public_view|session|allow|trusted|duo|mikrotik|proxy_|intel_|feeds?\b|'
-                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_', re.I)
+                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_',
+                                 re.I)
 
     OBJECT_CACHE_S = 2.0
     # which kind a bare name means when two kinds share it
@@ -34925,6 +35959,11 @@ class Daemon(object):
                                          for x in (m.get('sms_to') or [])])
                          for m in self.alert_messages()],
             'alerts': self.active_alerts(),
+            # what waits to be kept (5.21): a new network, a change of the
+            # firewall - the banner on every page counts it down, by the
+            # server's clock (server_now), not the browser's
+            'changes': self.changes_view(),
+            'server_now': time.time(),
             'holds': [dict(v, target=k, label=self.target_label(k))
                       for k, v in sorted(self.manual_holds().items())],
             'latency': self.latency_report(),
@@ -36004,7 +37043,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the certificate, the firewall and who may reach the
                      # pages, a new version, the backups of the whole house:
                      # how the house is guarded and how it is put back
-                     '/api/firewall', '/api/tls', '/api/upgrade', '/api/fullbackup')
+                     '/api/firewall', '/api/tls', '/api/upgrade', '/api/fullbackup',
+                     # the machine itself (5.21): its network, its clock,
+                     # restarting it
+                     '/api/net', '/api/ntp', '/api/power')
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -36084,6 +37126,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         A ValueError is the answer the dashboard shows."""
         who = self._caller()
         act = str(body.get('action') or '')
+        # the machine itself (5.21): said in the events by the account's name
+        if path in ('/api/net', '/api/ntp', '/api/power', '/api/change'):
+            me = d.session_get(body.get('session')) or {}
+            by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                    else who)
+            if path == '/api/net':
+                return d.net_post(body, by)
+            if path == '/api/ntp':
+                return d.ntp_post(body, by)
+            if path == '/api/power':
+                return d.power_post(body, by)
+            return {'message': d.change_answer(str(body.get('kind') or ''), act, by)}
         if path == '/api/firewall':
             if act == 'save':
                 return {'message': d.firewall_save(body, who)}
@@ -36900,6 +37954,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, d.tls_state())
             if path == '/api/upgrade':
                 return self._send(200, d.upgrade_state())
+            if path == '/api/net':
+                return self._send(200, d.net_view())
+            if path == '/api/ntp':
+                return self._send(200, d.ntp_view())
+            if path == '/api/power':
+                return self._send(200, d.power_view())
             if path == '/api/fullbackup':
                 if q.get('fresh'):
                     d.root_look(fresh=True)
@@ -38415,7 +39475,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, {'ok': True, 'deleted': name, 'backups': d.db_backups()})
             # ---- what root does for the dashboard (5.18) -------------------
             if path in ('/api/firewall', '/api/tls', '/api/upgrade', '/api/upgrade/upload',
-                        '/api/fullbackup', '/api/fullbackup/upload'):
+                        '/api/fullbackup', '/api/fullbackup/upload',
+                        '/api/net', '/api/ntp', '/api/power', '/api/change'):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
@@ -43345,6 +44406,10 @@ HELP_LINES = [
     ('sudo zigmon --full-inspect FILE', 'what one holds, and whether this machine made it'),
     ('sudo zigmon --full-restore FILE', 'put it back (--parts database,config,web,tls,...)'),
     ('zigmon --root-status', 'what root last did for the dashboard, and what it saw'),
+    ('#', 'The machine itself'),
+    ('zigmon --changes', 'a new network or a firewall change waiting to be kept'),
+    ('zigmon --change-keep net', 'keep it (net or fw); not kept in time, it goes back by itself'),
+    ('zigmon --change-back fw', 'put the old one back now (net or fw)'),
     ('zigmon --aggregate', 'roll old samples up now (the daemon must be stopped)'),
     ('zigmon --reset-data history', 'erase: all, history, events, or a device name'),
     ('zigmon --reset-order overview',
@@ -43580,6 +44645,14 @@ def build_parser():
                    help='the addresses that may not talk to the API: list, an address to block '
                         '(--force for good), -ADDRESS to let one back in, clear, or mikrotik for '
                         'the lines a router takes')
+    # handled before these are parsed (see main), and listed here so that
+    # --help and the checks know them
+    a.add_argument('--changes', action='store_true',
+                   help='a new network or a firewall change waiting to be kept (5.21)')
+    a.add_argument('--change-keep', metavar='KIND', choices=['net', 'fw'],
+                   help='keep a change on trial: net or fw')
+    a.add_argument('--change-back', metavar='KIND', choices=['net', 'fw'],
+                   help='put the old one back now: net or fw')
     a.add_argument('--unblock', metavar='ADDRESS',
                    help='let one address back in, or "all" for every one of them')
     a.add_argument('--mikrotik', metavar='WHAT', nargs='?', const='test',
@@ -43823,6 +44896,39 @@ def root_status_main():
     return 0
 
 
+def change_main(arguments):
+    """A change on trial (5.21) kept, or put back, from the command line -
+    where somebody is when the new network does not answer on the page."""
+    load_config()
+    word = arguments[0]
+    if word == '--changes':
+        code, out = api_call('/api/status', timeout=15.0)
+        rows = (out or {}).get('changes') or [] if code == 200 else None
+        if rows is None:
+            print('the daemon did not answer: %s' % ((out or {}).get('error') or code))
+            return 1
+        if not rows:
+            print('nothing waits to be kept')
+        for c in rows:
+            left = max(0, int(float(c.get('until') or 0) - time.time()))
+            print('%-4s %s waits to be kept: %d min %d s left, then it goes back by itself '
+                  '(zigmon --change-keep %s)' % (c.get('kind'), c.get('words'), left // 60, left % 60,
+                                                 c.get('kind')))
+        return 0
+    kind = arguments[1] if len(arguments) > 1 else ''
+    if kind not in ('net', 'fw'):
+        print('which change: zigmon %s net   (the network)  or  zigmon %s fw   (the firewall)'
+              % (word, word))
+        return 2
+    code, out = api_call('/api/change', method='POST', timeout=30.0,
+                         payload={'kind': kind, 'action': 'keep' if word == '--change-keep' else 'back'})
+    if code != 200:
+        print('not done: %s' % ((out or {}).get('error') or code))
+        return 1
+    print((out or {}).get('message') or 'done')
+    return 0
+
+
 def main(argv=None):
     global DEBUG, CONFIG_FILE
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -43840,6 +44946,8 @@ def main(argv=None):
         return subprocess.call([sys.executable, '-I', str(helper), word] + arguments[1:])
     if arguments and arguments[0] == '--root-status':
         return root_status_main()
+    if arguments and arguments[0] in ('--change-keep', '--change-back', '--changes'):
+        return change_main(arguments)
     if arguments and arguments[0] in ('--accounts', '--account-add', '--account-password', '--account-role',
                                       '--account-off', '--account-on'):
         load_config()

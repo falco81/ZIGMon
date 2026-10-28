@@ -491,7 +491,34 @@ install_helpers() {
     run install -d -m 700 /var/lib/zigmon-root /var/backups/zigmon
     run systemctl daemon-reload
     run systemctl enable --now zigmon-root.path zigmon-upgrade.path
+    # a path unit reads what it watches when it starts: the network and the
+    # clock (5.21) are asked in files of their own, which an old one ignores
+    run systemctl restart zigmon-root.path
     good "zigmon_root.py and zigmon_upgrade.py, started by zigmon-root.path and zigmon-upgrade.path"
+}
+
+install_time_tools() {
+    # The clock every schedule, sunrise scene and one-tap code of the house
+    # runs on (5.21): chrony keeps it, and the dashboard's Time section sets
+    # its servers. systemd-timesyncd and chronyd would fight over it.
+    step "The clock"
+    if ! command -v chronyc >/dev/null 2>&1; then
+        if [[ -n "$DRY_RUN" ]]; then
+            note "[would run] dnf install -y chrony"
+        else
+            dnf install -y chrony >/dev/null || { warn "chrony could not be installed - the Time section reads nothing"; return; }
+        fi
+    fi
+    if systemctl is-active --quiet systemd-timesyncd 2>/dev/null; then
+        run systemctl disable --now systemd-timesyncd
+    fi
+    run systemctl enable --now chronyd
+    run timedatectl set-ntp true || true
+    grep -Eq '^(server|pool) ' /etc/chrony.conf 2>/dev/null \
+        || warn "/etc/chrony.conf names no time server - set some under Control - Time"
+    command -v nmcli >/dev/null 2>&1 \
+        || note "NetworkManager (nmcli) is not here: the Network section can only show the network, not change it"
+    good "chronyd keeps the clock"
 }
 
 install_service() {
@@ -904,6 +931,7 @@ do_upgrade() {
     install_program
     install_service          # the unit changes with the program; a reload is cheap
     install_helpers
+    install_time_tools
     allow_broker_reload
     [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && {
         step "Dashboard files"
@@ -1121,6 +1149,7 @@ main() {
     allow_broker_reload
     install_service
     install_helpers
+    install_time_tools
     install_web
     check_certificate
     configure_nginx

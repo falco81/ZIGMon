@@ -11,6 +11,10 @@ Description=zigmon - what the dashboard asks of root
 [Path]
 PathExists=/var/lib/zigmon/root/request.json
 PathExists=/var/lib/zigmon/root/look.ask
+# the network, restarting and switching off, and the clock (5.21): asked
+# beside request.json, never behind a backup laid down in it
+PathExists=/var/lib/zigmon/root/net.ask
+PathExists=/var/lib/zigmon/root/ntp.ask
 Unit=zigmon-root.service
 
 [Install]

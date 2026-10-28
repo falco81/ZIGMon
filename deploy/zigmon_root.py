@@ -298,7 +298,8 @@ def plain(text, how):
     if not ADDR_RE.match(text):
         raise ValueError('not a plain address')
     got = {'address': ipaddress.ip_address,
-           'network': lambda t: ipaddress.ip_network(t, strict=False)}[how](text)
+           'network': lambda t: ipaddress.ip_network(t, strict=False),
+           'interface': ipaddress.ip_interface}[how](text)
     if '%' in str(got):
         raise ValueError('a scope id is not taken')
     return got
@@ -2007,6 +2008,582 @@ def full_restore(path, parts, from_page=True, passphrase='', before=True, say=No
     return said
 
 
+
+# ---- the machine's network, its name, and switching it off (5.21) ---------------------
+# Asked in net.ask, answered in net.json, beside request.json and never behind
+# it: what the network is now (read), a new one put in NetworkManager with the
+# host name and /etc/hosts (apply), or a restart or a power-off a few seconds
+# on (power). Every value is checked here again - addresses by ipaddress,
+# names by NAME_RE, the connection by the list NetworkManager gives - whatever
+# the daemon checked before. Ported from otp 1.0.137, which keeps a machine's
+# network the same way; zigmon takes DHCP as well, both ways.
+NET_ASK = 'net.ask'
+NET_FILE = 'net.json'
+NMCLI = os.environ.get('ZIGMON_NMCLI', 'nmcli')
+HOSTNAMECTL = os.environ.get('ZIGMON_HOSTNAMECTL', 'hostnamectl')
+HOSTS_FILE = os.environ.get('ZIGMON_HOSTS_FILE', '/etc/hosts')
+POWER_CMD = os.environ.get('ZIGMON_POWER_CMD', '')        # tests: a file written instead
+IP_CMD = os.environ.get('ZIGMON_IP_CMD', 'ip')
+RESOLV_FILE = os.environ.get('ZIGMON_RESOLV', '/etc/resolv.conf')
+NAME_RE = re.compile(r'^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+                     r'(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$')
+
+
+def drop_ask(name, d):
+    """An asking file taken away, whatever the zigmon account made of it: a
+    link (refused by O_NOFOLLOW) or a folder left there would have the path
+    unit start this service again and again until systemd gave up - and with
+    it every later certificate, firewall and backup."""
+    try:
+        os.unlink(name, dir_fd=d)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    try:
+        os.rmdir(name, dir_fd=d)
+        return
+    except OSError:
+        pass
+    try:
+        os.rename(name, '.refused-%s-%d' % (name, int(time.time())), src_dir_fd=d, dst_dir_fd=d)
+    except OSError:
+        pass
+
+
+def nm_fields(con, fields):
+    out = run([NMCLI, '-t', '-g', ','.join(fields), 'connection', 'show', con],
+              'nmcli connection show')
+    vals = out.rstrip('\n').split('\n')
+    got = {}
+    for k, v in zip(fields, vals + [''] * (len(fields) - len(vals))):
+        got[k] = v.replace('\\:', ':').strip()
+    return got
+
+
+def nm_list(text):
+    return [x.strip() for x in re.split(r'[,\s]+', text or '') if x.strip() and x.strip() != '--']
+
+
+NM_FIELDS = ['ipv4.method', 'ipv4.addresses', 'ipv4.gateway', 'ipv4.dns', 'ipv4.dns-search',
+             'ipv6.method', 'ipv6.addresses', 'ipv6.gateway', 'ipv6.dns']
+
+
+def net_read():
+    out = {'nm': bool(shutil.which(NMCLI)), 'devices': [], 'con': '', 'dev': '', 'conf': {},
+           'live': {'addrs4': [], 'addrs6': [], 'gw4': '', 'gw6': '', 'dns': []}}
+    try:
+        with open('/proc/sys/net/ipv6/conf/all/disable_ipv6') as f:
+            out['ipv6_kernel'] = f.read().strip() == '0'
+    except OSError:
+        out['ipv6_kernel'] = False
+    try:
+        for line in run([IP_CMD, '-o', 'addr', 'show'], 'ip addr').splitlines():
+            f = line.split()
+            if len(f) < 4 or f[1] == 'lo':
+                continue
+            try:
+                ifc = ipaddress.ip_interface(f[3])
+            except ValueError:
+                continue
+            if ifc.ip.is_loopback or ifc.ip.is_link_local:
+                continue
+            (out['live']['addrs4'] if ifc.version == 4 else out['live']['addrs6']).append(
+                {'addr': str(ifc), 'dev': f[1].split('@')[0]})
+        for fam, key in (('-4', 'gw4'), ('-6', 'gw6')):
+            r = run([IP_CMD, fam, 'route', 'show', 'default'], 'ip route', ok=(0, 1, 2))
+            m = re.search(r'default via (\S+) dev (\S+)', r)
+            if m:
+                out['live'][key] = m.group(1)
+                if key == 'gw4':
+                    out['dev'] = m.group(2)
+    except (Refused, OSError):
+        pass
+    try:
+        with open(RESOLV_FILE) as f:
+            out['live']['dns'] = [l.split()[1] for l in f if l.startswith('nameserver ')
+                                  and len(l.split()) > 1][:6]
+    except OSError:
+        pass
+    try:
+        out['hostname'] = run([HOSTNAMECTL, '--static'], 'hostnamectl').strip() or \
+            os.uname().nodename
+    except (Refused, OSError):
+        out['hostname'] = os.uname().nodename
+    if not out['nm']:
+        return out
+    try:
+        for line in run([NMCLI, '-t', '-f', 'DEVICE,TYPE,STATE,CONNECTION', 'device'],
+                        'nmcli device').splitlines():
+            f = line.replace('\\:', '\x00').split(':')
+            f = [x.replace('\x00', ':') for x in f]
+            if len(f) >= 4 and f[1] in ('ethernet', 'bond', 'vlan', 'bridge', 'team', 'wifi'):
+                out['devices'].append({'dev': f[0], 'type': f[1], 'state': f[2], 'con': f[3]})
+    except Refused as e:
+        out['nm_said'] = str(e)
+    dev = out['dev'] or next((d['dev'] for d in out['devices'] if d['con']), '')
+    con = next((d['con'] for d in out['devices'] if d['dev'] == dev and d['con']), '')
+    out['dev'], out['con'] = dev, con
+    if con:
+        try:
+            g = nm_fields(con, NM_FIELDS)
+            out['conf'] = {'ipv4_method': g['ipv4.method'],
+                           'ipv4_addresses': nm_list(g['ipv4.addresses']),
+                           'ipv4_gateway': g['ipv4.gateway'] if g['ipv4.gateway'] != '--' else '',
+                           'ipv4_dns': nm_list(g['ipv4.dns']),
+                           'ipv4_search': nm_list(g['ipv4.dns-search']),
+                           'ipv6_method': g['ipv6.method'],
+                           'ipv6_addresses': nm_list(g['ipv6.addresses']),
+                           'ipv6_gateway': g['ipv6.gateway'] if g['ipv6.gateway'] != '--' else '',
+                           'ipv6_dns': nm_list(g['ipv6.dns'])}
+        except Refused as e:
+            out['nm_said'] = str(e)
+    return out
+
+
+def net_checked(r):
+    """An apply request, every value in its one shape."""
+    out = {'con': str(r.get('con') or ''), 'reboot_in': 0}
+    if not out['con'] or len(out['con']) > 120 or any(c in out['con'] for c in '\n\r\x00'):
+        raise Refused('which connection?')
+    v4 = r.get('ipv4') or {}
+    out['method4'] = 'auto' if str(v4.get('method') or 'manual') == 'auto' else 'manual'
+    out['addr4'], out['gw4'] = '', ''
+    if out['method4'] == 'manual':
+        try:
+            a4 = plain(v4.get('addr'), 'interface')
+        except ValueError:
+            raise Refused('the IPv4 address is an address with its prefix (192.0.2.10/24)')
+        if a4.version != 4 or '/' not in str(v4.get('addr')):
+            raise Refused('the IPv4 address is an address with its prefix (192.0.2.10/24)')
+        out['addr4'] = str(a4)
+        gw = str(v4.get('gw') or '').strip()
+        if gw:
+            try:
+                g = plain(gw, 'address')
+            except ValueError:
+                raise Refused('the gateway is one IPv4 address')
+            if g.version != 4 or g not in a4.network:
+                raise Refused('the gateway %s is not in %s' % (g, a4.network))
+            out['gw4'] = str(g)
+    dns = []
+    for d in list(v4.get('dns') or [])[:4] + list((r.get('ipv6') or {}).get('dns') or [])[:4]:
+        try:
+            dns.append(str(plain(d, 'address')))
+        except ValueError:
+            raise Refused('%r is not the address of a DNS server' % str(d)[:60])
+    out['dns4'] = [d for d in dns if ':' not in d]
+    out['dns6'] = [d for d in dns if ':' in d]
+    search = []
+    for s_ in list(v4.get('search') or [])[:6]:
+        if not NAME_RE.match(str(s_)):
+            raise Refused('%r is not a domain' % str(s_)[:60])
+        search.append(str(s_))
+    out['search'] = search
+    v6 = r.get('ipv6') or {}
+    mode = str(v6.get('mode') or 'off')
+    if mode not in ('off', 'auto', 'manual', 'keep'):
+        raise Refused('IPv6 is off, auto, manual or keep')
+    out['mode6'] = mode
+    if mode == 'manual':
+        try:
+            a6 = plain(v6.get('addr'), 'interface')
+        except ValueError:
+            raise Refused('the IPv6 address is an address with its prefix (2001:db8::10/64)')
+        if a6.version != 6 or a6.ip.is_link_local or '/' not in str(v6.get('addr')):
+            raise Refused('the IPv6 address is a global one with its prefix (2001:db8::10/64)')
+        out['addr6'] = str(a6)
+        out['gw6'] = ''
+        g6 = str(v6.get('gw') or '').strip()
+        if g6:
+            try:
+                gg = plain(g6, 'address')
+            except ValueError:
+                raise Refused('the IPv6 gateway is one IPv6 address')
+            if gg.version != 6:
+                raise Refused('the IPv6 gateway is one IPv6 address')
+            out['gw6'] = str(gg)
+    host = str(r.get('hostname') or '').strip().rstrip('.').lower()
+    if host and (not NAME_RE.match(host) or '.' not in host):
+        raise Refused('the host name is the whole name: zigmon.example.cz')
+    out['hostname'] = host
+    olds = []
+    for o in list(r.get('old') or [])[:8]:
+        try:
+            olds.append(str(plain(o, 'address')))
+        except ValueError:
+            pass
+    out['old'] = olds
+    old_host = str(r.get('old_hostname') or '').strip().lower()
+    out['old_hostname'] = old_host if NAME_RE.match(old_host or 'x') else ''
+    try:
+        out['reboot_in'] = max(0, min(600, int(r.get('reboot_in') or 0)))
+    except (TypeError, ValueError):
+        out['reboot_in'] = 0
+    return out
+
+
+def hosts_lines(text, n):
+    """/etc/hosts with this machine's lines for its old addresses and names
+    taken out and its new ones put in; localhost lines kept as they are. With
+    an address from DHCP there is no address to write: the old lines go, and
+    the name is left to DNS."""
+    short = n['hostname'].split('.')[0] if n['hostname'] else ''
+    drop_names = set(x for x in (n['hostname'], short, n['old_hostname'],
+                                 n['old_hostname'].split('.')[0]) if x)
+    new4 = n['addr4'].split('/')[0] if n.get('addr4') else ''
+    out = []
+    for line in text.splitlines():
+        f = line.split('#', 1)[0].split()
+        if f and not f[0].startswith(('127.', '::1')):
+            if f[0] in n['old'] or (new4 and f[0] == new4) or \
+                    any(x.lower() in drop_names for x in f[1:]):
+                continue
+        out.append(line)
+    if n['hostname'] and new4:
+        out.append('%s %s %s    # this machine - written by zigmon' % (new4, n['hostname'], short))
+        if n.get('addr6'):
+            out.append('%s %s %s    # this machine - written by zigmon' % (
+                n['addr6'].split('/')[0], n['hostname'], short))
+    return '\n'.join(out) + '\n'
+
+
+def power_after(what, secs):
+    """A restart or a power-off a few seconds from now - after this helper
+    has written its answer and the page has had it. A transient timer of
+    systemd's: it outlives this oneshot service."""
+    secs = max(3, int(secs or 5))
+    if POWER_CMD:
+        with open(POWER_CMD, 'a') as f:
+            f.write('%s %d %s\n' % (what, secs, time.time()))
+        return '%s in %d s (written to %s)' % (what, secs, POWER_CMD)
+    if NO_SERVICES:
+        return '%s in %d s (not here: tests)' % (what, secs)
+    run(['systemd-run', '--on-active=%ds' % secs, '--unit',
+         'zigmon-%s-%d' % (what, int(time.time())), '/usr/bin/systemctl', what],
+        'systemd-run %s' % what)
+    return '%s in %d s' % (what, secs)
+
+
+def net_apply(n):
+    if not shutil.which(NMCLI):
+        raise Refused('NetworkManager (nmcli) is not on this machine: set the network by hand')
+    cons = [l.replace('\\:', ':') for l in run([NMCLI, '-t', '-g', 'NAME', 'connection',
+                                                'show'], 'nmcli connection show').splitlines()]
+    if n['con'] not in cons:
+        raise Refused('there is no connection %r here' % n['con'])
+    said = []
+    before = nm_fields(n['con'], NM_FIELDS)
+    if n['method4'] == 'auto':
+        # From DHCP: no address, no gateway of our own - the DNS servers given
+        # here are kept in place of the lease's only when there are some
+        args = [NMCLI, 'connection', 'modify', n['con'],
+                'ipv4.method', 'auto', 'ipv4.addresses', '', 'ipv4.gateway', '',
+                'ipv4.dns', ','.join(n['dns4']), 'ipv4.dns-search', ','.join(n['search']),
+                'ipv4.ignore-auto-dns', 'yes' if n['dns4'] else 'no']
+    else:
+        args = [NMCLI, 'connection', 'modify', n['con'],
+                'ipv4.method', 'manual', 'ipv4.addresses', n['addr4'],
+                'ipv4.gateway', n['gw4'], 'ipv4.dns', ','.join(n['dns4']),
+                'ipv4.dns-search', ','.join(n['search']), 'ipv4.ignore-auto-dns', 'yes']
+    if n['mode6'] == 'off':
+        args += ['ipv6.method', 'disabled', 'ipv6.addresses', '', 'ipv6.gateway', '',
+                 'ipv6.dns', '']
+    elif n['mode6'] == 'auto':
+        args += ['ipv6.method', 'auto', 'ipv6.addresses', '', 'ipv6.gateway', '',
+                 'ipv6.dns', ','.join(n['dns6'])]
+    elif n['mode6'] == 'manual':
+        args += ['ipv6.method', 'manual', 'ipv6.addresses', n['addr6'],
+                 'ipv6.gateway', n['gw6'], 'ipv6.dns', ','.join(n['dns6'])]
+    run(args, 'nmcli connection modify')
+    said.append('NetworkManager: %s - %s, DNS %s%s' % (
+        n['con'], 'an address from DHCP' if n['method4'] == 'auto' else
+        '%s via %s' % (n['addr4'], n['gw4'] or 'no gateway'),
+        ', '.join(n['dns4']) or ('from DHCP' if n['method4'] == 'auto' else 'none'),
+        {'off': ', IPv6 off', 'auto': ', IPv6 automatic',
+         'manual': ', IPv6 %s' % n.get('addr6'), 'keep': ''}[n['mode6']]))
+    if n['mode6'] in ('auto', 'manual'):
+        # IPv6 switched off in the kernel by an earlier hand: on again
+        write_root(FS_ROOT + '/etc/sysctl.d/90-zigmon-ipv6.conf',
+                   '%s\nnet.ipv6.conf.all.disable_ipv6 = 0\nnet.ipv6.conf.default.'
+                   'disable_ipv6 = 0\n' % MARK, 0o644)
+    if n['hostname']:
+        run([HOSTNAMECTL, 'set-hostname', n['hostname']], 'hostnamectl set-hostname')
+        said.append('host name: %s' % n['hostname'])
+    try:
+        with open(HOSTS_FILE) as f:
+            had = f.read()
+    except OSError:
+        had = '127.0.0.1 localhost localhost.localdomain\n::1 localhost localhost.localdomain\n'
+    new = hosts_lines(had, n)
+    if new != had:
+        try:
+            write_root(HOSTS_FILE + '.zigmon-before', had, 0o644)
+        except OSError:
+            pass
+        write_root(HOSTS_FILE, new, 0o644)
+        said.append('%s: this machine\'s lines' % HOSTS_FILE)
+    if n['reboot_in']:
+        said.append(power_after('reboot', n['reboot_in']))
+    return {'said': said, 'before': before}
+
+
+def ask_part(ask, answer, handle_one, most=65536):
+    """One asking file of the daemon's: read, always taken away, answered."""
+    d = root_fd()
+    try:
+        raw = read_req(ask, most)
+    except FileNotFoundError:
+        return
+    except (Refused, OSError):
+        drop_ask(ask, d)
+        return
+    drop_ask(ask, d)
+    out = {'at': time.time(), 'ok': False, 'id': ''}
+    try:
+        r = json.loads(raw.decode('utf-8'))
+        if not isinstance(r, dict):
+            raise Refused('the request is not an object')
+        out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        out['data'] = handle_one(r)
+        out['ok'] = True
+    except Refused as e:
+        out['said'] = str(e)[:400]
+    except Exception as e:                              # noqa: BLE001
+        out['said'] = 'it went wrong: %s' % str(e)[:300]
+    write_here(answer, json.dumps(out))
+
+
+def net_one(r):
+    what = r.get('do')
+    if what == 'read':
+        return net_read()
+    if what == 'apply':
+        return net_apply(net_checked(r))
+    if what == 'power':
+        how = r.get('how')
+        if how not in ('reboot', 'poweroff'):
+            raise Refused('reboot or poweroff')
+        try:
+            secs = int(r.get('in') or 5)
+        except (TypeError, ValueError):
+            secs = 5
+        return {'said': [power_after(how, min(secs, 600))]}
+    raise Refused('read, apply or power')
+
+
+def net_part():
+    ask_part(NET_ASK, NET_FILE, net_one)
+
+
+# ---- the time: chrony (5.21) -------------------------------------------------------
+# Asked in ntp.ask: how the clock is (read), chrony's servers set (apply), a
+# step to the right time now (sync). /etc/chrony.conf keeps everything of its
+# own; when zigmon sets the servers, the file's own server/pool/makestep/allow
+# lines are commented out (#zigmon#) and zigmon's block is added between marks
+# - put back as they were when it stops setting them.
+NTP_ASK = 'ntp.ask'
+NTP_FILE = 'ntp.json'
+CHRONYC = os.environ.get('ZIGMON_CHRONYC', 'chronyc')
+TIMEDATECTL = os.environ.get('ZIGMON_TIMEDATECTL', 'timedatectl')
+CHRONY_CONF = os.environ.get('ZIGMON_CHRONY_CONF', '/etc/chrony.conf')
+NTP_BEGIN = '# ---- zigmon: the time servers, set on the dashboard (Control - Time) ----'
+NTP_END = '# ---- zigmon: end ----'
+NTP_MARK = '#zigmon# '
+NTP_KEYS = ('server', 'pool', 'peer', 'makestep', 'allow', 'minsources', 'maxdistance', 'sourcedir')
+TZ_RE = re.compile(r'^[A-Za-z0-9_+-]{1,40}(/[A-Za-z0-9_+-]{1,40}){0,3}\Z')
+
+
+def ntp_read():
+    out = {'chrony': bool(shutil.which(CHRONYC)), 'tracking': {}, 'sources': []}
+    try:
+        t = run([TIMEDATECTL, 'show'], 'timedatectl', ok=(0, 1))
+        for line in t.splitlines():
+            if '=' in line:
+                k, v = line.split('=', 1)
+                if k in ('Timezone', 'NTP', 'NTPSynchronized', 'LocalRTC', 'CanNTP'):
+                    out[k.lower()] = v
+    except (Refused, OSError):
+        pass
+    out['time'] = time.time()
+    if not out['chrony']:
+        return out
+    try:
+        f = run([CHRONYC, '-c', 'tracking'], 'chronyc tracking').strip().split(',')
+        if len(f) >= 14:
+            out['tracking'] = {'ref_id': f[0], 'ref': f[1][:120], 'stratum': int(f[2] or 0),
+                               'ref_time': float(f[3] or 0), 'offset': float(f[4] or 0),
+                               'last_offset': float(f[5] or 0), 'rms': float(f[6] or 0),
+                               'freq': float(f[7] or 0), 'skew': float(f[9] or 0),
+                               'root_delay': float(f[10] or 0), 'root_disp': float(f[11] or 0),
+                               'interval': float(f[12] or 0), 'leap': f[13][:40]}
+    except (Refused, ValueError, OSError) as e:
+        out['said'] = str(e)[:200]
+    try:
+        for line in run([CHRONYC, '-c', 'sources'], 'chronyc sources').splitlines():
+            f = line.split(',')
+            if len(f) < 10:
+                continue
+            try:
+                out['sources'].append({'mode': f[0][:2], 'state': f[1][:2], 'name': f[2][:120],
+                                       'stratum': int(f[3] or 0), 'poll': int(f[4] or 0),
+                                       'reach': int(f[5] or 0, 8) if f[5] else 0,
+                                       'last_rx': int(f[6]) if f[6].lstrip('-').isdigit() else None,
+                                       'offset': float(f[7] or 0), 'measured': float(f[8] or 0),
+                                       'error': float(f[9] or 0)})
+            except ValueError:
+                continue
+    except (Refused, OSError):
+        pass
+    try:
+        with open(CHRONY_CONF) as f:
+            text = f.read()
+        out['managed'] = NTP_BEGIN in text
+        out['own'] = [l.strip() for l in text.splitlines()
+                      if l.strip().split(' ')[0] in ('server', 'pool', 'peer')][:20]
+    except OSError:
+        out['managed'] = False
+    return out
+
+
+def ntp_checked(r):
+    out = {'manage': bool(r.get('manage')), 'servers': [], 'allow': [],
+           'makestep': [1.0, 3], 'minsources': 1, 'timezone': ''}
+    for x in list(r.get('servers') or [])[:12]:
+        if not isinstance(x, dict):
+            raise Refused('a server is an object')
+        host = str(x.get('host') or '').strip().lower().rstrip('.')
+        try:
+            host = str(plain(host, 'address'))
+        except ValueError:
+            if not NAME_RE.match(host):
+                raise Refused('%r is not a host name or an address' % host[:80])
+        out['servers'].append({'host': host, 'pool': bool(x.get('pool')),
+                               'iburst': bool(x.get('iburst', True)),
+                               'prefer': bool(x.get('prefer')), 'nts': bool(x.get('nts'))})
+    for a in list(r.get('allow') or [])[:20]:
+        try:
+            out['allow'].append(str(plain(a, 'network')))
+        except ValueError:
+            raise Refused('%r is not a network (192.0.2.0/24)' % str(a)[:60])
+    try:
+        th = float((r.get('makestep') or [1.0, 3])[0])
+        lim = int((r.get('makestep') or [1.0, 3])[1])
+    except (TypeError, ValueError, IndexError):
+        raise Refused('makestep is a threshold in seconds and a number of updates')
+    if not (0.001 <= th <= 3600) or not (-1 <= lim <= 1000):
+        raise Refused('makestep: 0.001 - 3600 s, and -1 (always) to 1000 updates')
+    out['makestep'] = [th, lim]
+    try:
+        out['minsources'] = max(1, min(10, int(r.get('minsources') or 1)))
+    except (TypeError, ValueError):
+        out['minsources'] = 1
+    tz = str(r.get('timezone') or '').strip()
+    if tz and not TZ_RE.match(tz):
+        raise Refused('%r is not a time zone' % tz[:60])
+    out['timezone'] = tz
+    if out['manage'] and not out['servers']:
+        raise Refused('at least one time server')
+    return out
+
+
+def ntp_conf_text(text, n):
+    """chrony.conf with zigmon's block (or without it, put back as it was)."""
+    out, inside = [], False
+    for l in text.splitlines():
+        if l.strip() == NTP_BEGIN:
+            inside = True
+            continue
+        if l.strip() == NTP_END:
+            inside = False
+            continue
+        if inside:
+            continue
+        if l.startswith(NTP_MARK):
+            l = l[len(NTP_MARK):]           # the file's own line, put back first
+        out.append(l)
+    if not n['manage']:
+        return '\n'.join(out).rstrip('\n') + '\n'
+    kept = [(NTP_MARK + l) if l.strip().split(' ')[0] in NTP_KEYS else l for l in out]
+    block = [NTP_BEGIN]
+    for x in n['servers']:
+        opts = [o for o, on in (('iburst', x['iburst']), ('prefer', x['prefer']),
+                                ('nts', x['nts'])) if on]
+        block.append(('%s %s %s' % ('pool' if x['pool'] else 'server', x['host'], ' '.join(opts))).rstrip())
+    for a in n['allow']:
+        block.append('allow %s' % a)
+    block.append('makestep %s %d' % (('%g' % n['makestep'][0]), n['makestep'][1]))
+    if n['minsources'] > 1:
+        block.append('minsources %d' % n['minsources'])
+    block.append(NTP_END)
+    return '\n'.join([l.rstrip() for l in kept]).rstrip('\n') + '\n\n' + '\n'.join(block) + '\n'
+
+
+def ntp_apply(n):
+    said = []
+    if not shutil.which(CHRONYC) and not NO_SERVICES:
+        if shutil.which('dnf'):
+            run(['dnf', '-y', 'install', 'chrony'], 'dnf install chrony')
+            said.append('chrony installed')
+        else:
+            raise Refused('chrony is not on this machine')
+    try:
+        with open(CHRONY_CONF) as f:
+            had = f.read()
+    except FileNotFoundError:
+        had = 'driftfile /var/lib/chrony/drift\nrtcsync\nlogdir /var/log/chrony\n'
+    new = ntp_conf_text(had, n)
+    if new != had:
+        if NTP_BEGIN not in had:
+            try:
+                write_root(CHRONY_CONF + '.zigmon-before', had, 0o644)
+            except OSError:
+                pass
+        write_root(CHRONY_CONF, new, 0o644)
+        said.append('%s: %s' % (CHRONY_CONF, ', '.join(x['host'] for x in n['servers'])
+                                if n['manage'] else 'its own servers again'))
+        if not NO_SERVICES:
+            run(['systemctl', 'enable', '--now', 'chronyd'], 'systemctl enable chronyd')
+            run(['systemctl', 'restart', 'chronyd'], 'systemctl restart chronyd')
+            said.append('chronyd restarted')
+    if n['timezone']:
+        try:
+            cur = run([TIMEDATECTL, 'show', '-p', 'Timezone', '--value'], 'timedatectl').strip()
+        except (Refused, OSError):
+            cur = ''
+        if cur != n['timezone']:
+            run([TIMEDATECTL, 'set-timezone', n['timezone']], 'timedatectl set-timezone')
+            said.append('time zone: %s' % n['timezone'])
+    if not NO_SERVICES and shutil.which(TIMEDATECTL):
+        run([TIMEDATECTL, 'set-ntp', 'true'], 'timedatectl set-ntp', ok=(0, 1))
+    return {'said': said}
+
+
+def ntp_one(r):
+    what = r.get('do')
+    if what == 'read':
+        got = ntp_read()
+        if r.get('zones'):
+            try:
+                got['zones'] = [z for z in run([TIMEDATECTL, 'list-timezones'],
+                                               'timedatectl').split() if TZ_RE.match(z)][:700]
+            except (Refused, OSError):
+                pass
+        return got
+    if what == 'apply':
+        return ntp_apply(ntp_checked(r))
+    if what == 'sync':
+        said = run([CHRONYC, 'makestep'], 'chronyc makestep').strip()
+        run([CHRONYC, 'burst', '4/4'], 'chronyc burst', ok=(0, 1))
+        return {'said': [said[:200] or 'stepped']}
+    raise Refused('read, apply or sync')
+
+
+def ntp_part():
+    ask_part(NTP_ASK, NTP_FILE, ntp_one)
+
+
 # ---- the requests ---------------------------------------------------------------
 def status_read():
     try:
@@ -2127,6 +2704,13 @@ def handle(raw):
 
 def serve():
     d = root_fd()
+    # the network, the clock and switching off first, each answered on its
+    # own: none of them waits behind a backup laid down in request.json
+    for part in (net_part, ntp_part):
+        try:
+            part()
+        except Exception as e:                          # noqa: BLE001
+            print('%s: %s' % (part.__name__, e), file=sys.stderr)
     asked_look = False
     try:
         os.unlink('look.ask', dir_fd=d)

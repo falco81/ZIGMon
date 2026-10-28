@@ -395,6 +395,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/db/backups');
         exit;
     }
+    if ($what === 'net' || $what === 'ntp' || $what === 'power') {
+        // the machine itself (5.21): its network, its clock, restarting it -
+        // an administrator's, which the daemon checks
+        zigmon_relay('/api/' . $what);
+        exit;
+    }
     if ($what === 'firewall' || $what === 'tls' || $what === 'fullbackup' || $what === 'upgrade') {
         // what root does: each behind the PIN in the daemon; `fresh` asks root
         // to look again rather than show what it last saw
@@ -766,11 +772,14 @@ if (isset($_GET['api'])) {
                   'db-backup-delete' => '/api/db/backup/delete', 'db-backup-upload' => '/api/db/backup/upload',
                   'firewall-do' => '/api/firewall', 'tls-do' => '/api/tls', 'upgrade-do' => '/api/upgrade',
                   'upgrade-upload' => '/api/upgrade/upload', 'fullbackup-do' => '/api/fullbackup',
-                  'fullbackup-upload' => '/api/fullbackup/upload'];
+                  'fullbackup-upload' => '/api/fullbackup/upload',
+                  'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
+                  'change-do' => '/api/change'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
-        $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do'], true);
+        $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do',
+                                                                    'net-do', 'ntp-do', 'power-do'], true);
         zigmon_relay($paths[$what], 'POST', $body, $slow ? 180.0 : 30.0);
         exit;
     }
@@ -2331,6 +2340,25 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     padding:11px 18px;background:color-mix(in srgb, var(--crit) 22%, var(--panel));
     border-bottom:1px solid var(--crit);box-shadow:0 6px 18px rgba(0,0,0,.28)}
   #alertband.show{display:flex}
+  /* what waits to be kept (5.21): a new network, a change of the firewall */
+  .changes{position:sticky;top:0;z-index:59;display:flex;flex-direction:column;gap:8px;padding:10px 18px;
+    background:color-mix(in srgb, var(--warn) 18%, var(--panel));border-bottom:1px solid var(--warn)}
+  .changes[hidden]{display:none}
+  .change{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .change-words{flex:1 1 360px;min-width:0}
+  .change-left{color:var(--warn);font-weight:600}
+  .change-tools{display:flex;gap:8px;flex-wrap:wrap}
+  .net-steps{margin:8px 0 4px;padding-left:22px}
+  .net-steps li{margin:3px 0}
+  .net-steps li .mark{display:inline-block;width:1.2em;font-weight:700}
+  .net-steps li.good .mark{color:var(--ok)}
+  .net-steps li.bad .mark{color:var(--crit)}
+  .net-steps li .what{margin-right:8px}
+  .net-plan h4{margin:12px 0 4px}
+  .away-box h3{margin:0 0 8px}
+  .ntp-server{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+  .ntp-server input[type=text]{flex:1 1 220px;min-width:0}
+  .ntp-server .tick{display:inline-flex;align-items:center;gap:4px;font-size:13px}
   #alertband .bell{color:var(--crit);flex:0 0 auto;display:flex}
   #alertband .texts{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:2px}
   #alertband .one{font-size:13.5px;font-weight:600;white-space:normal;overflow-wrap:anywhere;line-height:1.35;
@@ -3725,6 +3753,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <span class="texts" id="alertband-texts"></span>
   <span class="acts"><button class="btn cmd small danger" id="alertband-clear">Clear</button></span>
 </div>
+<div id="changes" class="changes" role="alert" hidden></div>
 <div class="wrap">
 
 <header>
@@ -4044,13 +4073,18 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sec-front" data-icon="router">Front server &amp; router</button>
     <button type="button" data-sec="sec-access" data-icon="lock">Access</button>
     <button type="button" data-sec="sec-firewall" data-icon="net">Firewall</button>
-    <div class="ctl-group">System</div>
-    <button type="button" data-sec="sys-energy" data-icon="chart">Energy &amp; charts</button>
-    <button type="button" data-sec="sys-backup" data-icon="save">Backup</button>
+    <div class="ctl-group">Server</div>
+    <button type="button" data-sec="sys-network" data-icon="net">Network</button>
+    <button type="button" data-sec="sys-time" data-icon="clock">Time</button>
     <button type="button" data-sec="sys-certs" data-icon="key">Certificates</button>
-    <button type="button" data-sec="sys-upgrade" data-icon="upload">Upgrades</button>
+    <button type="button" data-sec="sys-power" data-icon="power">Restart and power off</button>
+    <div class="ctl-group">Data</div>
+    <button type="button" data-sec="sys-backup" data-icon="save">Backup</button>
     <button type="button" data-sec="sys-data" data-icon="db">Data &amp; database</button>
-    <button type="button" data-sec="sys-diag" data-icon="gear">Diagnostics</button>
+    <button type="button" data-sec="sys-energy" data-icon="chart">Energy &amp; charts</button>
+    <div class="ctl-group">Monitoring and updates</div>
+    <button type="button" data-sec="sys-diag" data-icon="pulse">Diagnostics</button>
+    <button type="button" data-sec="sys-upgrade" data-icon="upload">Upgrades</button>
     <button type="button" data-sec="sys-all" data-icon="list">All other settings</button>
     <button type="button" data-sec="sys-values" data-icon="grid">All values</button>
   </nav>
@@ -4574,6 +4608,56 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <div class="btnrow" style="margin-top:12px">
         <button class="btn cmd primary needs-unlock" id="fw-save" type="button">Save the firewall</button>
         <span class="muted small" id="fw-note" style="align-self:center"></span>
+      </div>
+    </div>
+    <div class="card full ot" data-sec="sys-network" id="net-now-card">
+      <h2>As it is now</h2>
+      <div id="net-now"></div>
+    </div>
+    <div class="card full ot net-job" data-sec="sys-network" id="net-job-card" hidden>
+      <h2>The change</h2>
+      <div id="net-job"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-network" id="net-form-card">
+      <h2>New settings</h2>
+      <p class="note">Put in by root through NetworkManager, with the host name and this machine&rsquo;s line in <code>/etc/hosts</code>, and then the whole machine restarts - so nothing is ever half changed. Back up, it checks that it has its new address and waits to be kept: press <b>Keep it</b> on the banner once the dashboard answers there. Not kept in time, or come up without the address at all, the network it had comes back by itself, with another restart. What knows the house by its old address is not told: the Shelly boxes reporting here, Zigbee2MQTT, the server in front, the router&rsquo;s reservation.</p>
+      <div id="net-form"></div>
+    </div>
+    <div class="card full set-card" data-sec="sys-network" data-old="system">
+      <h2>On trial</h2>
+      <div class="set-host" id="set-host-sys-network" data-for="sys-network"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
+    <div class="card full ot" data-sec="sys-time" id="ntp-card">
+      <h2>The clock</h2>
+      <div id="ntp-now"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-time" id="ntp-src-card">
+      <h2>Where the time comes from</h2>
+      <div id="ntp-sources"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-time" id="ntp-conf-card">
+      <h2>The time servers</h2>
+      <p class="note">Put into <code>/etc/chrony.conf</code> by root, between marks of zigmon&rsquo;s own: the file&rsquo;s own server lines are commented out while zigmon sets them, and come back as they were when it stops. chrony is installed when it is not there.</p>
+      <div id="ntp-conf"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-power" id="pw-card">
+      <h2>This server</h2>
+      <div id="pw-host"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-power" id="pw-job-card" hidden>
+      <h2>Restart</h2>
+      <div id="pw-job"></div>
+    </div>
+    <div class="card full set-card" data-sec="sys-power" data-old="system">
+      <h2>Restarting by itself</h2>
+      <div class="set-host" id="set-host-sys-power" data-for="sys-power"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
       </div>
     </div>
     <div class="card full ot" data-sec="sys-certs" id="cert-card">
@@ -17882,6 +17966,19 @@ var SETTINGS_LAYOUT = [
     ['login_tries', 'Wrong passwords before an address waits'],
     ['login_wait_min', '...and how long it waits (min)'],
   ]],
+  ['Changes kept on trial', [
+    ['|', 'a change that could cut the house off goes back by itself unless it is kept'],
+    ['net_confirm_min', 'A new network goes back unless kept within (min)',
+     'Counted from the moment the machine is back up and has its new address. 0: kept at once, with nothing to fall back on'],
+    ['fw_confirm_min', 'A change of the firewall goes back unless kept within (min)',
+     'The firewall and who may reach the pages. 0: kept at once'],
+  ]],
+  ['Restarting by itself', [
+    ['|', 'a regular restart of the machine'],
+    ['reboot_auto', 'Restart the server by itself'],
+    ['reboot_at', 'At'],
+    ['reboot_day', 'On (weekly)'],
+  ]],
   ['Backups', [
     ['|', 'the nightly backup'],
     ['backup_enabled', 'Daily backup'],
@@ -18396,7 +18493,8 @@ var SETTINGS_WHERE = {
   'Heating': 'auto-rooms', 'Weather': 'auto-rooms', 'One-tap links': 'msg-taps',
   'The second factor': 'msg-taps', 'Keeping addresses out': 'sec-block',
   'The server that faces the internet': 'sec-front', 'The router that carries the list': 'sec-front',
-  'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access'
+  'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access',
+  'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power'
 };
 function settingsHosts() {
   var out = [];
@@ -24958,6 +25056,8 @@ function applyStatus(st) {
   }
   var tPaint = performance.now();
   if (sigChanged('alertband', [st.alerts, Math.floor(Date.now() / 30000)])) renderAlertBand(st);
+  if (st.server_now) CHG.skew = st.server_now - Date.now() / 1000;
+  if (sigChanged('changes', [st.changes, isAdmin()])) renderChanges(st);
   applyRuntimeFlags(st);                     // before any card is built this tick
   STATE.status = st;
   var pill = $('pill');
@@ -26495,6 +26595,582 @@ function fullWire() {
     }).catch(zoops).then(function () { zbusy(b, false); });
   };
 }
+/* ---- the machine itself: its network, its clock, restarting it (5.21) --------
+   Ported from otp 1.0.137, whose pages look after a machine the same way.
+   Root does every one of them; these pages ask, and follow it - through a
+   restart of the whole machine, with the page waiting for the server to come
+   back, at its new address when it has one. */
+var NETP = {last: null, away: 0, target: null, dirty: false, drawnFor: ''};
+var PWR = {last: null, away: 0, going: null};
+var NTPP = {last: null, dirty: false};
+var CHG = {skew: 0, rows: []};
+function sysFacts(host, pairs) {
+  pairs.forEach(function (p) {
+    if (p[1] === undefined || p[1] === null || p[1] === '') return;
+    var row = el('div', 'kv');
+    row.appendChild(el('span', 'k', p[0]));
+    row.appendChild(el('span', 'v' + (p[2] ? ' ' + p[2] : ''), String(p[1])));
+    host.appendChild(row);
+  });
+}
+function sysSteps(job) {
+  var ol = el('ol', 'net-steps');
+  (job.steps || []).forEach(function (s) {
+    var li = el('li', s.ok ? 'good' : 'bad');
+    li.appendChild(el('span', 'mark', s.ok ? '✓' : '✗'));
+    li.appendChild(el('span', 'what', s.what));
+    li.appendChild(el('span', 'muted small', new Date(s.at * 1000).toTimeString().slice(0, 8)));
+    ol.appendChild(li);
+  });
+  return ol;
+}
+function sysSpan(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  if (seconds < 90) return seconds + ' s';
+  if (seconds < 5400) return Math.floor(seconds / 60) + ' min ' + (seconds % 60) + ' s';
+  if (seconds < 172800) return Math.floor(seconds / 3600) + ' h ' + Math.floor((seconds % 3600) / 60) + ' min';
+  return Math.floor(seconds / 86400) + ' d ' + Math.floor((seconds % 86400) / 3600) + ' h';
+}
+function sysStamp(ts) {
+  var d = new Date(ts * 1000);
+  return localDay(d) + ' ' + d.toTimeString().slice(0, 5);
+}
+/* The server gone for a restart: the page asks every two seconds and says
+   how long it has been away - and where it comes back, when that is a new
+   address this page was not opened at. */
+function sysAway(host, since, words, newUrl) {
+  host.innerHTML = '';
+  var box = el('div', 'away-box');
+  box.appendChild(el('h3', '', 'This page’s server is restarting'));
+  var gone = (Date.now() - since) / 1000;
+  box.appendChild(upBar(Math.min(100, gone / 1.5), 'warn', 'Not answering for ' + Math.round(gone)
+    + ' s. The page asks again every two seconds' + (words ? '; ' + words : '.'), true));
+  if (newUrl) {
+    var p = el('p', 'note');
+    p.appendChild(document.createTextNode('It comes back at its new address: '));
+    var a = el('a', 'mono', newUrl); a.href = newUrl; p.appendChild(a);
+    p.appendChild(document.createTextNode(' - signing in again is needed there.'));
+    box.appendChild(p);
+    if (gone > 150) { location.href = newUrl; }
+  }
+  host.appendChild(box);
+}
+
+/* -- the network -------------------------------------------------------------- */
+function loadNet(quiet) {
+  var host = $('net-now');
+  if (!host) return;
+  rootTimer('sys-network', function () { loadNet(true); }, NETP.target ? 2000 : 6000);
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see. The machine’s network is root’s to change, asked for by an administrator.', loadNet);
+    $('net-form').innerHTML = ''; $('net-job').innerHTML = ''; $('net-job-card').hidden = true;
+    return;
+  }
+  rootUnlockedHost(host);
+  api('net').then(function (d) {
+    NETP.away = 0;
+    drawNet(d);
+  }).catch(function (e) {
+    if (NETP.target) {
+      NETP.away = NETP.away || Date.now();
+      $('net-job-card').hidden = false;
+      var t = NETP.target, url = '';
+      if (t.ip && (location.hostname === t.old || location.hostname === t.oldHost))
+        url = location.protocol + '//' + (t.host && location.hostname === t.oldHost ? t.host : t.ip)
+          + (location.port ? ':' + location.port : '') + location.pathname + '#control/sys-network';
+      sysAway($('net-job'), NETP.away, t.ip ? 'back in a minute or two at ' + t.ip : 'back with an address from DHCP - find it on the router', url);
+      return;
+    }
+    if (!quiet) zoops(e);
+  });
+}
+function netAddr(d) {
+  var c = d.conf || {};
+  if ((c.ipv4_addresses || []).length) return c.ipv4_addresses[0];
+  var dev = d.dev, live = (d.live || {}).addrs4 || [];
+  for (var i = 0; i < live.length; i++) if (!dev || live[i].dev === dev) return live[i].addr;
+  return '';
+}
+function drawNet(d) {
+  NETP.last = d;
+  var host = $('net-now'), now = (d.now || {}), nd = now.data || {};
+  host.innerHTML = '';
+  if (!d.helper) host.appendChild(el('p', 'note bad', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once.'));
+  if (!nd.hostname && !nd.con) {
+    host.appendChild(el('p', 'note', 'Not read yet - within seconds, or press Read it again.'));
+  } else {
+    var c = nd.conf || {};
+    sysFacts(host, [
+      ['Host name', nd.hostname],
+      ['Connection', nd.con ? nd.con + (nd.dev ? ' (' + nd.dev + ')' : '') : ''],
+      ['IPv4 address', netAddr(nd) || '–', 'mono'],
+      ['Set', c.ipv4_method === 'auto' ? 'from DHCP' : (c.ipv4_method === 'manual' ? 'by hand' : (c.ipv4_method || ''))],
+      ['Gateway', c.ipv4_gateway || (nd.live || {}).gw4, 'mono'],
+      ['DNS servers', ((c.ipv4_dns || []).length ? c.ipv4_dns : (nd.live || {}).dns || []).join(', '), 'mono'],
+      ['Search domains', (c.ipv4_search || []).join(', ')],
+      ['IPv6', ((nd.live || {}).addrs6 || []).map(function (a) { return a.addr; }).join(', ')
+        || (c.ipv6_method === 'disabled' ? 'off' : (c.ipv6_method || '')), 'mono'],
+      ['Read', now.at ? ago(now.at) : '']]);
+    if (!nd.nm) host.appendChild(el('p', 'note bad', 'NetworkManager (nmcli) is not on this machine: its network can only be set by hand there.'));
+  }
+  var b = cmdButton('Read it again', 'refresh', 'small');
+  b.onclick = function () {
+    zbusy(b, true);
+    post('net-do', {action: 'read'}).then(function () { setTimeout(function () { loadNet(true); }, 2500); })
+      .catch(zoops).then(function () { setTimeout(function () { zbusy(b, false); }, 2500); });
+  };
+  var row = el('div', 'btnrow'); row.appendChild(b); host.appendChild(row);
+  var job = d.job || {};
+  var busy = job.state && ['asked', 'running', 'rebooting', 'going back', 'trial'].indexOf(job.state) >= 0;
+  if (!NETP.dirty || NETP.drawnFor !== String(now.at || '')) {
+    if (!(NETP.dirty && document.activeElement && $('net-form').contains(document.activeElement))) drawNetForm(d, busy);
+  }
+  drawNetJob(d);
+}
+function drawNetForm(d, busy) {
+  var host = $('net-form'), nd = (d.now || {}).data || {}, c = nd.conf || {};
+  NETP.drawnFor = String((d.now || {}).at || '');
+  NETP.dirty = false;
+  host.innerHTML = '';
+  if (!nd.nm) { host.appendChild(el('p', 'note', 'Nothing can be set from here without NetworkManager.')); return; }
+  var f = {};
+  var grid = el('div', 'set-grid');
+  f.host = zText(nd.hostname || '', 'zigmon.example.cz', 'mono');
+  grid.appendChild(zField('Host name (FQDN)', f.host, 'The machine’s whole name. Its line in /etc/hosts follows it.'));
+  var cons = (nd.devices || []).filter(function (x) { return x.con; });
+  if (cons.length > 1) {
+    f.con = zSelect(cons.map(function (x) { return [x.con, x.con + ' (' + x.dev + ', ' + x.type + ')']; }), nd.con);
+    grid.appendChild(zField('Connection', f.con));
+  }
+  f.method = c.ipv4_method === 'auto' ? 'auto' : 'manual';
+  var manual = el('div', 'set-cluster');
+  var seg = zSeg([['manual', 'Set by hand'], ['auto', 'From DHCP']], f.method, function (v) {
+    f.method = v; manual.hidden = v !== 'manual'; NETP.dirty = true;
+  });
+  grid.appendChild(zField('IPv4', seg, 'From DHCP the address is the router’s to give: the page cannot follow the server to it - find it on the router, or give it a reservation there.'));
+  f.addr = zText(netAddr(nd), '192.168.1.20/24', 'mono');
+  f.gw = zText(c.ipv4_gateway || (nd.live || {}).gw4 || '', '192.168.1.1', 'mono');
+  manual.appendChild(zField('Address with its prefix', f.addr, 'e.g. 192.168.1.20/24 - /24 is the mask 255.255.255.0.'));
+  manual.appendChild(zField('Gateway', f.gw));
+  manual.hidden = f.method !== 'manual';
+  grid.appendChild(manual);
+  f.dns = zText((c.ipv4_dns || []).join(', '), '192.168.1.1, 1.1.1.1', 'mono');
+  grid.appendChild(zField('DNS servers', f.dns, 'Separated by commas. From DHCP: empty takes the router’s.'));
+  f.search = zText((c.ipv4_search || []).join(', '), 'home.arpa', 'mono');
+  grid.appendChild(zField('Search domains', f.search));
+  var on6 = c.ipv6_method && ['disabled', 'ignore', ''].indexOf(c.ipv6_method) < 0;
+  f.on6 = zSwitch(on6);
+  grid.appendChild(zField('IPv6', f.on6, 'Switched on, the machine takes IPv6 beside IPv4.'));
+  var six = el('div', 'set-cluster');
+  f.mode6 = zSelect([['auto', 'automatic (SLAAC, DHCPv6)'], ['manual', 'set by hand']], c.ipv6_method === 'manual' ? 'manual' : 'auto');
+  f.addr6 = zText((c.ipv6_addresses || [])[0] || '', '2001:db8::10/64', 'mono');
+  f.gw6 = zText(c.ipv6_gateway || '', '', 'mono');
+  f.dns6 = zText((c.ipv6_dns || []).join(', '), '', 'mono');
+  six.appendChild(zField('How', f.mode6));
+  var six2 = el('div', 'set-cluster');
+  six2.appendChild(zField('Address with its prefix', f.addr6, 'e.g. 2001:db8::10/64'));
+  six2.appendChild(zField('Gateway', f.gw6));
+  six.appendChild(six2);
+  six.appendChild(zField('DNS servers', f.dns6));
+  var show6 = function () { six.hidden = !f.on6._get(); six2.hidden = f.mode6.value !== 'manual'; };
+  f.on6.input.addEventListener('change', show6); f.mode6.onchange = show6; show6();
+  grid.appendChild(six);
+  host.appendChild(grid);
+  grid.addEventListener('input', function () { NETP.dirty = true; });
+  grid.addEventListener('change', function () { NETP.dirty = true; });
+  var want = function () {
+    var list = function (i) { return i.value.split(/[\s,;]+/).filter(Boolean); };
+    return {con: f.con ? f.con.value : nd.con, hostname: f.host.value.trim(),
+            ipv4: {method: f.method, addr: f.addr.value.trim(), gw: f.gw.value.trim(), dns: list(f.dns), search: list(f.search)},
+            ipv6: {on: !!f.on6._get(), mode: f.mode6.value, addr: f.addr6.value.trim(), gw: f.gw6.value.trim(), dns: list(f.dns6)}};
+  };
+  var plan = el('div', 'net-plan');
+  var check = cmdButton('Check it', 'check', '');
+  var go = cmdButton('Change it and restart the server', 'power', 'primary');
+  var drawPlan = function (r) {
+    plan.innerHTML = '';
+    plan.appendChild(el('h4', '', 'What happens'));
+    var ol = el('ol', 'net-steps');
+    (r.plan || []).forEach(function (x) { ol.appendChild(el('li', '', x)); });
+    plan.appendChild(ol);
+  };
+  check.onclick = function () {
+    zbusy(check, true);
+    post('net-do', {action: 'plan', want: want()}).then(drawPlan, function (e) {
+      plan.innerHTML = ''; plan.appendChild(el('p', 'note bad', e.message || String(e)));
+    }).then(function () { zbusy(check, false); });
+  };
+  go.onclick = function () {
+    var w = want();
+    zbusy(go, true);
+    post('net-do', {action: 'plan', want: w}).then(function (r) {
+      zbusy(go, false);
+      drawPlan(r);
+      zmodal('Change the network and restart the server?', function (body) {
+        var ol = el('ol', 'net-steps');
+        (r.plan || []).forEach(function (x) { ol.appendChild(el('li', '', x)); });
+        body.appendChild(ol);
+        body.appendChild(el('p', 'note', 'The page loses its server for a minute or two, and follows it to its new address.'
+          + (d.trial_min ? ' It waits ' + d.trial_min + ' min to be kept - press Keep it on the banner once it answers there; '
+            + 'not kept, the old network comes back by itself.' : '')));
+      }, [{words: 'No, leave it', close: true},
+          {words: 'Change it and restart', cls: 'primary', icon: 'power', close: true, go: function () {
+            post('net-do', {action: 'apply', want: w}).then(function () {
+              var nw = r.want || {};
+              NETP.target = {ip: nw.new_ip || '', old: nw.old_ip || '', host: nw.hostname || '', oldHost: nw.old_hostname || ''};
+              toast('Asked - the server does it now', true);
+              loadNet(true);
+            }).catch(zoops);
+          }}], 'narrow');
+    }, function (e) { zbusy(go, false); plan.innerHTML = ''; plan.appendChild(el('p', 'note bad', e.message || String(e))); });
+  };
+  check.disabled = go.disabled = !!busy;
+  var row = el('div', 'btnrow'); row.appendChild(check); row.appendChild(go);
+  if (busy) row.appendChild(el('span', 'muted small', 'a change is under way'));
+  host.appendChild(row);
+  host.appendChild(plan);
+}
+var NET_TITLES = {asked: 'The network is being changed', running: 'The network is being changed',
+  rebooting: 'The server is restarting with its new network', trial: 'The new network waits to be kept',
+  'going back': 'The old network is coming back', done: 'The network is changed',
+  failed: 'The network was not changed'};
+function drawNetJob(d) {
+  var card = $('net-job-card'), host = $('net-job'), job = d.job || {};
+  if (!job.state) { card.hidden = true; host.innerHTML = ''; if (!NETP.away) NETP.target = null; return; }
+  card.hidden = false;
+  host.innerHTML = '';
+  card.className = 'card full ot net-job ' + job.state.replace(' ', '-');
+  host.appendChild(el('h3', '', NET_TITLES[job.state] || job.state));
+  var words = '';
+  if (job.state === 'rebooting' && job.down_at) words = 'restarting: ' + sysSpan(Date.now() / 1000 - job.down_at) + ' so far - a restart takes a minute or two';
+  if (job.state === 'trial' && job.trial_until) words = sysSpan(job.trial_until - Date.now() / 1000 - CHG.skew) + ' left to keep it';
+  host.appendChild(upBar(job.pct || 0, job.state === 'failed' ? 'bad' : (job.state === 'done' ? 'ok' : 'warn'), words, true));
+  host.appendChild(sysSteps(job));
+  var row = el('div', 'btnrow');
+  if (job.state === 'trial') changeTools(row, 'net');
+  if (job.state === 'done' || job.state === 'failed') {
+    var hide = cmdButton('Hide this', 'close', 'small');
+    hide.onclick = function () { post('net-do', {action: 'hide'}).then(function () { loadNet(true); }).catch(zoops); };
+    row.appendChild(hide);
+    row.appendChild(el('span', 'muted small', job.state === 'done' ? 'Hidden by itself 6 hours after it was done.' : 'Hidden by itself after a day.'));
+    NETP.target = null;
+  }
+  if (row.children.length) host.appendChild(row);
+}
+
+/* -- what waits to be kept: the banner on every page ---------------------------- */
+function changeTools(row, kind) {
+  if (!isAdmin()) return;
+  var keep = cmdButton('Keep it', 'check', 'small primary');
+  keep.onclick = function () {
+    zbusy(keep, true);
+    post('change-do', {kind: kind, action: 'keep'}).then(function (r) { toast(r.message || 'kept', true); tick(true); })
+      .catch(zoops).then(function () { zbusy(keep, false); });
+  };
+  var back = cmdButton('Put the old back now', 'undo', 'small danger');
+  back.onclick = function () {
+    zconfirm('Put the old back now?', kind === 'net' ? 'The server goes back to its old network and restarts.'
+      : 'The firewall and who may reach the pages go back to what they were before the change.', 'Put it back', function () {
+      post('change-do', {kind: kind, action: 'back'}).then(function (r) { toast(r.message || 'asked', true); tick(true); }).catch(zoops);
+    });
+  };
+  row.appendChild(keep); row.appendChild(back);
+}
+function renderChanges(st) {
+  var box = $('changes');
+  if (!box) return;
+  var rows = (st && st.changes) || [];
+  CHG.rows = rows;
+  box.innerHTML = '';
+  box.hidden = !rows.length;
+  rows.forEach(function (c) {
+    var row = el('div', 'change');
+    var words = el('div', 'change-words');
+    var what = String(c.words || '');
+    words.appendChild(el('b', '', what.charAt(0).toUpperCase() + what.slice(1) + ' waits to be kept'));
+    words.appendChild(document.createTextNode(' - '));
+    var left = el('span', 'change-left mono');
+    left.dataset.until = c.until;
+    words.appendChild(left);
+    words.appendChild(el('div', 'small muted', c.kind === 'net'
+      ? 'Not kept, the server goes back to its old network by itself and restarts. Keep it once you have checked that it answers at its new address.'
+      : 'Not kept, what was there before comes back by itself. Keep it once you have checked that SSH and these pages still answer.'));
+    row.appendChild(words);
+    var tools = el('div', 'change-tools');
+    changeTools(tools, c.kind);
+    row.appendChild(tools);
+    box.appendChild(row);
+  });
+  tickChanges();
+}
+function tickChanges() {
+  Array.prototype.forEach.call(document.querySelectorAll('.change-left'), function (n) {
+    var left = Number(n.dataset.until) - (Date.now() / 1000 + CHG.skew);
+    var t = left > 0 ? Math.floor(left / 60) + ':' + pad(Math.floor(left % 60)) + ' left' : 'going back now';
+    if (n.textContent !== t) n.textContent = t;
+  });
+}
+setInterval(tickChanges, 1000);
+
+/* -- restarting and switching off ----------------------------------------------- */
+var PW_STATES = {going: 'going down', back: 'up again', failed: 'it did not happen'};
+function loadPower(quiet) {
+  var host = $('pw-host');
+  if (!host) return;
+  rootTimer('sys-power', function () { loadPower(true); }, PWR.going ? 2000 : 8000);
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see. Restarting the machine is root’s to do, asked for by an administrator.', loadPower);
+    $('pw-job').innerHTML = ''; $('pw-job-card').hidden = true;
+    return;
+  }
+  rootUnlockedHost(host);
+  api('power').then(function (d) {
+    if (PWR.away && PWR.going === 'reboot') { location.reload(); return; }
+    PWR.away = 0;
+    drawPower(d);
+  }).catch(function (e) {
+    if (PWR.going) {
+      PWR.away = PWR.away || Date.now();
+      $('pw-job-card').hidden = false;
+      if (PWR.going === 'poweroff') {
+        $('pw-job').innerHTML = '';
+        $('pw-job').appendChild(el('p', 'note', 'The server is switched off. Nothing answers until somebody switches it on again at the machine.'));
+      } else sysAway($('pw-job'), PWR.away, 'the page comes back by itself.');
+      return;
+    }
+    if (!quiet) zoops(e);
+  });
+}
+function drawPower(d) {
+  PWR.last = d;
+  var host = $('pw-host');
+  host.innerHTML = '';
+  if (!d.helper) host.appendChild(el('p', 'note bad', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once.'));
+  sysFacts(host, [['Machine', d.host], ['Version', 'zigmon ' + d.version, 'mono'],
+    ['Up for', d.boot ? sysSpan(d.now - d.boot) : ''], ['zigmon running for', d.started ? sysSpan(d.now - d.started) : ''],
+    ['A regular restart', d.auto && d.auto.next ? (d.auto.how === 'daily' ? 'every day' : 'once a week') + ', next ' + sysStamp(d.auto.next)
+      : 'none - set it below']]);
+  var plan = d.plan || {};
+  if (plan.when && !plan.done) {
+    var p = el('p', 'note warn');
+    p.textContent = 'A ' + (plan.how === 'reboot' ? 'restart' : 'power-off') + ' is planned for ' + sysStamp(plan.when)
+      + ', asked by ' + (plan.by || '?') + '.';
+    host.appendChild(p);
+    var off = cmdButton('Call it off', 'cancel', 'small');
+    off.onclick = function () { post('power-do', {action: 'cancel'}).then(function (r) { toast(r.message, true); loadPower(true); }).catch(zoops); };
+    var r0 = el('div', 'btnrow'); r0.appendChild(off); host.appendChild(r0);
+  }
+  var busy = !!d.busy;
+  var row = el('div', 'btnrow');
+  var rb = cmdButton('Restart', 'reboot', ''), po = cmdButton('Power off', 'power', 'danger'), at = cmdButton('Restart at a time…', 'clock', '');
+  rb.disabled = po.disabled = at.disabled = busy;
+  rb.onclick = function () { powerAsk('reboot'); };
+  po.onclick = function () { powerAsk('poweroff'); };
+  at.onclick = powerAt;
+  row.appendChild(rb); row.appendChild(at); row.appendChild(po);
+  if (busy) row.appendChild(el('span', 'muted small', 'under way'));
+  host.appendChild(row);
+  drawPowerJob(d);
+}
+function powerAsk(how) {
+  zconfirm(how === 'reboot' ? 'Restart the server?' : 'Power off the server?',
+    how === 'reboot' ? 'The server restarts: for a minute or two nothing answers - the house, its rules and its alerts included.'
+      : 'The server is switched off. Nothing answers until somebody switches it on again at the machine - the house, its rules and its alerts included.',
+    how === 'reboot' ? 'Restart' : 'Power off', function () {
+      post('power-do', {how: how}).then(function () {
+        PWR.going = how;
+        toast(how === 'reboot' ? 'Asked - the server restarts in a few seconds' : 'Asked - the server is switched off in a few seconds', true);
+        loadPower(true);
+      }).catch(zoops);
+    }, how === 'reboot' ? false : true);
+}
+function powerAt() {
+  var inp = el('input', 'mono'); inp.type = 'datetime-local';
+  var t = new Date(Date.now() + 3600 * 1000); t.setMinutes(0);
+  inp.value = localDay(t) + 'T' + pad(t.getHours()) + ':' + pad(t.getMinutes());
+  var how = zSelect([['reboot', 'restart'], ['poweroff', 'power off']], 'reboot');
+  zmodal('Restart at a time', function (body) {
+    body.appendChild(zField('When', inp, 'By this server’s clock and time zone. A month ahead at the most; called off as easily, here.'));
+    body.appendChild(zField('What', how));
+  }, [{words: 'No, leave it', close: true},
+      {words: 'Plan it', cls: 'primary', icon: 'clock', close: true, go: function () {
+        post('power-do', {how: how.value, when: inp.value.replace('T', ' ')}).then(function (r) {
+          toast(r.message || 'planned', true); loadPower(true);
+        }).catch(zoops);
+      }}], 'narrow');
+}
+function drawPowerJob(d) {
+  var card = $('pw-job-card'), host = $('pw-job'), plan = d.plan || {}, row = d.row || {};
+  var live = plan.id && (!plan.when || plan.when <= d.now) && (row.state || !plan.done);
+  if (!live) { card.hidden = true; host.innerHTML = ''; PWR.going = null; return; }
+  card.hidden = false;
+  host.innerHTML = '';
+  var what = plan.how === 'reboot' ? 'Restart' : 'Power-off';
+  var done = row.state === 'back' || row.state === 'failed';
+  host.appendChild(el('h3', '', what + (done ? ' - ' + (row.state === 'back' ? 'done' : 'not done') : ' under way')));
+  var st = PW_STATES[row.state] || 'waiting';
+  var line = el('p', 'note ' + (row.state === 'failed' ? 'bad' : ''));
+  line.textContent = (row.state ? (row.state === 'back' ? '✓ ' : (row.state === 'failed' ? '✗ ' : '… ')) : '… ')
+    + st + (row.said && row.said !== st ? ' - ' + row.said : '') + (plan.by ? ' (asked by ' + plan.by + ')' : '');
+  host.appendChild(line);
+  if (row.state === 'going' && row.down_at) host.appendChild(upBar(Math.min(100, (d.now - row.down_at) / 1.2), 'warn', sysSpan(d.now - row.down_at) + ' so far', true));
+  if (row.state === 'going') PWR.going = plan.how;
+  if (done) {
+    PWR.going = null;
+    var hide = cmdButton('Hide this', 'close', 'small');
+    hide.onclick = function () { post('power-do', {action: 'hide'}).then(function () { loadPower(true); }).catch(zoops); };
+    var r = el('div', 'btnrow'); r.appendChild(hide); r.appendChild(el('span', 'muted small', 'Hidden by itself half an hour after it began.'));
+    host.appendChild(r);
+  }
+}
+
+/* -- the clock -------------------------------------------------------------------- */
+var NTP_STATES = {'*': 'followed', '+': 'combined', '-': 'not combined', '?': 'unreachable', 'x': 'false ticker', '~': 'too variable'};
+function loadNtp(quiet) {
+  var host = $('ntp-now');
+  if (!host) return;
+  rootTimer('sys-time', function () { loadNtp(true); }, 10000);
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see. The machine’s clock is root’s to set, asked for by an administrator.', loadNtp);
+    $('ntp-sources').innerHTML = ''; $('ntp-conf').innerHTML = '';
+    return;
+  }
+  rootUnlockedHost(host);
+  api('ntp').then(drawNtp).catch(function (e) { if (!quiet) zoops(e); });
+}
+function ntpSecs(v) {
+  v = Number(v) || 0;
+  var a = Math.abs(v);
+  if (a < 0.001) return (v * 1e6).toFixed(0) + ' µs';
+  if (a < 1) return (v * 1000).toFixed(1) + ' ms';
+  return v.toFixed(2) + ' s';
+}
+function drawNtp(d) {
+  NTPP.last = d;
+  var host = $('ntp-now'), now = d.now || {}, nd = now.data || {}, t = nd.tracking || {};
+  host.innerHTML = '';
+  if (!d.helper) host.appendChild(el('p', 'note bad', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once.'));
+  if (d.problem) host.appendChild(el('p', 'note bad', d.problem.charAt(0).toUpperCase() + d.problem.slice(1) + '.'));
+  if (!nd.time) host.appendChild(el('p', 'note', 'Not read yet - within seconds, or press Read it again.'));
+  else {
+    if (!nd.chrony) host.appendChild(el('p', 'note warn', 'chrony is not on this machine: saving the time servers below installs it.'));
+    var synced = t.leap ? t.leap !== 'Not synchronised' && !!t.stratum : nd.ntpsynchronized === 'yes';
+    sysFacts(host, [
+      ['Synchronised', synced ? 'yes' : 'no', synced ? 'good' : 'bad'],
+      ['Off the time servers', t.offset !== undefined ? ntpSecs(t.offset) : ''],
+      ['Follows', t.ref ? t.ref + (t.ref_id ? ' (' + t.ref_id + ')' : '') : ''],
+      ['Stratum', t.stratum],
+      ['Frequency', t.freq !== undefined ? t.freq.toFixed(3) + ' ppm' : ''],
+      ['Root delay / dispersion', t.root_delay !== undefined ? ntpSecs(t.root_delay) + ' / ' + ntpSecs(t.root_disp) : ''],
+      ['Leap status', t.leap],
+      ['Time zone', nd.timezone],
+      ['Its time', sysStamp(nd.time) + ' (read ' + ago(now.at) + ')']]);
+  }
+  var ap = d.applied || {};
+  if (ap.at) host.appendChild(el('p', 'note ' + (ap.ok ? '' : 'bad'), (ap.ok ? 'Time servers set ' : 'Time servers NOT set ') + new Date(ap.at * 1000).toTimeString().slice(0, 5) + ': ' + (ap.said || '')));
+  if (!(d.conf || {}).manage && (nd.own || []).length) host.appendChild(el('p', 'note', 'Its own /etc/chrony.conf: ' + nd.own.join('; ')));
+  var row = el('div', 'btnrow');
+  var rd = cmdButton('Read it again', 'refresh', 'small');
+  rd.onclick = function () { post('ntp-do', {action: 'read'}).then(function () { setTimeout(function () { loadNtp(true); }, 2500); }).catch(zoops); };
+  var step = cmdButton('Step it now', 'clock', 'small');
+  step.onclick = function () {
+    zconfirm('Step the clock now?', 'The clock set to the time servers at once (chronyc makestep), not slewed slowly - for a clock that is far off. Rules and schedules waiting on the time see the jump.', 'Step it', function () {
+      post('ntp-do', {action: 'sync'}).then(function () { toast('Asked', true); setTimeout(function () { loadNtp(true); }, 5000); }).catch(zoops);
+    }, false);
+  };
+  row.appendChild(rd); row.appendChild(step); host.appendChild(row);
+  var src = $('ntp-sources');
+  src.innerHTML = '';
+  src.appendChild(zTable(['Source', 'State', 'Stratum', 'Asked every', 'Reached', 'Last heard', 'Offset'], nd.sources || [], function (s) {
+    var tr = el('tr');
+    tr.appendChild(el('td', 'mono', s.name));
+    tr.appendChild(el('td', s.state === '*' ? 'good' : '', NTP_STATES[s.state] || s.state));
+    tr.appendChild(el('td', '', String(s.stratum)));
+    tr.appendChild(el('td', '', sysSpan(Math.pow(2, s.poll || 0))));
+    var reach = 0; for (var i = 0; i < 8; i++) if ((s.reach >> i) & 1) reach += 1;
+    tr.appendChild(el('td', '', reach + ' of the last 8'));
+    tr.appendChild(el('td', '', s.last_rx === null || s.last_rx === undefined ? '–' : sysSpan(s.last_rx) + ' ago'));
+    tr.appendChild(el('td', 'mono', ntpSecs(s.offset) + ' ± ' + ntpSecs(s.error)));
+    return tr;
+  }, 'plain|No source - chrony has none, or is not installed.'));
+  if (!NTPP.dirty) drawNtpConf(d);
+}
+function drawNtpConf(d) {
+  var host = $('ntp-conf'), c = d.conf || {};
+  host.innerHTML = '';
+  var f = {servers: (c.servers || []).map(function (x) { return Object.assign({}, x); })};
+  var dirty = function () { NTPP.dirty = true; };
+  f.manage = zSwitch(c.manage);
+  host.appendChild(zRow('zigmon sets the time servers', 'Off: the machine keeps its own /etc/chrony.conf (AlmaLinux’s pool, or what was set by hand).', f.manage));
+  var body = el('div');
+  var list = el('div', 'ntp-servers');
+  var drawList = function () {
+    list.innerHTML = '';
+    f.servers.forEach(function (x, i) {
+      var r = el('div', 'ntp-server');
+      var h = zText(x.host, 'cz.pool.ntp.org', 'mono'); h.oninput = function () { x.host = h.value.trim(); dirty(); };
+      var kind = zSelect([['0', 'one server'], ['1', 'a pool']], x.pool ? '1' : '0'); kind.onchange = function () { x.pool = kind.value === '1'; dirty(); };
+      r.appendChild(h); r.appendChild(kind);
+      [['iburst', 'iburst', 'Four quick questions at the start: synchronised in seconds, not minutes.'],
+       ['prefer', 'preferred', 'Followed before the others when it is good.'],
+       ['nts', 'NTS', 'Network Time Security: the server proves who it is (time.cloudflare.com, ptbtime1.ptb.de, nts.netnod.se…). Needs TCP 4460 out.']].forEach(function (o) {
+        var lab = el('label', 'tick'); var cb = el('input'); cb.type = 'checkbox';
+        cb.checked = o[0] === 'iburst' ? x.iburst !== false : !!x[o[0]];
+        cb.onchange = function () { x[o[0]] = cb.checked; dirty(); };
+        lab.appendChild(cb); lab.appendChild(document.createTextNode(' ' + o[1])); lab.title = o[2];
+        r.appendChild(lab);
+      });
+      var rm = cmdButton('Take it away', 'trash', 'small');
+      rm.onclick = function () { f.servers.splice(i, 1); dirty(); drawList(); };
+      r.appendChild(rm);
+      list.appendChild(r);
+    });
+  };
+  drawList();
+  body.appendChild(list);
+  var add = cmdButton('Add a server', 'add', 'small');
+  add.onclick = function () { f.servers.push({host: '', pool: false, iburst: true}); dirty(); drawList(); };
+  var picks = el('div', 'btnrow');
+  picks.appendChild(add);
+  (d.picks || []).forEach(function (p) {
+    var b = cmdButton(p, 'add', 'small');
+    b.onclick = function () {
+      if (f.servers.some(function (x) { return x.host === p; })) return;
+      f.servers.push({host: p, pool: /pool\./.test(p), iburst: true, nts: p === 'time.cloudflare.com'}); dirty(); drawList();
+    };
+    picks.appendChild(b);
+  });
+  body.appendChild(picks);
+  var grid = el('div', 'set-grid');
+  f.step_s = zText(String((c.makestep || [1, 3])[0]), '1', 'mono');
+  f.step_n = zText(String((c.makestep || [1, 3])[1]), '3', 'mono');
+  grid.appendChild(zField('Step when off by more than (s)', f.step_s));
+  grid.appendChild(zField('...in the first so many updates', f.step_n, 'How many updates after chronyd starts may step it: 3 is after a boot; -1 any time.'));
+  f.minsources = zText(String(c.minsources || 1), '1', 'mono');
+  grid.appendChild(zField('Sources that have to agree', f.minsources, 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.'));
+  f.allow = zText((c.allow || []).join(', '), '192.168.1.0/24', 'mono');
+  grid.appendChild(zField('Serve the time to', f.allow, 'Networks that may ask this machine for the time (UDP 123) - the boxes of the house, say. Empty: nobody. Let it in through the firewall too.'));
+  body.appendChild(grid);
+  body.hidden = !c.manage;
+  f.manage.input.addEventListener('change', function () { body.hidden = !f.manage._get(); dirty(); });
+  host.appendChild(body);
+  var zones = (d.zones || []).map(function (z) { return [z, z]; });
+  f.tz = zones.length ? zSelect([['', '(as it is)']].concat(zones), c.timezone || '') : zText(c.timezone || '', 'Europe/Prague', 'mono');
+  host.appendChild(zField('Time zone', f.tz, 'Of the machine: the logs, the times on these pages - and every schedule, sunrise scene and backup hour of the house, which run on its clock and zone.'));
+  host.addEventListener('input', dirty); host.addEventListener('change', dirty);
+  var save = cmdButton('Save the time servers', 'save', 'primary');
+  var said = el('span', 'muted small');
+  save.onclick = function () {
+    zbusy(save, true);
+    post('ntp-do', {action: 'save', conf: {manage: !!f.manage._get(), servers: f.servers.filter(function (x) { return x.host; }),
+      step_s: f.step_s.value, step_n: f.step_n.value, minsources: f.minsources.value, allow: f.allow.value, timezone: f.tz.value}})
+      .then(function (r) { NTPP.dirty = false; said.textContent = r.message || 'saved'; toast('Saved', true); setTimeout(function () { loadNtp(true); }, 3000); })
+      .catch(zoops).then(function () { zbusy(save, false); });
+  };
+  var row = el('div', 'btnrow'); row.appendChild(save); row.appendChild(said);
+  host.appendChild(row);
+}
+
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -26506,6 +27182,9 @@ function rootPaneShown(sec) {
   if (sec === 'sec-access') { loadAccounts(); renderSessions.at = 0; renderSessions(); }
   if (sec === 'sys-upgrade') { upgradeWire(); loadUpgrade(); }
   if (sec === 'sys-backup') { fullWire(); loadFull(); }
+  if (sec === 'sys-network') loadNet();
+  if (sec === 'sys-time') { NTPP.dirty = false; loadNtp(); }
+  if (sec === 'sys-power') loadPower();
 }
 [['fw-save', 'save'], ['fw-access-save', 'save'], ['up-start', 'upload'],
  ['up-forget', 'trash'], ['full-make', 'save']].forEach(function (x) { if ($(x[0])) setButtonIcon($(x[0]), x[1]); });
@@ -26527,6 +27206,9 @@ var CONTROL_SECTIONS = {
   'sec-front': ['Front server & router', 'The server in front of the house, and the router that carries the list of addresses kept out.'],
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
   'sec-firewall': ['Firewall', 'Who may reach the pages, and what the firewall lets in - put in by root, checked first, never shutting you out.'],
+  'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
+  'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],
+  'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
   'sys-energy': ['Energy & charts', 'What electricity costs, where the house is, and what the charts show.'],
   'sys-backup': ['Backup', 'The whole installation, settings files, imports on trial, nightly backups and going back a step.'],
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
@@ -26538,7 +27220,8 @@ var CONTROL_SECTIONS = {
 };
 // Old names still land somewhere sensible: bookmarks, other tabs' links
 var CONTROL_ALIAS = {devices: 'dev-devices', automation: 'auto-rules', presence: 'presence',
-                     alerts: 'msg-alerts', system: 'sys-backup', all: 'sys-values', values: 'sys-values'};
+                     alerts: 'msg-alerts', system: 'sys-backup', all: 'sys-values', values: 'sys-values',
+                     network: 'sys-network', time: 'sys-time', power: 'sys-power'};
 function controlSecOf(sec) {
   sec = CONTROL_ALIAS[sec] || sec;
   return CONTROL_SECTIONS[sec] ? sec : 'dev-devices';
