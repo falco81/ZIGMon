@@ -1691,7 +1691,8 @@ shell, `q` to leave. Live views (the log, the journal, the broker) follow new
 lines; Up pauses, End follows again, and typing filters like `grep -i`. Root
 lands in it at login, at the machine's own screen or over SSH, unless
 `zigmon --console-at-login off` is set; a command run over SSH, scp/sftp, or
-`ssh -t host ZIGMON_NO_CONSOLE=1 bash -l` gets the plain shell. The install
+`ssh -t host ZIGMON_NO_CONSOLE=1 bash -l` gets the plain shell. The same
+switch is on the dashboard, under Control - About. The install
 sets it on, an upgrade keeps your choice, and `install.sh --uninstall` removes
 `/etc/profile.d/zz-zigmon-console.sh` and the flag `/etc/zigmon-console-login`.
 
@@ -2102,17 +2103,23 @@ same pages and words where they fit:
   easily), or regularly (`reboot_auto`).
 * **A new version from the web** (Control - Upgrades): looked for once a day
   at `upgrade_url`, offered, fetched and checked exactly like a package
-  dropped on the page; `zigmon --upgrade-check`, `--upgrade-online`.
+  dropped on the page; `zigmon --upgrade-check`, `--upgrade-online`. With
+  more than one newer version there, which one to go to is chosen from a
+  list (the newest first); with one, the card is as it always was.
 * **Backups to other machines** (Control - Backup): FTP, FTPS, SFTP, SCP and
   SMB, locked with the password of the backups, on a schedule, with
   retention, listed and put back from there; `zigmon --rbackup-now`.
 * **The console**: `zigmon --console`, menus for everything the command line
   does, opened by itself when root signs in at the machine or over SSH
   (`zigmon --console-at-login on|off`).
+* **About** (Control - About): the version, how long it has run, what it
+  runs on - Python and its modules, the libraries under them, mosquitto,
+  chrony, nginx, php-fpm and the PHP of the pages with its extensions, the
+  system - and the switch for the console at login, put in by root.
 * **The Settings menu** in groups as otp has it: Security, *Server* (Network,
   Time, Certificates, Restart and power off), *Data* (Backup, Data &
   database, Energy & charts) and *Monitoring and updates* (Diagnostics,
-  Upgrades, All other settings, All values).
+  Upgrades, All other settings, All values, About).
 
 Root answers the network, the clock and restarting in files of their own
 (`root/net.ask`, `root/ntp.ask`), never behind a backup that holds

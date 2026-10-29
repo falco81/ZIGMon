@@ -395,6 +395,32 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/db/backups');
         exit;
     }
+    if ($what === 'about') {
+        // what this is and what it runs on (5.21, as otp says it): the
+        // daemon's answer, and this PHP itself - only the pages know which
+        // PHP php-fpm runs them with, and with what in it
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = zigmon_call('/api/about', 'GET', null, 30.0);
+        $got = $status === 200 ? json_decode($body, true) : null;
+        if (!is_array($got)) {
+            http_response_code($status ?: 503);
+            echo $status ? $body : json_encode(['ok' => false, 'error' => 'the monitoring daemon is not responding']);
+            exit;
+        }
+        $ext = [];
+        foreach (get_loaded_extensions() as $e) {
+            $v = phpversion($e);
+            $ext[(string) $e] = ($v && $v !== PHP_VERSION) ? (string) $v : '';
+        }
+        ksort($ext, SORT_FLAG_CASE | SORT_STRING);
+        $got['pages'] = ['php' => PHP_VERSION, 'sapi' => PHP_SAPI,
+                         'opcache' => function_exists('opcache_get_status') && (bool) ini_get('opcache.enable'),
+                         'server' => preg_replace('/[^\x20-\x7e]/', '', (string) ($_SERVER['SERVER_SOFTWARE'] ?? '')),
+                         'extensions' => $ext];
+        echo json_encode($got);
+        exit;
+    }
     if ($what === 'net' || $what === 'ntp' || $what === 'power') {
         // the machine itself (5.21): its network, its clock, restarting it -
         // an administrator's, which the daemon checks
@@ -770,7 +796,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -820,7 +846,7 @@ if (isset($_GET['api'])) {
                   'upgrade-upload' => '/api/upgrade/upload', 'fullbackup-do' => '/api/fullbackup',
                   'fullbackup-upload' => '/api/fullbackup/upload',
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
-                  'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup'];
+                  'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
@@ -2405,6 +2431,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ntp-server{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
   .ntp-server input[type=text]{flex:1 1 220px;min-width:0}
   .ntp-server .tick{display:inline-flex;align-items:center;gap:4px;font-size:13px}
+  .sw-h{margin:16px 0 6px;font-size:14px}
+  .sw-table td.k{color:var(--tx-mut);padding-right:18px;white-space:nowrap}
+  .sw-table tr.sw-group td{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--tx-mut);padding-top:10px}
+  .sw-ext{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
   #alertband .bell{color:var(--crit);flex:0 0 auto;display:flex}
   #alertband .texts{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:2px}
   #alertband .one{font-size:13.5px;font-weight:600;white-space:normal;overflow-wrap:anywhere;line-height:1.35;
@@ -4143,6 +4173,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sys-upgrade" data-icon="upload">Upgrades</button>
     <button type="button" data-sec="sys-all" data-icon="list">All other settings</button>
     <button type="button" data-sec="sys-values" data-icon="grid">All values</button>
+    <button type="button" data-sec="sys-about" data-icon="info">About</button>
   </nav>
   <div class="ctl-main">
   <div class="ctl-head" id="ctl-head"></div>
@@ -4715,6 +4746,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
         <span class="muted small set-note-alt"></span>
       </div>
+    </div>
+    <div class="card full ot" data-sec="sys-about" id="about-card">
+      <div id="about-state"></div>
+    </div>
+    <div class="card full ot" data-sec="sys-about" id="console-card">
+      <h2>The console at login</h2>
+      <p class="note">When root signs in at the machine&rsquo;s own screen or over SSH, the console opens by itself: <code>zigmon --console</code>, menus for everything the command line does. <b>q</b> leaves it for the shell exactly as it was. A command run over SSH, scp or sftp, and <code>ssh -t host ZIGMON_NO_CONSOLE=1 bash -l</code>, get the plain shell either way. Kept in <code>/etc/zigmon-console-login</code>, which root writes and nobody else; the same switch as <code>sudo zigmon --console-at-login on|off</code>.</p>
+      <div id="console-state"></div>
     </div>
     <div class="card full ot" data-sec="sys-certs" id="cert-card">
       <h2>The certificate</h2>
@@ -23933,6 +23972,9 @@ var ALERT_EXAMPLES = {
   certificate: ['The certificate runs out', 'The certificate of zigmon.example.cz runs out in 7 day(s), on 2026-11-30. The broker uses the same one.'],
   upgrade: ['Upgraded', 'zigmon 5.18.1 put in from the dashboard (was 5.18.0).'],
   root: ['Root did not put it in', 'nginx -t said no: the old certificate was put back. Nothing changed.'],
+  network: ['Keep the new network?', 'The new network is on trial: keep it within 10 min on the dashboard, or the server goes back to 192.168.1.20 by itself.'],
+  restart: ['The server restarts', 'The server restarts in a few seconds, asked by admin.'],
+  time: ['The clock is not right', 'The server\u2019s clock is not synchronised to a time server (chrony) - the schedules, sunrise and the one-tap codes run on it.'],
   router: ['The router would not take the blocked list', 'ssh: connect to host 192.168.40.1 port 22: No route to host. Five addresses are kept out here but not there.'],
   proxy: ['The log of the server in front could not be read', 'Permission denied reading /var/log/nginx/zigmon-tap.log as zigmon.'],
   heating: ['Heating-Loznice will not take its setting', 'Asked for 21.0 \u00b0C three times while it was awake; it is still on 17.5 \u00b0C.'],
@@ -26470,10 +26512,26 @@ function drawUpWeb(d) {
   };
   row.appendChild(look);
   if (o.newer && !d.running && !d.asked) {
-    var v = String(o.newest.version);
+    var v = String(o.newest.version), vurl = String(o.newest.url || w.url || '');
     var up = cmdButton('Upgrade to ' + v + ' now', 'play', 'primary');
+    // more than one version newer than this one: which of them is chosen
+    // here, the newest first; with one, nothing is asked and nothing changes
+    var many = (o.newer_list || []).filter(function (x) { return x && x.version; });
+    if (many.length > 1) {
+      var pick = zSelect(many.map(function (x, i) {
+        return [x.version, 'zigmon ' + x.version + (i === 0 ? ' (the newest)' : '')];
+      }), v);
+      pick.className = 'up-pick';
+      pick.title = 'More than one newer version is there: the one to go to';
+      pick.onchange = function () {
+        v = pick.value;
+        vurl = String((many.filter(function (x) { return x.version === v; })[0] || {}).url || w.url || '');
+        setButtonIcon(up, 'play', 'Upgrade to ' + v + ' now');
+      };
+      row.appendChild(pick);
+    }
     up.onclick = function () {
-      zconfirm('Upgrade to zigmon ' + v + '?', 'It is fetched from ' + String(o.newest.url || w.url || '') + ', its signature '
+      zconfirm('Upgrade to zigmon ' + v + '?', 'It is fetched from ' + vurl + ', its signature '
         + 'checked, and this server is upgraded: first a backup of the whole installation, then zigmon restarts - the '
         + 'house stops following its sensors for a minute or so. If the new version does not answer, the old one is put '
         + 'back by itself.', 'Upgrade', function () {
@@ -28098,6 +28156,86 @@ function rbPutBackConfirm(t, fl) {
         }).catch(function (e) { zbusy(b, false); zoops(e); });
       }}], 'narrow');
 }
+
+/* -- About (5.21): what this is, what it runs on - and the console at login ---- */
+function loadAbout(quiet) {
+  var host = $('about-state');
+  if (!host) return;
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see: what this machine runs, and how root signs in to it.', loadAbout);
+    $('console-state').innerHTML = '';
+    return;
+  }
+  rootUnlockedHost(host);
+  api('about').then(drawAbout).catch(function (e) { if (!quiet) zoops(e); });
+}
+function drawAbout(d) {
+  var host = $('about-state'), sw = d.software || {}, c = d.counts || {};
+  host.innerHTML = '';
+  host.appendChild(el('h2', '', 'zigmon ' + (d.version || '')));
+  sysFacts(host, [['Machine', d.host], ['Running for', d.started ? sysSpan(d.now - d.started) : ''],
+    ['Machine up for', d.boot ? sysSpan(d.now - d.boot) : ''], ['Devices', String(c.devices || 0)],
+    ['Sockets', String(c.sockets || 0)], ['Accounts', String(c.accounts || 0)],
+    ['Database', d.db_bytes ? sizeText(d.db_bytes) : '']]);
+  host.appendChild(el('p', 'muted small', 'One Python file (' + (sw.program || '/usr/local/lib/zigmon/zigmon.py')
+    + '), the standard library and paho-mqtt, and these PHP pages that ask it. On the server: zigmon --help, or zigmon --console.'));
+  var box = el('div', 'sw-box');
+  box.appendChild(el('h3', 'sw-h', 'What it runs on'));
+  var prog = function (k) { return (sw.programs || {})[k] || ''; };
+  var rows = [['zigmon', sw.zigmon], ['group:Python'], ['Python', sw.python], ['where', sw.python_path],
+    ['paho-mqtt', (sw.modules || {})['paho-mqtt']], ['OpenSSL (Python’s)', sw.openssl], ['SQLite (library)', sw.sqlite],
+    ['group:Beside it'], ['mosquitto', prog('mosquitto')], ['chrony', prog('chrony')], ['NetworkManager', prog('NetworkManager')],
+    ['OpenSSH', prog('OpenSSH')], ['smbclient', prog('smbclient')],
+    ['group:The pages'], ['nginx', prog('nginx')], ['php-fpm', prog('php-fpm')], ['PHP (command line)', prog('php')],
+    ['group:The system'], ['system', sw.os], ['kernel', (sw.kernel || '') + (sw.arch ? ' · ' + sw.arch : '')],
+    ['systemd', prog('systemd')], ['OpenSSL (system)', prog('openssl')], ['iptables', prog('iptables')], ['firewalld', prog('firewalld')]];
+  var t = el('table', 'plain sw-table'), tb = el('tbody'), head = null;
+  rows.forEach(function (r) {
+    var tr = el('tr');
+    if (r[0].indexOf('group:') === 0) {
+      // a heading is put in with the first row under it: a group with
+      // nothing of it on this machine is not shown at all
+      tr.className = 'sw-group';
+      var g = el('td', '', r[0].slice(6)); g.colSpan = 2; tr.appendChild(g); head = tr; return;
+    }
+    if (!r[1]) return;                       // not on this machine: not shown
+    if (head) { tb.appendChild(head); head = null; }
+    tr.appendChild(el('td', 'k', r[0]));
+    tr.appendChild(el('td', 'mono small', String(r[1])));
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb); box.appendChild(t);
+  var pg = d.pages || {};
+  if (pg.php) {
+    box.appendChild(el('h3', 'sw-h', 'The pages’ PHP (as php-fpm runs it here)'));
+    sysFacts(box, [['PHP', pg.php], ['How', pg.sapi], ['OPcache', pg.opcache ? 'on' : 'off'], ['Web server', pg.server || '–']]);
+    var ext = Object.keys(pg.extensions || {});
+    box.appendChild(el('div', 'muted small', 'Its extensions (' + ext.length + '):'));
+    var ex = el('div', 'sw-ext');
+    ext.forEach(function (k) { ex.appendChild(el('span', 'tag', k + (pg.extensions[k] ? ' ' + pg.extensions[k] : ''))); });
+    box.appendChild(ex);
+  }
+  host.appendChild(box);
+  drawConsoleSwitch(d.console || {});
+}
+function drawConsoleSwitch(cs) {
+  var host = $('console-state');
+  host.innerHTML = '';
+  var sw = zSwitch(cs.on);
+  var said = el('span', 'muted small');
+  sw.input.onchange = function () {
+    var on = !!sw._get();
+    sw.input.disabled = true;
+    post('about-do', {action: 'console', on: on}).then(function (r) {
+      toast(r.message || 'saved', true);
+      drawConsoleSwitch(r);
+    }).catch(function (e) { zoops(e); sw.input.checked = !on; sw.input.disabled = false; });
+  };
+  host.appendChild(zRow('Open the console when root signs in',
+    cs.on ? 'On: root at the machine’s screen or over SSH lands in the console.' : 'Off: root gets the plain shell; zigmon --console opens it by hand.', sw));
+  if (!cs.hook) host.appendChild(el('p', 'note warn', 'The login hook (/etc/profile.d/zz-zigmon-console.sh) is not on this machine: install.sh --upgrade puts it there. Until then the switch changes nothing.'));
+  host.appendChild(said);
+}
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -28112,6 +28250,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-time') { NTPP.dirty = false; loadNtp(); }
   if (sec === 'sys-power') loadPower();
+  if (sec === 'sys-about') loadAbout();
 }
 [['fw-save', 'save'], ['fw-access-save', 'save'], ['up-start', 'upload'],
  ['up-forget', 'trash'], ['full-make', 'save']].forEach(function (x) { if ($(x[0])) setButtonIcon($(x[0]), x[1]); });
@@ -28136,6 +28275,7 @@ var CONTROL_SECTIONS = {
   'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
   'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],
   'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
+  'sys-about': ['About', 'What this is, what it runs on, and whether root signing in at the machine or over SSH lands in its console.'],
   'sys-energy': ['Energy & charts', 'What electricity costs, where the house is, and what the charts show.'],
   'sys-backup': ['Backup', 'The whole installation, and sent to other machines; settings files, imports on trial, nightly backups and going back a step.'],
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
@@ -28148,7 +28288,7 @@ var CONTROL_SECTIONS = {
 // Old names still land somewhere sensible: bookmarks, other tabs' links
 var CONTROL_ALIAS = {devices: 'dev-devices', automation: 'auto-rules', presence: 'presence',
                      alerts: 'msg-alerts', system: 'sys-backup', all: 'sys-values', values: 'sys-values',
-                     network: 'sys-network', time: 'sys-time', power: 'sys-power'};
+                     network: 'sys-network', time: 'sys-time', power: 'sys-power', about: 'sys-about'};
 function controlSecOf(sec) {
   sec = CONTROL_ALIAS[sec] || sec;
   return CONTROL_SECTIONS[sec] ? sec : 'dev-devices';

@@ -15576,6 +15576,12 @@ class Daemon(object):
             newest = row.get('newest') or {}
             row['newer'] = bool(newest and _online_ver(newest.get('version')) > _online_ver(__version__))
             row['here'] = __version__
+            # every version there newer than this one, newest first: with more
+            # than one the page lets somebody choose which to go to - a step at
+            # a time, or past one they would rather not run
+            row['newer_list'] = [{'version': x.get('version'), 'url': x.get('url'), 'bytes': x.get('bytes')}
+                                 for x in (row.get('packages') or [])
+                                 if _online_ver(x.get('version')) > _online_ver(__version__)]
         return {'online': row, 'url': self.online_url(), 'check': self.online_on(),
                 'busy': bool(ONLINE_WORK['busy'] or ONLINE_WORK['fetching'])}
 
@@ -16840,6 +16846,104 @@ class Daemon(object):
             self._net_kick.set()
             return {'message': 'asked'}
         raise ValueError('save, read or sync')
+
+    # -- About (5.21): what this is, and what it runs on, as otp says it --------
+    SOFTWARE_EVERY_S = 3600
+    CONSOLE_HOOK = '/etc/profile.d/zz-zigmon-console.sh'
+
+    @staticmethod
+    def _first_line(argv):
+        try:
+            got = subprocess.run(argv, capture_output=True, text=True, timeout=10,
+                                 stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return ''
+        text = (got.stdout or '') + '\n' + (got.stderr or '')
+        return next((l.strip() for l in text.splitlines() if l.strip()), '')
+
+    def software_info(self):
+        """What this machine runs: zigmon, its Python and the modules it uses,
+        the libraries under them, the programs beside it and the system - for
+        Control - About. Asked at most once an hour: every one is a process."""
+        held = self.__dict__.get('_software')
+        if held and time.time() - held[0] < self.SOFTWARE_EVERY_S:
+            return dict(held[1])
+        import platform
+        out = {'zigmon': __version__,
+               'python': '%s %s' % (platform.python_implementation(), platform.python_version()),
+               'python_path': os.path.realpath(sys.executable),
+               'program': os.path.realpath(__file__),
+               'openssl': ssl.OPENSSL_VERSION, 'sqlite': sqlite3.sqlite_version,
+               'kernel': '%s %s' % (platform.system(), platform.release()),
+               'arch': platform.machine(), 'modules': {}, 'programs': {}}
+        try:
+            with open('/etc/os-release', encoding='utf-8') as f:
+                rel = dict(l.strip().split('=', 1) for l in f if '=' in l)
+            out['os'] = rel.get('PRETTY_NAME', '').strip('"')
+        except OSError:
+            out['os'] = ''
+        try:
+            import paho.mqtt as _paho
+            out['modules']['paho-mqtt'] = str(getattr(_paho, '__version__', '') or '')
+        except Exception:                               # noqa: BLE001
+            out['modules']['paho-mqtt'] = ''
+        progs = (('nginx', ['nginx', '-v']), ('php', ['php', '-v']), ('php-fpm', None),
+                 ('mosquitto', ['mosquitto', '-h']), ('openssl', ['openssl', 'version']),
+                 ('systemd', ['systemctl', '--version']), ('iptables', ['iptables', '--version']),
+                 ('firewalld', ['firewall-cmd', '--version']), ('chrony', ['chronyc', '--version']),
+                 ('NetworkManager', ['nmcli', '--version']), ('OpenSSH', ['ssh', '-V']),
+                 ('smbclient', ['smbclient', '--version']))
+        for name, cmd in progs:
+            if name == 'php-fpm':
+                import glob
+                fpm = sorted(glob.glob('/usr/sbin/php-fpm*') + glob.glob('/usr/sbin/php*-fpm*'))
+                line = self._first_line([fpm[-1], '-v']) if fpm else ''
+            else:
+                exe = shutil.which(cmd[0]) or next((p for p in ('/usr/sbin/' + cmd[0], '/sbin/' + cmd[0])
+                                                    if os.path.exists(p)), None)
+                line = self._first_line([exe] + cmd[1:]) if exe else ''
+            if name == 'systemd':
+                m = re.search(r'^systemd\s+(\d+)', line or '')
+            else:
+                m = re.search(r'(\d+\.\d+(?:\.\d+)?[^\s,()]*)', line or '')
+            if m and not re.search(r'(?i)denied|not found|error', line):
+                out['programs'][name] = m.group(1)
+        self._software = (time.time(), dict(out))
+        return out
+
+    def console_view(self):
+        """Whether root signing in lands in the console: the switch (a file
+        only root writes), and whether the login hook is there at all."""
+        try:
+            on = console_at_login()
+        except Exception:                               # noqa: BLE001
+            on = False
+        hook = os.environ.get('ZIGMON_CONSOLE_HOOK') or self.CONSOLE_HOOK
+        return {'on': bool(on), 'hook': os.path.isfile(hook), 'flag': console_flag_path()}
+
+    def console_set(self, on, by):
+        """The switch put in by root - this daemon may not write /etc - the
+        same file  zigmon --console-at-login  sets on the command line."""
+        got = self.root_call('net.ask', 'net.json', {'do': 'console', 'on': bool(on)}, 30)
+        self.say_event('control', '%s switched the console at login %s' % (by, 'on' if on else 'off'),
+                       'info', about='root')
+        return dict(self.console_view(), said=got.get('said') or [])
+
+    def about_view(self):
+        try:
+            db_bytes = os.path.getsize(str(db_path()))
+        except OSError:
+            db_bytes = 0
+        try:
+            devices = len(self.store.devices())
+        except Exception:                               # noqa: BLE001
+            devices = 0
+        return {'version': __version__, 'started': self.started_at, 'now': time.time(),
+                'boot': self.boot_time(), 'host': socket.gethostname(),
+                'counts': {'devices': devices, 'sockets': len(self.plugs),
+                           'accounts': len(getattr(self, 'accounts', {}) or {})},
+                'db_bytes': db_bytes, 'software': self.software_info(),
+                'console': self.console_view()}
 
     def system_loop(self):
         """Every few seconds, on a thread of its own so that the clock thread
@@ -37406,7 +37510,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                      '/api/firewall', '/api/tls', '/api/upgrade', '/api/fullbackup',
                      # the machine itself (5.21): its network, its clock,
                      # restarting it
-                     '/api/net', '/api/ntp', '/api/power',
+                     '/api/net', '/api/ntp', '/api/power', '/api/about',
                      # where the backups go, and with which keys (5.21)
                      '/api/rbackup', '/api/rbackup/download')
 
@@ -37489,7 +37593,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         who = self._caller()
         act = str(body.get('action') or '')
         # the machine itself (5.21): said in the events by the account's name
-        if path in ('/api/net', '/api/ntp', '/api/power', '/api/change'):
+        if path in ('/api/net', '/api/ntp', '/api/power', '/api/change', '/api/about'):
             me = d.session_get(body.get('session')) or {}
             by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
                                     else who)
@@ -37499,6 +37603,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return d.ntp_post(body, by)
             if path == '/api/power':
                 return d.power_post(body, by)
+            if path == '/api/about':
+                if act != 'console':
+                    raise ValueError('console')
+                got = d.console_set(body.get('on') is True, by)
+                return dict(got, message='the console at login is %s' % ('on' if got['on'] else 'off'))
             return {'message': d.change_answer(str(body.get('kind') or ''), act, by)}
         if path == '/api/firewall':
             if act == 'save':
@@ -38364,6 +38473,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, d.ntp_view())
             if path == '/api/power':
                 return self._send(200, d.power_view())
+            if path == '/api/about':
+                return self._send(200, d.about_view())
             if path == '/api/fullbackup':
                 if q.get('fresh'):
                     d.root_look(fresh=True)
@@ -39897,7 +40008,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # ---- what root does for the dashboard (5.18) -------------------
             if path in ('/api/firewall', '/api/tls', '/api/upgrade', '/api/upgrade/upload',
                         '/api/fullbackup', '/api/fullbackup/upload',
-                        '/api/net', '/api/ntp', '/api/power', '/api/change'):
+                        '/api/net', '/api/ntp', '/api/power', '/api/change', '/api/about'):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)

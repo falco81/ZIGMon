@@ -2370,7 +2370,15 @@ def net_one(r):
         except (TypeError, ValueError):
             secs = 5
         return {'said': [power_after(how, min(secs, 600))]}
-    raise Refused('read, apply or power')
+    if what == 'console':
+        # whether root signing in lands in zigmon's console: a file in /etc,
+        # where the zigmon group cannot write - put in its place, so a link
+        # found there is replaced, never followed
+        path = os.environ.get('ZIGMON_CONSOLE_FLAG') or (FS_ROOT + '/etc/zigmon-console-login')
+        word = 'on' if r.get('on') is True else 'off'
+        write_root(path, word + '\n', 0o644, owner=(0, 0))
+        return {'said': ['the console at login: %s' % word]}
+    raise Refused('read, apply, power or console')
 
 
 def net_part():

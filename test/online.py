@@ -458,6 +458,23 @@ check(zigmon.CONFIG['upgrade_url'] == 'https://dl.example.org/zigmon/' and int(z
 check(zigmon.DEFAULTS['upgrade_url'].startswith('https://github.com/') and zigmon.DEFAULTS['upgrade_check'] == 1,
       'the defaults are not where the releases are, looked at every day')
 
+# ---- more than one newer version: which one is chosen -----------------------------
+print('more than one newer version can be chosen from; one is offered as it was')
+_now = zigmon._online_ver(zigmon.__version__)
+_v = lambda add: '%d.%d.%d' % (_now[0], _now[1] + add, 0)
+d.store.set_meta('upgrade_online', json.dumps({'at': time.time(), 'url': 'https://dl.example.org/',
+    'newest': {'version': _v(2)}, 'packages': [{'version': _v(2), 'url': 'https://dl.example.org/a'},
+                                               {'version': _v(1), 'url': 'https://dl.example.org/b'},
+                                               {'version': zigmon.__version__, 'url': 'https://dl.example.org/c'}]}))
+_row = d.online_view()['online']
+check([x['version'] for x in _row.get('newer_list', [])] == [_v(2), _v(1)],
+      'the newer versions are not all offered, newest first: %r' % _row.get('newer_list'))
+d.store.set_meta('upgrade_online', '{}')
+_page = (HERE / 'web' / 'index.php').read_text()
+_draw = _page[_page.index('function drawUpWeb('):_page.index('function drawUpgrade(')]
+check('many.length > 1' in _draw and 'zSelect(' in _draw,
+      'the page offers no choice when more than one newer version is there')
+
 shutil.rmtree(W, ignore_errors=True)
 if bad:
     print('\n%d check(s) failed' % len(bad))

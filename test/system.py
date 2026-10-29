@@ -438,12 +438,36 @@ for key in ('net_confirm_min', 'fw_confirm_min', 'reboot_auto'):
     except ValueError:
         pass
 
+# ---- About, and the console at login -----------------------------------------------------
+print('About says what runs, and the console at login is switched through root')
+FLAG = W / 'console-login'
+os.environ['ZIGMON_CONSOLE_FLAG'] = str(FLAG)
+victim = W / 'victim'
+victim.write_text('keep me\n')
+os.symlink(str(victim), str(FLAG))                # planted: a link is replaced, never followed
+check(call('/api/about')[0] == 403 and call('/api/about', sess=TO)[0] == 403,
+      'About is read by a visitor or an operator')
+c, r = call('/api/about', sess=T0)
+check(c == 200 and r.get('version') == zigmon.__version__ and r['software'].get('python')
+      and r['software'].get('zigmon') == zigmon.__version__ and 'console' in r,
+      'About does not say what runs: %r' % {k: r.get(k) for k in ('version', 'console')})
+check(call('/api/about', {'action': 'console', 'on': True})[0] == 403 and
+      call('/api/about', {'action': 'console', 'on': True}, TO)[0] == 403,
+      'the console at login is switched by a visitor or an operator')
+c, r = call('/api/about', {'action': 'console', 'on': True}, T0)
+check(c == 200 and r.get('on') is True and not FLAG.is_symlink() and FLAG.read_text() == 'on\n'
+      and victim.read_text() == 'keep me\n', 'the console at login was not switched on, or the link was followed: %r' % r)
+c, r = call('/api/about', {'action': 'console', 'on': False}, T0)
+check(c == 200 and r.get('on') is False and FLAG.read_text() == 'off\n', 'the console at login was not switched off')
+c, r = call('/api/about', {'action': 'console', 'on': 'yes'}, T0)
+check(FLAG.read_text() == 'off\n', 'a word that is not true switched the console on')
+
 # ---- the page ------------------------------------------------------------------------------
 page = (HERE / 'web' / 'index.php').read_text()
 nav = page[page.index('id="control-nav"'):page.index('</nav>', page.index('id="control-nav"'))]
 for group in ('Security', 'Server', 'Data', 'Monitoring and updates'):
     check('<div class="ctl-group">%s</div>' % group in nav, 'the menu has no group %s' % group)
-for sec in ('sys-network', 'sys-time', 'sys-power'):
+for sec in ('sys-network', 'sys-time', 'sys-power', 'sys-about'):
     check('data-sec="%s"' % sec in nav and "'%s': [" % sec in page, 'the section %s is missing' % sec)
 check(nav.index('data-sec="sys-network"') < nav.index('Monitoring and updates') < nav.index('data-sec="sys-upgrade"'),
       'the network is not under Server, or the upgrades not under Monitoring')
