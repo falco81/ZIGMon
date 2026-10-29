@@ -3692,6 +3692,75 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .seg button{all:unset;cursor:pointer;padding:7px 12px;font-size:12.5px;font-weight:600;color:var(--tx-mut);border-left:1px solid var(--line)}
   .ot .seg button:first-child{border-left:0}
   .ot .seg button.on{background:rgba(88,166,255,.14);color:var(--info)}
+  /* Network, Time, Restart, Backups, About and Upgrades laid out as otp's
+     admin pages have them (otp 1.0.146, web/assets/otp.css): a heading with
+     its small button on the right, facts as a grid of a small-caps label over
+     its value, the form in boxes of its own, a card a machine. */
+  .ot h2 > .right{margin-left:auto;display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--tx-dim)}
+  .ot h2 > .right:empty{display:none}
+  .ot h2 > .right + .card-info,#tab-control .grid.charts > .card.ot > h2 > .right + .card-info{margin-left:8px}
+  .ot .set-item > .seg{align-self:flex-start;width:max-content;max-width:100%}
+  .ot .net-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px 22px;margin:4px 0 2px}
+  .ot .net-fact{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .ot .net-fact .k{font-size:11.5px;color:var(--tx-mut);text-transform:uppercase;letter-spacing:.3px}
+  .ot .net-fact .v{font-size:13.5px;word-break:break-word;color:var(--tx)}
+  .ot .net-fact .v.good{color:var(--ok)} .ot .net-fact .v.bad{color:var(--crit)} .ot .net-fact .v.warn{color:var(--warn)}
+  .ot .msect{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px 16px;
+    display:flex;flex-direction:column;gap:8px;min-width:0;margin-top:14px}
+  .ot .msect > h4{margin:0;font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--tx-dim);font-weight:700}
+  .ot .msect-lede{margin:0;color:var(--tx-mut);font-size:12.5px;line-height:1.5}
+  .ot .msect-body{display:flex;flex-direction:column;gap:10px}
+  .ot .msect .set-item{margin:0}
+  .ot .net-form-top{margin-top:4px}
+  .ot .net-form-top > .set-item:only-child{max-width:460px}
+  .ot .formgrid > .set-item > input,.ot .formgrid > .set-item > select{width:100%;box-sizing:border-box}
+  .ot .formgrid > .set-item > .says{margin-top:5px}
+  .ot .net-go{margin-top:14px}
+  .pw-wrap{min-width:0}
+  .ot .pw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
+  .ot .pw-grid > .card{margin:0;min-width:0}
+  .ot .ntp-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+  .ot .pw-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:15px}
+  .ot .pw-head .tag{margin-left:2px}
+  .ot .pw-node .btnrow,.ot .ntp-node .btnrow{margin-top:14px}
+  .ot .pw-node .note,.ot .ntp-node .note{margin:10px 0 0}
+  .ot .dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none;background:var(--tx-mut)}
+  .ot .dot.ok{background:var(--ok)} .ot .dot.warn{background:var(--warn)} .ot .dot.bad{background:var(--crit)}
+  .ot .ntp-big{margin:4px 0 12px}
+  .ot .ntp-off{font-size:26px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx)}
+  .ot .ntp-node .net-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .ot .ntp-set{margin:12px 0 0}
+  .ot .reach{display:inline-flex;gap:2px;vertical-align:middle}
+  .ot .reach i{display:inline-block;width:7px;height:12px;border-radius:2px;background:var(--panel2);border:1px solid var(--line)}
+  .ot .reach i.on{background:var(--ok);border-color:transparent}
+  .ot .ntp-own{margin:14px 0 6px}
+  .ot.rb-hero{border-left:4px solid var(--line)}
+  .ot.rb-hero.good{border-left-color:var(--ok)} .ot.rb-hero.warn{border-left-color:var(--warn)} .ot.rb-hero.bad{border-left-color:var(--crit)}
+  .ot .rb-hero-head{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  .ot .rb-hero-ic{flex:none;width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:var(--panel2);color:var(--tx-dim)}
+  .ot.rb-hero.good .rb-hero-ic{color:var(--ok);background:var(--ok-bg)} .ot.rb-hero.warn .rb-hero-ic{color:var(--warn);background:var(--warn-bg)}
+  .ot.rb-hero.bad .rb-hero-ic{color:var(--crit);background:var(--crit-bg)}
+  .ot .rb-hero-words{flex:1;min-width:260px}
+  .ot .rb-hero-words > b{font-size:16px;display:block;margin-bottom:8px;color:var(--tx)}
+  .ot .rb-hero-facts{display:flex;flex-wrap:wrap;gap:8px 18px}
+  .ot .rb-fact{display:flex;flex-direction:column;gap:2px;font-size:13px}
+  .ot .rb-fact .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx-mut);font-weight:700}
+  .ot .rb-fact.good .v{color:var(--ok)} .ot .rb-fact.bad .v{color:var(--crit);font-weight:700} .ot .rb-fact.warn .v{color:var(--warn)}
+  .ot .rb-hero-why{margin-top:8px;overflow-wrap:anywhere;color:var(--crit)}
+  .ot .rb-hero-acts{display:flex;gap:8px;flex-wrap:wrap}
+  .ot.rb-hero .going{margin-top:14px}
+  .ot .full-facts{margin:2px 0 14px}
+  .ot .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 16px}
+  .ot .facts .fact{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:0}
+  .ot .facts .fact .k{display:block;color:var(--tx-mut);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;line-height:1.35}
+  .ot .facts .fact .v{display:block;font-size:14.5px;font-weight:650;margin-top:4px;color:var(--tx);overflow-wrap:anywhere}
+  .ot .sw-box{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+  .ot .sw-h{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx-dim);margin:16px 0 10px}
+  .ot .sw-box > .sw-h:first-child{margin-top:0}
+  .ot .about-head{margin:0 0 12px;font-size:16px}
+  .ot .up-cli-lede{margin:0 0 8px}
+  .ot .sw-ext-h{margin-top:12px}
+  @media (max-width:700px){.ot .pw-grid,.ot .ntp-grid{grid-template-columns:minmax(0,1fr)}.ot .ntp-node .net-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
   @media (max-width:760px){.ot .tls-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ot .tls-rows .arow{flex-direction:column;align-items:flex-start}}
   .ot .cert-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .ot .cert-tools > .btn{width:100%;justify-content:center;min-width:0}
@@ -4699,7 +4768,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
     </div>
     <div class="card full ot" data-sec="sys-network" id="net-now-card">
-      <h2>As it is now</h2>
+      <h2>As it is now <span class="right" id="net-read"></span></h2>
       <div id="net-now"></div>
     </div>
     <div class="card full ot net-job" data-sec="sys-network" id="net-job-card" hidden>
@@ -4707,7 +4776,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <div id="net-job"></div>
     </div>
     <div class="card full ot" data-sec="sys-network" id="net-form-card">
-      <h2>New settings</h2>
+      <h2><span id="net-form-title">New settings</span></h2>
       <p class="note">Put in by root through NetworkManager, with the host name and this machine&rsquo;s line in <code>/etc/hosts</code>, and then the whole machine restarts - so nothing is ever half changed. Back up, it checks that it has its new address and waits to be kept: press <b>Keep it</b> on the banner once the dashboard answers there. Not kept in time, or come up without the address at all, the network it had comes back by itself, with another restart. What knows the house by its old address is not told: the Shelly boxes reporting here, Zigbee2MQTT, the server in front, the router&rsquo;s reservation.</p>
       <div id="net-form"></div>
     </div>
@@ -4719,9 +4788,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small set-note-alt"></span>
       </div>
     </div>
-    <div class="card full ot" data-sec="sys-time" id="ntp-card">
-      <h2>The clock</h2>
-      <div id="ntp-now"></div>
+    <div class="full ot pw-wrap" data-sec="sys-time" id="ntp-card">
+      <div class="pw-grid ntp-grid"><div class="card ntp-node"><div id="ntp-now"></div></div></div>
     </div>
     <div class="card full ot" data-sec="sys-time" id="ntp-src-card">
       <h2>Where the time comes from</h2>
@@ -4732,9 +4800,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <p class="note">Put into <code>/etc/chrony.conf</code> by root, between marks of zigmon&rsquo;s own: the file&rsquo;s own server lines are commented out while zigmon sets them, and come back as they were when it stops. chrony is installed when it is not there.</p>
       <div id="ntp-conf"></div>
     </div>
-    <div class="card full ot" data-sec="sys-power" id="pw-card">
-      <h2>This server</h2>
-      <div id="pw-host"></div>
+    <div class="full ot pw-wrap" data-sec="sys-power" id="pw-card">
+      <div class="pw-grid"><div class="card pw-node"><div id="pw-host"></div></div></div>
     </div>
     <div class="card full ot" data-sec="sys-power" id="pw-job-card" hidden>
       <h2>Restart</h2>
@@ -4803,8 +4870,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card full ot" data-sec="sys-upgrade" id="up-log-card">
       <h2>What root did last</h2>
       <p class="note">Every upgrade first makes a backup of the whole installation and a copy of the program, runs <code>install.sh --upgrade</code>, and asks the new version whether it answers. When it does not within a minute and a half, the copy is put back by itself.</p>
-      <details class="zfold"><summary>The log of the last upgrade</summary><pre class="zlines" id="up-log">&ndash;</pre></details>
-      <p class="note">The same on the command line: <code>tar xzf zigmon-X.Y.Z.tar.gz &amp;&amp; cd zigmon-X.Y.Z &amp;&amp; sudo ./install.sh --upgrade</code></p>
+      <pre class="zlines" id="up-log">&ndash;</pre>
+    </div>
+    <div class="card full ot" data-sec="sys-upgrade" id="up-cli-card">
+      <h2>On the command line</h2>
+      <div class="up-cli-lede muted small">The same, by hand, as root:</div>
+      <pre class="zlines">tar xzf zigmon-X.Y.Z.tar.gz &amp;&amp; cd zigmon-X.Y.Z
+sudo ./install.sh --upgrade                # a backup first, and the old one put back when the new does not answer</pre>
     </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="backup-card">
       <h2>Backup</h2>
@@ -4824,17 +4896,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
     </div>
     <div class="card full ot" data-sec="sys-backup" id="full-card">
-      <h2>The whole installation</h2>
+      <h2>The whole installation <span class="right" id="full-make-host"><button class="btn cmd primary needs-unlock" id="full-make" type="button">Back up the whole installation now</button></span></h2>
       <p class="note">Everything this machine needs to be this house again: the database, the configuration, nginx and the certificate with its key, the broker with its users, the firewall, the units, and Zigbee2MQTT&rsquo;s backup. Made by root into <code>/var/backups/zigmon</code>, readable by root only, and sealed so that this machine knows its own. Made every night after the database backup when switched on below, and before every upgrade and every restore. Putting one back keeps a backup of how it was first.</p>
-      <div class="btnrow">
-        <button class="btn cmd primary needs-unlock" id="full-make" type="button">Back up the whole installation now</button>
-      </div>
       <div id="full-says"></div>
       <div id="full-list" style="margin-top:12px"></div>
       <div id="full-drop-slot" style="margin-top:12px"></div>
       <p class="note">On the command line, as root: <code>zigmon --full-backup</code>, <code>zigmon --full-inspect FILE</code>, <code>zigmon --full-restore FILE [--parts database,config,&hellip;]</code></p>
     </div>
-    <div class="card full ot" data-sec="sys-backup" id="rb-card">
+    <div class="card full ot rb-hero" data-sec="sys-backup" id="rb-card">
       <h2>Backups to other machines</h2>
       <p class="note">A backup kept only on this machine is lost with it. The backup of the whole installation is made by root, locked with the password of the backups (AES-256, as <code>openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000</code> opens it) and sent to every destination switched on &mdash; FTP, FTPS, SFTP, SCP or an SMB share &mdash; with its <code>.sha256</code> and a <code>RESTORE.txt</code>. Nothing is ever sent unlocked. Old ones there are taken away as the settings below say: only this machine&rsquo;s, never the newest.</p>
       <div id="rb-top"></div>
@@ -4849,14 +4918,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
     </div>
     <div class="card full ot" data-sec="sys-backup" id="rb-where-card">
-      <h2>Where they go</h2>
-      <div class="btnrow" id="rb-add-host"></div>
-      <div id="rb-targets" style="margin-top:12px"></div>
+      <h2>Where they go <span class="right" id="rb-add-host"></span></h2>
+      <div id="rb-targets"></div>
     </div>
     <div class="card full ot" data-sec="sys-backup" id="rb-runs-card">
-      <h2>What was sent</h2>
-      <div class="btnrow" id="rb-runs-tools"></div>
-      <div id="rb-runs" style="margin-top:8px"></div>
+      <h2>What was sent <span class="right" id="rb-runs-tools"></span></h2>
+      <div id="rb-runs"></div>
     </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="snap-card">
       <h2>Going back a step</h2>
@@ -26829,7 +26896,12 @@ function drawFull(d) {
   if (d.progress) says.appendChild(rootProgress(d.progress));
   else if (d.busy) says.appendChild(rootStateLine({waiting: true}, ''));
   else if (d.status && d.status.state === 'failed') says.appendChild(el('p', 'note bad', (d.status.said || []).join('; ')));
-  host.appendChild(zTable(['Backup', 'Made', 'Size', '', ''], d.list || [], function (b) {
+  var list = d.list || [], newest = list[0];
+  var ff = otFacts([['Newest', newest ? ago(newest.ts) : 'none yet'], ['Its size', newest ? sizeText(newest.bytes) : ''],
+    ['Kept here', String(list.length)], ['Where', d.dir || '', 'mono']]);
+  ff.classList.add('full-facts');
+  host.appendChild(ff);
+  host.appendChild(zTable(['Backup', 'Made', 'Size', '', ''], list, function (b) {
     var tr = el('tr');
     var nm = el('td', 'mono', b.file);
     tr.appendChild(nm);
@@ -26998,6 +27070,45 @@ function sysFacts(host, pairs) {
     host.appendChild(row);
   });
 }
+/* The facts of otp's pages (1.0.146): a grid, each a small-caps label over
+   its value; nothing said shows as a dash, a value not known at all (undefined)
+   is left out. */
+function otFacts(rows) {
+  var box = el('div', 'net-facts');
+  rows.forEach(function (r) {
+    if (r[1] === undefined) return;
+    var one = el('div', 'net-fact');
+    one.appendChild(el('span', 'k', r[0]));
+    var v = el('span', 'v' + (r[2] ? ' ' + r[2] : ''));
+    if (r[1] instanceof Node) v.appendChild(r[1]);
+    else v.textContent = r[1] === '' || r[1] === null ? '\u2013' : String(r[1]);
+    one.appendChild(v);
+    box.appendChild(one);
+  });
+  return box;
+}
+/* A box of its own inside a card: a small heading, a line under it, its fields. */
+function otSect(title, lede) {
+  var box = el('section', 'msect');
+  box.appendChild(el('h4', '', title));
+  if (lede) box.appendChild(el('p', 'msect-lede', lede));
+  var body = el('div', 'msect-body');
+  box.appendChild(body);
+  box._body = body;
+  return box;
+}
+/* "Read it again" in a heading: made once, so that a redraw every few
+   seconds does not take it out from under the pointer. */
+function otReadButton(slot, go) {
+  if (!slot) return null;
+  var b = slot.querySelector('button');
+  if (!b) {
+    b = cmdButton('Read it again', 'refresh', 'small');
+    slot.appendChild(b);
+  }
+  b.onclick = function () { go(b); };
+  return b;
+}
 function sysSteps(job) {
   var ol = el('ol', 'net-steps');
   (job.steps || []).forEach(function (s) {
@@ -27049,6 +27160,7 @@ function loadNet(quiet) {
   if (!isUnlocked()) {
     rootLocked(host, 'An administrator’s to see. The machine’s network is root’s to change, asked for by an administrator.', loadNet);
     $('net-form').innerHTML = ''; $('net-job').innerHTML = ''; $('net-job-card').hidden = true;
+    if ($('net-read')) $('net-read').innerHTML = '';
     return;
   }
   rootUnlockedHost(host);
@@ -27084,27 +27196,26 @@ function drawNet(d) {
   if (!nd.hostname && !nd.con) {
     host.appendChild(el('p', 'note', 'Not read yet - within seconds, or press Read it again.'));
   } else {
-    var c = nd.conf || {};
-    sysFacts(host, [
-      ['Host name', nd.hostname],
-      ['Connection', nd.con ? nd.con + (nd.dev ? ' (' + nd.dev + ')' : '') : ''],
-      ['IPv4 address', netAddr(nd) || '–', 'mono'],
-      ['Set', c.ipv4_method === 'auto' ? 'from DHCP' : (c.ipv4_method === 'manual' ? 'by hand' : (c.ipv4_method || ''))],
-      ['Gateway', c.ipv4_gateway || (nd.live || {}).gw4, 'mono'],
-      ['DNS servers', ((c.ipv4_dns || []).length ? c.ipv4_dns : (nd.live || {}).dns || []).join(', '), 'mono'],
-      ['Search domains', (c.ipv4_search || []).join(', ')],
-      ['IPv6', ((nd.live || {}).addrs6 || []).map(function (a) { return a.addr; }).join(', ')
-        || (c.ipv6_method === 'disabled' ? 'off' : (c.ipv6_method || '')), 'mono'],
-      ['Read', now.at ? ago(now.at) : '']]);
+    var c = nd.conf || {}, live = nd.live || {};
+    var off6 = !c.ipv6_method || c.ipv6_method === 'disabled' || c.ipv6_method === 'ignore';
+    host.appendChild(otFacts([
+      ['Host name', nd.hostname || '', 'mono'],
+      ['Connection', nd.con ? nd.con + (nd.dev ? ' (' + nd.dev + ')' : '') : '', 'mono'],
+      ['IPv4 address', netAddr(nd), 'mono'],
+      ['IPv4 set', c.ipv4_method === 'auto' ? 'from DHCP' : (c.ipv4_method === 'manual' ? 'by hand' : (c.ipv4_method || ''))],
+      ['Gateway', c.ipv4_gateway || live.gw4 || '', 'mono'],
+      ['DNS servers', ((c.ipv4_dns || []).concat(c.ipv6_dns || [])).join(', ') || (live.dns || []).join(', '), 'mono'],
+      ['Search domains', (c.ipv4_search || []).join(', '), 'mono'],
+      ['IPv6', off6 ? 'off' : (c.ipv6_method === 'manual' ? 'on, set by hand' : 'on, automatic')],
+      ['IPv6 addresses', (live.addrs6 || []).map(function (a) { return a.addr; }).join(', '), 'mono'],
+      ['Read', now.at ? ago(now.at) : '']]));
     if (!nd.nm) host.appendChild(el('p', 'note bad', 'NetworkManager (nmcli) is not on this machine: its network can only be set by hand there.'));
   }
-  var b = cmdButton('Read it again', 'refresh', 'small');
-  b.onclick = function () {
+  otReadButton($('net-read'), function (b) {
     zbusy(b, true);
     post('net-do', {action: 'read'}).then(function () { setTimeout(function () { loadNet(true); }, 2500); })
       .catch(zoops).then(function () { setTimeout(function () { zbusy(b, false); }, 2500); });
-  };
-  var row = el('div', 'btnrow'); row.appendChild(b); host.appendChild(row);
+  });
   var job = d.job || {};
   var busy = job.state && ['asked', 'running', 'rebooting', 'going back', 'trial'].indexOf(job.state) >= 0;
   if (!NETP.dirty || NETP.drawnFor !== String(now.at || '')) {
@@ -27117,52 +27228,68 @@ function drawNetForm(d, busy) {
   NETP.drawnFor = String((d.now || {}).at || '');
   NETP.dirty = false;
   host.innerHTML = '';
+  var name = nd.hostname || '';
+  if ($('net-form-title')) $('net-form-title').textContent = name ? 'New settings for ' + name : 'New settings';
   if (!nd.nm) { host.appendChild(el('p', 'note', 'Nothing can be set from here without NetworkManager.')); return; }
   var f = {};
-  var grid = el('div', 'set-grid');
+  var form = el('div', 'net-form-body');
+  var top = el('div', 'formgrid net-form-top');
   f.host = zText(nd.hostname || '', 'zigmon.example.cz', 'mono');
-  grid.appendChild(zField('Host name (FQDN)', f.host, 'The machine’s whole name. Its line in /etc/hosts follows it.'));
+  top.appendChild(zField('Host name (FQDN)', f.host, 'The machine’s whole name. Its line in /etc/hosts follows it.'));
   var cons = (nd.devices || []).filter(function (x) { return x.con; });
   if (cons.length > 1) {
     f.con = zSelect(cons.map(function (x) { return [x.con, x.con + ' (' + x.dev + ', ' + x.type + ')']; }), nd.con);
-    grid.appendChild(zField('Connection', f.con));
+    top.appendChild(zField('Connection', f.con));
   }
+  form.appendChild(top);
+  // IPv4: how it is set, then its fields in a row
+  var s4 = otSect('IPv4', '');
   f.method = c.ipv4_method === 'auto' ? 'auto' : 'manual';
-  var manual = el('div', 'set-cluster');
-  var seg = zSeg([['manual', 'Set by hand'], ['auto', 'From DHCP']], f.method, function (v) {
-    f.method = v; manual.hidden = v !== 'manual'; NETP.dirty = true;
-  });
-  grid.appendChild(zField('IPv4', seg, 'From DHCP the address is the router’s to give: the page cannot follow the server to it - find it on the router, or give it a reservation there.'));
+  var g4 = el('div', 'formgrid');
   f.addr = zText(netAddr(nd), '192.168.1.20/24', 'mono');
   f.gw = zText(c.ipv4_gateway || (nd.live || {}).gw4 || '', '192.168.1.1', 'mono');
-  manual.appendChild(zField('Address with its prefix', f.addr, 'e.g. 192.168.1.20/24 - /24 is the mask 255.255.255.0.'));
-  manual.appendChild(zField('Gateway', f.gw));
-  manual.hidden = f.method !== 'manual';
-  grid.appendChild(manual);
+  var fAddr = zField('Address with its prefix', f.addr, 'e.g. 192.168.1.20/24 - /24 is the mask 255.255.255.0.');
+  var fGw = zField('Gateway', f.gw);
+  var seg = zSeg([['manual', 'Set by hand'], ['auto', 'From DHCP']], f.method, function (v) {
+    f.method = v; fAddr.hidden = fGw.hidden = v !== 'manual'; NETP.dirty = true;
+  });
+  var how4 = el('div', 'formgrid');
+  how4.appendChild(zField('How', seg, 'From DHCP the address is the router’s to give: the page cannot follow the server to it - find it on the router, or give it a reservation there.'));
+  s4._body.appendChild(how4);
+  g4.appendChild(fAddr);
+  g4.appendChild(fGw);
+  fAddr.hidden = fGw.hidden = f.method !== 'manual';
   f.dns = zText((c.ipv4_dns || []).join(', '), '192.168.1.1, 1.1.1.1', 'mono');
-  grid.appendChild(zField('DNS servers', f.dns, 'Separated by commas. From DHCP: empty takes the router’s.'));
+  g4.appendChild(zField('DNS servers', f.dns, 'Separated by commas. From DHCP: empty takes the router’s.'));
   f.search = zText((c.ipv4_search || []).join(', '), 'home.arpa', 'mono');
-  grid.appendChild(zField('Search domains', f.search));
+  g4.appendChild(zField('Search domains', f.search));
+  s4._body.appendChild(g4);
+  form.appendChild(s4);
+  // IPv6 beside it
+  var s6 = otSect('IPv6 (dual stack)', 'Switched on, the machine takes IPv6 beside IPv4.');
   var on6 = c.ipv6_method && ['disabled', 'ignore', ''].indexOf(c.ipv6_method) < 0;
   f.on6 = zSwitch(on6);
-  grid.appendChild(zField('IPv6', f.on6, 'Switched on, the machine takes IPv6 beside IPv4.'));
-  var six = el('div', 'set-cluster');
+  var r6 = el('div', 'formgrid');
+  r6.appendChild(zField('IPv6', f.on6));
+  s6._body.appendChild(r6);
+  var g6 = el('div', 'formgrid');
   f.mode6 = zSelect([['auto', 'automatic (SLAAC, DHCPv6)'], ['manual', 'set by hand']], c.ipv6_method === 'manual' ? 'manual' : 'auto');
   f.addr6 = zText((c.ipv6_addresses || [])[0] || '', '2001:db8::10/64', 'mono');
-  f.gw6 = zText(c.ipv6_gateway || '', '', 'mono');
-  f.dns6 = zText((c.ipv6_dns || []).join(', '), '', 'mono');
-  six.appendChild(zField('How', f.mode6));
-  var six2 = el('div', 'set-cluster');
-  six2.appendChild(zField('Address with its prefix', f.addr6, 'e.g. 2001:db8::10/64'));
-  six2.appendChild(zField('Gateway', f.gw6));
-  six.appendChild(six2);
-  six.appendChild(zField('DNS servers', f.dns6));
-  var show6 = function () { six.hidden = !f.on6._get(); six2.hidden = f.mode6.value !== 'manual'; };
+  f.gw6 = zText(c.ipv6_gateway || '', '2001:db8::1', 'mono');
+  f.dns6 = zText((c.ipv6_dns || []).join(', '), '2001:db8::53', 'mono');
+  g6.appendChild(zField('How', f.mode6));
+  var fAddr6 = zField('Address with its prefix', f.addr6, 'e.g. 2001:db8::10/64');
+  var fGw6 = zField('Gateway', f.gw6);
+  g6.appendChild(fAddr6);
+  g6.appendChild(fGw6);
+  g6.appendChild(zField('DNS servers', f.dns6));
+  s6._body.appendChild(g6);
+  var show6 = function () { g6.hidden = !f.on6._get(); fAddr6.hidden = fGw6.hidden = f.mode6.value !== 'manual'; };
   f.on6.input.addEventListener('change', show6); f.mode6.onchange = show6; show6();
-  grid.appendChild(six);
-  host.appendChild(grid);
-  grid.addEventListener('input', function () { NETP.dirty = true; });
-  grid.addEventListener('change', function () { NETP.dirty = true; });
+  form.appendChild(s6);
+  host.appendChild(form);
+  form.addEventListener('input', function () { NETP.dirty = true; });
+  form.addEventListener('change', function () { NETP.dirty = true; });
   var want = function () {
     var list = function (i) { return i.value.split(/[\s,;]+/).filter(Boolean); };
     return {con: f.con ? f.con.value : nd.con, hostname: f.host.value.trim(),
@@ -27171,7 +27298,7 @@ function drawNetForm(d, busy) {
   };
   var plan = el('div', 'net-plan');
   var check = cmdButton('Check it', 'check', '');
-  var go = cmdButton('Change it and restart the server', 'power', 'primary');
+  var go = cmdButton(name ? 'Change it and restart ' + name : 'Change it and restart the server', 'power', 'primary');
   var drawPlan = function (r) {
     plan.innerHTML = '';
     plan.appendChild(el('h4', '', 'What happens'));
@@ -27210,7 +27337,7 @@ function drawNetForm(d, busy) {
     }, function (e) { zbusy(go, false); plan.innerHTML = ''; plan.appendChild(el('p', 'note bad', e.message || String(e))); });
   };
   check.disabled = go.disabled = !!busy;
-  var row = el('div', 'btnrow'); row.appendChild(check); row.appendChild(go);
+  var row = el('div', 'btnrow net-go'); row.appendChild(check); row.appendChild(go);
   if (busy) row.appendChild(el('span', 'muted small', 'a change is under way'));
   host.appendChild(row);
   host.appendChild(plan);
@@ -27330,11 +27457,22 @@ function drawPower(d) {
   PWR.last = d;
   var host = $('pw-host');
   host.innerHTML = '';
+  var busy = !!d.busy;
+  // one machine, as otp draws each node: its dot and name, then its facts
+  var head = el('div', 'pw-head');
+  head.appendChild(el('span', 'dot ' + (busy ? 'warn' : 'ok')));
+  head.appendChild(el('b', '', d.host || 'this server'));
+  head.appendChild(el('span', 'tag info', 'this page'));
+  host.appendChild(head);
   if (!d.helper) host.appendChild(el('p', 'note bad', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once.'));
-  sysFacts(host, [['Machine', d.host], ['Version', 'zigmon ' + d.version, 'mono'],
-    ['Up for', d.boot ? sysSpan(d.now - d.boot) : ''], ['zigmon running for', d.started ? sysSpan(d.now - d.started) : ''],
+  host.appendChild(otFacts([
+    ['State', busy ? 'under way' : 'answering', busy ? 'warn' : ''],
+    ['Address', d.address === undefined ? undefined : (d.address || ''), 'mono'],
+    ['Running for', d.boot ? sysSpan(d.now - d.boot) : ''],
+    ['zigmon running for', d.started ? sysSpan(d.now - d.started) : ''],
+    ['Version', d.version || '', 'mono'],
     ['A regular restart', d.auto && d.auto.next ? (d.auto.how === 'daily' ? 'every day' : 'once a week') + ', next ' + sysStamp(d.auto.next)
-      : 'none - set it below']]);
+      : 'none - set it below']]));
   var plan = d.plan || {};
   if (plan.when && !plan.done) {
     var p = el('p', 'note warn');
@@ -27345,14 +27483,13 @@ function drawPower(d) {
     off.onclick = function () { post('power-do', {action: 'cancel'}).then(function (r) { toast(r.message, true); loadPower(true); }).catch(zoops); };
     var r0 = el('div', 'btnrow'); r0.appendChild(off); host.appendChild(r0);
   }
-  var busy = !!d.busy;
   var row = el('div', 'btnrow');
   var rb = cmdButton('Restart', 'reboot', ''), po = cmdButton('Power off', 'power', 'danger'), at = cmdButton('Restart at a time…', 'clock', '');
   rb.disabled = po.disabled = at.disabled = busy;
   rb.onclick = function () { powerAsk('reboot'); };
   po.onclick = function () { powerAsk('poweroff'); };
   at.onclick = powerAt;
-  row.appendChild(rb); row.appendChild(at); row.appendChild(po);
+  row.appendChild(rb); row.appendChild(po); row.appendChild(at);
   if (busy) row.appendChild(el('span', 'muted small', 'under way'));
   host.appendChild(row);
   drawPowerJob(d);
@@ -27423,41 +27560,60 @@ function loadNtp(quiet) {
   rootUnlockedHost(host);
   api('ntp').then(drawNtp).catch(function (e) { if (!quiet) zoops(e); });
 }
-function ntpSecs(v) {
-  v = Number(v) || 0;
-  var a = Math.abs(v);
-  if (a < 0.001) return (v * 1e6).toFixed(0) + ' µs';
-  if (a < 1) return (v * 1000).toFixed(1) + ' ms';
-  return v.toFixed(2) + ' s';
+/* An offset as otp says it: signed, in milliseconds while it is under a second. */
+function ntpMs(v) {
+  if (v === undefined || v === null || isNaN(v)) return '\u2013';
+  var ms = Number(v) * 1000, a = Math.abs(ms);
+  return (ms >= 0 ? '+' : '\u2212') + (a >= 1000 ? (a / 1000).toFixed(2) + ' s' : (a >= 10 ? a.toFixed(1) : a.toFixed(3)) + ' ms');
+}
+function ntpHealth(nd) {
+  var t = nd.tracking || {};
+  if (!nd.time) return {k: 'bad', w: 'not read yet'};
+  if (!nd.chrony) return {k: nd.ntpsynchronized === 'yes' ? 'ok' : 'bad', w: nd.ntpsynchronized === 'yes' ? 'synchronised (not chrony)' : 'chrony is not installed'};
+  if (t.leap === 'Not synchronised' || !t.stratum) return {k: 'bad', w: 'not synchronised'};
+  var off = Math.abs(t.offset || 0);
+  if (off > 1) return {k: 'bad', w: 'synchronised, but off'};
+  if (off > 0.1) return {k: 'warn', w: 'synchronised'};
+  return {k: 'ok', w: 'synchronised'};
 }
 function drawNtp(d) {
   NTPP.last = d;
   var host = $('ntp-now'), now = d.now || {}, nd = now.data || {}, t = nd.tracking || {};
   host.innerHTML = '';
+  var h = ntpHealth(nd);
+  var head = el('div', 'pw-head');
+  head.appendChild(el('span', 'dot ' + (h.k === 'ok' ? 'ok' : (h.k === 'warn' ? 'warn' : 'bad'))));
+  head.appendChild(el('b', '', d.host || 'This server'));
+  head.appendChild(el('span', 'tag info', 'this server'));
+  head.appendChild(el('span', 'tag ' + (h.k === 'ok' ? 'ok' : (h.k === 'warn' ? 'warn' : 'crit')), h.w));
+  host.appendChild(head);
   if (!d.helper) host.appendChild(el('p', 'note bad', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once.'));
   if (d.problem) host.appendChild(el('p', 'note bad', d.problem.charAt(0).toUpperCase() + d.problem.slice(1) + '.'));
   if (!nd.time) host.appendChild(el('p', 'note', 'Not read yet - within seconds, or press Read it again.'));
   else {
     if (!nd.chrony) host.appendChild(el('p', 'note warn', 'chrony is not on this machine: saving the time servers below installs it.'));
-    var synced = t.leap ? t.leap !== 'Not synchronised' && !!t.stratum : nd.ntpsynchronized === 'yes';
-    sysFacts(host, [
-      ['Synchronised', synced ? 'yes' : 'no', synced ? 'good' : 'bad'],
-      ['Off the time servers', t.offset !== undefined ? ntpSecs(t.offset) : ''],
-      ['Follows', t.ref ? t.ref + (t.ref_id ? ' (' + t.ref_id + ')' : '') : ''],
-      ['Stratum', t.stratum],
-      ['Frequency', t.freq !== undefined ? t.freq.toFixed(3) + ' ppm' : ''],
-      ['Root delay / dispersion', t.root_delay !== undefined ? ntpSecs(t.root_delay) + ' / ' + ntpSecs(t.root_disp) : ''],
-      ['Leap status', t.leap],
-      ['Time zone', nd.timezone],
-      ['Its time', sysStamp(nd.time) + ' (read ' + ago(now.at) + ')']]);
+    var big = el('div', 'ntp-big');
+    big.appendChild(el('span', 'ntp-off', ntpMs(t.offset)));
+    big.appendChild(el('span', 'muted small', ' off the time servers'));
+    host.appendChild(big);
+    host.appendChild(otFacts([
+      ['Follows', t.ref || t.ref_id || '', 'mono'],
+      ['Stratum', t.stratum !== undefined ? String(t.stratum) : '', 'mono'],
+      ['Last correction', t.last_offset !== undefined ? ntpMs(t.last_offset) : '', 'mono'],
+      ['Frequency', t.freq !== undefined ? Number(t.freq).toFixed(3) + ' ppm' : '', 'mono'],
+      ['Root delay / dispersion', t.root_delay !== undefined ? ntpMs(t.root_delay).replace('+', '') + ' / ' + ntpMs(t.root_disp).replace('+', '') : '', 'mono'],
+      ['Leap status', t.leap || ''],
+      ['Time zone', nd.timezone || '', 'mono'],
+      ['Its time', sysStamp(nd.time)],
+      ['Read', now.at ? ago(now.at) : '']]));
   }
   var ap = d.applied || {};
-  if (ap.at) host.appendChild(el('p', 'note ' + (ap.ok ? '' : 'bad'), (ap.ok ? 'Time servers set ' : 'Time servers NOT set ') + new Date(ap.at * 1000).toTimeString().slice(0, 5) + ': ' + (ap.said || '')));
-  if (!(d.conf || {}).manage && (nd.own || []).length) host.appendChild(el('p', 'note', 'Its own /etc/chrony.conf: ' + nd.own.join('; ')));
+  if (ap.at) host.appendChild(el('p', 'small ntp-set ' + (ap.ok ? 'muted' : 'bad'), (ap.ok ? 'Time servers set ' : 'Time servers NOT set ') + ago(ap.at) + (ap.said ? ': ' + ap.said : '')));
   var row = el('div', 'btnrow');
   var rd = cmdButton('Read it again', 'refresh', 'small');
   rd.onclick = function () { post('ntp-do', {action: 'read'}).then(function () { setTimeout(function () { loadNtp(true); }, 2500); }).catch(zoops); };
   var step = cmdButton('Step it now', 'clock', 'small');
+  step.title = 'The clock set to the time servers at once (chronyc makestep), not slewed slowly - for a clock that is far off.';
   step.onclick = function () {
     zconfirm('Step the clock now?', 'The clock set to the time servers at once (chronyc makestep), not slewed slowly - for a clock that is far off. Rules and schedules waiting on the time see the jump.', 'Step it', function () {
       post('ntp-do', {action: 'sync'}).then(function () { toast('Asked', true); setTimeout(function () { loadNtp(true); }, 5000); }).catch(zoops);
@@ -27466,18 +27622,31 @@ function drawNtp(d) {
   row.appendChild(rd); row.appendChild(step); host.appendChild(row);
   var src = $('ntp-sources');
   src.innerHTML = '';
-  src.appendChild(zTable(['Source', 'State', 'Stratum', 'Asked every', 'Reached', 'Last heard', 'Offset'], nd.sources || [], function (s) {
+  var STATES = {'*': ['ok', 'followed'], '+': ['ok', 'combined'], '-': ['', 'not combined'], '?': ['crit', 'unreachable'],
+                'x': ['crit', 'false ticker'], '~': ['warn', 'too variable']};
+  src.appendChild(zTable(['State', 'Source', 'Stratum', 'Asked every', 'Reached', 'Last heard', 'Offset'], nd.sources || [], function (s) {
     var tr = el('tr');
+    var st = STATES[s.state] || ['', NTP_STATES[s.state] || s.state];
+    var td = el('td');
+    td.appendChild(el('span', 'tag ' + (st[0] || 'dim'), st[1]));
+    if (s.mode === '=') td.appendChild(el('span', 'muted small', ' peer'));
+    tr.appendChild(td);
     tr.appendChild(el('td', 'mono', s.name));
-    tr.appendChild(el('td', s.state === '*' ? 'good' : '', NTP_STATES[s.state] || s.state));
-    tr.appendChild(el('td', '', String(s.stratum)));
-    tr.appendChild(el('td', '', sysSpan(Math.pow(2, s.poll || 0))));
-    var reach = 0; for (var i = 0; i < 8; i++) if ((s.reach >> i) & 1) reach += 1;
-    tr.appendChild(el('td', '', reach + ' of the last 8'));
-    tr.appendChild(el('td', '', s.last_rx === null || s.last_rx === undefined ? '–' : sysSpan(s.last_rx) + ' ago'));
-    tr.appendChild(el('td', 'mono', ntpSecs(s.offset) + ' ± ' + ntpSecs(s.error)));
+    tr.appendChild(el('td', 'num', String(s.stratum)));
+    tr.appendChild(el('td', 'num', sysSpan(Math.pow(2, s.poll || 0))));
+    var r = el('td'), bits = el('span', 'reach');
+    for (var i = 7; i >= 0; i--) bits.appendChild(el('i', (s.reach >> i) & 1 ? 'on' : ''));
+    bits.title = ('00000000' + (s.reach || 0).toString(2)).slice(-8) + ' - the last 8 tries';
+    r.appendChild(bits);
+    tr.appendChild(r);
+    tr.appendChild(el('td', 'muted', s.last_rx === null || s.last_rx === undefined ? '\u2013' : sysSpan(s.last_rx) + ' ago'));
+    tr.appendChild(el('td', 'num mono', ntpMs(s.offset) + ' \u00b1 ' + ntpMs(s.error).replace('+', '')));
     return tr;
   }, 'plain|No source - chrony has none, or is not installed.'));
+  if (!(d.conf || {}).manage && (nd.own || []).length) {
+    src.appendChild(el('p', 'muted small ntp-own', 'Its own /etc/chrony.conf:'));
+    src.appendChild(el('pre', 'zlines', nd.own.join('\n')));
+  }
   if (!NTPP.dirty) drawNtpConf(d);
 }
 function drawNtpConf(d) {
@@ -27625,24 +27794,36 @@ function drawRbTop() {
   var mine = (d.runs || [])[0];
   var on = (d.targets || []).filter(function (t) { return t.enabled; });
   var state = !on.length ? 'warn' : (!mine ? 'warn' : (mine.ok ? 'good' : 'bad'));
-  var box = el('div', 'notice rb-hero ' + (state === 'warn' ? '' : state));
-  box.appendChild(el('b', '', !on.length ? 'No destination yet - backups go nowhere'
+  // the card itself says it, as otp's does: a coloured edge and an icon
+  var card = $('rb-card');
+  if (card) ['good', 'warn', 'bad'].forEach(function (k) { card.classList.toggle(k, k === state); });
+  var head = el('div', 'rb-hero-head');
+  var ic = el('span', 'rb-hero-ic');
+  ic.innerHTML = iconMarkup(state === 'good' ? 'check' : (state === 'bad' ? 'close' : 'info'), 22);
+  head.appendChild(ic);
+  var words = el('div', 'rb-hero-words');
+  words.appendChild(el('b', '', !on.length ? 'No destination yet - backups go nowhere'
     : (!mine ? 'No backup has been sent yet'
       : (mine.ok ? 'The last backup of ' + (d.host || 'this machine') + ' went to every destination'
         : 'The last backup of ' + (d.host || 'this machine') + ' did not reach every destination'))));
-  var facts = el('dl', 'cert-kv');
-  var fact = function (k, v, cls) { facts.appendChild(el('dt', '', k)); facts.appendChild(el('dd', cls || '', v)); };
+  var facts = el('div', 'rb-hero-facts');
+  var fact = function (k, v, cls) {
+    var f = el('span', 'rb-fact ' + (cls || ''));
+    f.appendChild(el('span', 'k', k));
+    f.appendChild(el('span', 'v', v));
+    facts.appendChild(f);
+  };
   if (mine) fact('Last', ago(mine.at) + (mine.bytes ? ' · ' + sizeText(mine.bytes) : ''));
-  fact('Next', d.next ? d.next.replace('T', ' ') : 'by hand only');
-  fact('Locked', d.locked ? 'with the password (AES-256)' : 'NOT locked - set the password: nothing is sent without it', d.locked ? '' : 'bad');
+  fact('Next', d.next ? d.next.replace('T', ' ') : 'by hand only', d.next ? '' : 'warn');
+  fact('Locked', d.locked ? 'with the password (AES-256)' : 'NOT locked - set the password: nothing is sent without it', d.locked ? 'good' : 'bad');
   fact('Destinations', on.length + ' of ' + (d.targets || []).length + ' switched on');
-  box.appendChild(facts);
+  words.appendChild(facts);
   if (mine && !mine.ok) {
     var bad = (mine.targets || []).filter(function (x) { return !x.ok; });
-    box.appendChild(el('div', 'small bad', mine.error || bad.map(function (x) { return x.name + ': ' + (x.error || 'failed'); }).join(' · ')));
+    words.appendChild(el('div', 'rb-hero-why small', mine.error || bad.map(function (x) { return x.name + ': ' + (x.error || 'failed'); }).join(' · ')));
   }
-  host.appendChild(box);
-  var row = el('div', 'btnrow');
+  head.appendChild(words);
+  var acts = el('div', 'rb-hero-acts');
   var now = cmdButton('Back up now', 'upload', 'primary');
   now.id = 'rb-now';
   now.title = 'A backup made now and sent to every destination switched on - the same as the scheduled one.';
@@ -27655,12 +27836,13 @@ function drawRbTop() {
       rbWatch();
     }).catch(function (e) { zbusy(now, false); zoops(e); });
   };
-  row.appendChild(now);
+  acts.appendChild(now);
   var guide = cmdButton('How to put it back', 'info', '');
   guide.title = 'RESTORE.txt - the steps to bring everything back from a backup, as every backup carries it beside itself.';
   guide.onclick = rbGuide;
-  row.appendChild(guide);
-  host.appendChild(row);
+  acts.appendChild(guide);
+  head.appendChild(acts);
+  host.appendChild(head);
   var going = el('div', 'going wide');
   going.id = 'rb-going';
   going.hidden = !(d.job && d.job.running);
@@ -28313,11 +28495,20 @@ function loadAbout(quiet) {
 function drawAbout(d) {
   var host = $('about-state'), sw = d.software || {}, c = d.counts || {};
   host.innerHTML = '';
-  host.appendChild(el('h2', '', 'zigmon ' + (d.version || '')));
-  sysFacts(host, [['Machine', d.host], ['Running for', d.started ? sysSpan(d.now - d.started) : ''],
-    ['Machine up for', d.boot ? sysSpan(d.now - d.boot) : ''], ['Devices', String(c.devices || 0)],
-    ['Sockets', String(c.sockets || 0)], ['Accounts', String(c.accounts || 0)],
-    ['Database', d.db_bytes ? sizeText(d.db_bytes) : '']]);
+  host.appendChild(el('h2', 'about-head', 'zigmon ' + (d.version || '')));
+  // as otp's About: the facts as tiles, a line on what it is, then what it runs on
+  var tiles = el('div', 'facts');
+  [['Machine', d.host], ['Running for', d.started ? sysSpan(d.now - d.started) : ''],
+   ['Machine up for', d.boot ? sysSpan(d.now - d.boot) : ''], ['Devices', String(c.devices || 0)],
+   ['Sockets', String(c.sockets || 0)], ['Accounts', String(c.accounts || 0)],
+   ['Database', d.db_bytes ? sizeText(d.db_bytes) : '']].forEach(function (f) {
+    if (!f[1]) return;
+    var t = el('div', 'fact');
+    t.appendChild(el('span', 'k', f[0]));
+    t.appendChild(el('span', 'v', f[1]));
+    tiles.appendChild(t);
+  });
+  host.appendChild(tiles);
   host.appendChild(el('p', 'muted small', 'One Python file (' + (sw.program || '/usr/local/lib/zigmon/zigmon.py')
     + '), the standard library and paho-mqtt, and these PHP pages that ask it. On the server: zigmon --help, or zigmon --console.'));
   var box = el('div', 'sw-box');
@@ -28346,17 +28537,20 @@ function drawAbout(d) {
     tb.appendChild(tr);
   });
   t.appendChild(tb); box.appendChild(t);
+  host.appendChild(box);
   var pg = d.pages || {};
   if (pg.php) {
-    box.appendChild(el('h3', 'sw-h', 'The pages’ PHP (as php-fpm runs it here)'));
-    sysFacts(box, [['PHP', pg.php], ['How', pg.sapi], ['OPcache', pg.opcache ? 'on' : 'off'], ['Web server', pg.server || '–']]);
+    var pb = el('div', 'sw-box');
+    pb.appendChild(el('h3', 'sw-h', 'The pages’ PHP (as php-fpm runs it here)'));
+    pb.appendChild(otFacts([['PHP', pg.php, 'mono'], ['How', pg.sapi || '', 'mono'], ['OPcache', pg.opcache ? 'on' : 'off'],
+      ['Web server', pg.server || '', 'mono']]));
     var ext = Object.keys(pg.extensions || {});
-    box.appendChild(el('div', 'muted small', 'Its extensions (' + ext.length + '):'));
+    pb.appendChild(el('div', 'muted small sw-ext-h', 'Its extensions (' + ext.length + '):'));
     var ex = el('div', 'sw-ext');
     ext.forEach(function (k) { ex.appendChild(el('span', 'tag', k + (pg.extensions[k] ? ' ' + pg.extensions[k] : ''))); });
-    box.appendChild(ex);
+    pb.appendChild(ex);
+    host.appendChild(pb);
   }
-  host.appendChild(box);
   drawConsoleSwitch(d.console || {});
 }
 function drawConsoleSwitch(cs) {

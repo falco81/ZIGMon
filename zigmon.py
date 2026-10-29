@@ -16991,6 +16991,21 @@ class Daemon(object):
         except ValueError as e:
             self.say_event('control', 'the regular restart was not done: %s' % e, 'warn', about='restart')
 
+    def net_address_now(self):
+        """The machine's IPv4 address as the network was last read, for the
+        card of the machine under Restart and power off; '' when not known."""
+        try:
+            d = (self._mj('net:now') or {}).get('data') or {}
+            for a in (d.get('conf') or {}).get('ipv4_addresses') or []:
+                return str(a).split('/')[0]
+            dev = d.get('dev')
+            for a in (d.get('live') or {}).get('addrs4') or []:
+                if not dev or a.get('dev') == dev:
+                    return str(a.get('addr') or '').split('/')[0]
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return ''
+
     def power_view(self):
         plan = self.power_plan()
         row = self._mj('power:row') or {}
@@ -17001,7 +17016,7 @@ class Daemon(object):
         return {'plan': plan if live else {}, 'row': row if row.get('id') == plan.get('id') else {},
                 'now': time.time(), 'busy': self.power_busy(), 'boot': self.boot_time(),
                 'started': getattr(self, 'started_at', None) or self.__dict__.get('_started'),
-                'version': __version__, 'host': socket.gethostname(),
+                'version': __version__, 'host': socket.gethostname(), 'address': self.net_address_now(),
                 'auto': {'how': str(CONFIG.get('reboot_auto') or 'off'),
                          'next': nxt}, 'helper': self.root_installed()}
 
@@ -17194,7 +17209,8 @@ class Daemon(object):
         return {'now': self._mj('ntp:now') or {}, 'applied': self._mj('ntp:applied') or {},
                 'conf': self.ntp_conf(), 'zones': zones, 'picks': list(self.NTP_PICKS),
                 'hash': self.ntp_hash() if self._mj('ntp:conf') else '', 'at': time.time(),
-                'problem': self._ntp_work.get('problem') or '', 'helper': self.root_installed()}
+                'problem': self._ntp_work.get('problem') or '', 'helper': self.root_installed(),
+                'host': socket.gethostname()}
 
     def ntp_post(self, body, by):
         act = str(body.get('action') or '')
