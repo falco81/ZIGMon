@@ -2083,7 +2083,25 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.28.0**
+Current version: **5.29.0**
+
+5.29.0 — an answer by text is not sent into a gateway still busy with the
+text it answers.
+
+* **An answer to a pushed text waits for the push.** A command that arrived
+  by the gateway's webhook was answered within milliseconds - handed to the
+  TRB140 while it was still in the middle of that webhook, waiting for our
+  answer and then taking the message off its SIM. Its modem does one thing at
+  a time, so the answer waited behind it all and was written down as *no
+  answer from the gateway* (and had usually gone out). It now goes two
+  seconds after the push.
+* **A slow gateway says why.** Every question to the gateway's API - the
+  login, a send, a status, the inbox - is timed, and one that takes five
+  seconds or more is written to the log with what else was asked of the box
+  meanwhile, or with "nothing else of ours asking it - the box itself was
+  slow". `journalctl -u zigmon | grep "SMS gateway"` tells the two apart.
+
+`test/review529.py`; every check fails on 5.28.0.
 
 5.28.0 — a sensor or a button does what it means, at once and once.
 
