@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.22.0'
+__version__ = '5.23.0'
 
 import argparse
 import base64
@@ -519,6 +519,10 @@ DEFAULTS = {
     # GitHub folder, a folder listing, or one package's own address. Only
     # ever offered on the dashboard - nothing is put in by itself
     'upgrade_check': 1,
+    # going back to an older version (5.22) offered at all: off until somebody
+    # wants it - the card is not shown and the daemon does none of it; root
+    # on the command line with a package file still can
+    'downgrade_show': 0,
     'upgrade_url': 'https://github.com/falco81/ZIGMon/tree/main/release',
     # ...and that backup sent to other machines (5.21): FTP, FTPS, SFTP, SCP,
     # SMB - the destinations are set on the dashboard (Control - Backup) and
@@ -1492,6 +1496,18 @@ def thin(rows, points):
 # ---------------------------------------------------------------------------
 # Shelly Gen2+ RPC (the smart plugs)
 # ---------------------------------------------------------------------------
+# The checks run root's helper straight away (ZIGMON_ROOT_RUN) rather than
+# through zigmon-root.path - and one at a time, as systemd starts its oneshot:
+# two at once took the same request.json from each other, and the clock's
+# look at the network (5.21) landed in the middle of a certificate being put in.
+ROOT_RUN_LOCK = threading.Lock()
+
+
+def root_run_now(run, timeout):
+    with ROOT_RUN_LOCK:
+        subprocess.run(run.split() if ' ' in run else [run], capture_output=True, timeout=timeout)
+
+
 class PlugError(Exception):
     pass
 
@@ -9365,7 +9381,7 @@ class Daemon(object):
         'full_backup_nightly': (0, 1), 'full_backup_keep': (1, 60),
         'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
         'reboot_auto': 'str', 'reboot_at': 'str', 'reboot_day': (1, 7),
-        'upgrade_check': (0, 1), 'upgrade_url': 'str',
+        'upgrade_check': (0, 1), 'upgrade_url': 'str', 'downgrade_show': (0, 1),
         'rbackup': (0, 1), 'rbackup_at': 'str', 'rbackup_every': 'str', 'rbackup_day': (1, 7),
         'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650), 'rbackup_password': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
@@ -14685,7 +14701,7 @@ class Daemon(object):
             log('asked root: %s (%s)' % (kind, ident), 'debug')
         run = os.environ.get('ZIGMON_ROOT_RUN')
         if run:                                   # the checks: root answers at once
-            subprocess.run(run.split() if ' ' in run else [run], capture_output=True, timeout=600)
+            root_run_now(run, 600)
         return ident
 
     def root_look(self, fresh=False):
@@ -14702,7 +14718,7 @@ class Daemon(object):
                     os.close(fd)
                 run = os.environ.get('ZIGMON_ROOT_RUN')
                 if run and fresh:
-                    subprocess.run(run.split(), capture_output=True, timeout=120)
+                    root_run_now(run, 120)
                     look = self.root_read('look.json')
             except OSError:
                 pass
@@ -15462,6 +15478,9 @@ class Daemon(object):
         elif info.get('older') and not back:
             why = ('%s is older than %s, which runs here: going back to it is under Going back '
                    'to an older version' % (info['version'], __version__))
+        elif back and not self.downgrade_on():
+            why = ('going back to an older version is switched off - switch it on under Control - '
+                   'Upgrades (downgrade_show)')
         elif back and not info.get('older'):
             why = '%s is not older than %s, which runs here' % (info.get('version'), __version__)
         elif back and not (info.get('back') or {}).get('ok'):
@@ -15596,8 +15615,9 @@ class Daemon(object):
                                  for x in (row.get('packages') or [])
                                  if _online_ver(x.get('version')) > _online_ver(__version__)]
             # ...and the older ones, each with whether going back to it is safe
+            # - only when going back is switched on at all
             older = []
-            for x in (row.get('packages') or []):
+            for x in (row.get('packages') or []) if self.downgrade_on() else []:
                 if _online_ver(x.get('version')) < _online_ver(__version__):
                     try:
                         chk = self.downgrade_check(x.get('version'))
@@ -15625,6 +15645,7 @@ class Daemon(object):
         if not found:
             raise ValueError('zigmon %s is not at %s' % (version, url[:200]))
         if back:
+            self.downgrade_refused()
             if _online_ver(version) >= _online_ver(__version__):
                 raise ValueError('zigmon %s is not older than %s, which runs here' % (version, __version__))
             chk = self.downgrade_check(version)
@@ -15784,6 +15805,54 @@ class Daemon(object):
             return {'ok': False, 'why': 'the upgrade helper is not here'}
         return mod.downgrade_check(version, __version__, self.version_high())
 
+    @staticmethod
+    def downgrade_on():
+        try:
+            return bool(int(CONFIG.get('downgrade_show') or 0))
+        except (TypeError, ValueError):
+            return False
+
+    def downgrade_refused(self):
+        if not self.downgrade_on():
+            raise ValueError('going back to an older version is switched off - switch it on under '
+                             'Control - Upgrades (downgrade_show), or as root give the package file: '
+                             'sudo zigmon --downgrade FILE')
+
+    # The changelog of every version, from the README this version came with:
+    # it holds the entries of all that came before it, so what an older one
+    # brought - and what going back to it takes away - is said without
+    # fetching anything.
+    def changelog_entries(self):
+        held = self.__dict__.get('_changelog')
+        here = Path(os.path.realpath(__file__)).parent
+        path = next((p for p in (here / 'README.md', here.parent / 'README.md') if p.is_file()), None)
+        if path is None:
+            return []
+        mtime = path.stat().st_mtime
+        if held and held[0] == (str(path), mtime):
+            return held[1]
+        text = path.read_text(encoding='utf-8', errors='replace')
+        found = list(re.finditer(r'^(\d+\.\d+\.\d+) \u2014 ', text, re.M))
+        out = []
+        for i, m in enumerate(found):
+            end = found[i + 1].start() if i + 1 < len(found) else len(text)
+            body = text[m.start():end].strip()
+            out.append({'version': m.group(1), 'text': body[:20000]})
+        self._changelog = ((str(path), mtime), out)
+        return out
+
+    def changelog_for(self, version):
+        """What `version` brought, and - for an older one - what each version
+        after it up to this one did, which going back to it takes away."""
+        version = str(version or '').strip()
+        if not re.match(r'^\d+\.\d+\.\d+$', version):
+            raise ValueError('which version? (X.Y.Z)')
+        rows = self.changelog_entries()
+        own = next((r['text'] for r in rows if r['version'] == version), '')
+        later = [r for r in rows if _online_ver(version) < _online_ver(r['version']) <= _online_ver(__version__)]
+        later.sort(key=lambda r: _online_ver(r['version']), reverse=True)
+        return {'version': version, 'entry': own, 'later': later, 'here': __version__}
+
     def downgrade_busy(self):
         """What going back may not happen in the middle of."""
         if self.net_job_active(self._mj('net:job')) or (self._mj('net:job') or {}).get('state') == 'trial':
@@ -15795,9 +15864,11 @@ class Daemon(object):
         return ''
 
     def downgrade_view(self, pkg=None, running=False):
+        if not self.downgrade_on():
+            return {'on': False}
         pkg = pkg if pkg is not None else self.upgrade_package()
         mod = self.upgrade_helper()
-        out = {'high': self.version_high(), 'busy': self.downgrade_busy(),
+        out = {'on': True, 'high': self.version_high(), 'busy': self.downgrade_busy(),
                'epochs': [{'version': v, 'why': w} for v, w in (getattr(mod, 'DB_EPOCHS', ()) or ())]}
         floors = [e['version'] for e in out['epochs'] if _online_ver(e['version']) <= _online_ver(out['high'])]
         out['floor'] = max(floors, key=_online_ver) if floors else ''
@@ -15807,6 +15878,7 @@ class Daemon(object):
         return out
 
     def downgrade_start(self, who=''):
+        self.downgrade_refused()
         st = self.upgrade_state()
         pkg = st['package']
         if not pkg or not pkg.get('older'):
@@ -16064,7 +16136,7 @@ class Daemon(object):
         os.replace(str(tmp), str(self.root_dir(ask)))
         run = os.environ.get('ZIGMON_ROOT_RUN')
         if run:                                   # the checks: root answers at once
-            subprocess.run(run.split() if ' ' in run else [run], capture_output=True, timeout=600)
+            root_run_now(run, 600)
         end = time.time() + wait
         while True:
             got = self.root_read(answer)
@@ -29145,7 +29217,7 @@ class Daemon(object):
     # out, the PIN and every password, token and key.
     SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|never_block|block|blacklist|'
                                  r'public_view|session|allow|trusted|duo|mikrotik|proxy_|intel_|feeds?\b|'
-                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_|upgrade_|rbackup',
+                                 r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_|upgrade_|downgrade_|rbackup',
                                  re.I)
 
     OBJECT_CACHE_S = 2.0
@@ -37787,6 +37859,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'forget':
                 d.upgrade_forget()
                 return dict(d.upgrade_state(), message='the package is gone')
+            if act == 'changelog':
+                return d.changelog_for(body.get('version'))
             if act == 'downgrade_start':
                 d.downgrade_start(who)
                 return dict(d.upgrade_state(), message='root is putting the older version in - the '
@@ -45717,6 +45791,10 @@ def cmd_downgrade_check(args, pal):
     if back.get('busy'):
         print(pal.warn('  not now: %s' % back['busy']))
     older = row.get('older_list') or []
+    if not back.get('on'):
+        print(pal.warn('  going back is switched off (downgrade_show): Control - Upgrades, or as root'))
+        print(pal.warn('  give the package file: sudo zigmon --downgrade /path/zigmon-X.Y.Z.tar.gz'))
+        return 0
     if row.get('error'):
         print(pal.crit('  %s: %s' % (row.get('url'), row['error'])))
     elif not older:

@@ -200,6 +200,27 @@ os.environ['ZIGMON_CONFIG'] = str(W / 'config-d.json')
 d = zigmon.Daemon()
 d._stop.set()
 check(d.store.get_meta('version_high') == zigmon.__version__, 'the daemon did not write the highest version run')
+# switched off until somebody wants it: no card, and the daemon does none of it
+check(zigmon.DEFAULTS.get('downgrade_show') == 0 and d.downgrade_view() == {'on': False},
+      'going back is offered before anybody switched it on')
+for what, fn in (('started', lambda: d.downgrade_start('jana')),
+                 ('fetched', lambda: d.online_fetch('5.20.0', 'jana', back=True))):
+    try:
+        fn()
+        check(False, 'going back was %s while it is switched off' % what)
+    except ValueError as e:
+        check('switched off' in str(e), 'switched off, the refusal says something else: %s' % e)
+zigmon.CONFIG['downgrade_show'] = 1
+check(d.downgrade_view().get('on') is True, 'switched on, the card is not offered')
+# what an older version brought, and what going back to it takes away
+log = d.changelog_for('5.20.0')
+check(log['entry'].startswith('5.20.0 \u2014') and '5.21.0 \u2014' not in log['entry'],
+      'the entry of 5.20.0 is not its own: %r' % log['entry'][:80])
+check([x['version'] for x in log['later']][-1:] == ['5.21.0'] and
+      all(zigmon._online_ver(x['version']) <= zigmon._online_ver(zigmon.__version__) for x in log['later'])
+      and log['later'][0]['version'] == zigmon.__version__,
+      'what going back to 5.20.0 takes away is not every version after it up to this one: %r'
+      % [x['version'] for x in log['later']])
 d.store.set_meta('version_high', '9.9.9')
 d.note_version_high()
 check(d.store.get_meta('version_high') == '9.9.9', 'a lower version wrote over the highest one run')
@@ -244,8 +265,10 @@ d.upgrade_dir('request.json').unlink()
 
 # ---- the ways in -----------------------------------------------------------------------------
 page = (HERE / 'web' / 'index.php').read_text()
-check('id="up-back-card"' in page and "back: true" in page and "action: 'downgrade_start'" in page,
-      'the page has no way to go back')
+check('id="up-back-card" hidden' in page and "back: true" in page and "action: 'downgrade_start'" in page,
+      'the page has no way to go back, or shows it before it is switched on')
+check("['downgrade_show', 'Offer going back to an older version'" in page and 'function upChangelog(' in page
+      and page.count("upChangelog(") >= 3, 'the switch or the changelog of each version is not on the page')
 src = (HERE / 'zigmon.py').read_text()
 check("'--downgrade'" in src and "'--downgrade-check'" in src and 'Going back to an older version' in src,
       'the command line or the console has no way to go back')

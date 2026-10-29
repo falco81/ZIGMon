@@ -1618,7 +1618,8 @@ the whole installation and a copy of the program first, runs
 `install.sh --upgrade --yes`, and asks the new version whether it answers;
 when it does not within a minute and a half, or install.sh fails, the copy is
 put back by itself. Going back to an older version is done on the command
-line, or (5.22) under *Going back to an older version*: the older program is
+line, or (5.22) under *Going back to an older version* - shown once *Offer
+going back to an older version* is switched on (5.23): the older program is
 put in and the database left as it is, where no version between the two
 changed how it is read - otherwise it is refused and says why. The very first
 upgrade to 5.18 is done on the command line too - it is what installs the two
@@ -2082,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.22.0**
+Current version: **5.23.0**
+
+5.23.0 — going back is offered only when asked for, and says what it takes away.
+
+* **A switch, off by default**: *Offer going back to an older version*
+  (`downgrade_show`, Control - Upgrades). Off, the card *Going back to an
+  older version* is not shown, and the dashboard, `zigmon --downgrade
+  VERSION` and the console do none of it; root on the command line can still
+  go back with a package file (`sudo zigmon --downgrade FILE`), as the way
+  out when the dashboard itself is what does not work.
+* **What changed, for every version** in the card - an older one at
+  `upgrade_url` or a package sent here: *What changed* shows the version's
+  own entry and, above it, every version after it up to the one that runs -
+  what going back to it takes away. Read from the changelog this version
+  carries, which holds the entries of all that came before it: nothing is
+  fetched for it.
+
+The checks: root's helper, run straight away in them rather than through
+`zigmon-root.path`, is run one at a time, as systemd runs it - the look at
+the network and the clock (5.21) could otherwise take a certificate's request
+from under it, and `test/admin.py` failed now and then.
 
 5.22.0 — going back to an older version, without touching the database.
 

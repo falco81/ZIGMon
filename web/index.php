@@ -3572,6 +3572,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #zmodal[hidden]{display:none}
   #zmodal .box{background:var(--panel);border:1px solid var(--line);border-radius:16px; width:min(1320px,100%);max-height:92vh;display:flex;flex-direction:column; box-shadow:0 26px 70px rgba(0,0,0,.6)}
   #zmodal .box.narrow{width:min(560px,100%)}
+  #zmodal .box .zlines{max-height:46vh;overflow:auto;white-space:pre-wrap}
   #zmodal .box.medium{width:min(860px,100%)}
   #zmodal .body h4{margin:16px 0 6px;font-size:13.5px}
   #zmodal .head{display:flex;align-items:center;gap:12px;padding:16px 20px; border-bottom:1px solid var(--line)}
@@ -4789,7 +4790,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small" id="up-retry"></span>
       </div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-back-card">
+    <div class="card full ot" data-sec="sys-upgrade" id="up-back-card" hidden>
       <h2>Going back to an older version</h2>
       <p class="note">The older program is put in and <b>the database is left as it is</b> &ndash; nothing of it is copied or put back, however big it is. That is safe only while the older version reads the database as this one left it; where a version between them changed that, going back is refused and says why. A copy of the program as it is now is kept, and put back by itself if the older version does not answer. Not while a change of the network or the firewall waits to be kept.</p>
       <div id="up-back"></div>
@@ -17658,7 +17659,7 @@ function energyResetTail(st, host, plugs) {
 
 // ---- the tunable slice of config.json ----------------------------------------------
 var SETTINGS = { dirty: false };
-var SETTINGS_BOOL = { chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, upgrade_check: 1, rbackup: 1, public_view: 1, silence_alert_buttons: 1,
+var SETTINGS_BOOL = { chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, upgrade_check: 1, downgrade_show: 1, rbackup: 1, public_view: 1, silence_alert_buttons: 1,
                       watchdog: 1, route_watch: 1, mqtt_only: 1, debug: 1, debug_events: 1 };
 var SETTINGS_TIME = { backup_time: 1, rbackup_at: 1 };
 var SETTINGS_STEP = { price_per_kwh: '0.01', standing_charge_month: '0.01', heating_enforce_delta: '0.1', latitude: '0.000001', longitude: '0.000001', plug_min_request_gap: '0.05', plug_command_gap: '0.01' };
@@ -18136,6 +18137,10 @@ var SETTINGS_LAYOUT = [
      'Where new versions are looked for — https:// only. A GitHub folder (github.com/OWNER/REPO/tree/BRANCH/FOLDER), '
      + 'a folder listing of a web server of your own, or one package’s own address. Whatever it is, a package '
      + 'is taken only when it is signed by a release key installed with zigmon'],
+    ['downgrade_show', 'Offer going back to an older version',
+     'Shows the card Going back to an older version, and lets the dashboard, zigmon --downgrade VERSION and '
+     + 'the console do it. Off, none of them does; root on the command line can still go back with a package '
+     + 'file (sudo zigmon --downgrade FILE). Going back leaves the database as it is, and only where that is safe'],
   ]],
   ['When, how many, and the password', [
     ['|', 'backups to other machines'],
@@ -26639,11 +26644,36 @@ function drawUpgrade(d) {
 /* Going back to an older version (5.22): what root will do, said before it is
    asked - from the list at upgrade_url, or a package sent here - and the
    database left as it is. */
+// What going back to `version` takes away, and what it was: the entries of
+// the changelog this version carries, said before anybody presses Go back.
+function upChangelog(version) {
+  rootPost('upgrade-do', {action: 'changelog', version: version}).then(function (r) {
+    zmodal('zigmon ' + version + ': what changed', function (body) {
+      var later = r.later || [];
+      if (later.length) {
+        body.appendChild(el('h4', '', 'What going back to ' + version + ' takes away (' + later.length + ' version'
+          + (later.length > 1 ? 's' : '') + ', up to ' + r.here + ')'));
+        later.forEach(function (x, i) {
+          var det = el('details', 'zfold');
+          if (i === 0) det.open = true;
+          det.appendChild(el('summary', '', 'zigmon ' + x.version));
+          det.appendChild(el('pre', 'zlines', x.text));
+          body.appendChild(det);
+        });
+      }
+      body.appendChild(el('h4', '', 'zigmon ' + version + ' itself'));
+      body.appendChild(r.entry ? el('pre', 'zlines', r.entry) : el('p', 'muted', 'Its entry is not in the changelog this version carries.'));
+    }, null, 'medium');
+  }, zoops);
+}
 function drawUpBack(d) {
   var host = $('up-back');
   if (!host) return;
   var b = d.back || {}, w = (d.web || {}).online || {};
+  // off unless somebody switched it on: the card is not there at all
+  $('up-back-card').hidden = !b.on;
   host.innerHTML = '';
+  if (!b.on) return;
   var facts = el('div');
   sysFacts(facts, [['Runs here', 'zigmon ' + (d.version || '?')],
     ['The highest version this database has seen', b.high || ''],
@@ -26671,6 +26701,9 @@ function drawUpBack(d) {
     now.disabled = !b.ready;
     now.onclick = function () { go(pkg.version, false); };
     row.appendChild(now);
+    var log0 = cmdButton('What changed', 'list', '');
+    log0.onclick = function () { upChangelog(pkg.version); };
+    row.appendChild(log0);
     host.appendChild(row);
   }
   var older = (w.older_list || []).filter(function (x) { return x && x.version; });
@@ -26681,6 +26714,9 @@ function drawUpBack(d) {
       tr.appendChild(el('td', 'mono', 'zigmon ' + x.version));
       tr.appendChild(el('td', x.ok ? 'good' : 'muted small', x.ok ? 'safe - the database is left as it is' : x.why));
       var td = el('td');
+      var cl = cmdButton('What changed', 'list', 'small');
+      cl.onclick = function () { upChangelog(x.version); };
+      td.appendChild(cl);
       if (x.ok) {
         var bt = cmdButton('Go back to ' + x.version, 'undo', 'small');
         bt.disabled = !!(b.busy || d.running || d.asked);
