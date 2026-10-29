@@ -158,6 +158,10 @@ GW['hang_body'] = 0.0
 check(took < 10 and ok, 'a send the gateway answered 200 and never finished held everything %.0f s (%s, %s)'
       % (took, ok, said_))
 
+print('the modem is not asked about itself twice a minute')
+check(float(zigmon.DEFAULTS.get('sms_status_s') or 0) >= 300,
+      'the modem is asked about its signal, data and SIM every %ss by default' % zigmon.DEFAULTS.get('sms_status_s'))
+
 sys.stdout.flush()
 if bad:
     print('\n%d check(s) failed' % len(bad))

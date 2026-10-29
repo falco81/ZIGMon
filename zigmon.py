@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.3'
+__version__ = '5.29.4'
 
 import argparse
 import base64
@@ -180,7 +180,11 @@ DEFAULTS = {
     'sms_to': '',                 # who alerts go to, comma separated
     'sms_poll_s': 15,
     'sms_objects_settings': 0,     # settings, notifications and script bodies may be set by text             # how often to look for messages that came in (0 = never)
-    'sms_status_s': 30,           # how often to ask the modem about itself - signal, data, SIM (0 = never)
+    # how often to ask the modem about itself - signal, data, SIM (0 = never).
+    # 5.29.4: five minutes, not thirty seconds - each look is several AT
+    # questions to a modem that does one thing at a time, and a TRB140 asked
+    # that often was slow to send and stalled now and then
+    'sms_status_s': 300,
     'sms_allow': '',              # numbers allowed to give commands; empty means none
     'sms_reply': True,            # answer a command with what was done
     # A message from a number nobody knows is always written down; this says

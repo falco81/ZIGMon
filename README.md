@@ -2083,7 +2083,18 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.3**
+Current version: **5.29.4**
+
+5.29.4 — the modem asked about itself every five minutes, not twice a minute.
+
+The signal, network, data and SIM of the SMS gateway were read every thirty
+seconds by default: several AT questions each time to a modem that does one
+thing at a time. A TRB140 asked that often was slow to send and stalled now
+and then - reports of the same on its own forums point the same way. The
+default (`sms_status_s`) is now 300 s; a house that set its own keeps it, and
+Settings - SMS gateway still offers every 15 s to never.
+
+`test/review529.py`; its new check fails on 5.29.3.
 
 5.29.3 — a gateway that answers and does not finish the answer no longer
 holds every text for a minute.
