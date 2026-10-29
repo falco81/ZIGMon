@@ -2346,6 +2346,11 @@ def ask_part(ask, answer, handle_one, most=65536):
         if not isinstance(r, dict):
             raise Refused('the request is not an object')
         out['id'] = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:40]
+        until = r.get('until')
+        if isinstance(until, (int, float)) and not isinstance(until, bool) and time.time() > until:
+            # asked while a backup held this service: the daemon has given
+            # up waiting and told everyone it was not done - so it is not
+            raise Refused('asked too long ago - nobody waits for it any more')
         out['data'] = handle_one(r)
         out['ok'] = True
     except Refused as e:

@@ -40,6 +40,7 @@ import collections
 import contextlib
 import errno
 import getpass
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -7597,6 +7598,16 @@ def online_list(url):
 # ---------------------------------------------------------------------------
 # The daemon
 # ---------------------------------------------------------------------------
+def _one_writer(fn):
+    """A method that reads a whole list from the database, changes it and
+    writes it back: one at a time."""
+    @functools.wraps(fn)
+    def held(self, *a, **k):
+        with self._lists_lock:
+            return fn(self, *a, **k)
+    return held
+
+
 class Daemon(object):
     def __init__(self, storage=None):
         open_log()
@@ -7702,6 +7713,9 @@ class Daemon(object):
         self.schedule_runtime = {}   # schedule id -> {'last_day'}
         # rule id -> an action put off for a while: {'due', 'origin', 'facts', 'do'}
         self.rule_waiting = {}
+        # one writer at a time of the lists kept whole in the database: a
+        # scene switching three rules off from three threads lost one of them
+        self._lists_lock = threading.RLock()
         self.file_config = dict(CONFIG)      # what config.json says, before overrides
         # ...and which keys it really names, rather than leaving to the default:
         # the page says which of the three a running value came from
@@ -7716,6 +7730,7 @@ class Daemon(object):
         # the machine itself (5.21): its network, a restart, the firewall on
         # trial, the clock - each asked of root on a road of its own
         self._net_kick = threading.Event()
+        self._root_call_locks = {}
         self._net_work = {'read_at': 0.0}
         try:
             self.note_version_high()
@@ -13711,88 +13726,95 @@ class Daemon(object):
         while True:
             self._notify_kick.wait()
             self._notify_kick.clear()
-            while self.notify_queue:
-                item = self.notify_queue.pop(0)
-                # With the internet down every send waits out its timeout and
-                # the queue backs up; a "motion at 10:01" delivered at 10:20 is
-                # noise, not news. Anything that sat here longer than five
-                # minutes is dropped with a line in the log; a critical one is
-                # still sent, late is better than never for those.
-                waited = time.time() - item.get('queued', time.time())
-                if waited > 300 and item['level'] != 'crit':
-                    log('notification dropped, %s late: %s' % (human_age(waited), item['message'][:80]), 'warn')
-                    continue
-                title = item.get('title') or {'crit': 'PROBLEM', 'warn': 'Warning'}.get(item['level'], 'zigmon')
-                image = item.get('image') or ''
-                to = [x.strip() for x in str(item.get('sms_to') or '').split(',') if x.strip()] \
-                    or self.sms_recipients()
-                to = [self.phone_of(x) or x for x in to]        # a person stands for their number
-                came_from = str(item.get('about_number') or '')
-                if came_from:
-                    to = [x for x in to if not self._same_number(x, came_from)]   # never text it back at itself
-                to = [x for x in to if re.match(r'^\+?\d{6,15}$', re.sub(r'[^0-9+]', '', x or ''))]
-                texts = []
-                if self.sms_ready() and to and item.get('sms', True):
-                    body = ((item.get('title') + ': ') if item.get('title') else '') + item['message']
-                    # Cut to where a text message actually ends rather than at
-                    # a flat 320 characters: a part is 160 plain characters,
-                    # and 70 once a single Czech diacritic appears, so a long
-                    # alert was five messages of somebody's money. A critical
-                    # one may still run to two; anything else is held to one.
-                    body = self._sms_cut(body, 2 if item['level'] == 'crit' else 1)
-                    quiet = self._sms_quiet_now()
-                    if quiet and item['level'] != 'crit':
-                        # The house is asleep. A critical alert still wakes
-                        # the phone, because that is what critical means;
-                        # everything else waits for the morning rather than
-                        # being lost, and the other roads are unaffected -
-                        # ntfy and Telegram go out below as they always did.
-                        for number in to[:5]:
-                            self.sms_queue_add(number, body, why='quiet hours',
-                                               send_after=quiet)
-                        self.debug('a text is held until %s (quiet hours)'
-                                   % time.strftime('%H:%M', time.localtime(quiet)))
-                    else:
-                        texts = [(number, body) for number in to[:5]]
-                if CONFIG.get('notify_ntfy') and item.get('ntfy', True):
-                    try:
-                        headers = {'Title': ascii_header(title),
-                                   'Priority': 'high' if item['level'] == 'crit' else 'default',
-                                   'Tags': 'rotating_light' if item['level'] == 'crit' else 'house'}
-                        if image:
-                            # ntfy shows a picture from a URL; it is fetched by
-                            # the phone, so it has to be reachable from there
-                            headers['Attach'] = image
-                        where, auth = ntfy_address(CONFIG['notify_ntfy'])
-                        if auth:
-                            headers['Authorization'] = auth
-                        req = urllib.request.Request(where, data=item['message'].encode(),
-                                                     headers=headers)
-                        urllib.request.urlopen(req, timeout=10).read()
-                    except Exception as e:
-                        log('ntfy: %s' % e, 'warn')
-                token, chat = CONFIG.get('notify_telegram_token'), CONFIG.get('notify_telegram_chat')
-                if not item.get('telegram', True):
-                    token = None
-                if token and chat:
-                    try:
-                        text = '%s\n%s' % (title, item['message'])
-                        if image:
-                            method, body = 'sendPhoto', {'chat_id': str(chat), 'photo': image, 'caption': text[:1024]}
+            try:
+                while self.notify_queue:
+                    item = self.notify_queue.pop(0)
+                    # With the internet down every send waits out its timeout and
+                    # the queue backs up; a "motion at 10:01" delivered at 10:20 is
+                    # noise, not news. Anything that sat here longer than five
+                    # minutes is dropped with a line in the log; a critical one is
+                    # still sent, late is better than never for those.
+                    waited = time.time() - item.get('queued', time.time())
+                    if waited > 300 and item['level'] != 'crit':
+                        log('notification dropped, %s late: %s' % (human_age(waited), item['message'][:80]), 'warn')
+                        continue
+                    title = item.get('title') or {'crit': 'PROBLEM', 'warn': 'Warning'}.get(item['level'], 'zigmon')
+                    image = item.get('image') or ''
+                    to = [x.strip() for x in str(item.get('sms_to') or '').split(',') if x.strip()] \
+                        or self.sms_recipients()
+                    to = [self.phone_of(x) or x for x in to]        # a person stands for their number
+                    came_from = str(item.get('about_number') or '')
+                    if came_from:
+                        to = [x for x in to if not self._same_number(x, came_from)]   # never text it back at itself
+                    to = [x for x in to if re.match(r'^\+?\d{6,15}$', re.sub(r'[^0-9+]', '', x or ''))]
+                    texts = []
+                    if self.sms_ready() and to and item.get('sms', True):
+                        body = ((item.get('title') + ': ') if item.get('title') else '') + item['message']
+                        # Cut to where a text message actually ends rather than at
+                        # a flat 320 characters: a part is 160 plain characters,
+                        # and 70 once a single Czech diacritic appears, so a long
+                        # alert was five messages of somebody's money. A critical
+                        # one may still run to two; anything else is held to one.
+                        body = self._sms_cut(body, 2 if item['level'] == 'crit' else 1)
+                        quiet = self._sms_quiet_now()
+                        if quiet and item['level'] != 'crit':
+                            # The house is asleep. A critical alert still wakes
+                            # the phone, because that is what critical means;
+                            # everything else waits for the morning rather than
+                            # being lost, and the other roads are unaffected -
+                            # ntfy and Telegram go out below as they always did.
+                            for number in to[:5]:
+                                self.sms_queue_add(number, body, why='quiet hours',
+                                                   send_after=quiet)
+                            self.debug('a text is held until %s (quiet hours)'
+                                       % time.strftime('%H:%M', time.localtime(quiet)))
                         else:
-                            method, body = 'sendMessage', {'chat_id': str(chat), 'text': text}
-                        req = urllib.request.Request('https://api.telegram.org/bot%s/%s' % (token, method),
-                                                     data=json.dumps(body).encode(),
-                                                     headers={'Content-Type': 'application/json'})
-                        urllib.request.urlopen(req, timeout=10).read()
-                    except Exception as e:
-                        log('telegram: %s' % e, 'warn')
-                # The texts last, and by a worker of their own. Sent first and
-                # here, the gateway's minute per message (and its pauses)
-                # held a critical push back by minutes, and whatever queued
-                # behind it grew five minutes old and was dropped unsent.
-                if texts:
-                    self._sms_alert_add(texts)
+                            texts = [(number, body) for number in to[:5]]
+                    if CONFIG.get('notify_ntfy') and item.get('ntfy', True):
+                        try:
+                            headers = {'Title': ascii_header(title),
+                                       'Priority': 'high' if item['level'] == 'crit' else 'default',
+                                       'Tags': 'rotating_light' if item['level'] == 'crit' else 'house'}
+                            if image:
+                                # ntfy shows a picture from a URL; it is fetched by
+                                # the phone, so it has to be reachable from there
+                                headers['Attach'] = image
+                            where, auth = ntfy_address(CONFIG['notify_ntfy'])
+                            if auth:
+                                headers['Authorization'] = auth
+                            req = urllib.request.Request(where, data=item['message'].encode(),
+                                                         headers=headers)
+                            urllib.request.urlopen(req, timeout=10).read()
+                        except Exception as e:
+                            log('ntfy: %s' % e, 'warn')
+                    token, chat = CONFIG.get('notify_telegram_token'), CONFIG.get('notify_telegram_chat')
+                    if not item.get('telegram', True):
+                        token = None
+                    if token and chat:
+                        try:
+                            text = '%s\n%s' % (title, item['message'])
+                            if image:
+                                method, body = 'sendPhoto', {'chat_id': str(chat), 'photo': image, 'caption': text[:1024]}
+                            else:
+                                method, body = 'sendMessage', {'chat_id': str(chat), 'text': text}
+                            req = urllib.request.Request('https://api.telegram.org/bot%s/%s' % (token, method),
+                                                         data=json.dumps(body).encode(),
+                                                         headers={'Content-Type': 'application/json'})
+                            urllib.request.urlopen(req, timeout=10).read()
+                        except Exception as e:
+                            log('telegram: %s' % e, 'warn')
+                    # The texts last, and by a worker of their own. Sent first and
+                    # here, the gateway's minute per message (and its pauses)
+                    # held a critical push back by minutes, and whatever queued
+                    # behind it grew five minutes old and was dropped unsent.
+                    if texts:
+                        self._sms_alert_add(texts)
+            except Exception as e:                       # noqa: BLE001
+                # one message that went wrong (a database busy, a number the
+                # gateway chokes on) is that message: the thread dying with it
+                # left every later alert, a burglar's too, in the queue for good
+                log('a notification could not be handled: %s' % e, 'error')
+                self._notify_kick.set()
 
     def _sms_cut(self, words, parts=1):
         """The text cut to whole messages rather than to a count of letters.
@@ -15014,6 +15036,14 @@ class Daemon(object):
         except ValueError:
             return False
 
+    def access_from_look(self, look=None):
+        """Who may reach which page as nginx's own lines have it, the way the
+        dashboard would set it."""
+        now = (look if look is not None else self.root_look()).get('access') or {}
+        return {k: {'any': bool((now.get(k) or {}).get('any', True)),
+                    'from': list((now.get(k) or {}).get('from') or [])}
+                for k, _t, _w, _i in self.ACCESS_PAGES}
+
     def firewall_state(self, who=''):
         conf, access = self.fw_conf(), self.access_conf()
         look = self.root_look()
@@ -15027,9 +15057,7 @@ class Daemon(object):
                 'current': status.get('applied_hash') == self.apply_body()[1],
                 'auto': [dict(x) for x in self.fw_auto(conf, access or {})]}
         now = look.get('access') or {}
-        shown = access or {k: {'any': bool((now.get(k) or {}).get('any', True)),
-                               'from': list((now.get(k) or {}).get('from') or [])}
-                           for k, _t, _w, _i in self.ACCESS_PAGES}
+        shown = access or self.access_from_look(look)
         return {'ok': True, 'conf': conf, 'access': shown, 'from_nginx': access is None,
                 'present': {k: bool((now.get(k) or {}).get('present', True)) for k in now},
                 'pages': [{'key': k, 'title': t, 'words': w, 'icon': i}
@@ -16120,6 +16148,24 @@ class Daemon(object):
             pass
         return 0.0
 
+    @staticmethod
+    def boot_id():
+        """The kernel's id of this boot: unlike btime it does not move when
+        the clock is stepped."""
+        fake = os.environ.get('ZIGMON_BTIME_FILE')
+        try:
+            return (Path(fake).read_text() if fake else
+                    Path('/proc/sys/kernel/random/boot_id').read_text()).strip()
+        except OSError:
+            return ''
+
+    def rebooted_since(self, row):
+        """Has the machine started again since `row` was written."""
+        was, now = str(row.get('boot_id') or ''), self.boot_id()
+        if was and now:
+            return was != now
+        return self.boot_time() > float(row.get('boot') or 0) + 1
+
     def root_call(self, ask, answer, data, wait=60):
         """One question to root on a road of its own (net.ask, ntp.ask) and
         its answer - the network or the clock read, or a change made - never
@@ -16128,16 +16174,24 @@ class Daemon(object):
             raise ValueError('root has not been given this to do on this machine yet: run '
                              'install.sh --upgrade once, which installs zigmon-root.path')
         self.root_folders()
+        # one question at a time on each road: a read asked meanwhile would
+        # write over a change that root has not taken yet
+        with self._root_call_locks.setdefault(ask, threading.Lock()):
+            return self._root_call(ask, answer, data, wait)
+
+    def _root_call(self, ask, answer, data, wait):
         ask_id = secrets.token_hex(8)
         tmp = self.root_dir('.%s.%d.%d' % (ask, os.getpid(), threading.get_ident() % 100000))
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        end = time.time() + wait
         with os.fdopen(fd, 'w') as f:
-            f.write(json.dumps(dict(data, id=ask_id)))
+            # `until`: root, busy with a backup until long after, does not
+            # put in a change - or restart the machine - nobody waits for
+            f.write(json.dumps(dict(data, id=ask_id, until=end + 5)))
         os.replace(str(tmp), str(self.root_dir(ask)))
         run = os.environ.get('ZIGMON_ROOT_RUN')
         if run:                                   # the checks: root answers at once
             root_run_now(run, 600)
-        end = time.time() + wait
         while True:
             got = self.root_read(answer)
             if got.get('id') == ask_id:
@@ -16146,7 +16200,14 @@ class Daemon(object):
                 return got.get('data') or {}
             if time.time() > end:
                 break
-            time.sleep(0.4)
+            time.sleep(0.2)
+        # not answered: the question taken back, when it is still ours
+        try:
+            p = self.root_dir(ask)
+            if json.loads(Path(p).read_text() or '{}').get('id') == ask_id:
+                os.unlink(str(p))
+        except (OSError, ValueError, AttributeError):
+            pass
         busy = self.root_busy()
         raise ValueError('root did not answer in %d s%s' % (
             wait, ' - it is still at what was asked before (a backup takes minutes)' if busy
@@ -16256,7 +16317,10 @@ class Daemon(object):
             except ValueError:
                 raise ValueError('%r is not the IPv6 address of a DNS server' % x)
         host = str(want.get('hostname') or d.get('hostname') or '').strip().rstrip('.').lower()
-        if not self.HOST_RE.match(host) or '.' not in host:
+        host_old = str(d.get('hostname') or '')
+        # a short name the machine has already is kept as it is: going back
+        # to it, or a new address only, is never refused for it
+        if not self.HOST_RE.match(host) or ('.' not in host and host != host_old.lower()):
             raise ValueError('the host name is the whole name: zigmon.example.cz')
         old_ip = self.net_current_ip(now).split('/')[0]
         new_ip = str(a4.ip) if a4 else ''
@@ -16308,8 +16372,11 @@ class Daemon(object):
         """The page asks; the job is done by the network thread, which follows
         it through the restart. `rollback`: the old network asked back by the
         machine itself - never put on trial again."""
-        if self.net_job_active(self._mj('net:job')):
+        job = self._mj('net:job')
+        if self.net_job_active(job):
             raise ValueError('the network is being changed already')
+        if job and job.get('state') == 'trial':
+            raise ValueError('the last change of the network waits to be kept or put back first')
         if self.power_busy():
             raise ValueError('a restart or a power-off is under way')
         checked = self.net_check(want)
@@ -16364,7 +16431,7 @@ class Daemon(object):
         w = ask['want']
         by = '%s (network)' % (ask.get('by') or 'zigmon')
         job = {'id': ask['id'], 'state': 'running', 'at': time.time(), 'pct': 0,
-               'by': ask.get('by'), 'want': w, 'steps': [], 'boot': self.boot_time(),
+               'by': ask.get('by'), 'want': w, 'steps': [], 'boot': self.boot_time(), 'boot_id': self.boot_id(),
                'rollback': bool(ask.get('rollback'))}
         if self.net_trial_min() and not ask.get('rollback'):
             job['back'], job['back_why'] = self.net_back_want(self._mj('net:now'))
@@ -16543,7 +16610,7 @@ class Daemon(object):
             self.net_trial_tick(job)
             return
         if job and job.get('state') == 'rebooting':
-            if self.boot_time() > float(job.get('boot') or 0) + 1:
+            if self.rebooted_since(job):
                 self.net_job_after(job)
             elif time.time() - float(job.get('moved') or 0) > 900:
                 self._job_put(job, 'the machine did not restart in 15 minutes - restart it by '
@@ -16611,8 +16678,16 @@ class Daemon(object):
         t = time.time()
         trial = self._mj('fw:trial') or {}
         if not trial or trial.get('done'):
+            # never set on the dashboard: what nginx has now is what comes
+            # back - an empty one would leave the new lines in nginx
+            access = self.store.get_meta('web_access') or ''
+            if not access:
+                try:
+                    access = json.dumps(self.access_from_look())
+                except Exception:                       # noqa: BLE001
+                    access = ''
             trial = {'id': secrets.token_hex(6), 'was': self.store.get_meta('firewall') or '',
-                     'access': self.store.get_meta('web_access') or '', 'at': t, 'by': by}
+                     'access': access, 'at': t, 'by': by}
         trial.update(until=t + n * 60, last_by=by, min=n)
         self._mj_put('fw:trial', trial, bump=True)
         return trial
@@ -16745,7 +16820,7 @@ class Daemon(object):
         self._mj_put('power:row', row, bump=True)
 
     def power_go(self, plan):
-        row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': self.boot_time(),
+        row = {'id': plan['id'], 'how': plan['how'], 'at': time.time(), 'boot': self.boot_time(), 'boot_id': self.boot_id(),
                'by': plan.get('by')}
         try:
             row['down_at'] = time.time() + 5
@@ -16769,7 +16844,7 @@ class Daemon(object):
         plan = self.power_plan()
         row = self._mj('power:row') or {}
         if row.get('state') == 'going':
-            if self.boot_time() > float(row.get('boot') or 0) + 1:
+            if self.rebooted_since(row):
                 self._power_put(row, 'back', 'up again')
                 self.say_event('control', 'the server is up again after the %s' % (
                     'restart' if row.get('how') == 'reboot' else 'power-off'), 'info', about='restart')
@@ -16951,11 +17026,13 @@ class Daemon(object):
         self.ntp_problem_say(now)
         return now
 
+    NTP_RETRY_S = 120
+
     def ntp_apply(self):
         want = self.ntp_desired()
         row = {'hash': self.ntp_hash(), 'at': time.time()}
         try:
-            got = self.root_call('ntp.ask', 'ntp.json', dict(want, do='apply'), 300)
+            got = self.root_call('ntp.ask', 'ntp.json', dict(want, do='apply'), 60)
             row.update(ok=True, said='; '.join(got.get('said') or []) or 'as it was')
             log('the time: %s' % row['said'])
             if want.get('timezone') and 'time zone' in row['said']:
@@ -16985,7 +17062,10 @@ class Daemon(object):
             return
         if self._mj('ntp:conf'):
             done = self._mj('ntp:applied') or {}
-            if done.get('hash') != self.ntp_hash() and time.time() - float(done.get('at') or 0) > 30:
+            age = time.time() - float(done.get('at') or 0)
+            # not put in (root busy with a backup, say): asked again, not forgotten
+            if (done.get('hash') != self.ntp_hash() and age > 30) or \
+                    (not done.get('ok') and age > self.NTP_RETRY_S):
                 self.ntp_apply()
                 return
         sync_at = float(self.store.get_meta('ntp:sync') or 0)
@@ -17435,6 +17515,7 @@ class Daemon(object):
                 self.ping_broker()
             try:
                 self.check_for_backs()       # "on for ten minutes", the way back
+                self.timers_keep()
                 if time.time() - last_windows >= 10:
                     last_windows = time.time()
                     self.check_rule_windows()
@@ -20906,6 +20987,7 @@ class Daemon(object):
             raw = str(rows)
         return hashlib.sha1(raw.encode('utf-8', 'replace')).hexdigest()[:12]
 
+    @_one_writer
     def save_schedules(self, items):
         clean = []
         seen_ids = set()
@@ -27279,6 +27361,10 @@ class Daemon(object):
                 if str(action.get('do') or '').lower().split(':')[0] in ('for', 'off-for', 'step'):
                     send(target, action, 0.0)
                     continue
+                if honour_hold:
+                    key = self.hold_key(target)
+                    if key and self.target_held(key):
+                        continue             # taken over by hand, as _fire_target says
                 threading.Thread(
                     target=self._run_binding,
                     args=(target[1], action['do'], 'scene "%s"' % scene['name'], action.get('pulse_ms')),
@@ -27683,6 +27769,7 @@ class Daemon(object):
         canonical = next((n for n in self.plug_names_all() if n.lower() == spec.lower()), None)
         return canonical
 
+    @_one_writer
     def set_rule_enabled(self, rule_id, do, origin):
         """A rule switched off stays where it is and simply does not fire."""
         rules = self.rules()
@@ -27714,6 +27801,7 @@ class Daemon(object):
         ok, _ = self.presence_report('', 'home' if home else 'away', origin=origin, person=person)
         return ok
 
+    @_one_writer
     def set_group_enabled(self, kind, group_id, do, origin):
         """A sensor group or an action group switched off: it keeps its place
         and simply does nothing."""
@@ -27730,6 +27818,7 @@ class Daemon(object):
                 return True
         return False
 
+    @_one_writer
     def set_schedule_enabled(self, sched_id, do, origin):
         rows = self.schedules()
         for x in rows:
@@ -27743,6 +27832,7 @@ class Daemon(object):
                 return True
         return False
 
+    @_one_writer
     def set_binding_group_enabled(self, name, do, origin):
         """A whole section of button bindings at once - "the bedroom buttons
         do nothing while we are away"."""
@@ -28108,7 +28198,8 @@ class Daemon(object):
             with self._for_lock:
                 self._for_backs[self._for_key(target)] = {
                     'due': time.time() + span, 'target': target, 'back': back,
-                    'origin': 'after %s (%s)' % (human_span(span), origin), 'span': span}
+                    'origin': 'after %s (%s)' % (human_span(span), origin), 'span': span,
+                    'honour': bool(honour_hold)}
             return
         if low.startswith('step:'):
             step = numeric(low[5:])
@@ -28238,6 +28329,72 @@ class Daemon(object):
             return 'zb:%s:%s' % (target[1], target[2])
         return '%s:%s' % (target[0], target[1] if len(target) > 1 else '')
 
+    def timers_keep(self):
+        """The ways back of "on for N" and the rules waiting to act, written
+        down when they change, and read back once after a start: a heater on
+        "for half an hour" stayed on for good after an upgrade or a crash."""
+        if not getattr(self, '_timers_read', False):
+            self._timers_read = True
+            self.timers_restore()
+        with self._for_lock:
+            backs = [{'due': v['due'], 'back': v['back'], 'origin': v['origin'], 'span': v['span'],
+                      'honour': bool(v.get('honour')), 'target': self._timer_target_out(v['target'])}
+                     for v in self._for_backs.values()]
+        waits = {str(k): v for k, v in list(self.rule_waiting.items())}
+        sig = (tuple(sorted((b['origin'], b['due']) for b in backs)),
+               tuple(sorted((k, v.get('due')) for k, v in waits.items())))
+        if sig == getattr(self, '_timers_sig', None):
+            return
+        self._timers_sig = sig
+        try:
+            self.store.set_meta('timers', json.dumps({'backs': [b for b in backs if b['target']],
+                                                      'waits': waits}, default=str))
+        except Exception as e:                          # noqa: BLE001
+            log('the timers could not be written down: %s' % e, 'debug')
+
+    @staticmethod
+    def _timer_target_out(target):
+        if target[0] == 'plug':
+            return ['plug', str(getattr(target[1], 'name', target[1]))]
+        if target[0] == 'zb' and len(target) > 2:
+            return ['zb', str(target[1]), str(target[2])]
+        return None
+
+    def timers_restore(self):
+        try:
+            got = json.loads(self.store.get_meta('timers') or '{}')
+        except ValueError:
+            got = {}
+        if not isinstance(got, dict):
+            return
+        n = 0
+        for b in got.get('backs') or []:
+            try:
+                t = b['target']
+                if t[0] == 'plug':
+                    plug = self.plug_by_name(t[1])
+                    if plug is None:
+                        continue
+                    target = ('plug', plug)
+                else:
+                    target = ('zb', t[1], t[2])
+                with self._for_lock:
+                    key = self._for_key(target)
+                    if key not in self._for_backs:
+                        self._for_backs[key] = {'due': float(b['due']), 'target': target,
+                                                'back': str(b['back']), 'origin': str(b['origin']),
+                                                'span': float(b.get('span') or 0),
+                                                'honour': bool(b.get('honour'))}
+                        n += 1
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+        for rid, w in (got.get('waits') or {}).items():
+            if isinstance(w, dict) and 'due' in w and rid not in self.rule_waiting:
+                self.rule_waiting[rid] = dict(w, restored=True)
+                n += 1
+        if n:
+            log('%d timer(s) of before the restart taken up again' % n)
+
     def check_for_backs(self):
         """The ways back of "on for ten minutes" whose time has come."""
         if not self._for_backs:
@@ -28248,7 +28405,10 @@ class Daemon(object):
             todo = [self._for_backs.pop(k) for k in due]
         for one in todo:
             log('%s again after %s' % (one['back'], human_span(one['span'])), 'info')
-            self._fire_target(one['target'], one['back'], one['origin'])
+            # a rule's "on for ten minutes" leaves alone a light somebody has
+            # taken over by hand since: it was switched off under them
+            self._fire_target(one['target'], one['back'], one['origin'],
+                              honour_hold=bool(one.get('honour')))
 
     def _run_zigbee_switch(self, device_id, key, do, origin, pulse_ms=None):
         self.debug('command %s -> %s %s' % (do, device_id, key), origin)
@@ -28463,6 +28623,7 @@ class Daemon(object):
     def bindings(self):
         return self.store.meta_json('bindings')
 
+    @_one_writer
     def save_bindings(self, items):
         clean = []
         for index, b in enumerate(items or []):
@@ -28506,6 +28667,7 @@ class Daemon(object):
     def rules(self):
         return self.store.meta_json('rules')
 
+    @_one_writer
     def save_rules(self, items):
         clean = self._validate_rules(items)
         before = len(self.rules())
@@ -34269,6 +34431,7 @@ class Daemon(object):
         switched on by one button and off by another."""
         return self.store.meta_json('action_groups')
 
+    @_one_writer
     def save_action_groups(self, items):
         clean, seen = [], set()
         for index, g in enumerate(items or []):
@@ -34333,6 +34496,7 @@ class Daemon(object):
         so."""
         return self.store.meta_json('sensor_groups')
 
+    @_one_writer
     def save_sensor_groups(self, items):
         clean = []
         seen = set()
@@ -35728,6 +35892,13 @@ class Daemon(object):
         that dances around the line."""
         for r in self.rules():
             if not r.get('enabled', True):
+                # switched off: what it remembered is forgotten, as for a rule
+                # outside its hours - a door alarm switched back on found
+                # "already open" and said nothing at the next opening
+                rt = self.rule_runtime.get(r['id'])
+                if rt is not None and (rt.get('holds') is not None or 'since' in rt):
+                    rt['holds'] = None
+                    rt.pop('since', None)
                 continue
             if gated is not None and bool(str(r.get('when') or '').strip()) != gated:
                 continue                     # the other worker's rules
@@ -35826,15 +35997,21 @@ class Daemon(object):
             elif not fresh:
                 continue
             now = time.time()
-            if now - rt['fired'] < int(r.get('cooldown_s') or 0):
+            later = int(r.get('after_s') or 0)
+            # A rule that waits is held back by its cooldown when it ACTS
+            # (_rule_act), not when it is armed: stamped here, a wait called
+            # off by a movement and armed again inside the cooldown was
+            # refused, the edge was spent, and the light never went off.
+            if not later and now - rt['fired'] < int(r.get('cooldown_s') or 0):
                 continue
             # The hourly cap counts what happens, not what is armed: somebody
             # at a desk moving every couple of minutes armed and cancelled
             # the same wait three times and then met "max per hour" without
             # anything having been switched at all.
-            if not int(r.get('after_s') or 0) and self._rate_limited(r, rt):
+            if not later and self._rate_limited(r, rt):
                 continue
-            rt['fired'] = now
+            if not later:
+                rt['fired'] = now
             if wait_s:
                 rt['for_fired'] = rt['since']
             if paired and second and not mine and holds_second:
@@ -35869,6 +36046,8 @@ class Daemon(object):
         if int(r.get('after_s') or 0):
             # counted here for a rule that waits, so only what happens counts
             rt = self.rule_runtime.setdefault(r['id'], {'holds': None, 'fired': 0.0, 'reading': None})
+            if time.time() - float(rt.get('fired') or 0) < int(r.get('cooldown_s') or 0):
+                return
             if self._rate_limited(r, rt):
                 return
             rt['fired'] = time.time()
@@ -35932,6 +36111,12 @@ class Daemon(object):
                 self.debug('rule: %s called off - outside its hours, or the house is not as it asks'
                            % waiting['origin'])
                 continue
+            if waiting.get('restored') and rid not in self.rule_runtime:
+                # waiting from before a restart, and nothing heard since: is
+                # it still true, by the last reading
+                now_v = self.latest_value(r.get('device'), r.get('key'))
+                if now_v is None or not self._rule_holds(r['op'], now_v, r['value']):
+                    continue
             self._rule_act(r, waiting['origin'] + ' (after %s)' % human_span(int(r.get('after_s') or 0)),
                            waiting['facts'], waiting.get('device_id') or '')
             self.bump()
