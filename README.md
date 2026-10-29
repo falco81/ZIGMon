@@ -2083,7 +2083,19 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.5**
+Current version: **5.29.6**
+
+5.29.6 — the same command sent twice is done twice.
+
+5.29.5 took the same words from the same number within fifteen seconds for
+the gateway handing one text over twice - and so a command sent again on
+purpose, "on" and "on" again a few seconds later, was ignored the second
+time. The gateway's doubles come in the same second: without a stamp of the
+message's own, only the same words within two seconds are a double now; where
+the push carries one (an id, a time), the stamp decides - the same stamp is
+the same message, a new one a new command.
+
+`test/review5295.py`; its new checks fail on 5.29.5.
 
 5.29.5 — a long text no longer stalls the SMS gateway for a minute.
 

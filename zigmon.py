@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.5'
+__version__ = '5.29.6'
 
 import argparse
 import base64
@@ -10368,21 +10368,28 @@ class Daemon(object):
         if cur:
             pieces.append(cur)
         return [p for p in pieces if p.strip()] or [str(text)]
-    SMS_PUSH_SAME_S = 15
+    # The gateway's doubles come in the same second. Fifteen seconds (5.29.5)
+    # also swallowed the same command sent twice on purpose - "on", and "on"
+    # again a few seconds later - so without a stamp of the message's own it
+    # is two seconds; with one, the stamp decides.
+    SMS_PUSH_SAME_S = 2
+    SMS_PUSH_STAMPED_S = 120
 
-    def sms_push_seen(self, sender, text):
-        """True when this very text from this number came in moments ago -
-        the gateway handing one message over twice. Writes it down otherwise."""
+    def sms_push_seen(self, sender, text, stamp=''):
+        """True when this very message from this number was handed over a
+        moment ago - the gateway handing one message over twice. Writes it
+        down otherwise."""
         guard = self.__dict__.setdefault('_sms_push_guard', threading.Lock())
-        key = (re.sub(r'[^0-9+]', '', str(sender or '')), str(text or '').strip())
+        key = (re.sub(r'[^0-9+]', '', str(sender or '')), str(text or '').strip(), str(stamp or ''))
+        window = self.SMS_PUSH_STAMPED_S if stamp else self.SMS_PUSH_SAME_S
         now = time.time()
         with guard:
             seen = self.__dict__.setdefault('_sms_push_recent', {})
-            for k in [k for k, at in seen.items() if now - at > self.SMS_PUSH_SAME_S]:
+            for k in [k for k, v in seen.items() if now - v[0] > v[1]]:
                 del seen[k]
             if key in seen:
                 return True
-            seen[key] = now
+            seen[key] = (now, window)
             return False
 
     def _sms_reply_loop(self):
@@ -39842,8 +39849,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         # second (two POSTs in nginx's log), and each was answered: two paid
         # answers, the second queued behind the first. The same number with
         # the same words within a few seconds is that one text again.
-        if d.sms_push_seen(sender, text):
-            log('SMS push: the same message again within %ds - ignored' % d.SMS_PUSH_SAME_S, 'info')
+        # what the gateway says of the message itself, where it says it: the
+        # same message handed over twice carries the same stamp, a command
+        # sent again by hand a new one
+        stamp = ''
+        for name in ('id', 'sms_id', 'msg_id', 'index', 'timestamp', 'time', 'date', 'datetime', 'ts'):
+            got = (body or {}).get(name) or q.get(name)
+            if got not in (None, ''):
+                stamp = '%s=%s' % (name, str(got)[:60])
+                break
+        if d.sms_push_seen(sender, text, stamp):
+            log('SMS push: the same message handed over again%s - ignored'
+                % ((' (%s)' % stamp) if stamp else ' within %ds' % d.SMS_PUSH_SAME_S), 'info')
             return self._send(200, {'ok': True, 'acted': False, 'duplicate': True})
         d._sms_push_at = time.time()       # the reply waits for this request to be answered
         did = d.sms_handle(sender, text, road='push')

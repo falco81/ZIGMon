@@ -161,6 +161,19 @@ check(zigmon.Daemon.sms_parts(d.sms_help()) == 1 and '|' not in d.sms_help(),
 seen = getattr(d, 'sms_push_seen', None)
 check(seen and not seen('+420777000111', 'Status') and seen('+420 777 000 111', 'Status')
       and not seen('+420777000111', 'Help'), 'the same text pushed twice in a second is acted on twice')
+# ...and the same command sent again on purpose, a few seconds later, is a
+# command (5.29.5 swallowed it for fifteen seconds)
+time.sleep(2.5)
+check(seen and not seen('+420777000111', 'Status'), 'the same command sent again a few seconds later was ignored')
+if seen:
+    try:
+        stamped = (not seen('+420777000111', 'on', 'date=2026-10-29 15:00:01')
+                   and not seen('+420777000111', 'on', 'date=2026-10-29 15:00:04'))
+        time.sleep(2.5)
+        stamped = stamped and seen('+420777000111', 'on', 'date=2026-10-29 15:00:01')
+    except TypeError:
+        stamped = False
+    check(stamped, 'the gateway\'s own stamp of a message is not what tells a double from a command sent again')
 
 sys.stdout.flush()
 if bad:
