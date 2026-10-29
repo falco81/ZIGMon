@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""5.29: an answer by text is not sent into a gateway still busy with the
+push it answers, and a slow gateway says what it was doing. Every check fails
+on 5.28.0 and passes since.
+
+    python3 test/review529.py
+
+A Teltonika-lookalike REST API on a port of its own; no SIM card.
+"""
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+W = Path(tempfile.mkdtemp(prefix='zigmon-review529-check-'))
+PORT = 19853
+bad = []
+
+
+def check(ok, what):
+    if not ok:
+        bad.append(what)
+        print('  FAILED: ' + what)
+
+
+GW = {'sent': [], 'send_delay': 0.0}
+
+
+class Gateway(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _out(self, obj):
+        raw = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path == '/api/modems/status':
+            return self._out({'success': True, 'data': [{'id': '1-1'}]})
+        return self._out({'success': True, 'data': []})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+        if self.path == '/api/login':
+            return self._out({'success': True, 'data': {'token': 't0k3n', 'expires': 299}})
+        if self.path == '/api/messages/actions/send':
+            GW['sent'].append((time.time(), (body.get('data') or {}).get('message')))
+            if GW['send_delay']:
+                time.sleep(GW['send_delay'])
+            return self._out({'success': True, 'data': {'sms_used': 1}})
+        return self._out({'success': True, 'data': {}})
+
+
+srv = ThreadingHTTPServer(('127.0.0.1', PORT), Gateway)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+sys.path.insert(0, str(HERE))
+sys.argv = ['zigmon']
+import zigmon                                           # noqa: E402
+
+zigmon.load_config()
+zigmon.CONFIG.update({'db_file': str(W / 'z.db'), 'api_port': 0, 'token_file': str(W / 'run' / 'api-token'),
+                      'pin': '', 'plugs': [], 'sensors': [], 'mqtt_host': '', 'log_file': '',
+                      'state_dir': str(W / 'state'), 'sms_enabled': True, 'sms_host': '127.0.0.1',
+                      'sms_port': PORT, 'sms_https': False, 'sms_api': 'rest', 'sms_user': 'admin',
+                      'sms_password': 'x', 'sms_send_gap_s': 0, 'sms_timeout_s': 15, 'sms_daily_cap': 0})
+(W / 'state').mkdir()
+d = zigmon.Daemon()
+
+print('an answer to a pushed text waits until the push is answered')
+pushed = time.time()
+d._sms_push_at = pushed                                  # as the webhook does
+d.sms_reply('+420777000111', 'Doma jsou: Falco')
+end = time.time() + 6
+while not GW['sent'] and time.time() < end:
+    time.sleep(0.02)
+check(GW['sent'] and GW['sent'][0][0] - pushed >= 1.8,
+      'the answer was handed to the gateway %.2f s after the push, while it was still busy with it'
+      % ((GW['sent'][0][0] - pushed) if GW['sent'] else -1))
+
+print('a slow gateway says what else it was asked meanwhile')
+said = []
+was_log = zigmon.log
+zigmon.log = lambda msg, level='info': said.append((level, str(msg))) or was_log(msg, level)
+GW['send_delay'] = 5.5
+try:
+    d.sms_send('+420777000111', 'a slow one', why='alert', queue=False)
+finally:
+    zigmon.log = was_log
+    GW['send_delay'] = 0
+check([m for lv, m in said if 'took' in m and '/messages/actions/send' in m],
+      'a send that took 5.5 s at the gateway was not said as slow, nor with what else was asked: %r'
+      % [m for _lv, m in said][-3:])
+
+sys.stdout.flush()
+if bad:
+    print('\n%d check(s) failed' % len(bad))
+    os._exit(1)
+print('an answer by text waits for its push, and a slow gateway says why')
+os._exit(0)

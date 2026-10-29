@@ -10301,6 +10301,8 @@ class Daemon(object):
                                                      name='sms-replies', daemon=True)
             self._sms_reply_worker.start()
 
+    SMS_AFTER_PUSH_S = 2.0
+
     def _sms_reply_loop(self):
         """One at a time, in order, for as long as the daemon runs.
 
@@ -10322,6 +10324,15 @@ class Daemon(object):
                 self._sms_reply_wake.clear()
                 self._sms_reply_wake.wait(30)
                 continue
+            # An answer to a text the gateway pushed here was handed to it
+            # within milliseconds - while the gateway was still in the middle
+            # of that push, waiting for our "200" and then taking the message
+            # off its SIM. Its modem does one thing at a time, so the answer
+            # waited behind all of it and was written down as "no answer
+            # from the gateway". A breath after the push, the box is free.
+            wait = getattr(self, '_sms_push_at', 0) + self.SMS_AFTER_PUSH_S - time.time()
+            if wait > 0:
+                time.sleep(min(wait, self.SMS_AFTER_PUSH_S))
             try:
                 self.sms_send(number, text, why='reply')
             except Exception as e:
@@ -10520,9 +10531,43 @@ class Daemon(object):
         Bearer token from /api/login, and hands out tokens that last five
         minutes - so a refusal means log in again and try once more rather
         than give up."""
-        import urllib.request
         if timeout is None:
             timeout = float(CONFIG.get('sms_timeout_s') or 15)
+        with self._sms_watch(path):
+            return self._rest_once(path, method, payload, retry, timeout)
+
+    SMS_SLOW_S = 5.0
+
+    @contextlib.contextmanager
+    def _sms_watch(self, what):
+        """Every question to the gateway timed, and when one is slow, said
+        with whatever else was asked of it meanwhile. "No answer from the
+        gateway" alone does not tell a box that hung from a box that was
+        busy with something of ours."""
+        flying = self.__dict__.setdefault('_sms_flying', {})
+        done = self.__dict__.setdefault('_sms_done', collections.deque(maxlen=40))
+        start = time.time()
+        key = (threading.get_ident(), what, start)
+        flying[key] = True
+        try:
+            yield
+        finally:
+            flying.pop(key, None)
+            end = time.time()
+            done.append((start, end, what))
+            if end - start >= self.SMS_SLOW_S:
+                # what else was asked of the box while this one waited: still
+                # asking, or asked and answered in the meantime
+                others = ['%s (still asking, %.0fs)' % (w, end - at) for (_t, w, at) in list(flying)
+                          if at < end]
+                others += ['%s (%.1fs)' % (w, e - b_) for (b_, e, w) in list(done)[:-1]
+                           if e > start and b_ < end]
+                log('SMS gateway: %s took %.1fs%s' % (
+                    what, end - start, ('; asked of it meanwhile: ' + ', '.join(others)) if others else
+                    ' with nothing else of ours asking it - the box itself was slow'), 'warn')
+
+    def _rest_once(self, path, method, payload, retry, timeout):
+        import urllib.request
         token = self._sms_token()
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(self._sms_url('/api' + path), data=data,
@@ -10540,7 +10585,7 @@ class Daemon(object):
                 pass
             if e.code in (401, 403) and retry:
                 self._sms_tok = None                 # the token went stale
-                return self._rest(path, method, payload, retry=False, timeout=timeout)
+                return self._rest_once(path, method, payload, False, timeout)
             raise RuntimeError('%s %s: HTTP %d %s' % (method, path, e.code, body))
         if answer.get('success') is False:
             raise RuntimeError('%s %s: %s' % (method, path, json.dumps(answer.get('errors') or answer)[:200]))
@@ -10614,6 +10659,11 @@ class Daemon(object):
         now = time.time()
         if self._sms_tok and now < self._sms_tok[1]:
             return self._sms_tok[0]
+        with self._sms_watch('/login'):
+            return self._sms_login(now)
+
+    def _sms_login(self, now):
+        import urllib.request
         req = urllib.request.Request(self._sms_url('/api/login'),
                                      data=json.dumps({'username': CONFIG.get('sms_user') or 'admin',
                                                       'password': CONFIG.get('sms_password') or ''}).encode(),
@@ -39514,6 +39564,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     % text_field, 'debug')
             log('   taken as: from %s, %d character(s): %s'
                 % (sender or '(nobody)', len(text), text[:120]), 'debug')
+        d._sms_push_at = time.time()       # the reply waits for this request to be answered
         did = d.sms_handle(sender, text, road='push')
         # ...and if the house is doing the deleting, do it now rather than at
         # the next round: a message left sitting is one the modem may hand
