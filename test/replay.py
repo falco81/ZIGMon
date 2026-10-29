@@ -191,7 +191,10 @@ for _g in groups:
     assert _g.get('title') and _g.get('why'), 'a section with no name or no reason: %r' % (_g,)
     for _item in _g['items']:
         assert _item.get('what'), '%s says nothing about what it is for' % _item.get('name')
-# a wide enough window that another guard's own events cannot push this out
+# a wide enough window that another guard's own events cannot push this out -
+# and the event written down first: it goes through the writer's queue, and
+# read at once it was now and then not there yet
+d.store.flush(3.0)
 assert any('hidden values' in (e.get('detail') or '') for e in d.store.events(200)), \
     'showing the hidden values was not written down'
 print('guard: the hidden values need the PIN, and showing them is written down')

@@ -2083,7 +2083,43 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.4**
+Current version: **5.29.5**
+
+5.29.5 — a long text no longer stalls the SMS gateway for a minute.
+
+Measured on a TRB140 (TRB1_R_00.07.24.7) on 29.10.2026, with zigmon switched
+off: a text of two parts handed to it a few seconds after it took a text in
+held its modem 50-60 s - not even `AT` was answered - and then went out
+regardless. A text of one part, or one of two parts sent with nothing just
+in, went in under a second. With the link held open between the parts
+(`AT+CMMS=2`) the same two-part text went in 0.8 s.
+
+* **Hold the link open for long texts** (`sms_cmms`, Settings - SMS gateway -
+  When things go wrong): *always* (the default) keeps `AT+CMMS=2` on the
+  modem - looked at every five minutes, and set again when the modem has
+  forgotten it, which it does at every restart; *before each long text* sends
+  `AT+CMMS=1` just before a text of two parts or more; *never* leaves it
+  alone. Only `AT+CMMS?` and `AT+CMMS=0/1/2` are ever sent to the modem's
+  command line, never anything from a page or a text, and never while a text
+  is going out. A modem that refuses it still sends the text. The card of the
+  gateway shows what the modem last said (`cmms`).
+* **A text the gateway hands over twice is answered once**: the same words
+  from the same number within 15 s are that text again (seen twice in one
+  second in nginx's log).
+* **The help is one message**: its topics are separated by "/", not "|",
+  which is two characters in a text's own alphabet.
+* With the link not held open: a long answer goes as several of one part
+  each, and waits `sms_multipart_after_push_s` (25 s) after the text it
+  answers.
+* A slow send says how many parts it was, how long after the last push, and
+  how `AT+CMMS` was set.
+* "Delete SMS after forwarding" (`sms_gateway.to_http.delete_sms`) must stay
+  on in the gateway: with it off nothing deletes the messages and its memory
+  fills. "urcd: Failed to Remove SMS" in its log is the stall's consequence,
+  not its cause.
+
+`test/review5295.py`; every check fails on 5.29.4. `test/replay.py` waits for
+the event it looks for to be written (it was read now and then too soon).
 
 5.29.4 — the modem asked about itself every five minutes, not twice a minute.
 
