@@ -21701,6 +21701,15 @@ var SMS_GROUPS = [
     ['sms_push_base64', 'It encodes the text as Base64', 'switch', 'keeps accents intact']
   ]],
   ['When things go wrong', 'Waiting, retrying, and giving up.', false, [
+    ['sms_cmms', 'Hold the link open for long texts (AT+CMMS)', 'select', [
+      ['always', 'always \u2014 kept on by zigmon'],
+      ['per_message', 'before each long text'],
+      ['off', 'never \u2014 zigmon leaves it alone']],
+     'Helps when a long answer takes a minute to send: a TRB140 handed a text of two parts a few '
+     + 'seconds after one came in sat on it 50\u201360 s, and with this on sent it in under a second. '
+     + 'The gateway forgets it at every restart, so zigmon sets it again by itself.'],
+    ['sms_multipart_after_push_s', 'With it off: a long answer waits after the text (s)', 'number',
+     'and a long answer goes as several short ones; with the link held open neither is needed'],
     ['sms_timeout_s', 'Give up on the modem after (s)', 'number'],
     ['sms_reply_timeout_s', 'Give up sooner on an answer (s)', 'number',
      'Shorter than the one above, on purpose: an answer the box has not taken in this long it is not '

@@ -137,6 +137,13 @@ DEFAULTS = {
     # long it is not going to take, and waiting only holds the next one. 0
     # means treat it like anything else.
     'sms_reply_timeout_s': 20,
+    # 5.29.5: hold the link open between the parts of a long text (AT+CMMS).
+    # A TRB140 handed a two-part text a few seconds after it took one in sat
+    # on it 50-60 s, answering nothing; held open, the same text went in 0.8 s.
+    'sms_cmms': 'always',
+    # ...and with it off, how long a long answer waits after the text it
+    # answers (+20 s was quick on that box, +2 s was the minute's stall)
+    'sms_multipart_after_push_s': 25,
     # The least time between two messages. A day of a real Teltonika says
     # what it has to be: a send that lands while the modem is still putting
     # the previous one on the air is accepted at once by the box's API and
@@ -9526,7 +9533,8 @@ class Daemon(object):
         'heating_enforce_min': (0, 1440), 'heating_enforce_delta': (0, 10, True),
         'heating_enforce': 'str', 'heating_enforce_gap_s': (5, 3600), 'heating_enforce_tries': (1, 50),
         'sms_enabled': (0, 1), 'sms_objects_settings': (0, 1), 'sms_https': (0, 1), 'sms_port': (0, 65535), 'sms_poll_s': (0, 3600), 'sms_status_s': (0, 3600),
-        'sms_reply': (0, 1), 'sms_timeout_s': (1, 120), 'sms_reply_timeout_s': (0, 120), 'sms_send_gap_s': (0, 30, True),
+        'sms_reply': (0, 1), 'sms_timeout_s': (1, 120), 'sms_reply_timeout_s': (0, 120),
+        'sms_cmms': 'str', 'sms_multipart_after_push_s': (0, 120), 'sms_send_gap_s': (0, 30, True),
         'sms_host': 'str', 'sms_user': 'str', 'sms_password': 'str',
         'sms_api': 'str', 'sms_send_path': 'str', 'sms_read_path': 'str', 'sms_delete_path': 'str',
         'sms_modem': 'str', 'sms_verify_cert': (0, 1), 'sms_clear_inbox': (0, 1),
@@ -9694,6 +9702,8 @@ class Daemon(object):
                     overrides[key] = value
                 if key == 'sms_sim' and value not in ('prepaid', 'contract'):
                     raise ValueError('sms_sim is prepaid or contract')
+                if key == 'sms_cmms' and value not in self.SMS_CMMS_MODES:
+                    raise ValueError('sms_cmms is always, per_message or off')
                 if key == 'sms_stranger_alert':
                     # roads, or one of the three words that came before them
                     words = str(value or '').strip().lower()
@@ -9786,6 +9796,7 @@ class Daemon(object):
                                  name='weather', daemon=True).start()
             if any(k.startswith('sms') for k in changed):
                 self._sms_drop_token()              # a new password, a new login - the old one logged out
+                self._sms_cmms_checked = 0          # and AT+CMMS as now set, on the next beat
                 self._sms_modem_id = None
                 self._sms_status_at = 0             # and how it is doing, on the next beat
                 threading.Thread(target=self._sms_poll_thread, name='sms-poll', daemon=True).start()
@@ -9798,6 +9809,9 @@ class Daemon(object):
     TUNABLE_SECRETS = ('duo_skey', 'mikrotik_password', 'proxy_password', 'intel_shodan_key')
 
     TUNABLE_CHOICES = {
+        'sms_cmms': [('always', 'always - kept on by zigmon'),
+                     ('per_message', 'before each long text'),
+                     ('off', 'never - zigmon leaves it alone')],
         'reboot_auto': [('off', 'never by itself'), ('daily', 'every day'),
                         ('weekly', 'once a week')],
         'reboot_day': [('1', 'Monday'), ('2', 'Tuesday'), ('3', 'Wednesday'), ('4', 'Thursday'),
@@ -10310,7 +10324,14 @@ class Daemon(object):
         if not hasattr(self, '_sms_replies'):
             self._sms_replies = collections.deque()
             self._sms_reply_wake = threading.Event()
-        self._sms_replies.append((str(number), str(text)))
+        # With the link not held open between the parts of a long text
+        # (sms_cmms off), a long answer goes as several short ones: a text of
+        # one part does not stall the gateway, one of two can for a minute.
+        pieces = [str(text)]
+        if self.sms_cmms_mode() == 'off' and self.sms_parts(text) > 1:
+            pieces = self._sms_one_part_pieces(str(text))
+        for piece in pieces:
+            self._sms_replies.append((str(number), piece))
         self._sms_reply_wake.set()
         if not getattr(self, '_sms_reply_worker', None) or not self._sms_reply_worker.is_alive():
             self._sms_reply_worker = threading.Thread(target=self._sms_reply_loop,
@@ -10318,6 +10339,51 @@ class Daemon(object):
             self._sms_reply_worker.start()
 
     SMS_AFTER_PUSH_S = 2.0
+
+    def _sms_one_part_pieces(self, text):
+        """A text cut into pieces that are one message each - at its lines
+        where it can, and within a line at a space where it must."""
+        pieces, cur = [], ''
+        for line in str(text).split('\n'):
+            trial = (cur + '\n' + line) if cur else line
+            if self.sms_parts(trial) <= 1:
+                cur = trial
+                continue
+            if cur:
+                pieces.append(cur)
+            cur = ''
+            words = line.split(' ')
+            for w in words:
+                t2 = (cur + ' ' + w) if cur else w
+                if self.sms_parts(t2) <= 1:
+                    cur = t2
+                else:
+                    if cur:
+                        pieces.append(cur)
+                    cur = w
+                    while self.sms_parts(cur) > 1:          # one word longer than a message
+                        cut = 60 if any(ord(c) > 127 for c in cur) else 150
+                        pieces.append(cur[:cut])
+                        cur = cur[cut:]
+        if cur:
+            pieces.append(cur)
+        return [p for p in pieces if p.strip()] or [str(text)]
+    SMS_PUSH_SAME_S = 15
+
+    def sms_push_seen(self, sender, text):
+        """True when this very text from this number came in moments ago -
+        the gateway handing one message over twice. Writes it down otherwise."""
+        guard = self.__dict__.setdefault('_sms_push_guard', threading.Lock())
+        key = (re.sub(r'[^0-9+]', '', str(sender or '')), str(text or '').strip())
+        now = time.time()
+        with guard:
+            seen = self.__dict__.setdefault('_sms_push_recent', {})
+            for k in [k for k, at in seen.items() if now - at > self.SMS_PUSH_SAME_S]:
+                del seen[k]
+            if key in seen:
+                return True
+            seen[key] = now
+            return False
 
     def _sms_reply_loop(self):
         """One at a time, in order, for as long as the daemon runs.
@@ -10346,9 +10412,14 @@ class Daemon(object):
             # off its SIM. Its modem does one thing at a time, so the answer
             # waited behind all of it and was written down as "no answer
             # from the gateway". A breath after the push, the box is free.
-            wait = getattr(self, '_sms_push_at', 0) + self.SMS_AFTER_PUSH_S - time.time()
+            after = self.SMS_AFTER_PUSH_S
+            if self.sms_cmms_mode() == 'off' and self.sms_parts(text) > 1:
+                # a long one, the link not held open: well after the push,
+                # where the box takes it at once (+20 s quick, +2 s a minute)
+                after = max(after, float(CONFIG.get('sms_multipart_after_push_s') or 0))
+            wait = getattr(self, '_sms_push_at', 0) + after - time.time()
             if wait > 0:
-                time.sleep(min(wait, self.SMS_AFTER_PUSH_S))
+                time.sleep(min(wait, after))
             try:
                 self.sms_send(number, text, why='reply')
             except Exception as e:
@@ -10455,7 +10526,11 @@ class Daemon(object):
                 # ...with the patience worked out above, not the plain one: a
                 # reply of two parts was being given the same seconds as "on"
                 # and timing out while the modem was still working through it
+                if parts > 1 and self.sms_cmms_mode() == 'per_message':
+                    # for this text only: the modem puts it back to 0 itself
+                    self.sms_set_cmms(1)
                 tries = 0
+                sent_at = time.time()
                 while True:
                     tries += 1
                     try:
@@ -10476,6 +10551,11 @@ class Daemon(object):
                         log('the gateway would not take the connection (%s); trying again'
                             % str(e)[:60], 'debug')
                         time.sleep(1.0 * tries)
+                if time.time() - sent_at >= self.SMS_SLOW_S:
+                    # what the stall had to do with: a long text, soon after one came in
+                    log('SMS gateway: that send was %d part(s), %.1fs after the last push, AT+CMMS %s'
+                        % (parts, sent_at - getattr(self, '_sms_push_at', 0),
+                           self.sms_cmms_mode()), 'warn')
                 body = json.dumps(out)
             else:
                 params = {'username': user, 'password': secret, 'text': text}
@@ -10696,6 +10776,97 @@ class Daemon(object):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
         return ctx
+
+    # -- AT+CMMS: the link held open between the parts of a long text --------
+    # Measured on a TRB140 (TRB1_R_00.07.24.7) on 29.10.2026: a text of two
+    # parts handed to it a few seconds after it took a text in held the modem
+    # 50-60 s - not even "AT" was answered - and then went out regardless;
+    # with AT+CMMS=2 the same text went in 0.8 s. The modem forgets the
+    # setting whenever it restarts, so it is set, and checked, from here.
+    SMS_CMMS_MODES = ('always', 'per_message', 'off')
+    # the only things ever sent to the modem's command line: fixed words, no
+    # value from a page, a text or a setting ever reaches it
+    SMS_CMMS_COMMANDS = ('AT+CMMS?', 'AT+CMMS=0', 'AT+CMMS=1', 'AT+CMMS=2')
+    SMS_CMMS_EVERY_S = 300
+
+    def sms_cmms_mode(self):
+        mode = str(CONFIG.get('sms_cmms') or 'always')
+        return mode if mode in self.SMS_CMMS_MODES else 'always'
+
+    def _sms_at(self, command):
+        """One of the fixed AT+CMMS commands, through the gateway's own API.
+        Returns what the modem said."""
+        if command not in self.SMS_CMMS_COMMANDS:
+            raise ValueError('not a command zigmon sends to the modem')
+        if not self._sms_rest():
+            raise RuntimeError('only the device\'s own API can pass a command to its modem')
+        out = self._rest('/modems/%s/actions/exec_at' % self.sms_modem_id(), 'POST',
+                         {'data': {'command': command}}, timeout=5)
+        if isinstance(out, dict):
+            return str(out.get('response') or out.get('data') or '')
+        return str(out or '')
+
+    def sms_set_cmms(self, value):
+        """AT+CMMS=value on the modem; True when it said OK. Never raises: a
+        modem that will not take it still sends the text."""
+        value = int(value)
+        try:
+            said = self._sms_at('AT+CMMS=%d' % value)
+        except Exception as e:                          # noqa: BLE001
+            log('SMS gateway: AT+CMMS=%d could not be set: %s' % (value, str(e)[:150]), 'warn')
+            return False
+        ok = 'OK' in said.upper()
+        if ok:
+            self._sms_cmms_state = {'value': value, 'at': time.time(), 'set_at': time.time()}
+        else:
+            log('SMS gateway: AT+CMMS=%d was answered %r' % (value, said[:80]), 'warn')
+        return ok
+
+    def sms_get_cmms(self):
+        """What AT+CMMS? says now, or None."""
+        try:
+            said = self._sms_at('AT+CMMS?')
+        except Exception as e:                          # noqa: BLE001
+            log('SMS gateway: AT+CMMS? could not be asked: %s' % str(e)[:150], 'debug')
+            return None
+        m = re.search(r'\+CMMS:\s*(\d)', said)
+        if not m:
+            return None
+        state = self.__dict__.setdefault('_sms_cmms_state', {})
+        state.update(value=int(m.group(1)), at=time.time())
+        return int(m.group(1))
+
+    def sms_cmms_beat(self):
+        """Every five minutes and after a change of the settings: AT+CMMS as
+        the setting says - 2 kept for "always" (set again when the modem has
+        forgotten it), 0 once when "always" is left. Never while a text is
+        going out or has just gone, and never waiting for the gateway."""
+        if not self.sms_ready() or not self._sms_rest():
+            return
+        soon = time.time() - self.SMS_CMMS_EVERY_S + 30      # a text in the way: again in half a minute
+        if (getattr(self, '_sms_sending', 0) and time.time() - self._sms_sending < 120) or \
+                time.time() - getattr(self, '_sms_sent_at', 0) < 30 or \
+                not self._sms_send_lock.acquire(blocking=False):
+            self._sms_cmms_checked = soon
+            return
+        try:
+            self._sms_cmms_checked = time.time()
+            mode = self.sms_cmms_mode()
+            was = getattr(self, '_sms_cmms_mode_was', None)
+            self._sms_cmms_mode_was = mode
+            if mode == 'always':
+                now = self.sms_get_cmms()
+                if now != 2:
+                    if self.sms_set_cmms(2):
+                        log('SMS gateway: the modem had forgotten AT+CMMS%s - set again'
+                            % (' (restarted?)' if now == 0 else ''), 'info')
+            elif was == 'always' or was is None and mode == 'off' and \
+                    (getattr(self, '_sms_cmms_state', {}) or {}).get('value') == 2:
+                self.sms_set_cmms(0)
+            elif mode == 'per_message':
+                self.sms_get_cmms()
+        finally:
+            self._sms_send_lock.release()
 
     def sms_modem_id(self):
         """Which modem to send from. The API insists on being told, even when
@@ -12251,6 +12422,9 @@ class Daemon(object):
                                   'kind': 'SMS gateway', 'vendor': 'Teltonika',
                                   'model': values.get('network') or 'modem',
                                   'last_seen': int(time.time())})
+        cmms = (getattr(self, '_sms_cmms_state', None) or {}).get('value')
+        if cmms is not None:
+            values['cmms'] = cmms                  # AT+CMMS as the modem last said it
         values['sent_today'] = self._sms_counted('out')
         values['received_today'] = self._sms_counted('in')
         values['waiting_to_go'] = len(self.sms_outbox())
@@ -12331,18 +12505,18 @@ class Daemon(object):
         # made a mess of it - each way is simple on its own and there is
         # nothing to tell apart, nothing to skip and nothing to duplicate.
         if int(CONFIG.get('sms_push') or 0) and not force:
-            # Nothing deleted from here unless asked. The modem's own urcd
-            # removes a forwarded message five seconds after it is forwarded
-            # - that is in its log - and anybody else deleting the same slot,
-            # the forwarder or this house, is the fight that stalls the box.
-            # Left to itself it cleans up cleanly. Tidying from here is for a
-            # gateway that does not, and is a switch.
-            # Nothing from here while the webhook is on - not even a sweep.
-            # 4.59.0 read this box's inbox never, and in that build the
-            # sending never stalled once; reading it on any kind of beat is
-            # what wedges it. The inbox is read only where a webhook has its
-            # own message to take off, on that webhook's thread, and once more
-            # twenty seconds later if the box had not stored it yet.
+            # Nothing deleted from here unless asked: with "delete SMS after
+            # forwarding" on in the gateway's forwarding to HTTP
+            # (sms_gateway.to_http.delete_sms = 1) the gateway takes each
+            # message off itself, and it has to stay on - with it off nobody
+            # deletes them, urcd included, and the memory fills. Tidying from
+            # here is a switch, for a gateway that cannot.
+            # What stalled the box was not deleting or reading: it was a text
+            # of two or more parts handed to it a few seconds after one came
+            # in (measured 29.10.2026: 53 s with nothing of ours involved,
+            # 0.8 s with AT+CMMS=2 - see sms_cmms_beat). "urcd: Failed to
+            # Remove SMS" in its log is that stall's consequence, not its
+            # cause: the modem is busy sending and cannot delete.
             self._sms_last_poll = time.time()
             return None
 
@@ -13298,7 +13472,10 @@ class Daemon(object):
 
         if not low:
             words = [c['phrase'] for c in self.sms_commands() if c.get('enabled', True)]
-            lead = 'Ask: status, on, heating, blocked. More: help %s.' % '|'.join(shorts)
+            # "/" between the topics, not "|": a bar is two characters in a
+            # text's own alphabet, and eight of them made the answer two
+            # messages - the kind a TRB140 stalls a minute over
+            lead = 'Ask: status, on, heating, blocked. More: help %s.' % '/'.join(shorts)
             if words:
                 return self._sms_fit_one(lead + ' Yours: ', words)
             return self._sms_one(lead)
@@ -17907,6 +18084,19 @@ class Daemon(object):
                 # "silent for 14h29m". It asks nothing of the inbox, gives way
                 # to a message going out (see sms_status_poll) and never runs
                 # twice at once.
+                if (self.sms_ready() and self._sms_rest() and not getattr(self, '_sms_cmms_busy', False)
+                        and time.time() - getattr(self, '_sms_cmms_checked', 0) >= self.SMS_CMMS_EVERY_S):
+                    self._sms_cmms_busy = True
+                    self._sms_cmms_checked = time.time()
+
+                    def _cmms():
+                        try:
+                            self.sms_cmms_beat()
+                        except Exception as e:          # noqa: BLE001
+                            log('SMS gateway: AT+CMMS: %s' % e, 'debug')
+                        finally:
+                            self._sms_cmms_busy = False
+                    threading.Thread(target=_cmms, name='sms-cmms', daemon=True).start()
                 status_every = float(CONFIG.get('sms_status_s') or 0)
                 if (self.sms_ready() and status_every
                         and not getattr(self, '_sms_status_busy', False)
@@ -39648,6 +39838,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     % text_field, 'debug')
             log('   taken as: from %s, %d character(s): %s'
                 % (sender or '(nobody)', len(text), text[:120]), 'debug')
+        # The gateway now and then hands one text over twice in the same
+        # second (two POSTs in nginx's log), and each was answered: two paid
+        # answers, the second queued behind the first. The same number with
+        # the same words within a few seconds is that one text again.
+        if d.sms_push_seen(sender, text):
+            log('SMS push: the same message again within %ds - ignored' % d.SMS_PUSH_SAME_S, 'info')
+            return self._send(200, {'ok': True, 'acted': False, 'duplicate': True})
         d._sms_push_at = time.time()       # the reply waits for this request to be answered
         did = d.sms_handle(sender, text, road='push')
         # ...and if the house is doing the deleting, do it now rather than at
