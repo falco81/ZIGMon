@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.2'
+__version__ = '5.29.3'
 
 import argparse
 import base64
@@ -10587,9 +10587,32 @@ class Daemon(object):
                                      headers={'Content-Type': 'application/json',
                                               'Authorization': 'Bearer ' + token},
                                      method=method)
+        t0 = time.time()
         try:
-            answer = json.loads(urllib.request.urlopen(req, timeout=timeout,
-                                                       context=self._sms_ssl()).read() or b'{}')
+            resp = urllib.request.urlopen(req, timeout=timeout, context=self._sms_ssl())
+            t_head = time.time()
+            # The answer's head has come: the box has done what it was asked.
+            # Its body is then a few bytes, and is given seconds, not the whole
+            # patience. A day's log had every stall of a send last exactly our
+            # patience - 55 to 63 s, to the second - and the message gone out
+            # regardless: the box had answered and not finished the answer,
+            # and for that minute the house sent nothing and, the gateway
+            # being held, heard nothing either.
+            self._sms_body_patience(resp, min(timeout, self.SMS_BODY_S))
+            try:
+                raw = resp.read()
+            except (socket.timeout, TimeoutError, OSError) as e:
+                if resp.status == 200 and method == 'POST':
+                    log('SMS gateway: %s answered %d after %.1fs and never finished its answer '
+                        '(%s; %s) - taken as done' % (path, resp.status, t_head - t0, e,
+                                                       self._sms_head_words(resp)), 'warn')
+                    return {}
+                raise
+            took = time.time() - t0
+            if took >= self.SMS_SLOW_S:
+                log('SMS gateway: %s - its answer began after %.1fs, ended after %.1fs (%s)'
+                    % (path, t_head - t0, took, self._sms_head_words(resp)), 'warn')
+            answer = json.loads(raw or b'{}')
         except urllib.error.HTTPError as e:
             body = ''
             try:
@@ -10603,6 +10626,28 @@ class Daemon(object):
         if answer.get('success') is False:
             raise RuntimeError('%s %s: %s' % (method, path, json.dumps(answer.get('errors') or answer)[:200]))
         return answer.get('data', answer)
+
+    SMS_BODY_S = 5.0
+
+    @staticmethod
+    def _sms_body_patience(resp, seconds):
+        """The socket under an answer given its own, shorter patience for the
+        body. Reached through what http.client keeps; where it cannot be, the
+        request's own patience stands, as before."""
+        try:
+            sock = resp.fp.raw._sock
+            sock.settimeout(seconds)
+        except AttributeError:
+            pass
+
+    @staticmethod
+    def _sms_head_words(resp):
+        try:
+            h = resp.headers
+            return ', '.join('%s: %s' % (k, h.get(k)) for k in
+                             ('Content-Length', 'Transfer-Encoding', 'Connection') if h.get(k)) or 'no length given'
+        except Exception:                               # noqa: BLE001
+            return '?'
 
     @staticmethod
     def _sms_never_arrived(e):

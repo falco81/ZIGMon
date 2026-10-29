@@ -2083,7 +2083,24 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.2**
+Current version: **5.29.3**
+
+5.29.3 — a gateway that answers and does not finish the answer no longer
+holds every text for a minute.
+
+* **Once the gateway has answered, its answer is given seconds, not the
+  whole patience.** A send stuck on *reply · sending…* lasted exactly as long
+  as the patience every time - 55 to 63 s on a day's log, to the second - and
+  the message had gone out regardless: the box had said 200 and not finished
+  saying it. For that minute nothing else was sent, and the gateway, held,
+  pushed nothing in either. A POST the gateway has answered 200 is now taken
+  as done when the rest of its answer has not come within five seconds.
+* **Its log says which it was.** A slow call on the gateway now says when its
+  answer began and when it ended, with the headers that decide how an answer
+  ends (Content-Length, Transfer-Encoding, Connection): a box that did not
+  answer at all is told apart from one that answered and did not finish.
+
+`test/review529.py`; its new check fails on 5.29.2.
 
 5.29.2 — one session on the SMS gateway, not hundreds.
 

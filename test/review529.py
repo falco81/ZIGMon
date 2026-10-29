@@ -28,7 +28,7 @@ def check(ok, what):
         print('  FAILED: ' + what)
 
 
-GW = {'sent': [], 'send_delay': 0.0, 'logins': 0, 'logouts': 0}
+GW = {'sent': [], 'send_delay': 0.0, 'logins': 0, 'logouts': 0, 'hang_body': 0.0}
 
 
 class Gateway(BaseHTTPRequestHandler):
@@ -60,6 +60,16 @@ class Gateway(BaseHTTPRequestHandler):
             GW['sent'].append((time.time(), (body.get('data') or {}).get('message')))
             if GW['send_delay']:
                 time.sleep(GW['send_delay'])
+            if GW['hang_body']:
+                # answers, and never finishes the answer: no length, the
+                # connection held open
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"success": true, "da')
+                self.wfile.flush()
+                time.sleep(GW['hang_body'])
+                return
             return self._out({'success': True, 'data': {'sms_used': 1}})
         return self._out({'success': True, 'data': {}})
 
@@ -137,6 +147,16 @@ if hasattr(d, '_sms_drop_token'):
     d._sms_drop_token()
     time.sleep(0.5)
 check(GW['logouts'] > outs, 'a token dropped (a new password, a test) is left as a session on the gateway')
+
+print('a gateway that answers and never finishes the answer does not hold the texts for a minute')
+GW['hang_body'] = 25.0
+zigmon.CONFIG['sms_timeout_s'] = 30
+t0 = time.time()
+ok, said_ = d.sms_send('+420777000111', 'held open', why='reply', queue=False)
+took = time.time() - t0
+GW['hang_body'] = 0.0
+check(took < 10 and ok, 'a send the gateway answered 200 and never finished held everything %.0f s (%s, %s)'
+      % (took, ok, said_))
 
 sys.stdout.flush()
 if bad:
