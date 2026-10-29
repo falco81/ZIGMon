@@ -1910,7 +1910,7 @@ class ShellyRPC(object):
                 if conn.sock is not None:
                     conn.sock.settimeout(self.timeout)
             if fresh:
-                conn = http.client.HTTPConnection(self._address(host), port, timeout=self.timeout)
+                conn = http.client.HTTPConnection(self._box_address(host), port, timeout=self.timeout)
             started = time.perf_counter()
             if CONFIG.get('debug'):
                 log('http -> %s POST /rpc %s%s %s' % (self.host, 'fresh' if fresh else 'kept',
@@ -1957,7 +1957,7 @@ class ShellyRPC(object):
     _addrs = {}                 # host name -> (address, when looked up)
 
     @classmethod
-    def _address(cls, host):
+    def _box_address(cls, host):
         """A box's address without a resolver on the way of a command. A box
         named by a host name was looked up on every fresh connection - inside
         the box's gate, with no timeout - and a resolver taking two seconds
@@ -34894,7 +34894,7 @@ class Daemon(object):
         self.bump()
         return clean
 
-    def group_reading(self, g, moved_by=None):
+    def group_reading(self, g, moved_by=None, said=None):
         """What the group reads right now, and who moved it last."""
         key, mode = g['key'], g['mode']
         fresh = int(g.get('fresh_minutes') or 0)
@@ -34915,7 +34915,9 @@ class Daemon(object):
                 if not room or room['name'] != want_room:
                     skipped.append(name)
                     continue
-            value = self.latest_value(member, key)
+            value = (said or {}).get(member)
+            if value is None:
+                value = self.latest_value(member, key)
             if value is None:
                 continue
             parts.append((name, float(value)))
@@ -34953,7 +34955,14 @@ class Daemon(object):
                 continue
             if device_id not in g['members'] and name not in g['members']:
                 continue
-            value, parts = self.group_reading(g)
+            # the member that spoke is read from what it said, not from the
+            # house's memory of it: that is written by the broker thread just
+            # AFTER the rules are handed the reading, and a rule worker that
+            # got there first worked the group out from the member's old
+            # value - no change, no edge, and the light behind a group of
+            # PIRs did nothing (one press in three, with Python switching
+            # threads quickly)
+            value, parts = self.group_reading(g, said={device_id: values[g['key']], name: values[g['key']]})
             if value is None:
                 continue
             gid = 'grp:' + g['id']

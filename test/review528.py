@@ -237,7 +237,7 @@ def slow_gai(host, *a, **k):
 
 _socket.getaddrinfo = slow_gai
 try:
-    addr = getattr(zigmon.ShellyRPC, '_address', None)
+    addr = getattr(zigmon.ShellyRPC, '_box_address', None)
     if addr:
         t0 = time.time()
         for _ in range(5):
@@ -307,6 +307,22 @@ check('self._wifi_fetch_lock.acquire(False) if quick' in src,
       'a rule gated on who is home waits for a regular poll of a slow Wi-Fi controller')
 check('gc.freeze()' in src, 'a full collection walks everything the daemon keeps, on the broker thread')
 check("'gil_switch_ms': 0.1," in src, 'Python hands over between threads only every half millisecond')
+
+# ---- a group of sensors worked out from what its member just said -----------------------------------
+print('a group of PIRs moves with the report that moved it, whichever thread is first')
+d.store.upsert_device({'id': 'zigbee:PIR-G1', 'name': 'PIR-G1', 'source': 'zigbee', 'kind': 'sensor',
+                       'exposes': {'occupancy': {}}})
+d.store.upsert_device({'id': 'zigbee:PIR-G2', 'name': 'PIR-G2', 'source': 'zigbee', 'kind': 'sensor',
+                       'exposes': {'occupancy': {}}})
+d.store.set_meta('sensor_groups', json.dumps([{'id': 'gx', 'name': 'Hall', 'key': 'occupancy', 'mode': 'any',
+                                               'members': ['zigbee:PIR-G1', 'zigbee:PIR-G2'], 'enabled': True}]))
+for dev in ('zigbee:PIR-G1', 'zigbee:PIR-G2'):
+    d.live[dev] = {'payload': {'occupancy': False}, 'ts': int(time.time()), 'availability': None}
+d._group_last['grp:gx'] = 0.0
+# the rule worker gets the reading before the broker thread has written it down
+d.refresh_group('zigbee:PIR-G1', 'PIR-G1', {'occupancy': 1.0})
+check(d._group_last.get('grp:gx') == 1.0, 'a group of PIRs was worked out from the member\'s old value and '
+      'did not move (%r)' % d._group_last.get('grp:gx'))
 
 # ---- an MQTT toggle is a Set ----------------------------------------------------------------------
 src = (HERE / 'zigmon.py').read_text()
