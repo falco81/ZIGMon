@@ -4844,6 +4844,7 @@ class Storage(object):
         self._block_gen = 0
         self._block_loaded = False
         self._block_guard = threading.Lock()
+        self._block_delta = []    # (gen, ip, until, gone) since the list was last read whole
         self._dev_cache = {}      # device id -> row (or None when there is no such device)
         self._dev_list = None     # the whole list, rebuilt after any change
         self._actions_cache = {}  # device id -> the actions it has reported
@@ -5401,8 +5402,11 @@ class Storage(object):
         # same picture for a fraction of the work.
         bucket = max(1, seconds // max(1, int(points or 600)))
         rows = {}
-        with self.lock:
-            for key in keys:
+        # the lock is taken a key at a time: held round all of them, one
+        # question for many keys held every writer, the rules' reads and the
+        # door's list for as long as the whole lot took
+        for key in keys:
+            with self.lock:
                 if since < full_from:
                     for r in self.db.execute(
                             'SELECT MAX(ts) AS ts, avg AS value, min, max FROM samples_hourly '
@@ -5674,11 +5678,49 @@ class Storage(object):
         write its own stamp over the block's "read me again", and the door then
         trusted the list from before the block for its full minute - the
         address just blocked walked in 293 times in that minute."""
-        self._block_gen = getattr(self, '_block_gen', 0) + 1
-        self._block_cache_at = 0
+        with self._block_guard:
+            self._block_gen = getattr(self, '_block_gen', 0) + 1
+            self._block_delta.append((self._block_gen, '*', None, False))
+            del self._block_delta[:-4000]
+            self._block_cache_at = 0
+
+    @staticmethod
+    def _block_apply(cache, nets, ip, until, gone):
+        ip = str(ip)
+        if gone:
+            cache.pop(ip, None)
+        else:
+            cache[ip] = until
+        if '/' in ip:
+            try:
+                net = ipaddress.ip_network(ip, strict=False)
+            except ValueError:
+                return
+            nets[:] = [x for x in nets if x[0] != net]
+            if not gone:
+                nets.append((net, until))
+
+    def _block_patch(self, ip, until=None, gone=False):
+        """One address on or off the list, put into the list in hand at once.
+
+        A block used to throw the whole list away: the door kept answering
+        from the old one until a fresh read of all of it - 27,000 rows under
+        the database lock - came back, and an address blocked a moment before
+        got in 1,302 times meanwhile while a backup held the lock. And the log
+        sweep, blocking 292 addresses, read the whole list again 293 times:
+        17 s, 15.8 of them that. The change is also written down, so a read
+        of the whole list that began before it cannot put the old list back."""
+        with self._block_guard:
+            self._block_gen = getattr(self, '_block_gen', 0) + 1
+            self._block_delta.append((self._block_gen, str(ip), until, bool(gone)))
+            del self._block_delta[:-4000]
+            cache, nets = dict(self._block_cache), list(self._block_nets)
+            self._block_apply(cache, nets, ip, until, gone)
+            self._block_cache, self._block_nets = cache, nets
 
     def _block_reload(self, now):
-        gen = getattr(self, '_block_gen', 0)
+        with self._block_guard:
+            gen = getattr(self, '_block_gen', 0)
         with self.lock:
             rows = self.db.execute('SELECT ip, until FROM blocked').fetchall()
         # built aside and put in place whole: filled in place, a request on
@@ -5692,10 +5734,22 @@ class Storage(object):
                     nets.append((ipaddress.ip_network(r['ip'], strict=False), r['until']))
                 except ValueError:
                     continue
-        self._block_cache, self._block_nets = cache, nets
-        # held as fresh only if nothing changed while it was being read
-        self._block_cache_at = now if getattr(self, '_block_gen', 0) == gen else 0
-        self._block_loaded = True
+        with self._block_guard:
+            # what changed while it was being read is put into it, so a block
+            # made meanwhile is never lost; a change of the whole list (an
+            # import, a fold undone) leaves it to be read again
+            whole = False
+            for g, ip, until, gone in self._block_delta:
+                if g <= gen:
+                    continue
+                if ip == '*':
+                    whole = True
+                else:
+                    self._block_apply(cache, nets, ip, until, gone)
+            self._block_delta = [x for x in self._block_delta if x[0] > gen]
+            self._block_cache, self._block_nets = cache, nets
+            self._block_cache_at = 0 if whole else now
+            self._block_loaded = True
 
     def _block_answer(self, ip, networks, now):
         cache, nets = self._block_cache, self._block_nets
@@ -5755,7 +5809,7 @@ class Storage(object):
                 'hits=blocked.hits+1, auto=excluded.auto, by=excluded.by',
                 (str(ip), time.time(), until, str(why)[:200], 1 if auto else 0, str(by)[:60]))
             self.db.commit()
-        self._block_changed()
+        self._block_patch(ip, until)
         return True
 
     def unblock(self, ip=None, how='taken off'):
@@ -5785,7 +5839,10 @@ class Storage(object):
                 self.ran_out = []
             self.ran_out.extend(str(r['ip']) for r in rows)
             del self.ran_out[:-50]
-        self._block_changed()
+        if ip is None:
+            self._block_changed()
+        else:
+            self._block_patch(ip, gone=True)
         return gone or 0
 
     def fold_into(self, ip, net, by='folded'):
@@ -5813,7 +5870,7 @@ class Storage(object):
                 (now, r['ip'], 'folded', 'into %s' % net, 1, str(by or '')[:60]))
             self.db.execute('DELETE FROM blocked WHERE ip=?', (str(ip),))
             self.db.commit()
-        self._block_changed()
+        self._block_patch(ip, gone=True)
         return dict(r)
 
     def unfold(self, row, net):
@@ -5834,7 +5891,7 @@ class Storage(object):
                 'INSERT INTO block_events (ts, ip, what, why, auto, by) VALUES (?,?,?,?,?,?)',
                 (now, str(row['ip']), 'unfolded', 'out of %s' % net, 0, ''))
             self.db.commit()
-        self._block_changed()
+        self._block_patch(row['ip'], until)
         return True
 
     def add_fold_version(self, by, widest, before, after, groups, keep=10):
@@ -23623,6 +23680,15 @@ class Daemon(object):
     IDS_HARMLESS = ('not-suspicious', 'unknown', 'network-scan', 'protocol-command-decode',
                     'misc-activity', 'unusual-client-port-connection')
 
+    @staticmethod
+    def _eve_moment(one, now):
+        """When an eve line says it happened, or now when it does not say."""
+        ts = str(one.get('timestamp') or '')
+        try:
+            return datetime.strptime(ts, '%Y-%m-%dT%H:%M:%S.%f%z').timestamp()
+        except ValueError:
+            return now
+
     def tls_weigh(self, lines):
         """TLS handshakes, for the one thing they say that nothing else does.
 
@@ -23676,12 +23742,17 @@ class Daemon(object):
             # list. No client does that: a browser has one hello and uses it.
             # That is a tool measuring what the server will accept, and it is
             # visible in a minute where the address's own behaviour is not.
+            # The line's own moment, not the clock's: a backlog read at once (a
+            # rotated file drained, the daemon back after a while) put a
+            # day of one address's hellos into "the last minute", and an
+            # ordinary visitor became a tool trying fifteen faces.
+            when = self._eve_moment(one, now)
             faces = self._tls_faces.setdefault(ip, {})
-            faces[mark] = now
+            faces[mark] = when
             faces_bar = max(4, int(CONFIG.get('tls_faces_bar') or 6))
             if len(faces) >= faces_bar:      # only worth tidying when it might matter
-                for old_mark, when in list(faces.items()):
-                    if now - when > 60:
+                for old_mark, at in list(faces.items()):
+                    if when - at > 60:
                         del faces[old_mark]
             if len(faces) >= faces_bar:
                 if now - self._tls_faced.get(ip, 0) > 3600:
@@ -26128,8 +26199,12 @@ class Daemon(object):
             # has had for days and nothing beside it, because the rule was
             # only ever fetched for lines read after the change.
             try:
-                for row in self.store.db.execute(
-                        "SELECT value FROM meta WHERE key LIKE 'ids!_about!_%' ESCAPE '!'"):
+                # under the store's lock, as every read of the shared
+                # connection: read bare, it ran while the writer committed
+                with self.store.lock:
+                    about_rows = self.store.db.execute(
+                        "SELECT value FROM meta WHERE key LIKE 'ids!_about!_%' ESCAPE '!'").fetchall()
+                for row in about_rows:
                     try:
                         sid = int((json.loads(row[0] or '{}') or {}).get('sid') or 0)
                     except Exception:
@@ -38019,6 +38094,15 @@ for _name in ('save_scenes', 'save_rooms', 'save_scripts', 'save_sequences', 'sa
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = 'zigmon/' + __version__
     daemon = None
+    # A client that opens a connection and then says nothing - half a header,
+    # a body promised and never sent - held a thread for good: 400 of them
+    # were all still held a minute later. Forty seconds is past the longest
+    # wait the page hangs on purpose (/api/wait gives up at 30), and the
+    # socket is not read while that waits.
+    timeout = 40
+    # a chart asks for a few readings, the Overview for two of each sensor's
+    HISTORY_KEYS = 12
+    HISTORY_KEYS_ALL = 400
 
     # A secret in an address is a secret in the log. The header road exists
     # because a URL is written down everywhere it goes, and this daemon's own
@@ -38927,7 +39011,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e))
                 points = max(20, min(5000, int(q.get('points', 600))))
-                keys = [k for k in (q.get('keys') or '').split(',') if k]
+                # a chart draws a few readings, and the question is open to
+                # whoever the house is shown to: two hundred keys of a
+                # fortnight held the database for ten seconds
+                keys = list(dict.fromkeys(k for k in (q.get('keys') or '').split(',') if k))[:self.HISTORY_KEYS]
                 if not keys:
                     keys = [k for k in d.store.keys_for(device_id) if k != 'linkquality'][:4]
                 rows = d.store.history(device_id, keys, seconds, points)
@@ -38957,16 +39044,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e))
                 points = max(20, min(2000, int(q.get('points', 400))))
-                wanted = []
+                wanted, many = [], 0
                 for item in (q.get('items') or '').split(';'):
                     if '|' not in item:
                         continue
                     ident, keys = item.split('|', 1)
                     device_id = d.store.resolve(ident.strip())
-                    keys = [k for k in keys.split(',') if k]
+                    keys = list(dict.fromkeys(k for k in keys.split(',') if k))[:self.HISTORY_KEYS]
+                    keys = keys[:max(0, self.HISTORY_KEYS_ALL - many)]
                     if device_id and keys:
                         wanted.append((device_id, keys))
-                    if len(wanted) >= 200:
+                        many += len(keys)
+                    if len(wanted) >= 200 or many >= self.HISTORY_KEYS_ALL:
                         break
                 return self._send(200, {'ok': True, 'range_s': seconds,
                                         'series': d.store.history_many(wanted, seconds, points)})
@@ -39087,8 +39176,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._error(400, str(e))
         except Exception as e:
-            log('api %s: %s' % (path, e), 'error')
-            return self._error(500, 'internal error: %s' % e)
+            # what went wrong is for the log, not for whoever asked: SQLite's
+            # words and file paths went out to any client
+            ref = secrets.token_hex(3)
+            log('api %s [%s]: %s: %s' % (path, ref, type(e).__name__, e), 'error')
+            return self._error(500, 'internal error (%s in the daemon log)' % ref)
 
     def _sms_incoming(self, d, body, q):
         """The gateway's own "SMS forwarding to HTTP" calls this, by GET or by
@@ -40854,8 +40946,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         except (ValueError, RuntimeError) as e:
             return self._error(400, str(e))
         except Exception as e:
-            log('api %s: %s' % (path, e), 'error')
-            return self._error(500, 'internal error: %s' % e)
+            # what went wrong is for the log, not for whoever asked: SQLite's
+            # words and file paths went out to any client
+            ref = secrets.token_hex(3)
+            log('api %s [%s]: %s: %s' % (path, ref, type(e).__name__, e), 'error')
+            return self._error(500, 'internal error (%s in the daemon log)' % ref)
 
 
 class ApiListener(ThreadingHTTPServer):

@@ -188,6 +188,67 @@ check([x for x in fired_s if x[1] == 'on'], 'a 07:00 "on" missed while the daemo
       'never happened: %r' % fired_s)
 check(not [x for x in fired_s if x[1] == 'toggle'], 'a toggle missed long ago was done late: %r' % fired_s)
 
+# ---- the blocked list ----------------------------------------------------------------------
+print('an address blocked is kept out at once, and a block does not read the whole list again')
+import threading                                        # noqa: E402
+st = d.store
+now = real_time()
+with st.lock:
+    st.db.executemany('INSERT OR REPLACE INTO blocked (ip, since, until, why, hits, auto, by) '
+                      'VALUES (?,?,?,?,1,1,"")',
+                      [('10.%d.%d.%d' % (i >> 16 & 255, i >> 8 & 255, i & 255), now, now + 86400, 'x')
+                       for i in range(5000)])
+    st.db.commit()
+st._block_changed()
+st.blocked_until('1.1.1.1')                             # the list read whole once
+reads = []
+was_reload = st._block_reload
+st._block_reload = lambda when: reads.append(1) or was_reload(when)
+gate, let_in = threading.Event(), []
+
+
+def hold():
+    with st.lock:
+        gate.set()
+        time.sleep(0.8)                                 # a backup holding the database
+
+
+st.block('203.0.113.9', now + 3600, 'test')
+h = threading.Thread(target=hold)
+h.start()
+gate.wait()
+end = real_time() + 0.6
+while real_time() < end:
+    if st.blocked_until('203.0.113.9', wait=False) is None:
+        let_in.append(1)
+h.join()
+check(not let_in, 'an address blocked a moment before was let in %d times while the list was read again'
+      % len(let_in))
+for i in range(30):
+    st.block('198.51.100.%d' % i, now + 3600, 'sweep')
+    st.blocked_until('192.0.2.1')                        # the sweep asks about the next address
+check(len(reads) <= 2, 'thirty blocks in a sweep read the whole blocked list %d times' % len(reads))
+check(st.blocked_until('198.51.100.7') is not None and st.blocked_until('203.0.113.9', wait=False) is not None,
+      'a block made is not on the list')
+st.unblock('198.51.100.7')
+check(st.blocked_until('198.51.100.7', wait=False) is None, 'an address let back in is still kept out')
+st._block_reload = was_reload
+
+# ---- the API ----------------------------------------------------------------------------------
+print('the API: no endless connections, no unbounded history, no internals in an error')
+check(getattr(zigmon.ApiHandler, 'timeout', None) and zigmon.ApiHandler.timeout <= 60,
+      'a client that says nothing holds a thread of the API for good')
+check(getattr(zigmon.ApiHandler, 'HISTORY_KEYS', 10 ** 6) <= 20,
+      'one question for the history may ask for any number of readings')
+src = (HERE / 'zigmon.py').read_text()
+hist = src[src.index('    def history(self, device_id, keys, seconds'):src.index('    def reading_over(')]
+check(hist.index('for key in keys:') < hist.index('with self.lock:'),
+      'the history of many readings holds the database for all of them at once')
+check("'internal error: %s' % e" not in src, 'an internal error tells the client what the database said')
+one = {'timestamp': '2026-10-29T08:00:00.123456+0100'}
+check(hasattr(d, '_eve_moment') and abs(d._eve_moment(one, 0) - 1793257200.12) < 1,
+      'a TLS hello is counted at the moment it is read, not when it happened')
+
 # ---- the page ------------------------------------------------------------------------------------
 print('the console at login is changed on Save, not on the click')
 page = (HERE / 'web' / 'index.php').read_text()
