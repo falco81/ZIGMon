@@ -6720,14 +6720,24 @@ class Storage(object):
                 # read while the lock is still held (the first read after the
                 # copy builds the WAL index - a second on a big database) and
                 # put in place in one go
-                meta = {r['key']: r['value'] for r in self.db.execute('SELECT key, value FROM meta')}
+                # (a backup from an older version may lack a table: then
+                # nothing of it in memory, and nothing taken as complete)
+                meta_ok = True
+                try:
+                    meta = {r['key']: r['value'] for r in self.db.execute('SELECT key, value FROM meta')}
+                except sqlite3.Error:
+                    meta, meta_ok = {}, False
                 snaps = {}
-                for r in self.db.execute('SELECT device, payload, availability FROM snapshots'):
+                try:
+                    snap_rows = self.db.execute('SELECT device, payload, availability FROM snapshots').fetchall()
+                except sqlite3.Error:
+                    snap_rows = []
+                for r in snap_rows:
                     try:
                         snaps[r['device']] = (json.loads(r['payload'] or '{}'), r['availability'])
                     except ValueError:
                         snaps[r['device']] = ({}, r['availability'])
-                self._meta_raw, self._meta_cache, self._meta_complete = meta, {}, True
+                self._meta_raw, self._meta_cache, self._meta_complete = meta, {}, meta_ok
                 self._snap_cache = snaps
                 self._actions_cache, self._last_action = {}, {}
                 self._dev_cache, self._dev_list = {}, None
