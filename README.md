@@ -2083,7 +2083,60 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.27.0**
+Current version: **5.28.0**
+
+5.28.0 — a sensor or a button does what it means, at once and once.
+
+What can hold a reaction back or make it the wrong one, measured on a house of
+300 devices, 50 sockets, 200 rules and four million readings, each found
+fault proved and mended:
+
+* **A group of sensors moves with the report that moved it.** The group was
+  worked out from its members' last readings, which the broker thread writes
+  down just after handing the report to the rules: a rule worker that got
+  there first saw no change, and the light behind a group of PIRs did
+  nothing - one press in three once Python switched threads quickly.
+* **A retained message is not a press.** A button whose Zigbee2MQTT topic is
+  retained had its last "single" replayed by the broker at every reconnect,
+  and a toggle bound to it flipped the light. Its readings are still taken.
+* **After a restart, a state that held before is not news.** The rules are
+  primed with the last readings before the broker is asked for anything: a
+  door open for hours sent no "door opened" and flipped no light at the first
+  report after an upgrade. A change that happened while the daemon was away
+  still counts.
+* **The box's own button is not undone by an older poll.** A poll answered
+  after the box pushed "off" put the socket back to "on", and the next rule
+  asking for it on was skipped as "already on". A box that pushes is also no
+  longer taken for one that is down.
+* **A quick second press on a Zigbee toggle undoes the first**: it went by
+  the lamp's last report, which had not come back yet, and sent the same OFF
+  twice.
+* **A step of the clock does not end a wait.** NTP steps the clock at boot on
+  a machine without a battery clock - by hours on a Raspberry Pi - and "off
+  in ten minutes", "on for ten minutes" and "no motion for N s" ended at once.
+  Every wait in hand now moves with the step.
+* **A toggle over the broker is a Set** of the opposite, so the HTTP road
+  behind it cannot flip back what the box did and answered late.
+* **The way to a box**: a lost command is asked again after half a second
+  (it waited one, and five on a connection a poll had opened); a box named by
+  a host name is looked up once and refreshed behind, not on every press (a
+  slow resolver made every press seconds late); the sockets of a strip go
+  without a pause between them; a pulse is as long as asked (a 300 ms pulse
+  took 1.3 s, waiting for a poll).
+* **Putting a database back does not hold the house back**: the settings and
+  readings in memory stay in force while it is copied (every report and rule
+  waited for the copy - five seconds on a big database) and are swapped for
+  the restored ones in one go.
+* **A rule gated on who is home never waits for a regular poll** of a slow
+  Wi-Fi controller: it takes the last answer at once.
+* **The collector settles a minute after the start** (gc.freeze): a full
+  collection walked everything the daemon keeps, 15 ms on the broker thread.
+* **Python hands over between threads every 0.1 ms** (`gil_switch_ms`, was
+  0.5): with five busy pages a light waited 73-186 ms at worst, 37 now.
+* The database's VACUUM after a clean-up runs under its lock like everything
+  else on the shared connection.
+
+`test/review528.py` holds each of these; every check fails on 5.27.0.
 
 5.27.0 — root is never stopped by deleting a few backups in a row.
 
