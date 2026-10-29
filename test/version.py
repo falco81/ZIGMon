@@ -277,3 +277,14 @@ if _said.returncode != 0:
         print('   %s' % _line)
     raise SystemExit(1)
 print('the page\'s script parses: %d bytes of it' % len(_js))
+
+# The repository is the package unpacked: a dashboard at the top of it is a
+# stray copy (web/index.php is the one installed) and went into every package
+_top = Path(__file__).resolve().parent.parent
+if (_top / 'index.php').exists():
+    print('index.php at the top of the repository is an old copy, not the dashboard: web/index.php is')
+    raise SystemExit(1)
+if not (_top / 'tools' / 'make-release.sh').exists():
+    print('tools/make-release.sh, which makes the signed package, is missing')
+    raise SystemExit(1)
+print('the repository holds the package\'s files and nothing beside them')

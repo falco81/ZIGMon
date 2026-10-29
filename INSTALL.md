@@ -36,8 +36,21 @@ frontend; it claims its own hostname and nothing else). About ten minutes.
 
 ## 0. The short way
 
-Everything below is what the installer does, in the same order. Copy the whole
-folder to the machine and run it from inside:
+Everything below is what the installer does, in the same order. The newest
+signed package is always in this repository's `release/` folder
+(github.com/falco81/ZIGMon/tree/main/release); the repository itself is that
+package unpacked, file for file (`MANIFEST` and `MANIFEST.sig` at the top say
+which). Fetch the newest straight onto the machine:
+
+```bash
+V=$(curl -fsSL https://api.github.com/repos/falco81/ZIGMon/contents/release | grep -oE 'zigmon-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -t- -k2 -V | tail -n1)
+curl -fSL -o /root/$V https://raw.githubusercontent.com/falco81/ZIGMon/main/release/$V
+tar xzf /root/$V -C /root && cd /root/${V%.tar.gz}
+```
+
+An installed zigmon upgrades itself from there: `sudo zigmon --upgrade-online
+--yes`, or Control - Upgrades. Or copy the whole folder to the machine and
+run it from inside:
 
 ```bash
 scp -r zigmon/ root@server:/root/

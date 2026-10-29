@@ -2,6 +2,20 @@
 
 Standalone helpers that are not part of the running daemon.
 
+## make-release.sh
+
+The signed package of the version in this checkout, for whoever holds the
+release key:
+
+    tools/make-release.sh /path/to/zigmon-release-1.key
+
+It refuses unless the version is the same in zigmon.py, install.sh,
+tools/snort-debug.py and README.md (with a changelog entry) and everything
+is committed. It writes `release/zigmon-X.Y.Z.tar.gz` and puts `MANIFEST` and
+`MANIFEST.sig` at the top of the repository, so the repository on GitHub is
+the package unpacked. The key is only read by openssl, never copied or
+printed. Commit the three files and push.
+
 ## probe-front.py
 
 Run it against the hostname your one-tap **front** server answers on, **from
