@@ -28364,18 +28364,36 @@ function drawConsoleSwitch(cs) {
   host.innerHTML = '';
   var sw = zSwitch(cs.on);
   var said = el('span', 'muted small');
+  // A change of how root signs in is made on Save, not on the click: the
+  // switch alone wrote /etc through root at once, and a slip of the finger
+  // changed the login of the machine before anybody meant it to.
+  var bar = el('div');
+  bar.style.cssText = 'display:flex;gap:8px;margin-top:8px';
+  bar.hidden = true;
+  var save = el('button', 'btn primary small'); save.type = 'button';
+  setButtonIcon(save, 'save', 'Save');
+  var undo = el('button', 'btn small'); undo.type = 'button';
+  undo.textContent = 'Cancel';
+  bar.appendChild(save); bar.appendChild(undo);
   sw.input.onchange = function () {
+    var changed = !!sw._get() !== !!cs.on;
+    bar.hidden = !changed;
+    said.textContent = changed ? 'Not saved yet: nothing changes until Save.' : '';
+  };
+  undo.onclick = function () { drawConsoleSwitch(cs); };
+  save.onclick = function () {
     var on = !!sw._get();
-    sw.input.disabled = true;
+    zbusy(save, true); undo.disabled = true; sw.input.disabled = true;
     post('about-do', {action: 'console', on: on}).then(function (r) {
       toast(r.message || 'saved', true);
       drawConsoleSwitch(r);
-    }).catch(function (e) { zoops(e); sw.input.checked = !on; sw.input.disabled = false; });
+    }).catch(function (e) { zoops(e); zbusy(save, false); undo.disabled = false; sw.input.disabled = false; });
   };
   host.appendChild(zRow('Open the console when root signs in',
     cs.on ? 'On: root at the machine’s screen or over SSH lands in the console.' : 'Off: root gets the plain shell; zigmon --console opens it by hand.', sw));
   if (!cs.hook) host.appendChild(el('p', 'note warn', 'The login hook (/etc/profile.d/zz-zigmon-console.sh) is not on this machine: install.sh --upgrade puts it there. Until then the switch changes nothing.'));
   host.appendChild(said);
+  host.appendChild(bar);
 }
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {

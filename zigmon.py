@@ -7804,6 +7804,7 @@ class Daemon(object):
         self._zb_echo = {}       # Zigbee2MQTT name -> when we last saw our own /set echoed back
         self._gw_last = {}       # device -> {key: (value, when)} last written from a gateway poll
         self.presence = {}       # person id -> {home, last_seen, since, device, on_wifi}
+        self.presence_restore()
         self.wifi = {'ok': None, 'error': None, 'checked': None, 'count': None,
                      'wifi_count': None, 'clients_list': [], 'names': {}}
         try:
@@ -10089,8 +10090,10 @@ class Daemon(object):
             if float(item.get('after') or 0) > time.time():
                 keep.append(item)
                 continue
-            if (not item.get('after')
-                    and time.time() - item['first'] > float(CONFIG.get('sms_queue_hours') or 6) * 3600):
+            # counted from when it was first let go: one held for the morning
+            # was never given up on at all, and tried every half minute for good
+            start = max(float(item.get('first') or 0), float(item.get('after') or 0))
+            if time.time() - start > float(CONFIG.get('sms_queue_hours') or 6) * 3600:
                 self.say_event('sms', 'gave up on a message to %s after %s'
                                % (item['number'], human_span(time.time() - item['first'])), 'warn',
                                about='sms_trouble', title='A text was given up on')
@@ -10099,6 +10102,8 @@ class Daemon(object):
             if ok:
                 sent += 1
                 continue
+            if 'timed out' in str(detail).lower():
+                continue                 # it very likely went: again would be a second text
             item['tries'] += 1
             item['last_error'] = str(detail)[:120]
             keep.append(item)
@@ -10331,7 +10336,11 @@ class Daemon(object):
                 return False, ('no answer within %gs for a message of %d part%s - it may still '
                                'have gone out' % (timeout, parts, '' if parts == 1 else 's'))
             kept = False
-            if queue and CONFIG.get('sms_queue', True) and why not in ('test', 'reply'):
+            # A message the gateway did not answer for has, as said above,
+            # very likely gone: kept, it was sent again by every flush, every
+            # half minute, and timed out again each time - one boiler fault
+            # was five paid texts in two and a half minutes.
+            if queue and not timed_out and CONFIG.get('sms_queue', True) and why not in ('test', 'reply'):
                 # the gateway is away rather than the message being wrong: keep
                 # it and try again, so an alert is not simply lost
                 self.sms_queue_add(number or ('group:' + group), text, why)
@@ -21196,6 +21205,8 @@ class Daemon(object):
                 self.notify('The Zigbee mesh is unsettled: %d devices left it within the hour - a coordinator '
                             'or a router may be struggling.' % len(gone), 'warn', dedup='mesh-left', about='mesh')
 
+    SCHED_CATCH_UP_MAX_MIN = 60
+
     def check_schedules(self):
         """Once a minute: has a schedule's day and time just arrived? Fires
         once per entry per day - a missed minute (daemon restart, a stalled
@@ -21224,6 +21235,22 @@ class Daemon(object):
             skipped = max(0, (current_minute - seen[2]) - int((now - seen[0]) // 60) - 1)
         self._sched_seen = (now, today_key, current_minute)
         catch_up = 4 + skipped
+        # After a restart, the minutes the daemon was away (written down each
+        # minute), up to an hour and never into yesterday: a 07:00 "heating
+        # on" with the daemon back at 07:20 is still wanted; a 07:00 "lights
+        # on" at 18:00 is not. It caught up four minutes only, and a power cut
+        # from 06:55 to 07:10 skipped the morning's heating.
+        away = 0
+        if seen is None:
+            try:
+                last = float(self.store.get_meta('sched_seen_at') or 0)
+            except ValueError:
+                last = 0
+            if last and time.strftime('%Y-%m-%d', time.localtime(last)) == today_key and last < now:
+                away = min(int((now - last) // 60), current_minute, self.SCHED_CATCH_UP_MAX_MIN)
+        self.store.set_meta('sched_seen_at', repr(now), deferred=True)
+        late_ok = max(catch_up, away)
+        due = []
         for sch in self.schedules():
             if not sch.get('enabled', True) or weekday not in (sch.get('days') or []):
                 continue
@@ -21238,8 +21265,24 @@ class Daemon(object):
                 target_minute = (base + int(m.group(2) or 0)) % 1440
             else:
                 target_minute = hhmm_minutes(at)
-            if current_minute < target_minute or current_minute - target_minute > catch_up:
+            if current_minute < target_minute or current_minute - target_minute > late_ok:
                 continue                     # not due yet, or the window to catch up (4 min) has passed
+            due.append((target_minute, sch, at))
+        # caught up after being away: only what still means something late (on,
+        # off, a value - not a toggle, a pulse or "for ten minutes"), and of
+        # several missed for one target only the last: a 07:00 on and an 08:00
+        # off missed together are the off
+        def plain(sch):
+            low = str(sch.get('do') or '').lower()
+            return low in ('on', 'off') or low.startswith('set:')
+        latest = {}
+        for target_minute, sch, at in due:
+            if current_minute - target_minute <= catch_up or plain(sch):
+                latest[sch['target']] = max(latest.get(sch['target'], -1), target_minute)
+        for target_minute, sch, at in due:
+            if current_minute - target_minute > catch_up and (
+                    not plain(sch) or latest.get(sch['target']) != target_minute):
+                continue
             rt = self.schedule_runtime.setdefault(sch['id'], {'last_day': None})
             if rt['last_day'] is None:
                 # what a daemon before a restart already did today: kept on
@@ -27405,9 +27448,21 @@ class Daemon(object):
                                      name='hold', daemon=True).start()
             return
 
+        # Pressed again, the scene starts over: its steps still waiting from
+        # the press before are called off. "On now, off in a minute" pressed
+        # three times went off a minute after the FIRST press, and twice more
+        # after that. A step whose scene was switched off or taken away
+        # meanwhile does nothing either.
+        gens = self.__dict__.setdefault('_scene_gen', {})
+        gens[scene_id] = mine = gens.get(scene_id, 0) + 1
+
         def delayed(batch, wait_s):
-            if not self._stop.wait(wait_s):
-                fire(batch)
+            if self._stop.wait(wait_s) or gens.get(scene_id) != mine:
+                return
+            now = next((x for x in self.scenes() if x['id'] == scene_id), None)
+            if now is None or now.get('enabled', True) is False:
+                return
+            fire(batch)
 
         # Steps that share a delay are one batch, so four sockets told to go
         # in a second still go in the order they are written rather than
@@ -34188,12 +34243,24 @@ class Daemon(object):
                         # head. Not knowing counts as not off, so a house that
                         # has just started still puts it back.
                     current = valve.get('setpoint')
-                    if (not enforce_min and not at_once) or not isinstance(current, (int, float)):
+                    if not isinstance(current, (int, float)):
                         continue                 # already asked for this
+                    confirmed = self.__dict__.setdefault('_heat_confirmed', set())
                     if abs(float(current) - value) < delta:
                         self._heat_drift.pop(key, None)
+                        confirmed.add(key)
                         continue                 # the head is where we left it
-                    if not at_once:
+                    # Sent is not taken: the broker had it, the head may not.
+                    # A head that has not once said the number back since it
+                    # was sent is asked again (within the gap and the tries
+                    # below) whatever heating_enforce says - that setting is
+                    # about a hand on the knob, and a head that never heard
+                    # us has had no hand on it. It stayed at 21 all night
+                    # with the room wanting 17.
+                    unheard = key not in confirmed
+                    if not enforce_min and not at_once and not unheard:
+                        continue                 # turned by hand, and that is let be
+                    if not at_once and not unheard:
                         first = self._heat_drift.get(key)
                         if first is None:
                             self._heat_drift[key] = time.time()
@@ -34255,7 +34322,10 @@ class Daemon(object):
                         ok, message = self.zigbee_switch(device_id, 'system_mode', 'set:%s' % off_mode,
                                                          'heating: %s is %s' % (room['name'], room['why']))
                         if not ok:
+                            # not handed on (the broker away as the window
+                            # opened): asked again next round, not taken as done
                             log('heating: %s' % message, 'warn')
+                            continue
                     self._heat_last[key] = value      # the number stands, the mode does the shutting
                     continue
                 self.valve_take_over(device_id)   # its own programme must not fight ours
@@ -34263,6 +34333,7 @@ class Daemon(object):
                                                  'heating: %s is %s' % (room['name'], room['why']))
                 if ok:
                     self._heat_last[key] = value
+                    self.__dict__.setdefault('_heat_confirmed', set()).discard(key)
                 else:
                     log('heating: %s' % message, 'warn')
 
@@ -35064,6 +35135,7 @@ class Daemon(object):
                 later.append((person, moved == 'arrive', events))
             else:
                 self._presence_changed(person, moved == 'arrive', events)
+        self.presence_keep()
         return clients
 
     def people_public(self):
@@ -35213,6 +35285,7 @@ class Daemon(object):
                 return True, '%s was already %s' % (person['name'], 'home' if home else 'out')
             st['home'] = home
             st['since'] = time.time()
+        self.presence_keep()
         self.store.add_event('presence', '%s reported %s (%s)' % (person['name'], state, origin), 'info')
         if was is None:
             self.bump()
@@ -35291,6 +35364,38 @@ class Daemon(object):
         if not person.get('enabled', True) or was is None:
             return None                 # the first reading is not an arrival
         return 'arrive' if now_home else 'leave'
+
+    PRESENCE_KEPT = ('home', 'since', 'last_seen', 'device', 'phone', 'phone_at')
+    PRESENCE_KEEP_S = 3600
+
+    def presence_keep(self):
+        """Who is home, written down when it changes. Held in memory alone,
+        a restart forgot it: somebody who left meanwhile never left (no
+        "everybody has gone"), and a phone dozing at the first round had its
+        owner arrive again when it woke, with all that the first one home sets
+        going."""
+        out = {str(k): {f: v.get(f) for f in self.PRESENCE_KEPT} for k, v in list(self.presence.items())}
+        # who is where at once; when each was last seen once a minute is enough
+        text = json.dumps({k: [v.get('home'), v.get('phone')] for k, v in out.items()}, sort_keys=True)
+        if text != getattr(self, '_presence_kept', None) or \
+                time.time() - getattr(self, '_presence_kept_at', 0) > 60:
+            self._presence_kept, self._presence_kept_at = text, time.time()
+            self.store.set_meta('presence_state', json.dumps({'at': time.time(), 'people': out}),
+                                deferred=True)
+
+    def presence_restore(self):
+        try:
+            got = json.loads(self.store.get_meta('presence_state') or '{}')
+        except ValueError:
+            return
+        # an hour away is long enough for anything to have changed: then the
+        # first round is taken as it comes, as before
+        if not isinstance(got, dict) or time.time() - float(got.get('at') or 0) > self.PRESENCE_KEEP_S:
+            return
+        for pid, st in (got.get('people') or {}).items():
+            if isinstance(st, dict) and isinstance(st.get('home'), bool):
+                self.presence[pid] = dict({f: st.get(f) for f in self.PRESENCE_KEPT},
+                                          on_wifi=False)
 
     def _presence_changed(self, person, home, events):
         self._presence_moved_at = time.time()
