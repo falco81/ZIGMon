@@ -5,6 +5,10 @@
 # and this starts zigmon-upgrade.service, which checks the package as root
 # and runs its install.sh --upgrade. Nothing else can be asked for this way.
 [Unit]
+# no limit on how often it starts: the default (five in ten seconds) was
+# reached by a few backups deleted one after another on the dashboard, and
+# then nothing more was taken until somebody ran systemctl reset-failed
+StartLimitIntervalSec=0
 Description=zigmon - a new version asked for on the dashboard
 
 [Path]

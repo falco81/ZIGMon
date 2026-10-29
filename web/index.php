@@ -25817,6 +25817,17 @@ function rootNotInstalled(host) {
     + 'Upgrade once on the command line (sudo ./install.sh --upgrade), which installs zigmon-root.path and '
     + 'zigmon-upgrade.path; from then on it is done from here.'));
 }
+/* A request root has not taken for a minute: its path unit is not starting
+   it - stopped by systemd's limit on how often a unit starts (before 5.27 a
+   few deletes in a row reached it), or not running. Said, with the way out,
+   instead of "waiting for root" for half an hour. */
+function rootStuck(busy) {
+  if (!busy || busy.working || !(busy.since > 60)) return null;
+  var p = el('p', 'note warn', 'Root has not taken this for ' + Math.round(busy.since) + ' s: zigmon-root.path is not starting it. '
+    + 'On the server, as root: ');
+  p.appendChild(el('code', '', 'systemctl reset-failed zigmon-root.service zigmon-root.path; systemctl restart zigmon-root.path'));
+  return p;
+}
 /* One line: what root did with the last request of this kind. */
 function rootStateLine(node, words) {
   var st = el('div', 'cert-state');
@@ -26902,7 +26913,11 @@ function drawFull(d) {
   var says = $('full-says');
   says.innerHTML = '';
   if (d.progress) says.appendChild(rootProgress(d.progress));
-  else if (d.busy) says.appendChild(rootStateLine({waiting: true}, ''));
+  else if (d.busy) {
+    says.appendChild(rootStateLine({waiting: true}, ''));
+    var stuck = rootStuck(d.busy);
+    if (stuck) says.appendChild(stuck);
+  }
   else if (d.status && d.status.state === 'failed') says.appendChild(el('p', 'note bad', (d.status.said || []).join('; ')));
   var list = d.list || [], newest = list[0];
   var ff = otFacts([['Newest', newest ? ago(newest.ts) : 'none yet'], ['Its size', newest ? sizeText(newest.bytes) : ''],
@@ -26926,11 +26941,16 @@ function drawFull(d) {
     var rm = iconButton('trash', 'Delete');
     rm.onclick = function () {
       zconfirm('Delete ' + b.file, 'The backup is removed from ' + (d.dir || 'the server') + '.', 'Delete', function () {
+        FULL.last = Object.assign({}, FULL.last || d, {busy: {since: 0}});
+        drawFull(FULL.last);                  // the buttons off at once, not at the next look
         rootPost('fullbackup-do', {action: 'delete', file: b.file}).then(function (x) {
           return rootWait('fullbackup', x.asked).then(function () { toast('deleted', true); loadFull(); });
-        }, zoops);
+        }).catch(function (e) { zoops(e); loadFull(); });
       });
     };
+    // one request to root at a time: while it works on one, the others wait
+    // here rather than being pressed into "root is still busy"
+    if (d.busy) [rs, rm].forEach(function (x) { x.disabled = true; x.title = 'Root is busy with what was asked a moment ago'; });
     [dl, rs, rm].forEach(function (x) { acts.appendChild(x); });
     tr.appendChild(acts);
     return tr;

@@ -2083,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.26.0**
+Current version: **5.27.0**
+
+5.27.0 — root is never stopped by deleting a few backups in a row.
+
+zigmon-root.service is started by its path unit for every request, and
+systemd lets a unit start five times in ten seconds before it refuses it -
+and the path unit with it - until somebody runs `systemctl reset-failed`.
+Deleting backups one after another, with the page asking what is in place
+between them, reached that, and every request after it said *waiting for
+root…* for half an hour.
+
+* The four units root and upgrades run under have no such limit
+  (`StartLimitIntervalSec=0`), and `install.sh` - so every upgrade - clears a
+  unit the old limit stopped.
+* A request root has not taken for a minute says so, with the way out
+  (`systemctl reset-failed zigmon-root.service zigmon-root.path; systemctl
+  restart zigmon-root.path`), rather than waiting for root.
+* While root works on one backup, the others' *Delete* and *Put back* wait,
+  and the button pressed turns off at once.
+
+`test/review527.py`; every check fails on 5.26.0.
 
 5.26.0 — the machine's own sections drawn as OTP draws them.
 

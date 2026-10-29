@@ -7,6 +7,10 @@
 # go back to when the new version does not answer. It runs apart from
 # zigmon.service, which the upgrade restarts.
 [Unit]
+# no limit on how often it starts: the default (five in ten seconds) was
+# reached by a few backups deleted one after another on the dashboard, and
+# then nothing more was taken until somebody ran systemctl reset-failed
+StartLimitIntervalSec=0
 Description=zigmon - putting in a new version asked for on the dashboard
 After=network-online.target
 

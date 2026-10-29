@@ -4,6 +4,10 @@
 # takes one request from /var/lib/zigmon/root/, checks everything in it and
 # writes what it did back for the dashboard.
 [Unit]
+# no limit on how often it starts: the default (five in ten seconds) was
+# reached by a few backups deleted one after another on the dashboard, and
+# then nothing more was taken until somebody ran systemctl reset-failed
+StartLimitIntervalSec=0
 Description=zigmon - TLS, page access, the firewall and whole backups, as asked on the dashboard
 After=network-online.target
 

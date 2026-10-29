@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.26.0"
+VERSION="5.27.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -515,6 +515,10 @@ install_helpers() {
     # certificate's key and every password) and the key they are sealed with
     run install -d -m 700 /var/lib/zigmon-root /var/backups/zigmon
     run systemctl daemon-reload
+    # a unit stopped by the old limit on how often it starts stays stopped
+    # until told otherwise: told here, so an upgrade mends it
+    run systemctl reset-failed zigmon-root.service zigmon-root.path zigmon-upgrade.service \
+        zigmon-upgrade.path 2>/dev/null || true
     run systemctl enable --now zigmon-root.path zigmon-upgrade.path
     # a path unit reads what it watches when it starts: the network and the
     # clock (5.21) are asked in files of their own, which an old one ignores
