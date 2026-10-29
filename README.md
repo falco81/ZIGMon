@@ -2083,7 +2083,49 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.24.0**
+Current version: **5.25.0**
+
+5.25.0 — kept out at once, texts not paid for twice, and the house remembered across a restart.
+
+* **An address blocked is kept out at once.** A block threw the list in hand
+  away, and the door answered from the old one until all of it - 27,000
+  rows, under the database lock - had been read again: an address blocked a
+  moment before was let in 1,302 times while a backup held the lock. A block
+  now goes into the list in hand as it is made, and a read of the whole
+  list that began before it cannot put the old one back. The proxy log
+  sweep, which read the whole list again after every one of its blocks,
+  takes 1.7 s where it took 17.
+* **The history is asked for a few readings at a time**: twelve keys a chart,
+  four hundred for the whole Overview, and the database taken a key at a
+  time - two hundred keys of a fortnight, open to whoever the house is shown
+  to, held it for ten seconds.
+* **A connection that says nothing is let go after 40 s** instead of holding a
+  thread of the API for good; an internal error tells the client a reference
+  to the daemon's log, not what the database said.
+* **A text the gateway did not answer for is not sent again** - it very
+  likely went, and every flush, every half minute, sent it once more. One
+  held for the morning that keeps failing is given up on like any other.
+* **Who is home outlives a restart** (for an hour): somebody who left
+  meanwhile leaves, and a phone dozing at the first look does not make its
+  owner arrive again.
+* **A schedule missed while the daemon was away is caught up** - up to an hour
+  and never into yesterday, only what still means something late (on, off, a
+  value) and only the last of them for each target.
+* **A scene pressed again starts over**; its steps still waiting are called
+  off, and a step whose scene was switched off does nothing.
+* **A radiator head that never took its setting is told again** (within the
+  gap and the tries), whatever *heating_enforce* says; a head the window
+  could not shut is asked again next round.
+* **The console at login is switched on Save**, not on the click.
+* The status is written out a device at a time and a device that did not
+  change is not written out again (9.3 → 2.0 ms a wake); a TLS hello is
+  counted at the moment in its own line.
+
+The repository is the package unpacked, file for file: `tools/make-release.sh`
+makes the signed package, puts it in `release/` and `MANIFEST` with its
+signature at the top; the stray old `index.php` at the top is gone.
+
+`test/review525.py` holds each of these; every check fails on 5.24.0.
 
 5.24.0 — a sensor is followed at once, and what waits survives a restart.
 
