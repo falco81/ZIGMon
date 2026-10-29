@@ -36767,11 +36767,7 @@ class Daemon(object):
                 guard.wait(2.0)        # somebody is building it: theirs will do
         body = None
         try:
-            obj = self.status()
-            try:
-                body = json.dumps(obj, ensure_ascii=False, allow_nan=False).encode('utf-8')
-            except ValueError:
-                body = json.dumps(scrub_nan(obj), ensure_ascii=False, allow_nan=False).encode('utf-8')
+            body = self._status_json(self.status())
             return body
         finally:
             with guard:
@@ -36779,6 +36775,38 @@ class Daemon(object):
                 if body is not None:
                     self._status_held = (seq, time.time(), body)
                 guard.notify_all()
+
+    @staticmethod
+    def _json_out(obj):
+        try:
+            return json.dumps(obj, ensure_ascii=False, allow_nan=False)
+        except ValueError:
+            return json.dumps(scrub_nan(obj), ensure_ascii=False, allow_nan=False)
+
+    def _status_json(self, obj):
+        """The status as JSON, each device's part kept from the last time when
+        the device is the one describe() handed back then. Every change in the
+        house woke every page, and each wake wrote out 470 kB of devices that
+        had not changed - 6-10 ms holding the interpreter, sixteen times a
+        second in a busy house, on the threads the rules run on."""
+        devs = obj.get('devices') if isinstance(obj, dict) else None
+        if not isinstance(devs, list):
+            return self._json_out(obj).encode('utf-8')
+        rest = dict(obj)
+        rest.pop('devices')
+        held = self.__dict__.get('_device_json') or {}
+        kept, parts = {}, []
+        for dv in devs:
+            key = id(dv)
+            got = held.get(key)
+            if got is None or got[0] is not dv:
+                got = (dv, self._json_out(dv))
+            kept[key] = got
+            parts.append(got[1])
+        self._device_json = kept
+        head = self._json_out(rest)
+        return (head[:-1] + (', ' if len(head) > 2 else '') + '"devices": [' + ', '.join(parts) + ']}'
+                ).encode('utf-8')
 
     def status(self):
         t_status = time.perf_counter()
