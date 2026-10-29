@@ -340,3 +340,14 @@ eleven, driven directly; then the console itself on a pseudo-terminal: its
 menu, a submenu and Esc back, `!` opening a shell told ZIGMON_CONSOLE=1, the
 live log filtered as it is typed, and q closing it. Touches nothing on the
 machine. Fails on 5.20.0.
+
+## downgrade.py
+
+`python3 test/downgrade.py` — going back to an older version (5.22): root
+puts the older program in only when asked to and only when no version
+between changed how the database is read (`DB_EPOCHS`), judged by the
+highest version that ran on the database; no backup of the database is made
+and none put back - the file is the same byte for byte afterwards; what the
+older version does not know of is taken away once it answers, and nothing
+when it does not; the daemon offers only what root will do, and not while a
+change waits to be kept. Fails on 5.21.0.

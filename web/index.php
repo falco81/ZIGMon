@@ -4779,7 +4779,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-new-card">
       <h2>A new version</h2>
-      <p class="note">The package as it is released: <code>zigmon-X.Y.Z.tar.gz</code>, signed. Its signature is checked against the keys installed with zigmon before anything else is looked at; a package that is not signed, or not by one of them, or changed after it was signed, is refused. Going back to an older version is done on the command line.</p>
+      <p class="note">The package as it is released: <code>zigmon-X.Y.Z.tar.gz</code>, signed. Its signature is checked against the keys installed with zigmon before anything else is looked at; a package that is not signed, or not by one of them, or changed after it was signed, is refused. Going back to an older version is in the card below, Going back to an older version.</p>
       <div id="up-drop-slot"></div>
       <div id="up-pkg"></div>
       <div id="up-ready"></div>
@@ -4788,6 +4788,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <button class="btn cmd" id="up-forget" type="button" hidden>Throw the package away</button>
         <span class="muted small" id="up-retry"></span>
       </div>
+    </div>
+    <div class="card full ot" data-sec="sys-upgrade" id="up-back-card">
+      <h2>Going back to an older version</h2>
+      <p class="note">The older program is put in and <b>the database is left as it is</b> &ndash; nothing of it is copied or put back, however big it is. That is safe only while the older version reads the database as this one left it; where a version between them changed that, going back is refused and says why. A copy of the program as it is now is kept, and put back by itself if the older version does not answer. Not while a change of the network or the firewall waits to be kept.</p>
+      <div id="up-back"></div>
+      <div id="up-back-drop-slot" style="margin-top:12px"></div>
     </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-plan-card" hidden>
       <h2>The upgrade</h2>
@@ -26571,6 +26577,7 @@ function drawUpgrade(d) {
     return tr;
   }, 'plain'));
   drawUpWeb(d);
+  drawUpBack(d);
   var pk = $('up-pkg');
   pk.innerHTML = '';
   if (d.package) {
@@ -26628,10 +26635,87 @@ function drawUpgrade(d) {
   lg.textContent = (d.log || []).length ? d.log.join('\n') : '–';
   if (d.running) upAgain(3000);
 }
+
+/* Going back to an older version (5.22): what root will do, said before it is
+   asked - from the list at upgrade_url, or a package sent here - and the
+   database left as it is. */
+function drawUpBack(d) {
+  var host = $('up-back');
+  if (!host) return;
+  var b = d.back || {}, w = (d.web || {}).online || {};
+  host.innerHTML = '';
+  var facts = el('div');
+  sysFacts(facts, [['Runs here', 'zigmon ' + (d.version || '?')],
+    ['The highest version this database has seen', b.high || ''],
+    ['As far back as it goes', b.floor ? 'zigmon ' + b.floor + ' - before it the database was read differently' : 'any version']]);
+  host.appendChild(facts);
+  if (b.busy) host.appendChild(el('p', 'note warn', 'Not now: ' + b.busy + '.'));
+  var go = function (version, fetchFirst) {
+    zconfirm('Go back to zigmon ' + version + '?', 'The older program is put in and zigmon restarts with it - the house stops following its sensors for a minute or so. '
+      + 'The database is left as it is: no backup of it is made and none is put back. A copy of the program as it is now is kept, and put back by itself '
+      + 'if zigmon ' + version + ' does not answer. What it does not know of is taken away (the console at login, below 5.21).', 'Go back', function () {
+        var ask = fetchFirst ? rootPost('upgrade-do', {action: 'online_get', version: version, back: true, start: true})
+          : rootPost('upgrade-do', {action: 'downgrade_start'});
+        ask.then(function (r) { toast(r.message, true); drawUpgrade(r); }, zoops);
+      });
+  };
+  var pkg = b.package;
+  if (pkg) {
+    var box = el('div', 'notice ' + ((pkg.back || {}).ok ? 'good' : 'bad'));
+    box.appendChild(el('b', '', 'zigmon ' + pkg.version));
+    box.appendChild(el('div', 'small', 'signed by ' + (pkg.signed_by || '?') + ' · ' + (pkg.source ? 'fetched from ' + pkg.source : 'sent by ' + (pkg.by || '?'))
+      + ' · ' + ((pkg.back || {}).ok ? 'safe to go back to' : 'not safe: ' + ((pkg.back || {}).why || '?'))));
+    host.appendChild(box);
+    var row = el('div', 'btnrow');
+    var now = cmdButton('Go back to ' + pkg.version, 'undo', 'primary');
+    now.disabled = !b.ready;
+    now.onclick = function () { go(pkg.version, false); };
+    row.appendChild(now);
+    host.appendChild(row);
+  }
+  var older = (w.older_list || []).filter(function (x) { return x && x.version; });
+  if (older.length) {
+    host.appendChild(el('h3', 'sw-h', 'Older versions at upgrade_url'));
+    host.appendChild(zTable(['Version', 'Going back to it', ''], older, function (x) {
+      var tr = el('tr');
+      tr.appendChild(el('td', 'mono', 'zigmon ' + x.version));
+      tr.appendChild(el('td', x.ok ? 'good' : 'muted small', x.ok ? 'safe - the database is left as it is' : x.why));
+      var td = el('td');
+      if (x.ok) {
+        var bt = cmdButton('Go back to ' + x.version, 'undo', 'small');
+        bt.disabled = !!(b.busy || d.running || d.asked);
+        bt.onclick = function () { go(x.version, true); };
+        td.appendChild(bt);
+      }
+      tr.appendChild(td);
+      return tr;
+    }, 'plain'));
+  } else if (w.at) host.appendChild(el('p', 'muted small', 'No older version at upgrade_url (looked ' + ago(w.at) + ').'));
+}
+function upBackWire() {
+  var slot = $('up-back-drop-slot');
+  if (!slot || slot.dataset.wired) return;
+  slot.dataset.wired = '1';
+  var words = 'Or drop an older zigmon-X.Y.Z.tar.gz here, or press to choose it';
+  var drop = dropZone(words, '.gz,.tgz,application/gzip,application/octet-stream', function (files) {
+    var file = files[0];
+    drop._says.textContent = 'sending ' + file.name + ' (' + sizeText(file.size) + ')…';
+    sendInPieces('upgrade-upload', file, {back: true}, function (pc) { drop._says.textContent = 'sending ' + file.name + '… ' + pc + ' %'; }).then(function (d) {
+      toast(d.message || 'checked', true);
+      drop._says.textContent = words;
+      drawUpgrade(d);
+    }, function (e) {
+      drop._says.textContent = words;
+      zmodal('The package was not taken', function (body) { body.appendChild(el('p', 'note bad', String(e.message || e))); }, null, 'narrow');
+    });
+  });
+  slot.appendChild(drop);
+}
 function upgradeWire() {
   var slot = $('up-drop-slot');
   if (!slot || slot.dataset.wired) return;
   slot.dataset.wired = '1';
+  upBackWire();
   var words = 'Drop the zigmon-X.Y.Z.tar.gz here, or press to choose it';
   var drop = dropZone(words, '.gz,.tgz,application/gzip,application/octet-stream', function (files) {
     var file = files[0];

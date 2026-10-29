@@ -16,7 +16,8 @@ which runs this as root. This then trusts nothing it was handed:
   * every file in it is listed in MANIFEST with the right hash, nothing more,
     no links, no device, no path outside its one folder;
   * it is not older than the version installed (the same one again is a
-    retry and is allowed).
+    retry and is allowed) - unless going back was asked for (5.22), and it is
+    safe: see DB_EPOCHS below.
 
 Then, before anything is changed: a backup of the whole installation
 (zigmon_root.py --backup) and a copy of the program as it is. Its own
@@ -29,6 +30,8 @@ replaced is put back and started again, and the dashboard is told why.
   zigmon_upgrade.py --inspect FILE  check a package and say what it is (JSON);
                                     any user - the daemon asks this way
   zigmon_upgrade.py --run FILE      check and put in a package by hand (root)
+  zigmon_upgrade.py --run FILE --downgrade
+                                    go back to an older version by hand (root)
 """
 import grp
 import hashlib
@@ -57,6 +60,7 @@ UNITS = os.environ.get('ZIGMON_UNITS', '/etc/systemd/system')
 NO_SERVICES = bool(os.environ.get('ZIGMON_NO_SERVICES'))
 HEALTH_WAIT_S = float(os.environ.get('ZIGMON_HEALTH_WAIT_S', '90'))
 SERVICE_USER = os.environ.get('ZIGMON_USER', 'zigmon')
+FS_ROOT = os.environ.get('ZIGMON_FS_ROOT', '').rstrip('/')      # the checks: where / is
 MOST_PACKED = 64 * 1024 * 1024
 MOST_UNPACKED = 256 * 1024 * 1024
 MOST_FILES = 5000
@@ -112,6 +116,95 @@ def installed_version():
     except OSError:
         pass
     return ''
+
+
+# ---- going back to an older version (5.22) ------------------------------------------
+# Going back puts the older program in and leaves the database as it is: it can
+# be terabytes of readings, and copying it or putting a copy back is not what
+# anybody wants for "the new version misbehaves, give me last week's". That is
+# safe only while the older version reads the database as this one left it.
+# zigmon's database only ever grows - tables and columns added, nothing taken
+# away or read differently - except at the versions below, where an older one
+# would read it wrongly. Going back across one of them is refused; a version
+# that changes the database so must be added here, with the reason in words.
+#
+# The highest version that ever ran on the database counts, not only the one
+# installed: a database a newer zigmon wrote to, run since by an older one,
+# still holds what the newer one put there. The daemon keeps it in its meta
+# table (version_high).
+DB_EPOCHS = (
+    ('5.19.0', 'the accounts of the dashboard: an older version has no sign-in by name and '
+               'password, and would open the house to anybody holding the old PIN'),
+    ('5.19.1', 'PIN accounts: an older version would take an account\'s short PIN as its password'),
+)
+# What an install of a newer version puts on the machine that an older one
+# does not know of, and which would be in the way once it runs: taken away
+# when going back below the version that brought it. (What the older
+# install.sh puts in itself - its units, its helpers - it puts in over these.)
+AWAY_BELOW = (
+    ('5.21.0', ('/etc/profile.d/zz-zigmon-console.sh',),
+     'the console at login - an older zigmon has no console, and root\'s login would '
+     'say so every time'),
+)
+
+
+def db_file_path():
+    p = str(config_values().get('db_file') or '').strip()
+    return p if p.startswith('/') else os.path.join(STATE_DIR, 'history.db')
+
+
+def db_version_high():
+    """The highest version that has run on the database, as it says itself:
+    one row read, the database opened read-only - its size does not matter."""
+    import sqlite3
+    try:
+        con = sqlite3.connect('file:%s?mode=ro' % db_file_path(), uri=True, timeout=10)
+        try:
+            row = con.execute("SELECT value FROM meta WHERE key = 'version_high'").fetchone()
+        finally:
+            con.close()
+        v = str(row[0] if row else '').strip()
+        return v if re.match(r'^[0-9]+(\.[0-9]+){2,3}$', v) else ''
+    except Exception:                                    # noqa: BLE001 - no row is no answer
+        return ''
+
+
+def downgrade_check(target, installed, high=''):
+    """Whether going back from `installed` to `target` is safe, and why not.
+    Returns {'ok', 'why', 'floor', 'high', 'away'}."""
+    high = max([v for v in (installed, high) if v] or ['0.0.0'], key=version_tuple)
+    out = {'ok': False, 'why': '', 'floor': '', 'high': high, 'away': []}
+    if not installed or version_tuple(target) >= version_tuple(installed):
+        out['why'] = '%s is not older than %s, which is installed' % (target, installed or '?')
+        return out
+    crossed = [(v, why) for v, why in DB_EPOCHS
+               if version_tuple(target) < version_tuple(v) <= version_tuple(high)]
+    floors = [v for v, _w in DB_EPOCHS if version_tuple(v) <= version_tuple(high)]
+    out['floor'] = max(floors, key=version_tuple) if floors else ''
+    if crossed:
+        v, why = crossed[-1]
+        out['why'] = ('the database changed at %s (%s): %s would read it wrongly - %s is as far '
+                      'back as it goes without putting a backup of the database back'
+                      % (v, why, target, out['floor']))
+        return out
+    out['away'] = [{'below': v, 'paths': list(paths), 'what': what} for v, paths, what in AWAY_BELOW
+                   if version_tuple(target) < version_tuple(v)]
+    out['ok'] = True
+    return out
+
+
+def put_away(away, say):
+    """What the older version does not know of, taken away once it answers."""
+    for one in away:
+        for path in one['paths']:
+            path = FS_ROOT + path
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+                os.unlink(path)
+                say('taken away: %s (%s)' % (path, one['what']))
 
 
 def trusted_keys():
@@ -264,10 +357,14 @@ def inspect(path, extract_to=None):
         finally:
             shutil.rmtree(work, ignore_errors=True)
     have_v = installed_version()
-    return {'version': version, 'top': top, 'files': len(have), 'signed_by': who,
-            'bytes': size, 'changelog': changelog, 'installed': have_v,
-            'newer': not have_v or version_tuple(version) > version_tuple(have_v),
-            'older': bool(have_v) and version_tuple(version) < version_tuple(have_v)}
+    out = {'version': version, 'top': top, 'files': len(have), 'signed_by': who,
+           'bytes': size, 'changelog': changelog, 'installed': have_v,
+           'newer': not have_v or version_tuple(version) > version_tuple(have_v),
+           'older': bool(have_v) and version_tuple(version) < version_tuple(have_v)}
+    if out['older']:
+        # whether going back to it is safe, said before anybody asks
+        out['back'] = downgrade_check(version, have_v, db_version_high())
+    return out
 
 
 # ---- writing where zigmon may also write: never through a link ---------------
@@ -417,9 +514,14 @@ def before_backup(version, say):
     say('a backup of the whole installation first: %s' % got.stdout.strip()[:200])
 
 
-def put_in(package, ident='', want_sha='', by='the command line', log_to=None, step=None):
+def put_in(package, ident='', want_sha='', by='the command line', log_to=None, step=None,
+           downgrade=False):
     """Check the package, keep what is there, run its install.sh --upgrade,
-    and go back when the new one does not answer. Returns (rc, info, lines)."""
+    and go back when the new one does not answer. Returns (rc, info, lines).
+    `downgrade`: an older version asked for on purpose - checked against
+    DB_EPOCHS here again, whatever the daemon said, and without a backup of
+    the whole installation: the database is not touched, and what is kept to
+    put back is the program."""
     if os.geteuid() != 0 and not os.environ.get('ZIGMON_UPGRADE_TEST'):
         raise Refused('putting a version in takes root')
     os.makedirs(OWN_DIR, mode=0o700, exist_ok=True)
@@ -460,13 +562,24 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         unpacked = os.path.join(work, 'x')
         os.makedirs(unpacked, mode=0o700)
         info = inspect(copy, extract_to=unpacked)
-        if info['older']:
-            raise Refused('%s is older than %s, which is installed: going back is done on the '
-                          'command line' % (info['version'], info['installed']))
+        back = None
+        if info['older'] and not downgrade:
+            raise Refused('%s is older than %s, which is installed: that is going back, asked for '
+                          'as such (Upgrades - Going back, or --downgrade)'
+                          % (info['version'], info['installed']))
+        if downgrade:
+            back = downgrade_check(info['version'], info['installed'], db_version_high())
+            if not back['ok']:
+                raise Refused('not going back: %s' % back['why'])
         say('zigmon %s, signed by %s, %d files - checked' % (info['version'], info['signed_by'],
                                                             info['files']))
         at('backup')
-        before_backup(info['version'], say)
+        if back:
+            say('going back from %s to %s: the database is left as it is (the highest version '
+                'it has seen is %s, and nothing between changed how it is read) - no backup of '
+                'it is made, and none is put back' % (info['installed'], info['version'], back['high']))
+        else:
+            before_backup(info['version'], say)
         saved = keep_program(work)
         say('the program as it is kept, to go back to (%d MB)' % (os.path.getsize(saved) // 1048576))
         src = os.path.join(unpacked, info['top'])
@@ -508,6 +621,8 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         at('checking')
         ok, why = (False, 'install.sh failed') if rc != 0 else answers(info['version'], say)
         say(why)
+        if ok and back:
+            put_away(back['away'], say)
         if not ok:
             at('rolling back')
             put_program_back(saved, say)
@@ -568,7 +683,8 @@ def serve_request():
                pid=os.getpid())
         rc, info, _ = put_in(os.path.join(UPGRADE_DIR, name), ident,
                              re.sub(r'[^0-9a-f]', '', str(r.get('sha') or ''))[:64],
-                             str(r.get('by') or 'the dashboard')[:100], log_to, step)
+                             str(r.get('by') or 'the dashboard')[:100], log_to, step,
+                             downgrade=r.get('downgrade') is True)
         if info.get('rolled_back'):
             status(id=ident, state='failed', rc=rc, version=info['version'], rolled_back=True,
                    said='zigmon %s was put in but %s - the version before it is back'
@@ -606,7 +722,8 @@ def main(argv):
         return 0
     if len(argv) >= 2 and argv[0] == '--run':
         try:
-            rc, info, _ = put_in(os.path.abspath(argv[1]), log_to=print)
+            rc, info, _ = put_in(os.path.abspath(argv[1]), log_to=print,
+                                 downgrade='--downgrade' in argv[2:])
         except Refused as e:
             print('refused: %s' % e)
             return 1

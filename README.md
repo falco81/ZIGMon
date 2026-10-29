@@ -1618,8 +1618,11 @@ the whole installation and a copy of the program first, runs
 `install.sh --upgrade --yes`, and asks the new version whether it answers;
 when it does not within a minute and a half, or install.sh fails, the copy is
 put back by itself. Going back to an older version is done on the command
-line. The very first upgrade to 5.18 is done on the command line too - it is
-what installs the two path units.
+line, or (5.22) under *Going back to an older version*: the older program is
+put in and the database left as it is, where no version between the two
+changed how it is read - otherwise it is refused and says why. The very first
+upgrade to 5.18 is done on the command line too - it is what installs the two
+path units.
 
 **The whole installation** (Control - Backup). The database, the
 configuration, nginx with the certificate and its key, the broker with its
@@ -2079,7 +2082,33 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.21.0**
+Current version: **5.22.0**
+
+5.22.0 — going back to an older version, without touching the database.
+
+Control - Upgrades has a card of its own, *Going back to an older version*:
+the older versions at `upgrade_url`, each said safe or not and why, a button
+to go back to one, and a place to drop a package of your own. On the command
+line `sudo zigmon --downgrade-check` and `sudo zigmon --downgrade VERSION`
+(or a package file); in the console, Upgrades - Going back.
+
+Going back puts the older program in and **leaves the database as it is** -
+no backup of it is made and none is put back, so a database of any size goes
+back in the time an upgrade takes. That is safe only while the older version
+reads the database as the newer one left it, which in zigmon is all but
+always: the database only grows. Where a version changed how it is read -
+the accounts at 5.19.0, PIN accounts at 5.19.1 - going back across it is
+refused, by root as well as on the page (`DB_EPOCHS` in
+`deploy/zigmon_upgrade.py`, which a version that changes the database must
+add to). The highest version that ever ran on the database counts, not only
+the one installed: the daemon keeps it there (`version_high`). A copy of the
+program is kept and put back by itself when the older version does not
+answer; what it does not know of is taken away once it does (the console at
+login, below 5.21). Not while a change of the network or the firewall waits
+to be kept, or a restart is under way.
+
+Checked by `test/downgrade.py` (new, failing on 5.21.0): the database is the
+same byte for byte after going back.
 
 5.21.0 — the machine itself, from the dashboard and its console.
 

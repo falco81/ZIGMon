@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.21.0'
+__version__ = '5.22.0'
 
 import argparse
 import base64
@@ -7701,6 +7701,10 @@ class Daemon(object):
         # trial, the clock - each asked of root on a road of its own
         self._net_kick = threading.Event()
         self._net_work = {'read_at': 0.0}
+        try:
+            self.note_version_high()
+        except Exception as e:                          # noqa: BLE001
+            log('the highest version run on the database could not be written: %s' % e, 'warn')
         self._ntp_work = {'read_at': 0.0}
         threading.Thread(target=self.backup_loop, name='backup', daemon=True).start()
         # ...and the version of PHP the dashboard is served by, which is the
@@ -15422,7 +15426,7 @@ class Daemon(object):
             out = {'ok': False, 'said': (got.stderr or 'the check did not answer')[-300:]}
         return out
 
-    def upgrade_upload(self, part, of, data_b64, upload_id, who=''):
+    def upgrade_upload(self, part, of, data_b64, upload_id, who='', back=False):
         uid = re.sub(r'[^0-9A-Za-z]', '', str(upload_id or ''))[:32]
         if not uid:
             raise ValueError('missing upload id')
@@ -15438,9 +15442,9 @@ class Daemon(object):
             raise ValueError('bigger than any version of zigmon')
         if part < of:
             return {'received': part, 'of': of}
-        return {'received': part, 'of': of, 'package': self.upgrade_take(tmp, who)}
+        return {'received': part, 'of': of, 'package': self.upgrade_take(tmp, who, back=back)}
 
-    def upgrade_take(self, tmp, who='', source=None, want=None):
+    def upgrade_take(self, tmp, who='', source=None, want=None, back=False):
         """A package in the upgrade folder checked, and made the one waiting.
 
         One sent in pieces from the page and one fetched from the web (5.21)
@@ -15455,12 +15459,16 @@ class Daemon(object):
         why = None
         if not info.get('ok'):
             why = info.get('said') or 'the package was refused'
-        elif info.get('older'):
-            why = ('%s is older than %s, which runs here: going back is done on the '
-                   'command line' % (info['version'], __version__))
+        elif info.get('older') and not back:
+            why = ('%s is older than %s, which runs here: going back to it is under Going back '
+                   'to an older version' % (info['version'], __version__))
+        elif back and not info.get('older'):
+            why = '%s is not older than %s, which runs here' % (info.get('version'), __version__)
+        elif back and not (info.get('back') or {}).get('ok'):
+            why = 'not safe to go back to %s: %s' % (info['version'], (info.get('back') or {}).get('why'))
         elif want and info.get('version') != want:
             why = 'it was offered as %s and holds %s' % (want, info.get('version'))
-        elif source and _online_ver(info.get('version')) <= _online_ver(__version__):
+        elif source and not back and _online_ver(info.get('version')) <= _online_ver(__version__):
             why = '%s is not newer than %s, which runs here' % (info.get('version'), __version__)
         if why:
             try:
@@ -15482,12 +15490,17 @@ class Daemon(object):
         pkg = {'file': name, 'version': info['version'], 'signed_by': info.get('signed_by'),
                'bytes': info.get('bytes'), 'changelog': info.get('changelog') or '',
                'sha': digest.hexdigest(), 'at': int(time.time()), 'by': who or 'the dashboard',
-               'newer': info.get('newer')}
+               'newer': info.get('newer'), 'older': bool(info.get('older')),
+               'back': info.get('back') or None}
         if source:
             pkg['source'] = str(source)[:300]
         with open(str(self.upgrade_dir('package.json')), 'w') as f:
             json.dump(pkg, f)
-        if source:
+        if back:
+            self.say_event('control', 'zigmon %s %s, signed by %s - ready to go back to' % (
+                info['version'], ('fetched from %s' % str(source)[:200]) if source else 'sent to the dashboard',
+                info.get('signed_by')), 'warn', about='upgrade')
+        elif source:
             self.say_event('control', 'zigmon %s fetched from %s, signed by %s - ready to be put in'
                            % (info['version'], str(source)[:200], info.get('signed_by')), 'info',
                            about='upgrade')
@@ -15582,10 +15595,21 @@ class Daemon(object):
             row['newer_list'] = [{'version': x.get('version'), 'url': x.get('url'), 'bytes': x.get('bytes')}
                                  for x in (row.get('packages') or [])
                                  if _online_ver(x.get('version')) > _online_ver(__version__)]
+            # ...and the older ones, each with whether going back to it is safe
+            older = []
+            for x in (row.get('packages') or []):
+                if _online_ver(x.get('version')) < _online_ver(__version__):
+                    try:
+                        chk = self.downgrade_check(x.get('version'))
+                    except Exception as e:              # noqa: BLE001
+                        chk = {'ok': False, 'why': str(e)[:200]}
+                    older.append({'version': x.get('version'), 'url': x.get('url'),
+                                  'ok': bool(chk.get('ok')), 'why': chk.get('why') or ''})
+            row['older_list'] = older
         return {'online': row, 'url': self.online_url(), 'check': self.online_on(),
                 'busy': bool(ONLINE_WORK['busy'] or ONLINE_WORK['fetching'])}
 
-    def online_fetch(self, version, who=''):
+    def online_fetch(self, version, who='', back=False):
         """The package of `version`, fetched from where it was found and taken
         as one sent by hand would be. It is streamed into the upgrade folder
         under a name of its own, never held whole in memory, and what is left
@@ -15600,7 +15624,13 @@ class Daemon(object):
         found = [p for p in online_list(url) if p['version'] == version]
         if not found:
             raise ValueError('zigmon %s is not at %s' % (version, url[:200]))
-        if _online_ver(version) <= _online_ver(__version__):
+        if back:
+            if _online_ver(version) >= _online_ver(__version__):
+                raise ValueError('zigmon %s is not older than %s, which runs here' % (version, __version__))
+            chk = self.downgrade_check(version)
+            if not chk.get('ok'):
+                raise ValueError('not safe to go back to %s: %s' % (version, chk.get('why')))
+        elif _online_ver(version) <= _online_ver(__version__):
             raise ValueError('zigmon %s is not newer than %s, which runs here' % (version, __version__))
         with ONLINE_LOCK:
             if ONLINE_WORK['fetching']:
@@ -15613,7 +15643,8 @@ class Daemon(object):
             _data, _ct, final = _online_get(found[0]['url'], limit=UPGRADE_MOST, timeout=120,
                                             into=tmp)
             try:
-                return self.upgrade_take(tmp, who or 'the dashboard', source=final, want=version)
+                return self.upgrade_take(tmp, who or 'the dashboard', source=final, want=version,
+                                         back=back)
             except ValueError as e:
                 self.say_event('control', 'zigmon %s from %s was refused: %s'
                                % (version, str(final)[:200], e), 'warn', about='upgrade',
@@ -15642,7 +15673,9 @@ class Daemon(object):
             bool(os.environ.get('ZIGMON_UPGRADE_RUN'))
         not_ready = []
         if pkg and not pkg.get('newer') and pkg.get('version') != __version__:
-            not_ready.append('%s is not newer than %s, which runs here' % (pkg.get('version'), __version__))
+            not_ready.append('%s is not newer than %s, which runs here%s' % (
+                pkg.get('version'), __version__,
+                ' - it waits under Going back to an older version' if pkg.get('older') else ''))
         if pkg and pkg.get('version') == __version__:
             not_ready.append('this is the version that runs here already')
         running = st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800
@@ -15655,6 +15688,7 @@ class Daemon(object):
                 and helper and not running, 'not_ready': not_ready, 'helper': helper,
                 'path_unit': helper, 'status': st, 'running': running,
                 'asked': self.upgrade_asked(), 'web': self.online_view(),
+                'back': self.downgrade_view(pkg, running),
                 'log': lines, 'node': socket.gethostname().split('.')[0],
                 'nodes': [{'name': socket.gethostname().split('.')[0] or 'this machine', 'me': True,
                            'alive': True, 'version': __version__, 'at': int(time.time()),
@@ -15705,6 +15739,105 @@ class Daemon(object):
         self.store.set_meta('upgrade_asked', json.dumps({'id': ident, 'version': pkg['version'],
                                                          'from': __version__, 'at': int(time.time())}))
         self.say_event('control', 'an upgrade to zigmon %s started from the dashboard%s'
+                       % (pkg['version'], (' by ' + who) if who else ''), 'warn', about='upgrade')
+        run = os.environ.get('ZIGMON_UPGRADE_RUN')
+        if run:
+            subprocess.run(run.split(), capture_output=True, timeout=900)
+        return ident
+
+    # ---- going back to an older version (5.22) -----------------------------------
+    # Root decides whether it is safe (zigmon_upgrade.py, DB_EPOCHS): the older
+    # program is put in and the database left as it is - no backup of it made,
+    # none put back, however big it is - but only where nothing between the two
+    # versions changed how the database is read. The same table answers here,
+    # read from the helper itself, so the page offers only what root will do.
+    def upgrade_helper(self):
+        held = self.__dict__.get('_upgrade_helper')
+        path = self.helper_file('zigmon_upgrade.py')
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if held and held[0] == (str(path), mtime):
+            return held[1]
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('zigmon_upgrade_tables', str(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self._upgrade_helper = ((str(path), mtime), mod)
+        return mod
+
+    def version_high(self):
+        v = str(self.store.get_meta('version_high') or '')
+        return v if re.match(r'^\d+\.\d+\.\d+$', v) else __version__
+
+    def note_version_high(self):
+        """The highest version that has run on this database, kept in it: going
+        back is judged by it, not by the version that runs."""
+        have = self.store.get_meta('version_high') or ''
+        if not re.match(r'^\d+\.\d+\.\d+$', have) or _online_ver(__version__) > _online_ver(have):
+            self.store.set_meta('version_high', __version__)
+
+    def downgrade_check(self, version):
+        mod = self.upgrade_helper()
+        if mod is None:
+            return {'ok': False, 'why': 'the upgrade helper is not here'}
+        return mod.downgrade_check(version, __version__, self.version_high())
+
+    def downgrade_busy(self):
+        """What going back may not happen in the middle of."""
+        if self.net_job_active(self._mj('net:job')) or (self._mj('net:job') or {}).get('state') == 'trial':
+            return 'the network is being changed - finish that first'
+        if self.changes_view():
+            return 'a change waits to be kept - keep it or put it back first'
+        if self.power_busy():
+            return 'a restart or a power-off is under way'
+        return ''
+
+    def downgrade_view(self, pkg=None, running=False):
+        pkg = pkg if pkg is not None else self.upgrade_package()
+        mod = self.upgrade_helper()
+        out = {'high': self.version_high(), 'busy': self.downgrade_busy(),
+               'epochs': [{'version': v, 'why': w} for v, w in (getattr(mod, 'DB_EPOCHS', ()) or ())]}
+        floors = [e['version'] for e in out['epochs'] if _online_ver(e['version']) <= _online_ver(out['high'])]
+        out['floor'] = max(floors, key=_online_ver) if floors else ''
+        if pkg and pkg.get('older'):
+            out['package'] = pkg
+            out['ready'] = bool((pkg.get('back') or {}).get('ok')) and not running and not out['busy']
+        return out
+
+    def downgrade_start(self, who=''):
+        st = self.upgrade_state()
+        pkg = st['package']
+        if not pkg or not pkg.get('older'):
+            raise ValueError('send or fetch the older version first')
+        if st['running'] or st['asked']:
+            raise ValueError('an upgrade is going on already')
+        busy = self.downgrade_busy()
+        if busy:
+            raise ValueError(busy)
+        back = self.downgrade_check(pkg['version'])
+        if not back.get('ok'):
+            raise ValueError('not safe to go back to %s: %s' % (pkg['version'], back.get('why')))
+        if not st['helper']:
+            raise ValueError('this machine cannot put a version in by itself yet: zigmon-upgrade.path '
+                             'is not installed')
+        ident = secrets.token_hex(8)
+        req = {'id': ident, 'file': pkg['file'], 'version': pkg['version'], 'sha': pkg['sha'],
+               'by': who or 'the dashboard', 'downgrade': True}
+        tmp = self.upgrade_dir('.request.%s' % ident)
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(req))
+        os.replace(str(tmp), str(self.upgrade_dir('request.json')))
+        with open(str(self.upgrade_dir('status.json')) + '.new', 'w') as f:
+            json.dump({'id': ident, 'state': 'running', 'step': 'waiting for root',
+                       'version': pkg['version'], 'at': time.time(), 'downgrade': True}, f)
+        os.replace(str(self.upgrade_dir('status.json')) + '.new', str(self.upgrade_dir('status.json')))
+        self.store.set_meta('upgrade_asked', json.dumps({'id': ident, 'version': pkg['version'],
+                                                         'from': __version__, 'at': int(time.time()),
+                                                         'downgrade': True}))
+        self.say_event('control', 'going back to zigmon %s started%s - the database stays as it is'
                        % (pkg['version'], (' by ' + who) if who else ''), 'warn', about='upgrade')
         run = os.environ.get('ZIGMON_UPGRADE_RUN')
         if run:
@@ -37654,6 +37787,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'forget':
                 d.upgrade_forget()
                 return dict(d.upgrade_state(), message='the package is gone')
+            if act == 'downgrade_start':
+                d.downgrade_start(who)
+                return dict(d.upgrade_state(), message='root is putting the older version in - the '
+                            'database stays as it is')
             # a new version from the web (5.21): looked for, or fetched and
             # checked as one sent by hand - and put in only when asked to
             if act in ('online_look', 'online_get'):
@@ -37668,7 +37805,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                          'no zigmon package there')
                 return dict(d.upgrade_state(), message=words)
             if act == 'online_get':
-                pkg = d.online_fetch(body.get('version'), who)
+                back = body.get('back') is True
+                pkg = d.online_fetch(body.get('version'), who, back=back)
+                if body.get('start') and back:
+                    d.downgrade_start(who)
+                    return dict(d.upgrade_state(), message='zigmon %s fetched and checked - root is '
+                                'going back to it' % pkg['version'])
                 if body.get('start'):
                     d.upgrade_start(who)
                     return dict(d.upgrade_state(), message='zigmon %s fetched and checked - root is '
@@ -37677,7 +37819,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                             % (pkg['version'], pkg.get('signed_by')))
         if path == '/api/upgrade/upload':
             got = d.upgrade_upload(body.get('part') or 1, body.get('of') or 1, body.get('data'),
-                                   body.get('upload_id'), who)
+                                   body.get('upload_id'), who, back=body.get('back') is True)
             if 'package' in got:
                 got = dict(d.upgrade_state(), **got)
                 got['message'] = 'zigmon %s, signed by %s - checked' % (
@@ -44950,6 +45092,8 @@ HELP_LINES = [
     ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
     ('sudo zigmon --upgrade-online --yes',
      'fetch the newest (or a VERSION), check its signature, put it in and follow it'),
+    ('sudo zigmon --downgrade-check', 'which older versions it may go back to, and why not the rest'),
+    ('sudo zigmon --downgrade 5.20.0', 'go back to it (or to a package FILE); the database stays'),
     ('#', 'The machine itself'),
     ('zigmon --changes', 'a new network or a firewall change waiting to be kept'),
     ('zigmon --change-keep net', 'keep it (net or fw); not kept in time, it goes back by itself'),
@@ -45185,6 +45329,12 @@ def build_parser():
     a.add_argument('--upgrade-online', nargs='?', const='newest', metavar='VERSION',
                    help='(root) fetch the newest zigmon (or VERSION) from upgrade_url, check its '
                         'signature, put it in and follow it here (--yes: without asking)')
+    a.add_argument('--downgrade-check', action='store_true',
+                   help='(root) which older versions at upgrade_url it may go back to, and why not '
+                        'the others')
+    a.add_argument('--downgrade', metavar='VERSION|FILE',
+                   help='(root) go back to an older version - from upgrade_url, or a package file - '
+                        'leaving the database as it is, where that is safe (--yes: without asking)')
     a.add_argument('--run-script', metavar='NAME',
                    help='run one of the little scripts; --text ip=1.2.3.4 gives it its names')
     a.add_argument('--proxy', action='store_true',
@@ -45519,6 +45669,129 @@ def cmd_upgrade_online(args, pal):
             return 1
     print(pal.warn('  still going after half an hour: zigmon --root-status says where it is'))
     return 1
+
+
+def _follow_upgrade(pal, version, what='put in'):
+    """An upgrade or a going back asked of root, followed here until it ends -
+    zigmon restarts on the way, so questions unanswered for a while are
+    expected, not a failure."""
+    said, misses, ends = None, 0, time.time() + 1800
+    while time.time() < ends:
+        time.sleep(3)
+        code, st = api_call('/api/upgrade', timeout=10.0)
+        if code != 200 or not isinstance(st, dict):
+            misses += 1
+            if misses == 1:
+                print(pal.dim('  zigmon is restarting - asking again...'))
+            continue
+        now = st.get('status') or {}
+        line = '%s %s' % (now.get('state'), now.get('step') or '')
+        if line != said:
+            said = line
+            print('  ' + (now.get('step') or now.get('state') or '?'))
+        if now.get('state') == 'done':
+            print(pal.ok('  zigmon %s is %s and answers' % (st.get('version') or version, what)))
+            return 0
+        if now.get('state') == 'failed':
+            print(pal.crit('  %s%s' % (now.get('said') or 'it failed',
+                                       ' - the version before was put back' if now.get('rolled_back') else '')))
+            return 1
+    print(pal.warn('  still going after half an hour: zigmon --root-status says where it is'))
+    return 1
+
+
+def cmd_downgrade_check(args, pal):
+    """Which older versions this machine may go back to, and why not the
+    others: the versions at upgrade_url, judged by the same table root uses."""
+    out = _upgrade_ask(pal, {'action': 'online_look'}, timeout=90.0)
+    if out is None:
+        return 2
+    back = out.get('back') or {}
+    row = (out.get('web') or {}).get('online') or {}
+    if args.json:
+        print(json.dumps({'back': back, 'older': row.get('older_list') or []}, indent=2, default=str))
+        return 0
+    print(pal.title('going back from zigmon %s' % __version__))
+    print('  the highest version this database has seen: %s' % (back.get('high') or __version__))
+    print('  as far back as it goes: %s' % (('zigmon %s' % back['floor']) if back.get('floor') else 'any version'))
+    if back.get('busy'):
+        print(pal.warn('  not now: %s' % back['busy']))
+    older = row.get('older_list') or []
+    if row.get('error'):
+        print(pal.crit('  %s: %s' % (row.get('url'), row['error'])))
+    elif not older:
+        print(pal.dim('  no older version at %s' % row.get('url')))
+    for x in older:
+        print('  zigmon %-10s %s' % (x['version'], pal.ok('safe: zigmon --downgrade %s' % x['version'])
+                                    if x.get('ok') else pal.dim(x.get('why') or 'not safe')))
+    print(pal.dim('  a package of your own: sudo zigmon --downgrade /path/zigmon-X.Y.Z.tar.gz'))
+    return 0
+
+
+def cmd_downgrade(args, pal):
+    """Go back to an older version: VERSION from upgrade_url through the daemon,
+    or a package FILE straight through root's helper. Either way the database
+    is left as it is, and only where that is safe."""
+    want = str(args.downgrade or '').strip()
+    if os.path.isfile(want):
+        if os.geteuid() != 0:
+            print(pal.crit('going back from a file is root\'s: sudo zigmon --downgrade %s' % want))
+            return 2
+        helper = Daemon.helper_file('zigmon_upgrade.py')
+        got = subprocess.run([sys.executable, '-I', str(helper), '--inspect', os.path.abspath(want)],
+                             capture_output=True, text=True, timeout=120)
+        try:
+            info = json.loads(got.stdout or '{}')
+        except ValueError:
+            info = {'ok': False, 'said': (got.stderr or 'the check did not answer')[-300:]}
+        if not info.get('ok'):
+            print(pal.crit('refused: %s' % info.get('said')))
+            return 1
+        back = info.get('back') or {}
+        if not info.get('older') or not back.get('ok'):
+            print(pal.crit('not going back to %s: %s' % (info.get('version'), back.get(
+                'why') or 'it is not older than %s' % info.get('installed'))))
+            return 1
+        version = info['version']
+    else:
+        if not re.match(r'^\d+\.\d+\.\d+$', want):
+            print(pal.crit('which version? zigmon --downgrade X.Y.Z, or a package file'))
+            return 2
+        out = _upgrade_ask(pal, {'action': 'online_look'}, timeout=90.0)
+        if out is None:
+            return 2
+        row = (out.get('web') or {}).get('online') or {}
+        pk = next((x for x in row.get('older_list') or [] if x.get('version') == want), None)
+        if not pk:
+            print(pal.crit('zigmon %s is not an older version at %s' % (want, row.get('url'))))
+            return 1
+        if not pk.get('ok'):
+            print(pal.crit('not going back to %s: %s' % (want, pk.get('why'))))
+            return 1
+        version = want
+    print(pal.title('zigmon %s -> %s (going back)' % (__version__, version)))
+    print('  the older program is put in and zigmon restarts with it; the database is left as')
+    print('  it is - no backup of it is made and none is put back. If %s does not answer, this' % version)
+    print('  version is put back by itself.')
+    if not args.yes:
+        try:
+            ok = input('  go on? (y/N) ').strip().lower() in ('y', 'yes')
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            print('  nothing done')
+            return 1
+    if os.path.isfile(want):
+        helper = Daemon.helper_file('zigmon_upgrade.py')
+        return subprocess.call([sys.executable, '-I', str(helper), '--run', os.path.abspath(want),
+                                '--downgrade'])
+    print(pal.dim('  fetching it and checking its signature...'))
+    out = _upgrade_ask(pal, {'action': 'online_get', 'version': version, 'back': True, 'start': True},
+                       timeout=600.0)
+    if out is None:
+        return 1
+    print(pal.ok('  ' + str(out.get('message') or 'asked')))
+    return _follow_upgrade(pal, version, 'back')
 
 
 # ======================================================================
@@ -49219,9 +49492,24 @@ CONSOLE_MORE['backups'].extend([
     ('Backups to other machines: how they went', lambda c: c.act('--rbackup-status')),
     ('Backups to other machines: one now', lambda c: c.act('--rbackup-now')),
 ])
+def _console_downgrade(c):
+    """Going back: the versions there are and which are safe, then one chosen
+    and asked for - as zigmon --downgrade does, the database left as it is."""
+    c.act('--downgrade-check')
+    version = c.ask_one('Go back to an older version', 'the version', '', help_=(
+        'One that --downgrade-check called safe, e.g. 5.20.0 - or the path of a package file. '
+        'The database is left as it is; this version is put back if the older one does not answer.'),
+        check=lambda v, _: None if re.match(r'^\d+\.\d+\.\d+$', v) or os.path.isfile(v)
+        else 'a version X.Y.Z or a package file')
+    if version and c.confirm('Go back', 'zigmon goes back to %s and restarts - the database stays '
+                             'as it is.' % version, 'Go back', danger=True):
+        c.act('--downgrade', version, '--yes')
+
+
 CONSOLE_MORE['upgrades'].extend([
     ('Look for a new version on the web now', lambda c: c.act('--upgrade-check')),
     ('Upgrade from the web', _console_upgrade_online),
+    ('Going back to an older version (the database stays as it is)', _console_downgrade),
 ])
 
 
@@ -49405,6 +49693,10 @@ def _dispatch(args, pal):
         return cmd_upgrade_check(args, pal)
     if getattr(args, 'upgrade_online', None):
         return cmd_upgrade_online(args, pal)
+    if getattr(args, 'downgrade_check', False):
+        return cmd_downgrade_check(args, pal)
+    if getattr(args, 'downgrade', None):
+        return cmd_downgrade(args, pal)
     if getattr(args, 'rbackup_now', False) or getattr(args, 'rbackup_status', False):
         return cmd_rbackup(args, pal)
     if getattr(args, 'run_script', None):
