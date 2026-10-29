@@ -2083,7 +2083,26 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.1**
+Current version: **5.29.2**
+
+5.29.2 — one session on the SMS gateway, not hundreds.
+
+* **The gateway's token is kept as long as the gateway takes it.** It was
+  renewed every four minutes, ahead of its "expires", and every renewal is a
+  login - a session on the TRB140 - that nothing ever logged out: its
+  *Access Control - Sessions* filled with dozens a day from this machine, on
+  a box whose modem is slow enough already. A token the gateway refuses is
+  logged in again then, and only then.
+* **A token we are done with is logged out** (`/api/logout`): a new password,
+  a test of the gateway.
+* A connection the gateway would not take is tried again with the same token
+  - it is not the token that was refused, and a new login each time was one
+  more session.
+
+Sessions already left on the gateway can be ended once by hand: *System -
+Administration - Access Control - Sessions*, select all, *Terminate*.
+
+`test/review529.py`; its new checks fail on 5.29.1.
 
 5.29.1 — the SMS tab shows a message as it is, not as it was.
 

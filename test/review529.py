@@ -28,7 +28,7 @@ def check(ok, what):
         print('  FAILED: ' + what)
 
 
-GW = {'sent': [], 'send_delay': 0.0}
+GW = {'sent': [], 'send_delay': 0.0, 'logins': 0, 'logouts': 0}
 
 
 class Gateway(BaseHTTPRequestHandler):
@@ -51,7 +51,11 @@ class Gateway(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
         if self.path == '/api/login':
-            return self._out({'success': True, 'data': {'token': 't0k3n', 'expires': 299}})
+            GW['logins'] += 1
+            return self._out({'success': True, 'data': {'token': 't0k3n%d' % GW['logins'], 'expires': 299}})
+        if self.path == '/api/logout':
+            GW['logouts'] += 1
+            return self._out({'success': True, 'data': {}})
         if self.path == '/api/messages/actions/send':
             GW['sent'].append((time.time(), (body.get('data') or {}).get('message')))
             if GW['send_delay']:
@@ -116,6 +120,23 @@ page = (HERE / 'web' / 'index.php').read_text()
 log = page[page.index('function renderSmsLog('):page.index("var tools = $('sms-log-tools');")]
 check('log_rev' in log, 'the SMS tab does not fetch the log again when a message settles')
 check('sending\\u2026' in log and 'm.going' in log, 'a message on its way is drawn as "no answer from the gateway"')
+
+print('one session on the gateway, not a new one every four minutes')
+before = GW['logins']
+real = time.time
+try:
+    for k in range(12):                                  # an hour of status questions, five minutes apart
+        time.time = lambda k=k: real() + k * 300
+        d._rest('/modems/status')
+finally:
+    time.time = real
+check(GW['logins'] - before <= 1, 'an hour of questions logged in %d times: a session on the gateway each, '
+      'never logged out' % (GW['logins'] - before))
+outs = GW['logouts']
+if hasattr(d, '_sms_drop_token'):
+    d._sms_drop_token()
+    time.sleep(0.5)
+check(GW['logouts'] > outs, 'a token dropped (a new password, a test) is left as a session on the gateway')
 
 sys.stdout.flush()
 if bad:

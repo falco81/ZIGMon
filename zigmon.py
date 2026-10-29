@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.1'
+__version__ = '5.29.2'
 
 import argparse
 import base64
@@ -9781,7 +9781,7 @@ class Daemon(object):
                 threading.Thread(target=self.weather, kwargs={'force': True},
                                  name='weather', daemon=True).start()
             if any(k.startswith('sms') for k in changed):
-                self._sms_tok = None                # a new password, a new login
+                self._sms_drop_token()              # a new password, a new login - the old one logged out
                 self._sms_modem_id = None
                 self._sms_status_at = 0             # and how it is doing, on the next beat
                 threading.Thread(target=self._sms_poll_thread, name='sms-poll', daemon=True).start()
@@ -10467,7 +10467,8 @@ class Daemon(object):
                         # request and went quiet
                         if tries >= 3 or not self._sms_never_arrived(e):
                             raise
-                        self._sms_tok = None      # a new connection, and a new token
+                        # a new connection - the token is not what was refused,
+                        # and a new login each time was one more session on the box
                         log('the gateway would not take the connection (%s); trying again'
                             % str(e)[:60], 'debug')
                         time.sleep(1.0 * tries)
@@ -10695,10 +10696,32 @@ class Daemon(object):
         token = data.get('token') or answer.get('token') or ''
         if not token:
             raise RuntimeError('the device gave no token: %s' % json.dumps(answer)[:150])
-        # renew a minute before it lapses; five minutes is the usual life
-        lives = float(data.get('expires') or 299)
-        self._sms_tok = (token, now + max(30.0, lives - 60))
+        # Kept for as long as the box takes it - not renewed every four minutes
+        # ahead of its "expires". Each login is a session on the gateway, and
+        # nothing ever logged the old ones out: a day of it was hundreds of
+        # sessions held on a small box whose modem is slow enough already. A
+        # token the box refuses is logged in again then (see _rest_once).
+        self._sms_tok = (token, float('inf'))
         return token
+
+    def _sms_drop_token(self):
+        """A token we are done with, logged out on the gateway rather than left
+        to sit there as one more session. Behind, and briefly: it must never
+        hold up what comes next."""
+        held, self._sms_tok = self._sms_tok, None
+        if not held or not self._sms_rest():
+            return
+
+        def bye(token=held[0]):
+            import urllib.request
+            try:
+                req = urllib.request.Request(self._sms_url('/api/logout'), data=b'{}',
+                                             headers={'Content-Type': 'application/json',
+                                                      'Authorization': 'Bearer ' + token}, method='POST')
+                urllib.request.urlopen(req, timeout=5, context=self._sms_ssl()).read()
+            except Exception:                           # noqa: BLE001
+                pass
+        threading.Thread(target=bye, name='sms-logout', daemon=True).start()
 
     def sms_test(self, number=None):
         """Is the gateway there, does it take our password, and - if a number
@@ -10707,7 +10730,7 @@ class Daemon(object):
             return False, 'switch the gateway on and give it an address first'
         try:
             if self._sms_rest():
-                self._sms_tok = None
+                self._sms_drop_token()
                 self._sms_token()
                 modem = self.sms_modem_id()
                 reached = 'the device let us in, and its modem is %s' % modem
