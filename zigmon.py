@@ -1600,7 +1600,9 @@ class ShellyRPC(object):
             # up on no later than before - but a lost packet costs a second
             # instead of five, and a dark room instead of nothing at all.
             patient = urgent_now and method in self.REPEATABLE and not self.known_down
-            ladder = [min(self.timeout, w) for w in (1.0, 1.6, 2.4)] if patient else \
+            # half a second first: a box on the LAN answers in tens of ms,
+            # and a Set is safe to say twice
+            ladder = [min(self.timeout, w) for w in (0.5, 1.0, 1.5, 2.0)] if patient else \
                 [min(self.timeout, 1.0) if (urgent_now and self.known_down) else self.timeout]
             keep_timeout = self.timeout
             try:
@@ -1832,8 +1834,10 @@ class ShellyRPC(object):
             # for nothing. Where several may fly together, the gap is shared
             # between them, which comes to the same protection in a quarter
             # of the time.
-            at_once = self.at_once(self.host)
-            gap = 0.0 if at_once == 1 else gap / at_once
+            # No wait at all: the order is kept by the gate's tickets, and the
+            # box is protected by how many it is given at once. The gap made
+            # the fourth socket of a strip wait 15 ms for nothing.
+            gap = 0.0
         if gap <= 0:
             return
         # Reserve this host's next slot, then sleep outside the lock - a
@@ -1898,8 +1902,15 @@ class ShellyRPC(object):
                         pass
                     conn = None
             fresh = conn is None
+            if not fresh:
+                # A kept connection carries the timeout of whoever opened it -
+                # a poll's five seconds - and a lost command on it waited those
+                # five before it was asked again, not its own half second.
+                conn.timeout = self.timeout
+                if conn.sock is not None:
+                    conn.sock.settimeout(self.timeout)
             if fresh:
-                conn = http.client.HTTPConnection(host, port, timeout=self.timeout)
+                conn = http.client.HTTPConnection(self._address(host), port, timeout=self.timeout)
             started = time.perf_counter()
             if CONFIG.get('debug'):
                 log('http -> %s POST /rpc %s%s %s' % (self.host, 'fresh' if fresh else 'kept',
@@ -1942,6 +1953,41 @@ class ShellyRPC(object):
                 if attempt == 0 and not fresh and gone_stale:
                     continue
                 raise PlugError('cannot reach %s at %s (%s)' % (self.label, self.host, e))
+
+    _addrs = {}                 # host name -> (address, when looked up)
+
+    @classmethod
+    def _address(cls, host):
+        """A box's address without a resolver on the way of a command. A box
+        named by a host name was looked up on every fresh connection - inside
+        the box's gate, with no timeout - and a resolver taking two seconds
+        made every press two seconds late, a dead one made it fail. An address
+        is used as it is; a name is looked up once and refreshed behind, and
+        the one that worked is kept when a refresh fails."""
+        try:
+            ipaddress.ip_address(host)
+            return host
+        except ValueError:
+            pass
+        hit = cls._addrs.get(host)
+        if hit is None:
+            try:
+                ip = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+            except (OSError, IndexError):
+                return host                        # as before: the connection says why
+            cls._addrs[host] = (ip, time.time())
+            return ip
+        if time.time() - hit[1] > 300:
+            cls._addrs[host] = (hit[0], time.time())       # one refresh at a time
+
+            def refresh():
+                try:
+                    cls._addrs[host] = (socket.getaddrinfo(host, None, socket.AF_INET,
+                                                           socket.SOCK_STREAM)[0][4][0], time.time())
+                except (OSError, IndexError):
+                    pass                                   # keep the one that worked
+            threading.Thread(target=refresh, name='resolve', daemon=True).start()
+        return hit[0]
 
     @staticmethod
     def _parse_challenge(header):
@@ -19165,7 +19211,9 @@ class Daemon(object):
                 'off' if state else 'on', '%.1f s' % (ms / 1000.0), origin), 'info', p.device_id)
             self.bump()
             log('%s pulse: %s for %d ms (%s)' % (p.name, 'off' if state else 'on', ms, origin))
-            self.poll_plug(p, force=True)
+            # confirmed behind, not before the wait: paced a second behind the
+            # command, the poll made every pulse a second longer than asked
+            threading.Thread(target=self.poll_plug, args=(p, True), name='confirm', daemon=True).start()
             self._stop.wait(ms / 1000.0)
             last = None
             for attempt in range(3):          # the way back must not be lost
@@ -19184,7 +19232,8 @@ class Daemon(object):
             p.output = 1 if state else 0
             self.store.add_event('plug', 'pulse: back %s' % ('on' if state else 'off'),
                                  'info' if state else 'warn', p.device_id)
-            self.poll_plug(p, force=True)
+            # and this one behind as well: whoever pressed is told at once
+            threading.Thread(target=self.poll_plug, args=(p, True), name='confirm', daemon=True).start()
             self.bump()
             return True, '%s pulsed %s for %.1f s and is back %s' % (
                 p.name, 'off' if state else 'on', ms / 1000.0, 'on' if state else 'off')

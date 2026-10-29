@@ -220,6 +220,50 @@ finally:
     time.time = real
 check(not BOX['sets'], '"off in ten minutes" went off at once when the clock was stepped forward: %r' % BOX['sets'])
 
+# ---- the way to the box -----------------------------------------------------------------------------
+print('the way to the box: no resolver per press, a pulse as long as asked, a lost command asked again soon')
+import socket as _socket                                 # noqa: E402
+looked = []
+real_gai = _socket.getaddrinfo
+
+
+def slow_gai(host, *a, **k):
+    if host == 'box.example':
+        looked.append(host)
+        time.sleep(0.3)
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, '', ('127.0.0.1', 0))]
+    return real_gai(host, *a, **k)
+
+
+_socket.getaddrinfo = slow_gai
+try:
+    addr = getattr(zigmon.ShellyRPC, '_address', None)
+    if addr:
+        t0 = time.time()
+        for _ in range(5):
+            addr('box.example')
+        took = time.time() - t0
+    else:
+        took = 9
+    check(len(looked) <= 1 and took < 0.6, 'a box named by its host name is looked up for every press (%d lookups)'
+          % len(looked) if addr else 'a box named by its host name is looked up for every press')
+finally:
+    _socket.getaddrinfo = real_gai
+src = (HERE / 'zigmon.py').read_text()
+check('(0.5, 1.0, 1.5, 2.0)' in src, 'a lost Switch.Set is asked again after a whole second')
+check('conn.sock.settimeout(self.timeout)' in src, 'a command on a poll\'s kept connection waits a poll\'s five seconds')
+pp = d.plugs['Light-Test']
+BOX['output'] = False
+d.poll_plug(pp, force=True)
+time.sleep(1.2)
+BOX['sets'].clear()
+at = []
+was_post = BOX.copy()
+t0 = time.time()
+d.pulse_plug(pp, 300, 'a test')
+took = time.time() - t0
+check(took < 0.9, 'a pulse of 300 ms took %.2f s: it waited for a poll first' % took)
+
 # ---- an MQTT toggle is a Set ----------------------------------------------------------------------
 src = (HERE / 'zigmon.py').read_text()
 tp = src[src.index('    def toggle_plug('):src.index('    def read_plug_counters(')]
