@@ -7914,13 +7914,27 @@ function buildDeviceCard(d, st) {
 function renderDeviceGrid(hostId, emptyId, list, kind, st) {
   var host = $(hostId);
   if (ORDER.drag || Date.now() - ORDER.justDropped < 800) return;   // never redraw under a drag
-  host.innerHTML = '';
   if ($(emptyId)) $(emptyId).hidden = !!list.length;
+  // A card is built again only when what it shows has changed. Every report
+  // used to clear the grid and build all of it: one temperature on a house
+  // of 225 sensors cost 260-650 ms of a phone's time, and the cards lost
+  // hover and focus each time. "12 s ago" moves on with the ten-second step.
+  var kept = host._cards || {}, next = {}, order = [];
+  var step = Math.floor(Date.now() / 10000), unlocked = isUnlocked();
+  var common = JSON.stringify([step, unlocked, st.thresholds, REARRANGE, LINKS], SIG_QUIET);
   sortByOrder(list, kind, function (d) { return d.id; }).forEach(function (d) {
-    var card = buildDeviceCard(d, st);
-    makeReorderable(card, host, kind, d.id);
-    host.appendChild(card);
+    var sig;
+    try { sig = common + JSON.stringify(d, SIG_QUIET); } catch (e) { sig = String(Math.random()); }
+    var had = kept[d.id], card;
+    if (had && had.sig === sig && had.node.parentNode === host) card = had.node;
+    else { card = buildDeviceCard(d, st); makeReorderable(card, host, kind, d.id); }
+    next[d.id] = {sig: sig, node: card};
+    order.push(card);
   });
+  var wanted = new Set(order);
+  Array.prototype.slice.call(host.children).forEach(function (c) { if (!wanted.has(c)) host.removeChild(c); });
+  order.forEach(function (card, i) { if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null); });
+  host._cards = next;
 }
 function renderSensorsTab(st) {
   renderDeviceGrid('sensor-cards', 'sensors-empty',
@@ -17384,7 +17398,10 @@ function waitLoop() {
       setTimeout(loop, 20);
     }, function () {
       WAIT.failures++;
-      setTimeout(loop, Math.min(15000, 2000 * WAIT.failures));
+      // a wait on the daemon next door costs nothing: tried again within
+      // three seconds, and at once when a status gets through meanwhile
+      WAIT.retry = setTimeout(function () { WAIT.retry = null; loop(); },
+                              Math.min(3000, 1000 * WAIT.failures));
     });
   })();
 }
@@ -25358,6 +25375,10 @@ function tick(force) {
   Promise.race([api('status'), late]).then(function (st) {
     applyStatus(st);
     WAIT.failures = 0;                     // the daemon is back: the next wait retries at once, not after the backoff
+    // ...and so it does: the wait asleep in its backoff timer is woken now.
+    // It slept on, the 5 s net stood down with failures at nought, and the
+    // page missed changes for seconds after the daemon came back
+    if (WAIT.retry) { clearTimeout(WAIT.retry); WAIT.retry = null; WAIT.running = false; waitLoop(); }
     afterStatus(force);
   }).catch(function (e) {
     $('pill').className = 'pill crit'; $('pill-text').textContent = 'Dashboard offline';

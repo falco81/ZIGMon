@@ -586,7 +586,11 @@ d.reload_devices()
 # nothing.
 # the wake-up checks above left stubs in place of these two
 d.bump = zigmon.Daemon.bump.__get__(d)
-d.bump_soon = zigmon.Daemon.bump_soon.__get__(d)
+_real_soon = zigmon.Daemon.bump_soon.__get__(d)
+_main = threading.current_thread()
+# only the numbers these checks send: the sockets above go on being polled,
+# and since 5.24 a number in a quiet moment wakes the pages at once
+d.bump_soon = lambda delay=0.5: _real_soon(delay) if threading.current_thread() is _main else None
 
 
 def _wakes(what, settle=0.8):
@@ -601,17 +605,27 @@ def _wakes(what, settle=0.8):
 
 
 check(_wakes(lambda: d.bump_soon(0.2)) == 1, 'a number alone did not wake the pages once')
-check(_wakes(lambda: d.bump()) == 1, 'a state change alone did not wake the pages once')
-check(_wakes(lambda: [d.bump_soon(0.2) for _ in range(10)]) == 1,
-      'ten numbers in a burst woke the pages more than once')
-_both = _wakes(lambda: (d.bump_soon(0.2), time.sleep(0.05), d.bump()))
-check(_both == 1,
+d.seq = 0
+time.sleep(0.3)
+d.bump_soon(0.2)
+check(d.seq == 1, 'a number in a quiet house waited for its timer before the pages heard of it')
+time.sleep(0.5)
+_one = _wakes(lambda: d.bump())
+check(_one == 1, 'a state change alone did not wake the pages once: %d' % _one)
+time.sleep(0.3)
+_burst = _wakes(lambda: [d.bump_soon(0.2) for _ in range(10)])
+check(_burst <= 2, 'ten numbers in a burst woke the pages %d times, not at once and once after' % _burst)
+time.sleep(0.3)
+_both = _wakes(lambda: (d.bump_soon(0.2), time.sleep(0.05), d.bump_soon(0.2), time.sleep(0.05), d.bump()))
+check(_both == 2,
       'a press with a number waiting behind it woke the pages %d times, so the status was '
-      'fetched and drawn twice for one change' % _both)
-_after = _wakes(lambda: (d.bump_soon(0.2), time.sleep(0.05), d.bump(),
+      'fetched and drawn again for numbers it already carried' % _both)
+time.sleep(0.3)
+_after = _wakes(lambda: (d.bump_soon(0.2), time.sleep(0.05), d.bump_soon(0.2), time.sleep(0.05), d.bump(),
                          time.sleep(0.02), d.bump_soon(0.2)))
-check(_after == 2, 'a number that arrived after the press was never carried: %d wake(s)' % _after)
+check(_after == 3, 'a number that arrived after the press was never carried: %d wake(s)' % _after)
 print('a state change carries the waiting numbers; a number after it still gets its own wake')
+d.bump_soon = _real_soon
 
 
 # ============================================================================

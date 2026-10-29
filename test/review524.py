@@ -128,6 +128,28 @@ zr.read_req = lambda name, most=0: json.dumps({'id': 'x2', 'do': 'read', 'until'
 zr.ask_part('net.ask', 'net.json', lambda r: done.append(r) or {})
 check(done and out.get('ok') is True, 'a question still waited for is refused')
 
+# ---- the pages follow at once ---------------------------------------------------------
+print('the pages hear of a reading at once')
+time.sleep(0.6)
+since = d.seq
+t0 = time.time()
+d.bump_soon()
+woke = d.wait_for_change(since, 2)
+took = time.time() - t0
+check(took < 0.1, 'a temperature in a quiet house reached the pages %d ms late' % (took * 1000))
+n0 = d.seq
+for _i in range(40):
+    d.bump_soon()
+    time.sleep(0.01)
+time.sleep(0.7)
+check(d.seq - n0 <= 3, 'a burst of numbers woke the pages %d times in half a second' % (d.seq - n0))
+page = (HERE / 'web' / 'index.php').read_text()
+grid = page[page.index('function renderDeviceGrid('):page.index('function renderSensorsTab(')]
+check("host.innerHTML = '';" not in grid and 'host._cards' in grid,
+      'one reading builds every card of the Sensors and Buttons grids again')
+check('WAIT.retry' in page and 'clearTimeout(WAIT.retry)' in page,
+      'the wait for changes sleeps on in its backoff after the daemon is back')
+
 # ---- the automations ------------------------------------------------------------------
 print('rules, scenes, holds and timers')
 import sqlite3                                          # noqa: E402

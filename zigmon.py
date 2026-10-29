@@ -13905,10 +13905,19 @@ class Daemon(object):
             self._numbers_pending = True
             if self._bump_timer is not None:
                 return
-            timer = threading.Timer(delay, self._bump_now)
-            timer.daemon = True
-            self._bump_timer = timer
-            timer.start()
+            # The first number after a quiet half second wakes the pages AT
+            # ONCE; only what follows inside that half second waits for the
+            # timer. Every temperature reached the page half a second late
+            # in a quiet house - 501 ms each time, measured - for nothing.
+            quiet = time.time() - getattr(self, '_woke_at', 0.0)
+            lead = quiet >= delay
+            if not lead:
+                timer = threading.Timer(delay - quiet, self._bump_now)
+                timer.daemon = True
+                self._bump_timer = timer
+                timer.start()
+        if lead:
+            self.bump()
 
     def _bump_now(self):
         """The half second is up. Wake the pages - unless something else has
