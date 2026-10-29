@@ -8068,10 +8068,18 @@ class Daemon(object):
             except (ValueError, UnicodeDecodeError):
                 pass
             return
+        # A retained message is the broker telling us what was said last,
+        # at a reconnect or a restart of either side - not something that
+        # happened now. A button whose Zigbee2MQTT topic is retained replayed
+        # its last "single" at every reconnect, and a toggle bound to it
+        # flipped the light. Its readings are still taken; its presses not.
+        self._retained_msg = bool(getattr(msg, 'retain', False))
         try:
             self.handle(msg.topic, msg.payload)
         except Exception as e:      # one bad payload must never stop the feed
             log('handling %s: %s' % (msg.topic, e), 'error')
+        finally:
+            self._retained_msg = False
 
     # -- message routing ----------------------------------------------------
     def handle(self, topic, raw):
@@ -9170,6 +9178,15 @@ class Daemon(object):
             # it is awake for a second or two: now or not at all
             threading.Thread(target=self.maybe_reconfigure, args=(device_id,),
                              name='reconfigure', daemon=True).start()
+        if isinstance(payload, dict):
+            # when each key was last said by the device itself, to the
+            # fraction of a second: a toggle trusts what it sent until then
+            heard = self.__dict__.setdefault('_zb_key_at', {})
+            t_heard = time.time()
+            for k in payload:
+                heard[(device_id, k)] = t_heard
+            if len(heard) > 20000:
+                heard.clear()
         flat = flatten(payload)
         values = {}
         saw_action = False
@@ -9177,7 +9194,9 @@ class Daemon(object):
             if key in IGNORE_KEYS or key.startswith('update'):
                 continue
             if key == 'action':
-                if value not in (None, ''):
+                if value not in (None, '') and getattr(self, '_retained_msg', False):
+                    log('%s: %s replayed by the broker (retained) - not a press' % (name, value), 'debug')
+                elif value not in (None, ''):
                     saw_action = True
                     # the relay first, the paperwork after: a binding is the one
                     # thing here a person is physically waiting on
@@ -9274,6 +9293,13 @@ class Daemon(object):
                     log('%s switched %s (%s, seen on its MQTT)' % (p.name, 'on' if output else 'off', source))
                     changed = True
                 p.output = output
+                # newer than any poll already on its way: an answer asked
+                # before this push put the light back to what it was, and the
+                # next rule asking for it was skipped as "already so"
+                p.output_at = time.time()
+                # ...and a box that pushes is a box that is there: a command
+                # no longer waits it out as "known to be down"
+                p.failures = 0
             if p.flat:
                 for k, v in flatten(value).items():
                     if k in ('id', 'source'):
@@ -17608,6 +17634,7 @@ class Daemon(object):
                 last_ping = now
                 self.ping_broker()
             try:
+                self.clock_watch()           # a step of the clock moves every wait with it
                 self.check_for_backs()       # "on for ten minutes", the way back
                 self.timers_keep()
                 if time.time() - last_windows >= 10:
@@ -19172,7 +19199,10 @@ class Daemon(object):
             # over the broker the answer says what it is now, not what it was:
             # aim at the opposite of what the box last said, which is a toggle
             on = not bool(p.output)
-            if self.mqtt_command(p, 'Switch.Toggle', {'id': int(p.cfg.get('switch_id') or 0)},
+            # a Set to the opposite, not a Toggle: the HTTP road behind it
+            # sets the same value, so a box that carried out the first and
+            # answered late is not flipped back by the second
+            if self.mqtt_command(p, 'Switch.Set', {'id': int(p.cfg.get('switch_id') or 0), 'on': on},
                                  fallback=lambda: p.rpc().set_output(on)):
                 self._plug_switched(p, on, origin)
                 return True, '%s switched %s' % (p.name, 'on' if on else 'off')
@@ -28506,6 +28536,43 @@ class Daemon(object):
             return 'zb:%s:%s' % (target[1], target[2])
         return '%s:%s' % (target[0], target[1] if len(target) > 1 else '')
 
+    CLOCK_STEP_S = 1.0
+
+    def clock_watch(self):
+        """The waits are reckoned on the wall clock, and the wall clock jumps:
+        NTP steps it at boot on a machine without a battery clock - by hours
+        on a Raspberry Pi - and by hand. Stepped forward, "off in ten
+        minutes" and "on for ten minutes" ended at once and "no motion for N
+        s" fired the moment it was armed; stepped back, they waited the step
+        out as well. The steady clock does not jump: when the two part, every
+        wait in hand is moved by the step, so it still ends when it should."""
+        off = time.time() - time.monotonic()
+        was = getattr(self, '_clock_off', None)
+        self._clock_off = off
+        if was is None:
+            return 0.0
+        step = off - was
+        if abs(step) < self.CLOCK_STEP_S:
+            return 0.0
+        with self._for_lock:
+            for v in self._for_backs.values():
+                v['due'] = float(v['due']) + step
+        for v in list(self.rule_waiting.values()):
+            if isinstance(v, dict) and v.get('due') is not None:
+                v['due'] = float(v['due']) + step
+        for rt in list(self.rule_runtime.values()):
+            if not isinstance(rt, dict):
+                continue
+            if rt.get('since') is not None:
+                same = rt.get('for_fired') == rt['since']
+                rt['since'] = float(rt['since']) + step
+                if same:
+                    rt['for_fired'] = rt['since']
+            if rt.get('fired'):
+                rt['fired'] = float(rt['fired']) + step
+        log('the clock was stepped by %+.1f s: every wait in hand moved with it' % step, 'warn')
+        return step
+
     def timers_keep(self):
         """The ways back of "on for N" and the rules waiting to act, written
         down when they change, and read back once after a start: a heater on
@@ -28782,12 +28849,23 @@ class Daemon(object):
             # Not every converter implements TOGGLE - the Zigbee2MQTT frontend
             # always sends the explicit state, and so do we when the last
             # report tells us what the channel is doing.
+            # ...and what we sent last counts while the lamp has not said this
+            # key since: a second press half a second after the first, before
+            # the lamp's report came back over a busy mesh, read the old
+            # report and sent the first press's OFF again - nothing happened
+            # and the person pressed a third time
             current = str((self.live.get(device_id, {}).get('payload') or {}).get(key) or '').upper()
+            sent = self.__dict__.setdefault('_zb_sent', {}).get((device_id, key))
+            heard = self.__dict__.setdefault('_zb_key_at', {}).get((device_id, key), 0.0)
+            if sent and sent[1] > heard and time.time() - sent[1] < 5:
+                current = sent[0]
             value = {'ON': 'OFF', 'OFF': 'ON'}.get(current, 'TOGGLE')
         else:
             value = action.upper()
         sent_at = time.time()          # taken before the publish: the echo can beat us back
         put(value)
+        if value in ('ON', 'OFF'):
+            self.__dict__.setdefault('_zb_sent', {})[(device_id, key)] = (value, sent_at)
         if value in ('ON', 'OFF'):
             self._verify_zigbee_set(device_id, key, value, label, topic, sent_at)
         self.store.add_event('switch', 'set %s from %s' % (value, origin),
@@ -36054,6 +36132,37 @@ class Daemon(object):
 
     RULE_BACKLOG = 20000        # the same ceiling the deferred writes have
 
+    def prime_rules(self):
+        """Before the first message: what each rule's condition was when the
+        daemon stopped, from the last readings kept. Started empty, every rule
+        took the first report after a restart - a door open for hours, the
+        broker's retained copy of it - for a fresh edge: a false "door opened",
+        and a toggle rule flipped its light at every upgrade. A change that
+        happened while the daemon was away is still one."""
+        n = 0
+        for r in self.rules():
+            if not r.get('enabled', True) or r['id'] in self.rule_runtime:
+                continue
+            first = self.latest_value(r['device'], r['key'])
+            if first is None:
+                continue
+            first_ok = self._rule_holds(r['op'], self._effective_reading(r, first), r['value'])
+            holds, second_ok = first_ok, None
+            if r.get('device2') and r.get('key2'):
+                other = self.latest_value(r['device2'], r['key2'])
+                second_ok = other is not None and self._rule_holds(r['op2'], other, r['value2'])
+                holds = (first_ok or second_ok) if r.get('combine') == 'or' else (first_ok and second_ok)
+            rt = {'holds': holds, 'fired': 0.0, 'reading': first, 'first': first_ok, 'second': second_ok}
+            if holds:
+                # held from now: a "for N s" rule counts its stretch again and
+                # acts at its end - "no motion for ten minutes" switched off
+                # once more is better than a light left on for good
+                rt['since'] = time.time()
+            self.rule_runtime[r['id']] = rt
+            n += 1
+        if n:
+            log('%d rule(s) primed with the readings from before the start' % n, 'debug')
+
     def queue_rules(self, device_id, name, values):
         """Rules are evaluated on a worker of their own, in order. The broker
         thread hands the reading over and is free again in microseconds, so a
@@ -37876,6 +37985,10 @@ class Daemon(object):
             else:
                 log('cannot listen on %s:%s - %s' % (CONFIG['api_host'], CONFIG['api_port'], e), 'error')
             return 2
+        try:
+            self.prime_rules()
+        except Exception as e:                          # noqa: BLE001
+            log('the rules could not be primed: %s' % e, 'warn')
         self.connect()
         server.start()
         self._running = True
