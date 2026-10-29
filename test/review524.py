@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -153,7 +154,6 @@ check('WAIT.retry' in page and 'clearTimeout(WAIT.retry)' in page,
 # ---- the automations ------------------------------------------------------------------
 print('rules, scenes, holds and timers')
 import sqlite3                                          # noqa: E402
-import threading                                        # noqa: E402
 d.root_installed = lambda: False
 sent = []
 d._run_zigbee_switch = lambda dev, key, do, origin, pulse_ms=None: sent.append(do)
@@ -270,6 +270,34 @@ time.sleep(1)
 check(not [i for i in d.notify_queue if i['message'] == 'burglar!'],
       'one message that went wrong stopped every later alert: %r' % [i['message'] for i in d.notify_queue])
 zigmon.CONFIG.update({'sms_enabled': False})
+
+# ---- nothing on the rules' clock or the page waits for the database ------------------
+print('the clock and the page do not wait behind the database')
+d._power_peak_cache = (time.time() - 120, 1.0, 2.0)
+d._money_cache = (time.time() - 60, float(zigmon.CONFIG.get('price_per_kwh') or 0), {'held': 1})
+d.rule_waiting['r-held'] = {'due': time.time() + 600, 'origin': 'y', 'facts': {}, 'device_id': 'd',
+                            'do': 'off', 'at': time.time()}
+took = {}
+
+
+def hold(gate):
+    with d.store.lock:
+        gate.set()
+        time.sleep(1.0)                                 # the nightly VACUUM, say
+
+
+for name, fn in (('peaks', d.power_peaks), ('money', d.money), ('timers', d.timers_keep)):
+    gate = threading.Event()
+    h = threading.Thread(target=hold, args=(gate,))
+    h.start()
+    gate.wait()
+    t0 = time.time()
+    fn()
+    took[name] = time.time() - t0
+    h.join()
+for name, secs in took.items():
+    check(secs < 0.3, '%s waited %.1f s behind a database somebody else held' % (name, secs))
+d.rule_waiting.pop('r-held', None)
 
 d.store.flush(3.0)
 sys.stdout.flush()

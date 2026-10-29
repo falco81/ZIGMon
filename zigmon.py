@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.23.0'
+__version__ = '5.24.0'
 
 import argparse
 import base64
@@ -6756,7 +6756,10 @@ class Storage(object):
 
     def _defer(self, fn, *args):
         """Run a write later, in order, on the writer thread."""
-        if len(self._wq) > 20000:            # a pathological backlog: keep the newest
+        # a pathological backlog: keep the newest. 20,000 was half a minute of
+        # a busy house's readings - less than the nightly VACUUM holds the
+        # database for, and the readings of that half minute were dropped
+        if len(self._wq) > 200000:
             try:
                 self._wq.popleft()
             except IndexError:
@@ -20413,7 +20416,8 @@ class Daemon(object):
         the week from the hourly figures, which are cheap to ask."""
         now = time.time()
         cached = getattr(self, '_power_peak_cache', None)
-        if cached and now - cached[0] < 60:
+        if cached and (now - cached[0] < 60 or (threading.current_thread().name != 'peaks'
+                                                 and self._bg_refresh('peaks', self.power_peaks))):
             day, week = cached[1], cached[2]
         else:
             day = week = None
@@ -20458,6 +20462,23 @@ class Daemon(object):
         hour = max((t for _, t in self._power_minutes), default=None)
         return {'hour': round(hour, 1) if hour is not None else None, 'day': day, 'week': week}
 
+    def _bg_refresh(self, name, fn):
+        """A figure for the page worked out again on a thread of its own, the
+        one already held served meanwhile. Worked out on the page's thread,
+        the week's peak read the samples for 1.5 s under the store's lock -
+        every page, the writer and the rules' clock waiting behind it, and
+        seconds more while the nightly VACUUM held the lock."""
+        running = self.__dict__.setdefault('_bg_running', set())
+        if name not in running:
+            running.add(name)
+            def run():
+                try:
+                    fn()
+                finally:
+                    running.discard(name)
+            threading.Thread(target=run, name=name, daemon=True).start()
+        return True
+
     def money(self):
         """This month's electricity in money: what the sockets have counted so
         far, what that comes to at this rate by the end of the month, and what
@@ -20470,7 +20491,8 @@ class Daemon(object):
         # that cannot have changed. Ten seconds old is not visible in a figure
         # measured in months, and the cache is dropped when the price changes.
         held = self._money_cache
-        if held and held[0] > time.time() - 10 and held[1] == price:
+        if held and held[1] == price and (held[0] > time.time() - 10 or (
+                threading.current_thread().name != 'money' and self._bg_refresh('money', self.money))):
             return dict(held[2])
         now = time.localtime()
         start = time.mktime((now.tm_year, now.tm_mon, 1, 0, 0, 0, 0, 0, -1))
@@ -28357,7 +28379,7 @@ class Daemon(object):
         self._timers_sig = sig
         try:
             self.store.set_meta('timers', json.dumps({'backs': [b for b in backs if b['target']],
-                                                      'waits': waits}, default=str))
+                                                      'waits': waits}, default=str), deferred=True)
         except Exception as e:                          # noqa: BLE001
             log('the timers could not be written down: %s' % e, 'debug')
 
@@ -34664,11 +34686,17 @@ class Daemon(object):
         return clean
 
     def room_map(self):
+        raw = self.store.get_meta('room_of') or '{}'
+        held = self.__dict__.get('_room_map_held')
+        if held is not None and held[0] == raw:
+            return dict(held[1])
         try:
-            rows = json.loads(self.store.get_meta('room_of') or '{}')
+            rows = json.loads(raw)
         except ValueError:
             rows = {}
-        return {str(k): str(v) for k, v in rows.items()} if isinstance(rows, dict) else {}
+        out = {str(k): str(v) for k, v in rows.items()} if isinstance(rows, dict) else {}
+        self._room_map_held = (raw, out)
+        return dict(out)
 
     def save_room_map(self, mapping):
         known = {r['id'] for r in self.rooms()}

@@ -2083,7 +2083,58 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.23.0**
+Current version: **5.24.0**
+
+5.24.0 — a sensor is followed at once, and what waits survives a restart.
+
+What the pages and the rules waited for, measured on a house of 350 devices,
+200 rules and five million readings:
+
+* **A reading reaches the pages at once.** A number (a temperature, watts)
+  woke the pages half a second late, every time; the first one after a quiet
+  half second now wakes them straight away, and a burst still wakes them at
+  most twice in half a second.
+* **The Sensors and Buttons grids keep the cards that did not change.** One
+  reading built every card again: 260-650 ms on a phone for 225 sensors, now
+  about 20 ms.
+* **The page follows again at once when the daemon is back**, rather than
+  sleeping out its backoff and missing changes for seconds.
+* **The page's figures are not read under the database's lock.** The week's
+  peak read the samples for 1.5 s on the page's thread, and during the
+  nightly VACUUM every page waited 7-12 s; the figure held is shown and a
+  fresh one is worked out behind it. The rooms of the sensor groups are read
+  once, not twice per member per message.
+* The queue of database writes holds ten times as much: a long VACUUM no
+  longer drops readings.
+
+The automations:
+
+* A rule's **"on for N"** no longer switches off a light somebody has taken
+  over by hand meanwhile; a scene run by a rule leaves held sockets alone also
+  when two are on one box.
+* **"On for half an hour" and a rule's "then wait" survive a restart** - a
+  heater stayed on for good after an upgrade or a crash. A waiting rule is
+  asked again by the last reading before it acts.
+* A rule with a wait and a cooldown could stop firing for good; a rule
+  switched off and on again forgets what it remembered (a door alarm said
+  nothing at the next opening); rules switched together from a scene no
+  longer lose one of them.
+* One notification that went wrong (a database busy) stopped every later
+  alert for good; it is now that one message.
+
+The machine itself (5.21):
+
+* Going back to the old network works on a machine with a short host name
+  (`raspberrypi`) - it was refused, and so was every change on trial.
+* The first change of who may reach the pages ever made is taken back when
+  it is not kept; nginx kept the new lines.
+* What root is asked to do and nobody waits for any more - a restart or a
+  network asked while root was at a long backup - is not done later.
+* A change of the network asked while the last one waits to be kept is
+  refused rather than dropped; time settings root could not put in are asked
+  again; a step of the clock is not taken for a restart of the machine.
+
+`test/review524.py` holds each of these; every check fails on 5.23.0.
 
 5.23.0 — going back is offered only when asked for, and says what it takes away.
 
