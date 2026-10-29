@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.25.0'
+__version__ = '5.26.0'
 
 import argparse
 import base64

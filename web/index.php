@@ -3728,7 +3728,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .dot.ok{background:var(--ok)} .ot .dot.warn{background:var(--warn)} .ot .dot.bad{background:var(--crit)}
   .ot .ntp-big{margin:4px 0 12px}
   .ot .ntp-off{font-size:26px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx)}
-  .ot .ntp-node .net-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
+  /* the one machine's card, as OTP draws it: a label and its value on one line */
+  .ot .ntp-node .net-facts,.ot .pw-node .net-facts{display:flex;flex-direction:column;gap:5px;margin:2px 0 4px}
+  .ot .ntp-node .net-fact,.ot .pw-node .net-fact{flex-direction:row;align-items:baseline;gap:12px}
+  .ot .ntp-node .net-fact .k,.ot .pw-node .net-fact .k{flex:none;width:150px;font-size:12.5px;text-transform:none;letter-spacing:0}
+  .ot .ntp-node .net-fact .v,.ot .pw-node .net-fact .v{font-size:13px;font-weight:600}
   .ot .ntp-set{margin:12px 0 0}
   .ot .reach{display:inline-flex;gap:2px;vertical-align:middle}
   .ot .reach i{display:inline-block;width:7px;height:12px;border-radius:2px;background:var(--panel2);border:1px solid var(--line)}
@@ -3760,7 +3764,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .about-head{margin:0 0 12px;font-size:16px}
   .ot .up-cli-lede{margin:0 0 8px}
   .ot .sw-ext-h{margin-top:12px}
-  @media (max-width:700px){.ot .pw-grid,.ot .ntp-grid{grid-template-columns:minmax(0,1fr)}.ot .ntp-node .net-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:700px){.ot .pw-grid,.ot .ntp-grid{grid-template-columns:minmax(0,1fr)}.ot .ntp-node .net-fact .k,.ot .pw-node .net-fact .k{width:120px}}
   @media (max-width:760px){.ot .tls-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ot .tls-rows .arow{flex-direction:column;align-items:flex-start}}
   .ot .cert-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .ot .cert-tools > .btn{width:100%;justify-content:center;min-width:0}
@@ -4875,7 +4879,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card full ot" data-sec="sys-upgrade" id="up-cli-card">
       <h2>On the command line</h2>
       <div class="up-cli-lede muted small">The same, by hand, as root:</div>
-      <pre class="zlines">tar xzf zigmon-X.Y.Z.tar.gz &amp;&amp; cd zigmon-X.Y.Z
+      <pre class="zlines">sudo zigmon --upgrade-check                # what is newer at the address above
+sudo zigmon --upgrade-online --yes         # fetch the newest, check its signature, put it in
+sudo zigmon --downgrade-check              # what going back could reach, and what it takes away
+
+tar xzf zigmon-X.Y.Z.tar.gz &amp;&amp; cd zigmon-X.Y.Z
 sudo ./install.sh --upgrade                # a backup first, and the old one put back when the new does not answer</pre>
     </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="backup-card">

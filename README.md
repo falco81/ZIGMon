@@ -2083,7 +2083,34 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.25.0**
+Current version: **5.26.0**
+
+5.26.0 — the machine's own sections drawn as OTP draws them.
+
+Network, Time, Restart and power off, Backups, About and Upgrades look as
+the same sections of OTP do, in zigmon's own colours:
+
+* **Network**: *As it is now* is a grid of facts - the label small above its
+  value - with *Read it again* at the right of its heading; *New settings
+  for <host>* takes the host name, then a box for IPv4 and one for IPv6
+  (dual stack), and *Check it* beside *Change it and restart*.
+* **Time**: the machine's card - a dot, its name, *this server* and
+  *synchronised*, how far off the time servers it is in big figures, and a
+  label and its value on each line - then *Where the time comes from*, each
+  source with its state, how often it was reached as eight bars, and the
+  machine's own /etc/chrony.conf.
+* **Restart and power off**: one card for the machine: its state, address,
+  how long it and zigmon have been running, the version, and the buttons.
+* **Backups**: backups to other machines lead with a card of their state -
+  the last, the next, whether they are locked, the destinations; the whole
+  installation has its facts and its button in the heading.
+* **About**: the machine in tiles, what it runs on and the pages' PHP below.
+* **Upgrades**: the last upgrade's log shown as it is, and a card of the same
+  on the command line (`zigmon --upgrade-check`, `--upgrade-online --yes`,
+  `--downgrade-check`, or a package by hand).
+
+The restart card says the machine's address (from the last look at the
+network). `test/review526.py` checks the layout; its checks fail on 5.25.0.
 
 5.25.0 — kept out at once, texts not paid for twice, and the house remembered across a restart.
 
