@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.0'
+__version__ = '5.29.1'
 
 import argparse
 import base64
@@ -10015,7 +10015,8 @@ class Daemon(object):
                 rows = json.loads(self.store.get_meta('sms_log') or '[]')
             except ValueError:
                 rows = []
-            mark = self._sms_mark = {'log_n': len(rows), 'log_at': (rows[0].get('at') if rows else 0)}
+            mark = self._sms_mark = {'log_n': len(rows), 'log_at': (rows[0].get('at') if rows else 0),
+                                     'log_rev': getattr(self, '_sms_rev', 0)}
         return dict(mark)
 
     def _sms_log_write(self, rows):
@@ -10026,7 +10027,13 @@ class Daemon(object):
         # is written down before it is acted on, and this write waited on
         # the database lock - a backup's second and a half - first
         self.store.set_meta('sms_log', json.dumps(rows), deferred=True)
-        self._sms_mark = {'log_n': len(rows), 'log_at': (rows[0].get('at') if rows else 0)}
+        # ...and a count of every change, not only of the rows: a message
+        # settled from "going" to "sent" changes neither how many there are
+        # nor the newest one's time, and the page went on showing it as not
+        # answered until it was reloaded
+        self._sms_rev = getattr(self, '_sms_rev', 0) + 1
+        self._sms_mark = {'log_n': len(rows), 'log_at': (rows[0].get('at') if rows else 0),
+                          'log_rev': self._sms_rev}
 
     def _sms_lock(self):
         # One at a time for the log and the outbox: a message coming in by the
@@ -10059,6 +10066,10 @@ class Daemon(object):
                         # calling that a failure is how a message that did
                         # arrive got written down as one that did not
                         'at': int(time.time()), 'ok': (None if ok is None else bool(ok)),
+                        # handed to the gateway and not answered YET - which
+                        # is not "it did not answer": the page showed every
+                        # message on its way as one the gateway had ignored
+                        'going': bool(direction == 'out' and ok is None),
                         'why': str(why or '')[:40],
                         # which way it came in: the modem's inbox, or pushed
                         # here the moment it arrived. Worth keeping because
@@ -10088,6 +10099,7 @@ class Daemon(object):
             for row in rows:
                 if row.get('id') == row_id:
                     row['ok'] = (None if ok is None else bool(ok))
+                    row.pop('going', None)
                     self._sms_log_write(rows)
                     self.bump()
                     return

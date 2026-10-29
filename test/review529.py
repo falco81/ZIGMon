@@ -101,6 +101,22 @@ check([m for lv, m in said if 'took' in m and '/messages/actions/send' in m],
       'a send that took 5.5 s at the gateway was not said as slow, nor with what else was asked: %r'
       % [m for _lv, m in said][-3:])
 
+print('the SMS tab sees a message settle, and tells "going" from "no answer"')
+rid = d.sms_note('out', '+420777000111', 'on its way', None, 'reply')
+m1 = d._sms_log_mark()
+row = next(r for r in d.sms_log(10) if r.get('id') == rid)
+check(row.get('going') is True, 'a message handed to the gateway and not answered yet is not told from one never answered')
+d.sms_note_settled(rid, True)
+m2 = d._sms_log_mark()
+check(m1 != m2, 'a message settling from going to sent leaves the mark the page watches as it was: '
+      'the tab showed it as not answered until it was reloaded (%r)' % m2)
+row = next(r for r in d.sms_log(10) if r.get('id') == rid)
+check(row.get('ok') is True and not row.get('going'), 'a settled message is still marked as going')
+page = (HERE / 'web' / 'index.php').read_text()
+log = page[page.index('function renderSmsLog('):page.index("var tools = $('sms-log-tools');")]
+check('log_rev' in log, 'the SMS tab does not fetch the log again when a message settles')
+check('sending\\u2026' in log and 'm.going' in log, 'a message on its way is drawn as "no answer from the gateway"')
+
 sys.stdout.flush()
 if bad:
     print('\n%d check(s) failed' % len(bad))

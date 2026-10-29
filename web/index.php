@@ -21268,7 +21268,9 @@ function renderSmsLog(st, force) {
   // when the filter changes, which is what "force" is for.
   // The lock belongs in the mark: locked, the daemon refuses this read, and
   // the refusal must not look like an answer that is still good.
-  var mark = [((st || {}).sms || {}).log_n, ((st || {}).sms || {}).log_at,
+  // ...and how many times it changed: a message settling from "going" to
+  // "sent" moves neither of the other two, and stayed "not answered" until F5
+  var mark = [((st || {}).sms || {}).log_n, ((st || {}).sms || {}).log_at, ((st || {}).sms || {}).log_rev,
               SMSBOX.which, isUnlocked()].join('|');
   // The mark alone decides. It starts as null, so the first drawing always
   // fetches; "and there is something on screen" was the obvious guard to add
@@ -21291,8 +21293,11 @@ function renderSmsLog(st, force) {
     if (!rows.length) { host.appendChild(el('p', 'btnhelp', 'Nothing here yet.')); return; }
     rows.forEach(function (m) {
       // three states, not two: it went, it did not, or the gateway never said
-      var unsure = m.ok === null || m.ok === undefined;
-      var line = el('div', 'sms-line ' + m.dir + (m.ok ? '' : (unsure ? ' unsure' : ' bad')));
+      // four, in truth: still on its way is not "the gateway never said" -
+      // and one left "going" by a restart is, after a few minutes
+      var going = !!m.going && Date.now() / 1000 - (m.at || 0) < 300;
+      var unsure = !going && (m.ok === null || m.ok === undefined);
+      var line = el('div', 'sms-line ' + m.dir + (m.ok || going ? '' : (unsure ? ' unsure' : ' bad')));
       var who = el('div', 'sms-who');            // the name over the time, not a table
       var whoName = el('span', 'sms-name', (m.person ? ICON.person + ' ' + m.person : m.number || '?'));
       if (m.id) whoName.appendChild(objMark('smslog:' + m.id, 'this message'));
@@ -21317,14 +21322,15 @@ function renderSmsLog(st, force) {
       if (m.person && m.number) who.title = m.number;
       line.appendChild(who);
       var bubble = el('div', 'sms-bubble ' + m.dir, m.text);
-      if (unsure) bubble.title = 'The gateway did not answer in time. It usually means the message '
+      if (going) bubble.title = 'Handed to the gateway; it has not said yet that it went.';
+      else if (unsure) bubble.title = 'The gateway did not answer in time. It usually means the message '
         + 'went out anyway and the gateway was busy sending an earlier one \u2014 it is not a failure, '
         + 'only an unanswered question.';
       else if (!m.ok) bubble.title = 'This one did not get through';
       line.appendChild(bubble);
       var tail = el('div', 'sms-tail');
       tail.appendChild(el('span', 'muted small', (m.dir === 'in' ? 'received' : (m.why || 'sent'))
-        + (m.ok ? '' : (unsure ? ' \u00b7 no answer from the gateway' : ' \u00b7 failed'))));
+        + (m.ok ? '' : (going ? ' \u00b7 sending\u2026' : unsure ? ' \u00b7 no answer from the gateway' : ' \u00b7 failed'))));
       var again = cmdButton('', 'reset', 'small iconbtn'); again.classList.remove('needs-unlock');
       again.title = m.dir === 'in' ? 'Answer this one' : 'Send it again';
       again.onclick = function () {

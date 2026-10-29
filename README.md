@@ -2083,7 +2083,21 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.0**
+Current version: **5.29.1**
+
+5.29.1 — the SMS tab shows a message as it is, not as it was.
+
+* **A message on its way is not "no answer from the gateway".** A text is
+  written down the moment it is handed to the gateway, before the gateway
+  says it went - and in that moment it was drawn exactly as one the gateway
+  never answered: orange, *no answer from the gateway*. It is now *sending…*.
+* **The tab sees it settle.** It fetched the log again only when a message
+  was added; a message settling from going to sent changed neither how many
+  there were nor the newest one's time, so it stayed "not answered" until
+  the page was reloaded (F5 showed it sent at once). The status now counts
+  every change of the log, and the tab follows it.
+
+`test/review529.py`; its new checks fail on 5.29.0.
 
 5.29.0 — an answer by text is not sent into a gateway still busy with the
 text it answers.
