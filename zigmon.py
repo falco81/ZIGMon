@@ -223,7 +223,7 @@ DEFAULTS = {
     # status or the words of a message, a light that takes 3 ms took 91 (and
     # 143 at worst). At 0.5 ms the same took 18; busy work costs nothing
     # measurable more.
-    'gil_switch_ms': 0.5,
+    'gil_switch_ms': 0.1,         # 5.28: 0.5 let five busy pages hold a light back 73-186 ms
     # A button that reports the same press twice - a BLU button through two
     # gateways, or one that repeats itself - ran its binding twice, and with a
     # toggle behind it the press looked like it had done nothing at all. A
@@ -839,9 +839,9 @@ def log_drain(timeout=3.0):
 def apply_gil_switch():
     """Hand Python between threads as often as gil_switch_ms says."""
     try:
-        ms = float(numeric(CONFIG.get('gil_switch_ms')) or 0.5)
+        ms = float(numeric(CONFIG.get('gil_switch_ms')) or 0.1)
     except (TypeError, ValueError):
-        ms = 0.5
+        ms = 0.1
     want = max(0.1, min(5.0, ms)) / 1000.0
     if abs(sys.getswitchinterval() - want) > 1e-7:
         sys.setswitchinterval(want)
@@ -6585,8 +6585,11 @@ class Storage(object):
         self._stats_cache = None
         before = self.stats().get('bytes') or 0
         try:
-            self.db.execute('VACUUM')
-            self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            # under the lock, as every use of the shared connection: run bare,
+            # it ran beside the writer thread's own statements on it
+            with self.lock:
+                self.db.execute('VACUUM')
+                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
         except sqlite3.OperationalError:
             pass
         self._stats_cache = None
@@ -6643,10 +6646,11 @@ class Storage(object):
         if apply:
             self._stats_cache = None
             try:
-                self.db.execute('VACUUM')
-                # fold the write-ahead log back in, or the file still looks
-                # every bit as big as it was
-                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                with self.lock:            # the shared connection, as everywhere
+                    self.db.execute('VACUUM')
+                    # fold the write-ahead log back in, or the file still looks
+                    # every bit as big as it was
+                    self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
             except sqlite3.OperationalError:
                 pass
         after = (self.stats().get('bytes') or 0) if apply else before
@@ -6687,13 +6691,11 @@ class Storage(object):
         import sqlite3
         self.flush(5.0)
         self._wq.clear()                     # anything still queued belongs to the replaced contents
-        self._meta_cache.clear()
-        self._snap_cache.clear()
-        self._dev_cache.clear()
-        self._actions_cache.clear()
-        self._last_action.clear()
-        self._meta_raw.clear()
-        self._meta_complete = False   # memory no longer mirrors the table
+        # The copies in memory stay in force while the pages are copied, and
+        # are swapped for the restored ones after (below). Cleared here, every
+        # reader - the broker thread recording a report, the rule workers
+        # reading the rules - missed them and queued on the lock for the
+        # whole copy: a light five seconds late for every restore.
         self.last_sample.clear()             # what was written last belongs to the old contents
         self.last_written.clear()
         self._dev_list = None
@@ -6715,6 +6717,21 @@ class Storage(object):
             with self.lock:
                 src.backup(self.db)
                 self.db.commit()
+                # read while the lock is still held (the first read after the
+                # copy builds the WAL index - a second on a big database) and
+                # put in place in one go
+                meta = {r['key']: r['value'] for r in self.db.execute('SELECT key, value FROM meta')}
+                snaps = {}
+                for r in self.db.execute('SELECT device, payload, availability FROM snapshots'):
+                    try:
+                        snaps[r['device']] = (json.loads(r['payload'] or '{}'), r['availability'])
+                    except ValueError:
+                        snaps[r['device']] = ({}, r['availability'])
+                self._meta_raw, self._meta_cache, self._meta_complete = meta, {}, True
+                self._snap_cache = snaps
+                self._actions_cache, self._last_action = {}, {}
+                self._dev_cache, self._dev_list = {}, None
+                self._warm_devices()
         finally:
             src.close()
         if keep_accounts is not None:
@@ -6735,10 +6752,6 @@ class Storage(object):
         # the rules) put the old list straight back, where it stayed - the
         # raw settings said the restored rules and the rules in force were
         # the ones from before the restore.
-        self._meta_cache.clear()
-        self._meta_raw.clear()
-        self._meta_complete = False
-        self._warm_meta()
         self._meta_cache.clear()
 
     def counter_delta(self, device_id, key, t0, t1):
@@ -35287,7 +35300,10 @@ class Daemon(object):
         # regular poll that is waiting out a slow controller: it takes the
         # lock for at most its own timeout, then goes with the last answer
         quick = getattr(UNIFI_QUICK, 'timeout', None)
-        if not self._wifi_fetch_lock.acquire(timeout=quick if quick else -1):
+        # a rule's quick look does not queue behind a regular poll that is
+        # waiting out a slow controller at all: the last answer is used at once
+        # (it waited its whole 0.4 s for the lock, and the rules behind it too)
+        if not (self._wifi_fetch_lock.acquire(False) if quick else self._wifi_fetch_lock.acquire()):
             log('presence: the controller is still being asked; using the last answer', 'debug')
             return self.wifi.get('clients_list') or []
         try:
@@ -36180,6 +36196,18 @@ class Daemon(object):
                     title='Somebody has never been found on the network', about='wifi')
 
     RULE_BACKLOG = 20000        # the same ceiling the deferred writes have
+
+    @staticmethod
+    def gc_settle():
+        """What the daemon has loaded for good put out of the collector's
+        reach. A full collection walks every object there is, and it stops
+        the world on whichever thread happened to allocate - most often the
+        broker thread, in the middle of a report: 15 ms each time on a warm
+        daemon. Frozen, it walks only what came since."""
+        import gc
+        gc.collect()
+        gc.freeze()
+        log('the collector settled: %d objects kept out of its walks' % gc.get_freeze_count(), 'debug')
 
     def prime_rules(self):
         """Before the first message: what each rule's condition was when the
@@ -38041,6 +38069,10 @@ class Daemon(object):
         self.connect()
         server.start()
         self._running = True
+        # a minute in, once everything the daemon keeps for good is loaded
+        t = threading.Timer(60, self.gc_settle)
+        t.daemon = True
+        t.start()
         # the clock side of rules and schedules runs whether or not there is
         # a plug to poll (before, a house with only Zigbee switches had no
         # schedules at all, since they rode on the plug poll loop)

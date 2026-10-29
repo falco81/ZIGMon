@@ -17815,7 +17815,7 @@ var SETTINGS_LAYOUT = [
     ['networkmap_interval', 'Network map (s, 0 = off)'],
     ['presence_fresh_s', 'Presence rule re-asks Wi-Fi if older than (s, -1 = never)'],
     ['gil_switch_ms', 'Hand Python to the next thread every (ms)',
-     'Python runs one thread at a time and hands over every five milliseconds unless told otherwise. The way from a sensor to a light changes hands half a dozen times, so with the page\u2019s status or a message being built at the same moment, a light that takes 3 ms took 91 and 143 at worst. Measured at 0.5: 18. Smaller is quicker to answer and costs busy work a little more'],
+     'Python runs one thread at a time and hands over every five milliseconds unless told otherwise. The way from a sensor to a light changes hands half a dozen times, so with the page\u2019s status or a message being built at the same moment, a light that takes 3 ms took 91 and 143 at worst. Measured at 0.5: 18; with five pages busy at once 73\u2013186 at 0.5 and 37 at 0.1, the default since 5.28. Smaller is quicker to answer and costs busy work a little more'],
     ['presence_look_s', 'And waits at most (s) for the answer',
      'That re-ask happens on the rule worker, so this is the longest a slow controller can hold back the rules that are gated on who is home — and everything queued behind them. A healthy controller answers in a fraction of a second; one that accepts the connection and then says nothing held the rules three seconds a reading. Past this, the last answer stands'],
   ]],

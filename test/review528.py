@@ -264,6 +264,50 @@ d.pulse_plug(pp, 300, 'a test')
 took = time.time() - t0
 check(took < 0.9, 'a pulse of 300 ms took %.2f s: it waited for a poll first' % took)
 
+# ---- nothing on the way waits for the database being put back -------------------------------------
+print('a restore of the database does not hold the house back')
+st = d.store
+d.store.set_meta('rules', json.dumps([{'id': 'rx', 'device': 'zigbee:PIR', 'key': 'occupancy', 'op': '==',
+                                       'value': 1, 'plug': 'Light-Test', 'do': 'on', 'enabled': True}]))
+rows = [('0xbulk%03d' % (i % 300), 1700000000 + i, 'temperature', 20.0 + (i % 50) / 10) for i in range(400000)]
+with st.lock:
+    st.db.executemany('INSERT OR IGNORE INTO samples (device, ts, key, value) VALUES (?,?,?,?)', rows)
+    st.db.commit()
+st.flush(3.0)
+src_db = W / 'restore-from.db'
+st.backup_to(src_db)
+if src_db.exists():
+    waits, stop = [], threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            t0 = time.time()
+            st.get_meta('rules')
+            st.get_meta('bindings')
+            waits.append(time.time() - t0)
+            time.sleep(0.002)
+
+    th = threading.Thread(target=reader)
+    th.start()
+    t0 = time.time()
+    st.restore_from(str(src_db))
+    copy_s = time.time() - t0
+    stop.set()
+    th.join()
+    worst = max(waits or [0])
+    check(worst < 0.05, 'a reading of the rules waited %.0f ms while the database was put back (%.0f ms)'
+          % (worst * 1000, copy_s * 1000))
+    check(json.loads(st.get_meta('rules') or '[]')[:1] and json.loads(st.get_meta('rules'))[0].get('id') == 'rx',
+          'the rules in force after a restore are not the restored ones')
+else:
+    check(False, 'no backup could be made to restore from')
+
+src = (HERE / 'zigmon.py').read_text()
+check('self._wifi_fetch_lock.acquire(False) if quick' in src,
+      'a rule gated on who is home waits for a regular poll of a slow Wi-Fi controller')
+check('gc.freeze()' in src, 'a full collection walks everything the daemon keeps, on the broker thread')
+check("'gil_switch_ms': 0.1," in src, 'Python hands over between threads only every half millisecond')
+
 # ---- an MQTT toggle is a Set ----------------------------------------------------------------------
 src = (HERE / 'zigmon.py').read_text()
 tp = src[src.index('    def toggle_plug('):src.index('    def read_plug_counters(')]
