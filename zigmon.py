@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.29.6'
+__version__ = '5.29.7'
 
 import argparse
 import base64
@@ -37691,6 +37691,7 @@ class Daemon(object):
             'weather': self._weather_cache[1] if self._weather_cache else None,
             'sms': dict(self._sms_log_mark(),
                             **{'ready': self.sms_ready(), 'sent_today': self.sms_sent_today(),
+                    'cmms': self.sms_cmms_mode(),
                     'to': self.mask_phone(', '.join(self.sms_recipients())),
                     'extra_to': self.mask_phone(CONFIG.get('sms_to') or ''),
                     'extra_allow': self.mask_phone(CONFIG.get('sms_allow') or ''),
@@ -42067,6 +42068,17 @@ def cmd_sms(args, pal):
         if value is not None:
             value = value.get('value') if isinstance(value, dict) else value
             print('  %-22s %s' % (label, value))
+    # the link held open between the parts of a long text (5.29.5): as set
+    # here, and as the modem itself last said it
+    if sms.get('cmms'):
+        held = ((gateway or {}).get('values') or {}).get('cmms')
+        held = held.get('value') if isinstance(held, dict) else held
+        words = {'always': 'always', 'per_message': 'before each long text', 'off': 'never'}.get(
+            sms['cmms'], sms['cmms'])
+        said = ('the modem says %s' % int(held)) if isinstance(held, (int, float)) else 'not read from the modem yet'
+        line = '%s - %s' % (words, said)
+        print('  %-22s %s' % ('long texts (AT+CMMS)',
+                              pal.warn(line) if sms['cmms'] == 'always' and held not in (None, 2) else line))
     waiting = len(data.get('sms_outbox') or [])
     if waiting:
         print('  %-22s %s' % ('waiting to go', pal.warn(str(waiting))))
@@ -50593,6 +50605,38 @@ def _console_upgrade_online(c):
         c.act('--upgrade-online', '--yes')
 
 
+def _console_sms(c):
+    """The SMS gateway from the console: how it is, what came and went, what
+    waits - and AT+CMMS, the one switch that decided whether a long answer
+    took a second or a minute on a TRB140."""
+    def cmms():
+        got = c.ask_one('Hold the link open for long texts (AT+CMMS)', 'always, per_message or off',
+                        'always', help_='always keeps AT+CMMS=2 (set again after every restart '
+                        'of the gateway); per_message sets it just before each long text; off '
+                        'leaves the modem alone.',
+                        check=lambda v, _: None if v in ('always', 'per_message', 'off')
+                        else 'always, per_message or off')
+        if got:
+            c.act('--settings', 'sms_cmms=%s' % got)
+
+    def test():
+        number = c.ask_one('Send a test message', 'to number', '', help_=(
+            'In international form, e.g. +420777123456. One text goes out and costs what one costs.'),
+            check=lambda v, _: None if re.match(r'^\+?[0-9 ]{6,20}$', v) else 'a phone number')
+        if number:
+            c.act('--sms', 'test', '--number', number)
+    return c.sub('SMS gateway', [
+        ('How it is (signal, network, AT+CMMS)', lambda: c.act('--sms', 'status')),
+        ('What came in', lambda: c.act('--sms', 'inbox')),
+        ('What went out', lambda: c.act('--sms', 'outbox')),
+        ('What waits to go', lambda: c.act('--sms', 'waiting')),
+        ('Send what waits now', lambda: c.act('--sms', 'flush')),
+        ('Hold the link open for long texts (AT+CMMS)', cmms),
+        ('Send a test message', test),
+    ], 'sms')
+
+
+CONSOLE_MORE['main'].append(('SMS gateway', _console_sms))
 CONSOLE_MORE['main'].append(('Network, time and power', _console_machine))
 CONSOLE_MORE['backups'].extend([
     ('Backups to other machines: how they went', lambda c: c.act('--rbackup-status')),

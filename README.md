@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.6**
+Current version: **5.29.7**
+
+5.29.7 — the command line and the console know AT+CMMS.
+
+* `zigmon --sms status` says how long texts are sent: the setting
+  (*always*, *before each long text*, *never*) and what the modem last said
+  of AT+CMMS - in warning colour when it is meant to be held and is not.
+* The console (`zigmon --console`) has an **SMS gateway** menu: how it is,
+  what came in, what went out, what waits and sending it now, the AT+CMMS
+  switch, and a test message. The two new settings of 5.29.5 (`sms_cmms`,
+  `sms_multipart_after_push_s`) were already among Settings there and in
+  `zigmon --settings KEY=VALUE`.
+
+`test/review5297.py`; every check fails on 5.29.6.
 
 5.29.6 — the same command sent twice is done twice.
 
