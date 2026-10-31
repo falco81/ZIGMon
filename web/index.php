@@ -2538,11 +2538,6 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   :is(#settings-grid, .set-host) .set-item > .set-says{grid-row:3;grid-column:1/-1;font-size:12px;line-height:1.45;
     color:var(--tx-mut);flex-basis:100%;width:100%}
   .set-says code{font-size:11px;overflow-wrap:anywhere}
-  /* From the web: the three settings side by side under what was found */
-  #up-web-card .up-set{margin-top:16px;padding-top:4px;border-top:1px solid var(--line)}
-  #tab-control #up-web-card .up-set .set-host .set-cluster > .set-sub{display:none}
-  #tab-control #up-web-card .up-set .set-host .set-cluster{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
-  #up-web-card #up-web .note{margin:0 0 6px}
   .net-steps{margin:8px 0 4px;padding-left:22px}
   .net-steps li{margin:3px 0}
   .net-steps li .mark{display:inline-block;width:1.2em;font-weight:700}
@@ -4122,6 +4117,112 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot table.plain td.acts .btn{margin-left:4px}
   .ot table.plain td.num{text-align:right;font-variant-numeric:tabular-nums}
   .ot .zfold{margin-top:12px} .ot .zfold summary{cursor:pointer;color:var(--info);font-size:13px}
+  /* Upgrades and maintenance as otp 1.0.197 draws it (5.35.1). otp's sizes
+     for this pane's cards alone - the rest of zigmon keeps its own: a card's
+     padding and title, a note's words, a table's head and rows, the controls
+     38 px high (32 px small), a primary button filled, a fold drawn as a bar
+     with its chevron, and the save bar at the end of the pane. */
+  #ctl-head[data-sec="sys-upgrade"] .ctl-title{font-size:22px;line-height:1.5}
+  #ctl-head[data-sec="sys-upgrade"] .ctl-lede{font-size:14px;line-height:1.6;max-width:980px}
+  #tab-control .grid.charts > .card.up{padding:20px 22px;border-radius:14px;font-size:14.5px;line-height:1.5}
+  .grid.charts > .card.up + .card.up{margin-top:-2px}
+  #tab-control .grid.charts > .card.up > h2{font-size:16px;line-height:1.5;margin:0 0 12px}
+  .card.up p.note{font-size:13px;line-height:1.5;color:var(--tx-dim);margin:0 0 14px;max-width:940px}
+  .card.up > p.note{font-size:13.5px;line-height:1.55;max-width:980px}
+  .card.up p.note.small{font-size:12.5px}
+  .card.up .note.bad{color:var(--crit)} .card.up .note.good{color:var(--ok)} .card.up .note.warn{color:var(--warn)}
+  .card.up .muted{color:var(--tx-dim)}
+  .card.up .small{font-size:12.5px}
+  .card.up .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .card.up table{width:100%;border-collapse:collapse}
+  .card.up table th{text-align:left;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut);
+    font-weight:700;line-height:1.5;padding:6px 10px 6px 0;border-bottom:1px solid var(--line);white-space:nowrap;
+    background:var(--panel)}
+  .card.up table td{font-size:14px;line-height:1.5;padding:7px 10px 7px 0;border-bottom:1px solid rgba(38,44,55,.55);
+    vertical-align:middle}
+  .card.up table th:first-child,.card.up table td:first-child{padding-left:11px}
+  .card.up table tr:last-child td{border-bottom:0}
+  .card.up table td:not(:first-child) > .tag:first-child{margin-left:-7px}
+  .card.up table tbody tr:hover{background:rgba(88,166,255,.08)}
+  .card.up table tbody tr:hover > td:first-child{box-shadow:inset 3px 0 0 var(--info)}
+  .card.up td.rowtools{width:1%;white-space:nowrap;text-align:right}
+  .card.up td .sub{display:block;font-size:12px;color:var(--tx-dim);margin-top:2px}
+  .card.up .tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700;line-height:1.5;
+    letter-spacing:.4px;text-transform:uppercase;white-space:nowrap}
+  .card.up .btnrow,.up-save-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  :is(.card.up, .up-save-bar) .btn{height:38px;padding:0 16px;font-size:13.5px;font-weight:600;border-radius:10px;gap:8px;
+    display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1}
+  .card.up .btn.small{height:32px;padding:0 12px;font-size:12.5px;border-radius:8px}
+  :is(.card.up, .up-save-bar) .btn.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  :is(.card.up, .up-save-bar) .btn.primary:hover:not(:disabled){background:#388bfd;border-color:#388bfd;color:#fff}
+  :is(.card.up, .up-save-bar) .btn.primary svg{opacity:1}
+  .card.up .btn.danger{color:var(--crit);border-color:rgba(248,81,73,.45);background:var(--crit-bg)}
+  .card.up .btn.danger:hover:not(:disabled){background:rgba(248,81,73,.22);color:#ff7b72;border-color:var(--crit)}
+  .card.up input[type=text]{height:38px;padding:0 12px;font-size:14px;line-height:1.2;border-radius:10px;
+    background-color:var(--panel2);color:var(--tx);border:1px solid var(--line)}
+  .card.up .drop{min-height:84px}
+  .card.up .drop span{font-size:13px}
+  #up-pkg .notice{margin:12px 0 16px;font-size:14px;line-height:1.5}
+  #up-pkg .notice b{display:block;margin-bottom:2px}
+  #up-web p.mono{margin:1em 0;overflow-wrap:anywhere}
+  .card.up pre.zlines{font-size:12px;line-height:1.5}
+  /* a fold: a bar with a chevron, otp's details.fold */
+  .card.up details.zfold{border:1px solid var(--line);border-radius:12px;margin:0 0 10px;background:var(--panel2)}
+  .card.up details.zfold > summary{cursor:pointer;padding:10px 14px;font-weight:650;font-size:13.5px;line-height:1.5;
+    color:var(--tx);list-style:none;display:flex;align-items:center;gap:10px}
+  .card.up details.zfold > summary::-webkit-details-marker{display:none}
+  .card.up details.zfold > summary:hover{color:var(--info)}
+  .card.up details.zfold > summary::before{content:'';flex:none;width:9px;height:9px;
+    border-right:1.8px solid currentColor;border-bottom:1.8px solid currentColor;
+    transform:rotate(-45deg) translate(-1px,-1px);opacity:.65;transition:transform .16s ease,opacity .16s ease}
+  .card.up details.zfold[open] > summary::before{transform:rotate(45deg) translate(-2px,-2px);opacity:1}
+  .card.up details.zfold > summary:hover::before{opacity:1}
+  .card.up details.zfold[open] > summary{border-bottom:1px solid var(--line)}
+  #up-log-fold{margin:0}
+  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp:not(.open){display:-webkit-box;
+    -webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp.cut{cursor:pointer}
+  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp.cut:not(.open):hover{color:var(--tx)}
+  /* going back: a row a version, its buttons at the right (otp 1.0.145) */
+  .card.up .dg-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;
+    padding:8px 10px;border-bottom:1px solid var(--line)}
+  .card.up .dg-left{display:flex;align-items:center;gap:10px;min-width:9em;white-space:nowrap}
+  .card.up .dg-acts{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-left:auto}
+  .card.up .dg-acts .btn{white-space:nowrap}
+  .card.up ul.dg-why{margin:8px 0;padding:0 14px 0 32px}
+  .card.up details.zfold > .dg-rows{padding:0 4px 4px}
+  .card.up .notice.warn{border-color:rgba(210,153,34,.45);background:var(--warn-bg)}
+  /* From the web: the three settings side by side under what was found, each
+     its name in bold over its control, the words under that in three lines
+     (a click opens the rest) - and no Save of their own */
+  #up-web-card .up-set{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+  #up-web-card .up-set .set-grid > .set-head,
+  #tab-control #up-web-card .up-set .set-host .set-cluster > .set-sub{display:none}
+  #tab-control #up-web-card .up-set .set-host .set-cluster{grid-template-columns:repeat(auto-fit,minmax(310px,1fr));
+    gap:22px 22px;margin:0}
+  #tab-control #up-web-card .up-set .set-host .set-cluster > .set-item{max-width:540px;gap:7px 6px;margin:0}
+  #tab-control #up-web-card .up-set .set-item > label{grid-row:1;grid-column:1/-1;display:flex;align-items:center;gap:6px;
+    font-size:13.5px;font-weight:650;line-height:1.3;color:var(--tx);letter-spacing:0;text-transform:none;
+    justify-self:stretch;align-self:end;margin:0}
+  #tab-control #up-web-card .up-set .set-item > label .iinfo{order:3;margin:0 0 0 auto}
+  #tab-control #up-web-card .up-set .set-item > label .obj-mark{order:1;margin:0}
+  #up-web-card .set-says code{background:none;border:0;padding:0;font-size:inherit}
+  #tab-control #up-web-card .up-set .set-item.set-bool{grid-template-columns:minmax(0,1fr)}
+  #tab-control #up-web-card .up-set .set-item.set-bool > .sw{grid-row:2;grid-column:1;justify-self:start;
+    align-self:center;margin:0}
+  #tab-control #up-web-card .up-set .set-item > input{grid-row:2;align-self:center}
+  #tab-control #up-web-card .up-set .set-item > .set-says{grid-row:3;font-size:12.5px;line-height:1.5;color:var(--tx-mut)}
+  #up-web-card .set-says.clamp:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;
+    -webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+  #up-web-card .set-says.clamp.cut:not(.open):hover{color:var(--tx-dim)}
+  /* otp's save bar: below the last card until something is changed, then
+     stuck to the bottom of the page with the page fading out above it */
+  .up-save-bar{position:static;margin:0 0 4px;padding:12px 0;border:1px solid transparent;border-radius:14px}
+  .up-save-bar:not(.dirty) #up-save{opacity:.55}
+  .up-save-bar.dirty{position:sticky;bottom:12px;z-index:20;padding:12px 16px;background:var(--panel2);
+    border-color:rgba(88,166,255,.4);box-shadow:0 12px 30px rgba(0,0,0,.45)}
+  .up-save-bar.dirty::before{content:'';position:absolute;left:-8px;right:-8px;bottom:calc(100% + 1px);height:26px;
+    pointer-events:none;background:linear-gradient(to top,var(--bg) 20%,rgba(13,17,23,0))}
   .ot a.fgo{color:var(--info);text-decoration:none} .ot a.fgo:hover{text-decoration:underline}
   .ot .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--tx-mut);flex:0 0 auto}
   .ot .dot.ok{background:var(--ok)} .ot .dot.warn{background:var(--warn)} .ot .dot.crit{background:var(--crit)}
@@ -5116,54 +5217,57 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     </div>
     <!-- Upgrades and maintenance (otp 1.0.197's pane, for one machine): the
          nodes - this one - with its maintenance, new versions from the web
-         with the three settings of looking for them, and a package sent here. -->
-    <div class="card full ot" data-sec="sys-upgrade" id="up-card">
+         with the three settings of looking for them, and a package sent here.
+         Drawn as otp draws it (5.35.1): its cards in its order, its sizes
+         (.card.up), the output of root folded, and the settings saved by the
+         save bar at the end of the pane. -->
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-card">
       <h2>The nodes</h2>
-      <p class="note" id="up-nodes-note">A server in maintenance is being worked on: the alerts about the machine itself and about devices going quiet or offline are held &ndash; kept in the events &ndash; while it is, and for 10 min after, and its /healthz says 503. The house goes on as ever: sensors, rules, sockets, schedules, the broker and these pages. An upgrade, an update of the system and a restart put it in maintenance by themselves, and back in service when they are over.</p>
+      <p class="note" id="up-nodes-note">A server in maintenance is being worked on: the alerts about the machine itself and about devices going quiet or offline are held &ndash; kept in the events &ndash; while it is, and for 10 min after, and its /healthz says 503. The house goes on as ever: sensors, rules, sockets, schedules, the broker and these pages.</p>
       <div id="up-nodes"></div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" data-old="settings" id="up-web-card">
+    <div class="card full ot up" data-sec="sys-upgrade" data-old="settings" id="up-web-card">
       <h2>From the web</h2>
-      <p class="note" id="up-web-note">Where new versions are published &ndash; the address below &ndash; is looked at once a day. A newer zigmon found there is offered here, and put in with one click: fetched, its signature checked like a package sent by hand, a backup of the whole installation made first, then this server upgraded. Nothing is put in by itself.</p>
+      <p class="note" id="up-web-note">Where new versions are published &ndash; the address below &ndash; is looked at once a day. A newer zigmon found there is offered here, and put in with one click: fetched, its signature checked like a package sent by hand, then this server upgraded. Nothing is put in by itself.</p>
       <div id="up-web"></div>
       <div class="set-card up-set" data-for="sys-upgrade">
         <div class="set-host" id="set-host-sys-upgrade" data-for="sys-upgrade"></div>
-        <div class="btnrow set-bar">
-          <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
-          <span class="muted small set-note-alt"></span>
-        </div>
       </div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-new-card">
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-new-card">
       <h2>A new version</h2>
-      <p class="note" id="up-new-note">The .tar.gz of a new zigmon, as it was released. It is checked before anything else: it must be signed by a release key this server trusts, every file in it must be the one signed, and it must not be older than what runs here. Root checks it all again before it is put in. An older one waits under Going back to an older version.</p>
+      <p class="note" id="up-new-note">The .tar.gz of a new zigmon, as it was released. It is checked before anything else: it must be signed by a release key this server trusts, every file in it must be the one signed, and it must not be older than what runs here. Root checks it all again before it is put in.</p>
       <div id="up-drop-slot"></div>
       <div id="up-pkg"></div>
       <div class="btnrow" style="margin-top:10px">
         <button class="btn cmd primary needs-unlock" id="up-start" type="button" disabled>Upgrade this server</button>
         <button class="btn cmd" id="up-forget" type="button" hidden>Forget the package</button>
-        <span class="muted small" id="up-retry"></span>
       </div>
       <div id="up-ready"></div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-back-card" hidden>
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-back-card" hidden>
       <h2>Going back to an older version</h2>
-      <p class="note">The older program is put in and <b>the database is left as it is</b> &ndash; nothing of it is copied or put back, however big it is. That is safe only while the older version reads the database as this one left it; where a version between them changed that, going back is refused and says why. A copy of the program as it is now is kept, and put back by itself if the older version does not answer. Not while a change of the network or the firewall waits to be kept.</p>
+      <p class="note" id="up-back-note">Only to a version that is safe: one that reads the database as this one left it &ndash; where a version between them changed that, going back is refused and says why. The older program is put in and <b>the database is left as it is</b>: nothing of it is copied or put back, however big it is. A copy of the program as it is now is kept, and put back by itself if the older version does not answer. Not while a change of the network or the firewall waits to be kept.</p>
       <div id="up-back"></div>
       <div id="up-back-drop-slot" style="margin-top:12px"></div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-plan-card" hidden>
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-plan-card" hidden>
       <h2>The upgrade</h2>
       <div id="up-plan"></div>
+      <p class="note small" id="up-retry" style="min-height:1.4em;margin:6px 0 0"></p>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-log-card">
-      <h2>What root did last</h2>
-      <p class="note">Every upgrade first makes a backup of the whole installation and a copy of the program, runs <code>install.sh --upgrade</code>, and asks the new version whether it answers. When it does not within a minute and a half, the copy is put back by itself.</p>
-      <pre class="zlines" id="up-log">&ndash;</pre>
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-log-card">
+      <h2>What root said last <span class="mono small muted" id="up-log-node"></span></h2>
+      <p class="note" id="up-log-note"><span>The output of install.sh, the last time this server was upgraded from these pages.</span>
+        <span class="mono">/var/lib/zigmon/upgrade/last.log</span></p>
+      <details class="zfold" id="up-log-fold">
+        <summary>the output</summary>
+        <pre class="zlines" id="up-log">&ndash;</pre>
+      </details>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-cli-card">
+    <div class="card full ot up" data-sec="sys-upgrade" id="up-cli-card">
       <h2>On the command line</h2>
-      <div class="up-cli-lede muted small">The same, by hand, as root:</div>
+      <p class="note" id="up-cli-note">The same, by hand, as root:</p>
       <pre class="zlines">sudo zigmon --maintenance on --why "upgrade"   # in maintenance: the alerts about the machine held
 sudo zigmon --maintenance off              # back in service (if it was put there by hand)
 sudo zigmon --maintenance status           # which, since when, and why
@@ -5174,6 +5278,13 @@ sudo zigmon --downgrade-check              # what going back could reach, and wh
 
 tar xzf zigmon-X.Y.Z.tar.gz &amp;&amp; cd zigmon-X.Y.Z
 sudo ./install.sh --upgrade                # a backup first, and the old one put back when the new does not answer</pre>
+    </div>
+    <!-- otp's save bar (1.0.123), at the end of the pane: below the last card
+         until something is changed, then stuck to the bottom. -->
+    <div class="full up-save-bar" data-sec="sys-upgrade" id="up-save-bar">
+      <button class="btn cmd primary" type="button" id="up-save">Save the changes</button>
+      <button class="btn cmd" type="button" id="up-reset">Put them back</button>
+      <span class="muted small" id="up-save-said"></span>
     </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="backup-card">
       <h2>Backup</h2>
@@ -19793,7 +19904,7 @@ function netMark(what) {
 // Settings whose words stand under them rather than under the pointer
 // (otp 1.0.197's three of Upgrades and maintenance, side by side in From the web).
 var SETTING_SAYS_UNDER = {
-  upgrade_check: 'Once a day (and when Look now is pressed) the address beside is asked for zigmon-X.Y.Z.tar.gz '
+  upgrade_check: 'Once a day (and when Look now is pressed) the address below is asked for zigmon-X.Y.Z.tar.gz '
     + 'packages; a newer one than runs here is offered on this page - put in with one click, after its signature '
     + 'has been checked like any package sent by hand. Nothing is put in by itself.',
   upgrade_url: 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), a web page or '
@@ -19984,6 +20095,11 @@ function renderSettings(st) {
       if (SETTING_SAYS_UNDER[key]) {
         var says = el('div', 'set-says');
         says.innerHTML = SETTING_SAYS_UNDER[key];       // our own words, not anybody's input
+        // in three lines, as otp has it (1.0.156): a click opens the rest in
+        // place, and only a text that is cut looks like one
+        says.classList.add('clamp');
+        says.onclick = function () { says.classList.toggle('open'); };
+        says.onmouseenter = function () { says.classList.toggle('cut', says.scrollHeight > says.clientHeight + 2); };
         item.appendChild(says);
       }
       into.appendChild(item);
@@ -20008,6 +20124,9 @@ function renderSettings(st) {
   });
   applySettingsWhen();
   setSettingsNote('');
+  // what Upgrades and maintenance's save bar measures a change against
+  upSaveBoxes().forEach(function (b) { b.dataset.was = upBoxValue(b); });
+  upSaveMark();
   // a settings card with nothing in it is not shown, nor is a section left empty
   Array.prototype.forEach.call(document.querySelectorAll('.set-card'), function (card) {
     var h = card.querySelector('.set-host');
@@ -28109,9 +28228,8 @@ function drawUpWeb(d) {
     + ' and this server runs ' + here + ' (looked ' + esc(ago(o.at)) + ')';
   else p.innerHTML = 'No zigmon package there (looked ' + esc(ago(o.at)) + ')';
   host.appendChild(p);
-  var at = el('p', 'small muted');
-  at.innerHTML = '<code>' + esc(w.url || o.url || '–') + '</code>';
-  host.appendChild(at);
+  // the address in a line of its own, as otp has it: its text, never markup
+  host.appendChild(el('p', 'mono small muted', w.url || o.url || '–'));
   var row = el('div', 'btnrow');
   var look = cmdButton('Look now', 'refresh', '');
   look.disabled = !!(d.running || w.busy);
@@ -28273,6 +28391,7 @@ function drawUpgrade(d) {
   }
   var lg = $('up-log');
   lg.textContent = (d.log || []).length ? d.log.join('\n') : '–';
+  if ($('up-log-node')) $('up-log-node').textContent = d.node || '';
   if (d.running) upAgain(3000);
 }
 
@@ -28309,11 +28428,13 @@ function drawUpBack(d) {
   $('up-back-card').hidden = !b.on;
   host.innerHTML = '';
   if (!b.on) return;
-  var facts = el('div');
-  sysFacts(facts, [['Runs here', 'zigmon ' + (d.version || '?')],
-    ['The highest version this database has seen', b.high || ''],
-    ['As far back as it goes', b.floor ? 'zigmon ' + b.floor + ' - before it the database was read differently' : 'any version']]);
-  host.appendChild(facts);
+  // where it looks, what runs here and how far back it may go: one line, as
+  // otp says it above its list
+  var at = el('p', 'note small', 'At ' + ((d.web || {}).url || w.url || '?') + ' - this server runs '
+    + (d.version || '?') + '; it may go back to ' + (b.floor ? b.floor + ' or newer - before it the database was read differently'
+      : 'any version') + (b.high ? '. The highest version this database has seen: ' + b.high : '') + '.');
+  at.style.marginTop = '0';
+  host.appendChild(at);
   if (b.busy) host.appendChild(el('p', 'note warn', 'Not now: ' + b.busy + '.'));
   var go = function (version, fetchFirst) {
     zconfirm('Go back to zigmon ' + version + '?', 'The older program is put in and zigmon restarts with it - the house stops following its sensors for a minute or so. '
@@ -28322,17 +28443,33 @@ function drawUpBack(d) {
         var ask = fetchFirst ? rootPost('upgrade-do', {action: 'online_get', version: version, back: true, start: true})
           : rootPost('upgrade-do', {action: 'downgrade_start'});
         ask.then(function (r) { toast(r.message, true); drawUpgrade(r); }, zoops);
-      });
+      }, true);
+  };
+  // a version's buttons at the right of its row: What changed, and Go back
+  // where it may (otp 1.0.145) - in red, as going back is
+  var acts = function (version, ok, fetchFirst, disabled) {
+    var cell = el('div', 'dg-acts');
+    var notes = cmdButton('What changed', 'list', 'small');
+    notes.onclick = function () { upChangelog(version); };
+    cell.appendChild(notes);
+    if (ok) {
+      var bt = cmdButton('Go back to ' + version, 'undo', 'small danger');
+      bt.disabled = !!disabled;
+      bt.onclick = function () { go(version, fetchFirst); };
+      cell.appendChild(bt);
+    }
+    return cell;
   };
   var pkg = b.package;
   if (pkg) {
-    var box = el('div', 'notice ' + ((pkg.back || {}).ok ? 'good' : 'bad'));
-    box.appendChild(el('b', '', 'zigmon ' + pkg.version));
+    var safe = !!(pkg.back || {}).ok;
+    var box = el('div', 'notice ' + (safe ? 'warn' : 'bad'));
+    box.appendChild(el('b', '', 'zigmon ' + pkg.version + ' - older: ' + (safe ? 'ready to go back to' : 'not safe to go back to')));
     box.appendChild(el('div', 'small', 'signed by ' + (pkg.signed_by || '?') + ' · ' + (pkg.source ? 'fetched from ' + pkg.source : 'sent by ' + (pkg.by || '?'))
-      + ' · ' + ((pkg.back || {}).ok ? 'safe to go back to' : 'not safe: ' + ((pkg.back || {}).why || '?'))));
+      + (pkg.at ? ' · ' + ago(pkg.at) : '') + (safe ? '' : ' · ' + ((pkg.back || {}).why || '?'))));
     host.appendChild(box);
     var row = el('div', 'btnrow');
-    var now = cmdButton('Go back to ' + pkg.version, 'undo', 'primary');
+    var now = cmdButton('Go back to ' + pkg.version, 'undo', 'danger');
     now.disabled = !b.ready;
     now.onclick = function () { go(pkg.version, false); };
     row.appendChild(now);
@@ -28341,27 +28478,43 @@ function drawUpBack(d) {
     row.appendChild(log0);
     host.appendChild(row);
   }
+  // the older versions at upgrade_url in rows of their own, not a table
+  // (otp 1.0.145): the version and its state at the left, the buttons at the
+  // right; those it may not go back to folded under one bar, each reason
+  // said once
   var older = (w.older_list || []).filter(function (x) { return x && x.version; });
+  var rows = function (items, ok) {
+    var list = el('div', 'dg-rows');
+    items.forEach(function (x) {
+      var r = el('div', 'dg-row');
+      var left = el('div', 'dg-left');
+      left.appendChild(el('b', '', x.version));
+      var tag = el('span', 'tag ' + (ok ? 'ok' : 'warn'), ok ? 'yes' : 'no');
+      if (!ok && x.why) tag.title = x.why;
+      left.appendChild(tag);
+      r.appendChild(left);
+      r.appendChild(acts(x.version, ok, true, b.busy || d.running || d.asked));
+      list.appendChild(r);
+    });
+    return list;
+  };
   if (older.length) {
-    host.appendChild(el('h3', 'sw-h', 'Older versions at upgrade_url'));
-    host.appendChild(zTable(['Version', 'Going back to it', ''], older, function (x) {
-      var tr = el('tr');
-      tr.appendChild(el('td', 'mono', 'zigmon ' + x.version));
-      tr.appendChild(el('td', x.ok ? 'good' : 'muted small', x.ok ? 'safe - the database is left as it is' : x.why));
-      var td = el('td');
-      var cl = cmdButton('What changed', 'list', 'small');
-      cl.onclick = function () { upChangelog(x.version); };
-      td.appendChild(cl);
-      if (x.ok) {
-        var bt = cmdButton('Go back to ' + x.version, 'undo', 'small');
-        bt.disabled = !!(b.busy || d.running || d.asked);
-        bt.onclick = function () { go(x.version, true); };
-        td.appendChild(bt);
-      }
-      tr.appendChild(td);
-      return tr;
-    }, 'plain'));
-  } else if (w.at) host.appendChild(el('p', 'muted small', 'No older version at upgrade_url (looked ' + ago(w.at) + ').'));
+    var good = older.filter(function (x) { return x.ok; }), bad = older.filter(function (x) { return !x.ok; });
+    if (good.length) host.appendChild(rows(good, true));
+    else host.appendChild(el('p', 'note', 'No version at the address may be gone back to.'));
+    if (bad.length) {
+      var det = el('details', 'zfold');
+      det.style.marginTop = '12px';
+      det.appendChild(el('summary', '', bad.length + ' older version(s) it may not go back to' + (b.floor ? ' - below ' + b.floor : '')));
+      var reasons = [];
+      bad.forEach(function (x) { if (x.why && reasons.indexOf(x.why) < 0) reasons.push(x.why); });
+      var why = el('ul', 'note small dg-why');
+      reasons.forEach(function (t) { why.appendChild(el('li', 'bad', t)); });
+      det.appendChild(why);
+      det.appendChild(rows(bad, false));
+      host.appendChild(det);
+    }
+  } else if (w.at) host.appendChild(el('p', 'note', 'No version older than this one is there (looked ' + ago(w.at) + ').'));
 }
 function upBackWire() {
   var slot = $('up-back-drop-slot');
@@ -28386,6 +28539,7 @@ function upgradeWire() {
   var slot = $('up-drop-slot');
   if (!slot || slot.dataset.wired) return;
   slot.dataset.wired = '1';
+  upFoldWords(document.getElementById('tab-control') || document);
   upBackWire();
   var words = 'Drop the zigmon-X.Y.Z.tar.gz here, or press to choose it';
   var drop = dropZone(words, '.gz,.tgz,application/gzip,application/octet-stream', function (files) {
@@ -30227,7 +30381,7 @@ var CONTROL_SECTIONS = {
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
   'sys-acme': ['Automatic certificates', 'The certificate of this machine ordered from Let’s Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for a server it cannot see from the internet.'],
   // otp's pane (1.0.197): the side menu says Upgrades, the pane its whole name
-  'sys-upgrade': ['Upgrades and maintenance', 'A new version put in from here: send the package, or take it from the web, and this server is upgraded - in maintenance while it is, a backup of the whole installation made first, and the old version put back by itself when the new one does not answer. The command line (install.sh --upgrade) works as it always has.'],
+  'sys-upgrade': ['Upgrades and maintenance', 'A new version put in from here: send the package, and this server is upgraded - in maintenance while it is, a backup of the whole installation made first, and back in service only once it answers again. The command line (install.sh --upgrade) works as it always has.'],
   'sys-osup': ['System updates', 'The operating system\u2019s packages, updated by dnf: what is waiting, how many of them security updates, and whether the update will need a restart - then every update or only the security ones, with what dnf says as it goes. A restart it needs is offered when it is done, or made by itself.'],
   'sys-data': ['Data & database', 'What is written down and for how long, the database itself, and erasing it.'],
   'sys-diag': ['Diagnostics', 'Where the time goes, how devices reach the mesh, and the daemon itself.'],
@@ -30263,12 +30417,38 @@ function drawControlHead(sec) {
   var head = $('ctl-head'); if (!head) return;
   var info = CONTROL_SECTIONS[sec] || ['', ''];
   head.innerHTML = '';
+  head.dataset.sec = sec;                // a pane drawn as otp draws it sizes its head as otp does
   var t = el('h1', 'ctl-title');
   var icon = document.querySelector('#control-nav button[data-sec="' + sec + '"]');
   if (icon && icon.dataset.icon) t.innerHTML = iconMarkup(icon.dataset.icon, 22);
   t.appendChild(el('span', '', info[0]));
   head.appendChild(t);
   head.appendChild(el('p', 'ctl-lede', info[1]));
+  if (sec === 'sys-upgrade') upFoldWords(head);
+}
+// Long explaining words in three lines, as otp 1.0.157 has them on
+// Upgrades and maintenance - the pane's lede and its cards' notes: a click
+// opens the rest in place, and only a text that is cut looks like one. Never
+// a warning or an error, nor one with a link or a button in it.
+var UP_FOLD_SEEN = null;
+function upFoldWords(root) {
+  Array.prototype.forEach.call(root.querySelectorAll('.ctl-lede, .card.up > p.note'), function (p) {
+    if (p._folded || /(^|\s)(bad|warn|good)(\s|$)/.test(p.className) || p.querySelector('a, button, input, select')) return;
+    p._folded = true;
+    p.classList.add('clamp');
+    var mark = function () {
+      if (!p.isConnected || !p.clientHeight || p.classList.contains('open')) return;
+      p.classList.toggle('cut', p.scrollHeight > p.clientHeight + 2);
+    };
+    p.addEventListener('click', function () { p.classList.toggle('open'); });
+    if (typeof ResizeObserver === 'function') {
+      if (!UP_FOLD_SEEN) UP_FOLD_SEEN = new ResizeObserver(function (rows) {
+        rows.forEach(function (r) { if (r.target._foldMark) r.target._foldMark(); });
+      });
+      p._foldMark = mark;
+      UP_FOLD_SEEN.observe(p);
+    } else setTimeout(mark, 60);
+  });
 }
 function showControlSection(sec) {
   sec = controlSecOf(sec);
@@ -30454,6 +30634,45 @@ function pinCtlNav(on) {
   });
   pinCtlNav(CTLNAV.pinned);
 })();
+// Upgrades and maintenance saves its three settings the way otp does
+// (1.0.123): with the bar at the end of the pane - Save the changes, Put them
+// back, and how many are changed - rather than a Save of the card's own.
+// Below the last card until something is changed, then stuck to the bottom.
+// Save is the one Save it always was: every setting, wherever it is drawn.
+function upSaveBoxes() {
+  var h = $('set-host-sys-upgrade');
+  return h ? Array.prototype.slice.call(h.querySelectorAll('input[data-k], select[data-k], textarea[data-k]')) : [];
+}
+function upBoxValue(b) { return b.dataset.bool ? (b.checked ? '1' : '0') : String(b.value); }
+function upSaveMark() {
+  var bar = $('up-save-bar');
+  if (!bar) return;
+  var n = upSaveBoxes().filter(function (b) { return b.dataset.was !== undefined && upBoxValue(b) !== b.dataset.was; }).length;
+  bar.classList.toggle('dirty', n > 0);
+  $('up-save-said').textContent = n ? n + ' change(s) not saved yet' : '';
+}
+(function () {
+  var card = $('up-web-card');
+  if (!card || !$('up-save')) return;
+  card.addEventListener('input', upSaveMark);
+  card.addEventListener('change', upSaveMark);
+  setButtonIcon($('up-save'), 'save');
+  setButtonIcon($('up-reset'), 'undo');
+  $('up-save').onclick = function () {
+    if (!$('up-save-bar').classList.contains('dirty') && !SETTINGS.dirty) { toast('nothing has changed', true); return; }
+    $('settings-save').onclick();
+  };
+  $('up-reset').onclick = function () {
+    upSaveBoxes().forEach(function (b) {
+      if (b.dataset.was === undefined) return;
+      if (b.dataset.bool) b.checked = b.dataset.was === '1'; else b.value = b.dataset.was;
+    });
+    SETTINGS.dirty = false;
+    setSettingsNote('');
+    applySettingsWhen();
+    upSaveMark();
+  };
+})();
 // Every Save on a settings card saves every setting, wherever it is drawn -
 // the same one Save it always was.
 Array.prototype.forEach.call(document.querySelectorAll('.set-save-alt'), function (b) {
@@ -30476,7 +30695,8 @@ function firstSentence(text) {
 // notes that the page writes into as it goes: left as they are
 // - and the three of Upgrades and maintenance, said whole as otp says them
 var LIVE_NOTES = {'notify-note': 1, 'wifi-api-note': 1, 'wifi-seen-note': 1,
-                  'up-nodes-note': 1, 'up-web-note': 1, 'up-new-note': 1};
+                  'up-nodes-note': 1, 'up-web-note': 1, 'up-new-note': 1, 'up-back-note': 1,
+                  'up-log-note': 1, 'up-cli-note': 1};
 function decorateControlCards(root) {
   Array.prototype.forEach.call((root || document).querySelectorAll('section.panel .card, #lock-card'), function (card) {
     var h = card.querySelector(':scope > h2');

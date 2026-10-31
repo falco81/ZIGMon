@@ -16954,8 +16954,9 @@ class Daemon(object):
             not_ready.append('%s is not newer than %s, which runs here%s' % (
                 pkg.get('version'), __version__,
                 ' - it waits under Going back to an older version' if pkg.get('older') else ''))
-        if pkg and pkg.get('version') == __version__:
-            not_ready.append('this is the version that runs here already')
+        # The version that runs here, sent again, is put in again (5.35.1): a
+        # retry, as otp and root's zigmon_upgrade.py have it - not a reason
+        # to refuse, and nothing to say in red under a package that is fine.
         running = st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800
         try:
             with open(str(self.upgrade_dir('last.log')), errors='replace') as f:
