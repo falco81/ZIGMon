@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.30.0"
+VERSION="5.31.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -36,6 +36,8 @@ DO_UNINSTALL=""
 KEEP_PHP=""                 # --keep-php: leave PHP as it is (no move to 8.3)
 PHP_BRANCH="8.3"            # the branch the dashboard runs on, and the first
 PHP_PATCH="36"              # release of it with the php2shell fix (8.3.36)
+KEEP_PYTHON=""              # --keep-python: leave the daemon on the Python it runs on
+ZIGMON_PY="/usr/bin/python3"   # the Python the daemon and the command run on (ensure_python)
 
 MQTT_HOST="127.0.0.1"
 MQTT_PORT=""
@@ -153,6 +155,8 @@ Usage: sudo ./install.sh [options]
   --upgrade               replace the program files and restart, touching nothing else
   --uninstall             remove the service and dashboard, keep the history
   --keep-php              leave PHP as it is (by default it is brought to 8.3.36 or newer)
+  --keep-python           leave the daemon on the Python it runs on (by default it moves
+                          to the newest python3.X the system's repositories offer)
   -h, --help              this text
 EOF
 }
@@ -185,6 +189,7 @@ while [[ $# -gt 0 ]]; do
         --upgrade)        DO_UPGRADE="yes"; shift ;;
         --uninstall)      DO_UNINSTALL="yes"; shift ;;
         --keep-php)       KEEP_PHP="yes"; shift ;;
+        --keep-python)    KEEP_PYTHON="yes"; shift ;;
         -h|--help)        usage; exit 0 ;;
         *)                fail "unknown option $1 (see --help)" ;;
     esac
@@ -558,6 +563,7 @@ install_time_tools() {
 install_service() {
     step "systemd"
     run install -m 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
+    [[ -n "$DRY_RUN" ]] || python_point_at "$ZIGMON_PY"   # 5.31: the Python ensure_python chose
     run install -m 644 "$SOURCE_DIR/deploy/zigmon.logrotate" "$LOGROTATE_FILE"
     run install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/zigmon /var/log/zigmon
     run systemctl daemon-reload
@@ -812,6 +818,143 @@ tune_php_fpm() {
     if ! rpm -q php-opcache >/dev/null 2>&1; then
         dnf install -y -q php-opcache >/dev/null 2>&1 && good "php-opcache installed" || warn "php-opcache could not be installed; the dashboard's PHP is recompiled on every request"
     fi
+}
+
+# The Python the daemon runs on (5.31). AlmaLinux 9's own python3 is 3.9 and
+# stays so - dnf and the system's tools run on it, so it is never touched. The
+# repositories carry newer ones beside it (python3.11, python3.12, and what a
+# later minor release adds): the newest of them, brought to its latest patch,
+# is what the daemon and the zigmon command run on. It is a separate
+# interpreter, so paho-mqtt (and Duo's package, if there) is given to it: its
+# own RPM where there is one, else the very package the system Python has,
+# copied into $LIB_DIR/pythonX.Y, else from PyPI. Nothing is switched until the
+# new one imports everything the daemon needs and runs it; anything less and
+# the daemon stays where it was. The root helper and the upgrader stay on the
+# system's python3: they are what puts a failed upgrade back.
+PY_NEWEST=14             # the highest python3.X looked for
+PY_OLDEST=11             # and the lowest worth moving to
+PY_BIN_DIR=/usr/bin      # where the repositories put them
+
+python_of_unit() {       # the interpreter the installed unit starts, or nothing
+    [[ -f "$UNIT_FILE" ]] || return 0
+    sed -n 's|^ExecStart=\(/[^ ]*/python3[0-9.]*\) .*|\1|p' "$UNIT_FILE" | head -n 1
+}
+
+python_minor() {         # 12 for /usr/bin/python3.12; nothing when it does not run
+    "$1" -c 'import sys; print(sys.version_info[1])' 2>/dev/null
+}
+
+python_site() {          # the folder of packages zigmon keeps for that Python
+    local v; v="$("$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
+    printf '%s/python%s' "$LIB_DIR" "$v"
+}
+
+python_ready() {         # 0 when that Python has all the daemon imports and runs it
+    local py="$1" site; site="$(python_site "$py")"
+    "$py" -I -c "import sys; sys.path.append('$site')
+import ssl, sqlite3, curses, json, hashlib, ctypes, http.server, email, ftplib, pty
+import paho.mqtt.client" >/dev/null 2>&1 || return 1
+    [[ ! -f "$LIB_DIR/zigmon.py" ]] || "$py" "$LIB_DIR/zigmon.py" --version >/dev/null 2>&1
+}
+
+python_give_package() {  # $1 the Python, $2 the module, $3 its RPM name part, $4 its PyPI name
+    local py="$1" mod="$2" rpmname="$3" pypi="$4" minor site sys_dir
+    minor="$(python_minor "$py")"
+    "$py" -I -c "import $mod" >/dev/null 2>&1 && return 0
+    # 1. the repositories' own build for that Python
+    if dnf -y -q install "python3.$minor-$rpmname" >/dev/null 2>&1 && "$py" -I -c "import $mod" >/dev/null 2>&1; then
+        return 0
+    fi
+    site="$(python_site "$py")"
+    # 2. the package the system Python runs with (paho and duo are pure Python)
+    local top="${mod%%.*}"
+    sys_dir="$($PY_BIN_DIR/python3 -I -c "import os, $top; print(os.path.dirname(list($top.__path__)[0]))" 2>/dev/null)"
+    rm -rf "$site/$top.zigmon-new"
+    install -d -m 755 "$site"
+    if [[ -n "$sys_dir" && -d "$sys_dir/$top" ]]; then
+        cp -a "$sys_dir/$top" "$site/$top.zigmon-new" \
+            && find "$site/$top.zigmon-new" -name __pycache__ -prune -exec rm -rf {} + \
+            && rm -rf "$site/$top" && mv "$site/$top.zigmon-new" "$site/$top"
+        "$py" -I -c "import sys; sys.path.append('$site'); import $mod" >/dev/null 2>&1 && return 0
+    fi
+    # 3. PyPI, through that Python's own pip
+    rpm -q "python3.$minor-pip" >/dev/null 2>&1 || dnf -y -q install "python3.$minor-pip" >/dev/null 2>&1 || true
+    "$py" -m pip --disable-pip-version-check -q install --no-compile --upgrade --target "$site" "$pypi" >/dev/null 2>&1 || true
+    "$py" -I -c "import sys; sys.path.append('$site'); import $mod" >/dev/null 2>&1
+}
+
+python_point_at() {      # the unit and the zigmon command start this Python
+    local py="$1"
+    if [[ -f "$UNIT_FILE" ]]; then
+        sed -i "s|^ExecStart=/[^ ]*/python3[0-9.]* |ExecStart=$py |" "$UNIT_FILE"
+    fi
+    if [[ -f "$LIB_DIR/zigmon.py" ]]; then
+        sed -i "1s|^#!.*python.*$|#!$py|" "$LIB_DIR/zigmon.py"
+    fi
+}
+
+ensure_python() {
+    step "Python"
+    local was; was="$(python_of_unit)"; was="${was:-$PY_BIN_DIR/python3}"
+    if [[ -n "$KEEP_PYTHON" ]]; then
+        [[ -x "$was" ]] || was=$PY_BIN_DIR/python3
+        ZIGMON_PY="$was"
+        say "--keep-python: the daemon stays on $was ($("$was" -V 2>&1))"
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+        note "[would move the daemon to the newest python3.$PY_OLDEST..python3.$PY_NEWEST the repositories offer, with paho-mqtt for it]"
+        return 0
+    fi
+    command -v dnf >/dev/null 2>&1 || { ZIGMON_PY="$was"; warn "no dnf here: the daemon stays on $was"; return 0; }
+    local n py best=""
+    for (( n = PY_NEWEST; n >= PY_OLDEST; n-- )); do
+        py="$PY_BIN_DIR/python3.$n"
+        if [[ -x "$py" ]] || dnf -q list --available "python3.$n" >/dev/null 2>&1; then
+            best="$n"
+            break
+        fi
+    done
+    if [[ -z "$best" ]]; then
+        ZIGMON_PY="$was"
+        good "no newer Python in the repositories; the daemon stays on $was ($("$was" -V 2>&1))"
+        return 0
+    fi
+    py="$PY_BIN_DIR/python3.$best"
+    say "the newest Python the repositories offer: python3.$best"
+    # installed or brought to its latest patch
+    if rpm -q "python3.$best" >/dev/null 2>&1; then
+        dnf -y -q upgrade "python3.$best" "python3.$best-libs" >/dev/null 2>&1 || true
+    else
+        dnf -y -q install "python3.$best" >/dev/null 2>&1 || true
+    fi
+    if [[ ! -x "$py" ]]; then
+        ZIGMON_PY="$was"
+        warn "python3.$best could not be installed; the daemon stays on $was"
+        return 0
+    fi
+    python_give_package "$py" paho.mqtt.client paho-mqtt 'paho-mqtt<3' \
+        || warn "paho-mqtt could not be given to python3.$best (no RPM for it, none on the system Python, no PyPI)"
+    if $PY_BIN_DIR/python3 -I -c 'import duo_client' >/dev/null 2>&1 || [[ -d "$(python_site "$py")/duo_client" ]]; then
+        python_give_package "$py" duo_client duo_client duo-client \
+            || warn "duo_client could not be given to python3.$best: Duo requests use the daemon's own signing"
+    fi
+    if python_ready "$py"; then
+        ZIGMON_PY="$py"
+        if [[ "$py" == "$was" ]]; then
+            good "the daemon runs on $("$py" -V 2>&1)"
+        else
+            good "the daemon moves from $("$was" -V 2>&1) to $("$py" -V 2>&1)"
+        fi
+        return 0
+    fi
+    # what was there, if it still runs the daemon; else the system's own
+    if [[ "$was" != "$py" ]] && python_ready "$was"; then
+        ZIGMON_PY="$was"
+    else
+        ZIGMON_PY=$PY_BIN_DIR/python3
+    fi
+    warn "$("$py" -V 2>&1) does not run the daemon (a module missing); it stays on $("$ZIGMON_PY" -V 2>&1)"
 }
 
 check_certificate() {
@@ -1090,6 +1233,7 @@ do_upgrade() {
     fi
     preflight
     install_program
+    ensure_python            # 5.31: the newest python3.X of the repositories
     install_service          # the unit changes with the program; a reload is cheap
     install_helpers
     install_time_tools
@@ -1267,6 +1411,7 @@ MPATCH
         fi
     }
     run install -m 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
+    [[ -n "$DRY_RUN" ]] || python_point_at "$ZIGMON_PY"
     run systemctl daemon-reload
     if [[ -f /etc/php-fpm.d/www.conf ]]; then
         ensure_php                       # 5.30: PHP 8.3.36, at every upgrade
@@ -1312,6 +1457,7 @@ main() {
     install_backup_tools
     create_user
     install_program
+    ensure_python
     write_config
     create_mqtt_user
     allow_broker_reload

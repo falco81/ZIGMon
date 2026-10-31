@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.30.0'
+__version__ = '5.31.0'
 
 import argparse
 import base64
@@ -65,6 +65,14 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote, urlsplit, urlunsplit
+
+# The packages install.sh gives a newer Python than the system's (5.31):
+# paho-mqtt (and Duo's) in /usr/local/lib/zigmon/python3.12 beside this file,
+# looked in after the interpreter's own, so its own RPM wins where there is one.
+_OWN_SITE = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                         'python%d.%d' % sys.version_info[:2])
+if os.path.isdir(_OWN_SITE) and _OWN_SITE not in sys.path:
+    sys.path.append(_OWN_SITE)
 
 try:
     import paho.mqtt.client as mqtt

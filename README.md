@@ -2083,7 +2083,45 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.30.0**
+Current version: **5.31.0**
+
+5.31.0 — certificates that renew themselves, and the newest Python.
+
+* **Automatic certificates** on Certificates, as in OTP: a certificate from
+  Let's Encrypt (or its staging CA, or any ACME CA given by its directory and,
+  where the system does not trust it, its root), ordered and renewed by the
+  daemon - when fewer than *acme_days* are left (a third of a short life),
+  a failed try again after six hours. The key is EC P-256 or RSA 2048 and is
+  made and put in by root exactly as an uploaded certificate is; the daemon
+  never keeps it.
+* **HTTP-01** over port 80: root gives nginx a location for
+  `/.well-known/acme-challenge/` between marks, checked with `nginx -t`, and
+  takes it out again as it was; only a token of an order going is answered.
+  **DNS-01** by hand (the record shown, *It is in DNS*), by RFC 2136
+  (nsupdate, the TSIG key in a file of its own, never on its command line),
+  Cloudflare, acme-dns or deSEC, with a guide for each, an alias zone and the
+  resolvers to ask.
+* Who looks after the certificate is shown: one put in by hand is kept out of
+  ACME's care; *Order it now* takes it back and *Back to the one before* puts
+  the previous one back, key and all. Orders, renewals and failures go into
+  the events; `zigmon --acme` and the console's *Automatic certificates* show and
+  order it too.
+* **The newest Python** at every install and upgrade: AlmaLinux 9's own
+  python3 (3.9, which dnf runs on) is left alone, and the daemon and the
+  `zigmon` command move to the newest python3.X the repositories offer -
+  3.12 on AlmaLinux 9.4 and later, 3.13 or 3.14 once a minor release carries
+  them - brought to its latest patch. paho-mqtt (and Duo's package, where it
+  is installed) is given to it: its own RPM where there is one, else the
+  package the system Python has, copied to `/usr/local/lib/zigmon/python3.X`,
+  else PyPI. Nothing is switched until the new one imports everything the
+  daemon needs and runs it; otherwise the daemon stays where it was, and a
+  failed upgrade from the dashboard puts the old unit back with the program.
+  The root helper and the upgrader stay on the system's python3.
+  `install.sh --keep-python` leaves the daemon on the Python it runs on.
+
+`test/acme.py` (an ACME CA in the test itself, every road) and
+`test/python.py` (the move to a newer Python and its way back); both fail on
+5.30.0.
 
 5.30.0 — the certificate downloaded as it is needed, and PHP 8.3.36.
 
