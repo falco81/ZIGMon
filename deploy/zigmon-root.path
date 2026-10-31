@@ -19,6 +19,9 @@ PathExists=/var/lib/zigmon/root/look.ask
 # beside request.json, never behind a backup laid down in it
 PathExists=/var/lib/zigmon/root/net.ask
 PathExists=/var/lib/zigmon/root/ntp.ask
+# the updates of the system (5.34): only started here - the job runs in a
+# unit of its own, and never holds anything else up
+PathExists=/var/lib/zigmon/root/osup.ask
 Unit=zigmon-root.service
 
 [Install]

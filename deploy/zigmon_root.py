@@ -20,7 +20,10 @@ root. Four kinds of thing can be asked for, and nothing else:
                    put back, deleted;
   * look.ask     - what is in place now (the certificate, the firewall as
                    iptables-save or firewall-cmd shows it, the allow lists,
-                   the kept backups), written for the dashboard.
+                   the kept backups), written for the dashboard;
+  * osup.ask     - a look for the system's updates, or the update itself
+                   (dnf), started as a job of its own that outlives this
+                   service and writes how it goes into osup.json and osup.log.
 
 Nothing in a request is trusted: every value is checked against the one shape
 it may have before it goes into a file, certificates and keys are read by
@@ -38,6 +41,8 @@ a path it could swap for a link.
                                           trusted with what the dashboard is not
   zigmon_root.py --inspect FILE [--passphrase-file F]
                                           what a backup holds
+  zigmon_root.py --os-job ID check|upgrade [security]
+                                          the system's updates (started by itself)
 """
 import calendar
 import grp
@@ -3253,6 +3258,262 @@ def ntp_part():
     ask_part(NTP_ASK, NTP_FILE, ntp_one)
 
 
+# ---- the updates of the operating system (5.34, otp 1.0.158 - 1.0.193) ------------------
+# Asked in osup.ask and answered at once in osup.ans: the work itself - minutes
+# of dnf, a quarter of an hour on a slow line - runs as a unit of its own
+# (systemd-run), so this oneshot service ends at once and every other ask is
+# served meanwhile, and the daemon may restart, or be upgraded, while it goes
+# on. The job holds a lock of its own for as long as it runs: a second one is
+# refused, never queued. Its progress and its last lines go into osup.json
+# every second or so, the whole of what dnf said into osup.log (a look's into
+# osup-check.log, so that it does not write over the update's) - all written
+# into the zigmon account's folder for the group to read, as every answer is.
+# Nothing in the request reaches a command line but the two words the job is
+# started with, each checked against the one shape it may have.
+OSUP_ASK = 'osup.ask'
+OSUP_ANS = 'osup.ans'
+OSUP_FILE = 'osup.json'
+OSUP_LOG = {'upgrade': 'osup.log', 'check': 'osup-check.log'}
+OSUP_LOCK = os.environ.get('ZIGMON_OSUP_LOCK', '/run/zigmon-osup.lock')
+# where the job looks for dnf and needs-restarting (tests: a folder of fakes first)
+OSUP_PATH = os.environ.get('ZIGMON_OSUP_PATH', '/usr/sbin:/usr/bin:/sbin:/bin')
+OSUP_JOB_RE = re.compile(r'^[0-9a-f]{12,32}\Z')
+OSUP_KINDS = ('check', 'upgrade')
+# The packages a restart is needed for once they are updated, as dnf
+# needs-restarting -r names them (otp 1.0.159): told before the update is made.
+REBOOT_PKGS = {'kernel', 'kernel-core', 'kernel-rt', 'kernel-rt-core', 'kernel-modules',
+               'kernel-modules-core', 'kernel-uek', 'glibc', 'linux-firmware', 'systemd',
+               'dbus', 'dbus-broker', 'dbus-daemon', 'microcode_ctl', 'zlib', 'zlib-ng-compat',
+               'openssl-libs', 'gnutls'}
+
+
+def osup_tool(name):
+    return shutil.which(name, path=OSUP_PATH)
+
+
+def osup_running():
+    """Whether a job holds the lock now - asked without waiting for it."""
+    import fcntl
+    try:
+        fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def osup_launch(job, kind, security=False):
+    """The job started where it outlives this service: a transient unit of
+    systemd's, or - with no systemd, and under the tests - a process of its
+    own session."""
+    if osup_running():
+        raise Refused('an update or a look for updates is going on already')
+    if not osup_tool('dnf'):
+        raise Refused('dnf is not on this machine')
+    argv = [sys.executable, '-I', os.path.abspath(__file__), '--os-job', job, kind] + \
+        (['security'] if security else [])
+    if not NO_SERVICES and shutil.which('systemd-run') and os.path.isdir('/run/systemd/system'):
+        run(['systemd-run', '--unit', 'zigmon-os-%s-%s' % (kind, job[:12]), '--collect', '--quiet',
+             '--property', 'TimeoutStopSec=30min'] + argv, 'systemd-run')
+        how = 'a unit of its own'
+    else:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        how = 'a process of its own'
+    # answered only once the job holds its lock: a second ask a moment after
+    # is refused here, not started beside it to give up without a word
+    end = time.time() + 15
+    while not osup_running() and time.time() < end:
+        time.sleep(0.05)
+    return how
+
+
+def osup_one(r):
+    kind = r.get('kind')
+    if r.get('do') != 'run' or kind not in OSUP_KINDS:
+        raise Refused('run: check or upgrade')
+    job = str(r.get('job') or '')
+    if not OSUP_JOB_RE.match(job):
+        raise Refused('the job has no id of the right shape')
+    if 'security' in r and not isinstance(r['security'], bool):
+        raise Refused('security is yes or no')
+    security = r.get('security') is True and kind == 'upgrade'
+    how = osup_launch(job, kind, security)
+    return {'started': kind, 'job': job, 'security': security, 'how': how}
+
+
+def osup_part():
+    ask_part(OSUP_ASK, OSUP_ANS, osup_one, 4096)
+
+
+def reboot_for(packages):
+    """Which of the packages waiting want a restart once updated."""
+    out = []
+    for p in packages:
+        words = str(p).split()
+        name = words[0] if words else ''
+        if re.search(r'\.(x86_64|aarch64|noarch|i686|ppc64le|s390x)$', name):
+            name = name.rsplit('.', 1)[0]
+        if name in REBOOT_PKGS or name.startswith('kernel-core-'):
+            out.append(name)
+    return sorted(set(out))
+
+
+def reboot_now(env, say=None):
+    """Whether this machine waits for a restart already: needs-restarting -r
+    says 1 when it does - the standalone one, or dnf's own."""
+    cmd = [osup_tool('needs-restarting'), '-r'] if osup_tool('needs-restarting') else \
+        [osup_tool('dnf'), 'needs-restarting', '-r']
+    got = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300,
+                         stdin=subprocess.DEVNULL)
+    if got.returncode == 1 and say:
+        said = got.stdout.strip().splitlines()
+        say(said[0] if said else 'a restart is needed')
+    return got.returncode == 1
+
+
+def osup_job(job, kind, security=False):
+    """The work itself, as root, in a process of its own: a look for what dnf
+    has waiting, or the update."""
+    import fcntl
+    fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return 1
+    state = {'id': job, 'kind': kind, 'state': 'running', 'pct': 1, 'lines': [], 'n': 0,
+             'began': time.time(), 'at': time.time(), 'packages': [], 'reboot': False,
+             'pm': 'dnf', 'phase': 'starting', 'security_only': bool(security)}
+    whole = []
+    last = [0.0]
+
+    def put(force=False):
+        state['at'] = time.time()
+        if force or time.time() - last[0] > 0.8:
+            last[0] = time.time()
+            state['lines'] = state['lines'][-400:]
+            del whole[:-5000]
+            try:
+                write_here(OSUP_FILE, json.dumps(state))
+                write_here(OSUP_LOG[kind], '\n'.join(whole) + '\n')
+            except OSError:
+                pass
+
+    def say(line):
+        line = line.rstrip()
+        if line:
+            state['lines'].append(line[:300])
+            whole.append(line[:300])
+            state['n'] += 1
+        put()
+
+    env = {'PATH': OSUP_PATH, 'LANG': 'C', 'LC_ALL': 'C', 'HOME': '/root'}
+
+    def stream(cmd, on_line=None, ok=(0,)):
+        say('$ ' + ' '.join([os.path.basename(cmd[0])] + cmd[1:]))
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                             stdin=subprocess.DEVNULL, text=True, bufsize=1, errors='replace')
+        for ln in p.stdout:
+            if on_line:
+                on_line(ln)                         # the bar first: what is written has moved
+            say(ln)
+        rc = p.wait()
+        if rc not in ok:
+            raise Refused('%s ended with %d' % (os.path.basename(cmd[0]), rc))
+        return rc
+
+    dnf = osup_tool('dnf')
+    try:
+        put(True)
+        if not dnf:
+            raise Refused('dnf is not on this machine')
+        if kind == 'check':
+            state['phase'] = 'asking for what is new'
+            seen = []
+            stream([dnf, '-q', '--refresh', 'check-update'], seen.append, ok=(0, 100))
+            pk = []
+            for ln in seen:
+                parts = ln.split()
+                if ln.startswith((' ', '\t')) or len(parts) < 3 or '.' not in parts[0] or \
+                        parts[0].startswith(('Obsoleting', 'Security:', 'Last')):
+                    continue
+                pk.append('%s %s' % (parts[0], parts[1]))
+            state['phase'] = 'which of them are security updates'
+            sec = subprocess.run([dnf, '-q', 'updateinfo', 'list', '--security'],
+                                 capture_output=True, text=True, env=env, timeout=600,
+                                 stdin=subprocess.DEVNULL)
+            names = set()
+            for ln in sec.stdout.splitlines():
+                parts = ln.split()
+                if len(parts) >= 3 and not ln.startswith(' '):
+                    names.add(parts[2])
+            state['security'] = len(names) if sec.returncode == 0 else None
+            state['packages'] = pk[:1000]
+            state['count'] = len(pk)
+            # whether the update will need a restart, told before it is made
+            state['phase'] = 'whether a restart is needed'
+            state['reboot_why'] = reboot_for(pk)
+            state['reboot_after'] = bool(state['reboot_why'])
+            try:
+                state['reboot_now'] = reboot_now(env)
+            except (OSError, subprocess.SubprocessError):
+                state['reboot_now'] = False
+            say('%d update(s) waiting, %s of them security' % (
+                len(pk), '?' if state['security'] is None else state['security']))
+            if state['reboot_now']:
+                say('a restart is needed already, before any update')
+            if state['reboot_why']:
+                say('a restart will be needed after the update: %s' % ', '.join(state['reboot_why']))
+            state['pct'] = 100
+        else:
+            seen = {'total': 0, 'done': 0}
+
+            def count(ln):
+                m = re.search(r'\b(\d+)/(\d+)\s*$', ln)
+                if m and re.search(r'(Upgrading|Installing|Cleanup|Verifying|Running scriptlet|'
+                                   r'Erasing|Reinstalling|Downgrading|Obsoleting)\s*:', ln):
+                    seen['total'] = max(seen['total'], int(m.group(2)) * 2)  # put in, then verified
+                    seen['done'] = min(seen['total'], seen['done'] + 1)
+                    state['phase'] = 'putting the packages in'
+                if ln.startswith('Downloading Packages'):
+                    state['phase'] = 'downloading'
+                    state['pct'] = max(state['pct'], 8)
+                if seen['total']:
+                    state['pct'] = max(state['pct'], min(97, 10 + int(87 * seen['done'] /
+                                                                      seen['total'])))
+            state['phase'] = 'asking for what is new'
+            # only the security updates where asked (otp 1.0.164): dnf's own --security
+            stream([dnf, '-y', '--refresh', 'upgrade'] + (['--security'] if security else []), count)
+            state['phase'] = 'whether a restart is needed'
+            try:
+                state['reboot'] = reboot_now(env, say)
+            except (OSError, subprocess.SubprocessError):
+                state['reboot'] = False
+            say('updated%s' % (' - a restart is needed' if state['reboot'] else
+                               ', no restart needed'))
+            state['pct'] = 100
+        state['state'] = 'done'
+        state['phase'] = 'done'
+    except Refused as e:
+        state.update(state='failed', said=str(e)[:300])
+        say('failed: %s' % str(e)[:300])
+    except Exception as e:                              # noqa: BLE001 - said, never lost
+        state.update(state='failed', said='it broke: %s' % str(e)[:300])
+        say('it broke: %s' % str(e)[:300])
+    finally:
+        state['ended'] = time.time()
+        put(True)
+        os.close(fd)
+    return 0
+
+
 # ---- the requests ---------------------------------------------------------------
 def status_read():
     try:
@@ -3378,9 +3639,10 @@ def handle(raw):
 
 def serve():
     d = root_fd()
-    # the network, the clock and switching off first, each answered on its
-    # own: none of them waits behind a backup laid down in request.json
-    for part in (net_part, ntp_part):
+    # the network, the clock and switching off first, and the updates of the
+    # system, each answered on its own: none of them waits behind a backup
+    # laid down in request.json
+    for part in (net_part, ntp_part, osup_part):
         try:
             part()
         except Exception as e:                          # noqa: BLE001
@@ -3508,6 +3770,11 @@ def main(argv):
                         return 1
                 full_restore(path, parts, from_page=False, say=print)
             return 0
+        if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in OSUP_KINDS:
+            # started by osup_launch, never by the dashboard's words
+            if not OSUP_JOB_RE.match(argv[1]):
+                return 2
+            return osup_job(argv[1], argv[2], argv[3:4] == ['security'])
         if not argv:
             return serve()
     except Refused as e:

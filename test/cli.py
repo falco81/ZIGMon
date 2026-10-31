@@ -98,7 +98,7 @@ READS = [
     ['--mikrotik', 'show'], ['--what-if', 'Nothing', 'temperature', '20'],
     ['--run-script', 'no-such-script'], ['--diagnose', 'no-such-plug'],
     ['--status', '--json'], ['--devices', '--json'], ['--alerts', '--json'],
-    ['--console-at-login', 'status'],
+    ['--console-at-login', 'status'], ['--updates'],
 ]
 
 bad = []
