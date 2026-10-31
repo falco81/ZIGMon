@@ -18411,7 +18411,13 @@ var SETTINGS_LAYOUT = [
      + '<i>Its name…</i> above changes it too'],
     ['acme_days', 'Renewed when fewer days are left than',
      'Let’s Encrypt’s certificates last 90 days; 30 is what it advises. A certificate that lasts less is renewed at a third of its life'],
-    ['acme_key', 'The key of the certificate', 'What Let\u2019s Encrypt takes: ECDSA P-256 or P-384 - smaller and quicker - or RSA 2048, 3072 or 4096 for old clients. Both is what it recommends: two certificates, RSA sent by default and ECDSA to every client that can take it; the broker reads the RSA one'],
+    ['acme_key', 'The key of the certificate',
+     'Let\u2019s Encrypt takes RSA keys of 2048, 3072 or 4096 bits and ECDSA keys on P-256 or P-384. '
+     + 'Both - what Let\u2019s Encrypt advises - orders two certificates for the name: RSA served by default, '
+     + 'the much smaller ECDSA one to the clients that say they take it. The broker reads the RSA one'],
+    ['acme_account_key', 'The key of the ACME account',
+     'The key the account with the CA signs with - never one of a certificate. '
+     + 'RSA 2048, 3072, 4096 or ECDSA P-256, P-384. A change makes a new account at the next order'],
     ['acme_challenge', 'How the CA checks the name',
      'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, for a CA of your own): root '
      + 'gives port 80 a location for <code>/.well-known/acme-challenge/</code>. DNS-01 needs nothing open: the CA reads a TXT record'],
@@ -20277,7 +20283,7 @@ var SETTINGS_WHEN = {
   duo_device: ['tap_factor', 'duo'], duo_wait_s: ['tap_factor', 'duo'],
   // Automatic certificates (5.30): each box only where it is used, as otp has them
   acme_email: 'acme=1', acme_ca: 'acme=1', acme_name: 'acme=1', acme_days: 'acme=1',
-  acme_key: 'acme=1', acme_challenge: 'acme=1', acme_resolvers: 'acme=1',
+  acme_key: 'acme=1', acme_account_key: 'acme=1', acme_challenge: 'acme=1', acme_resolvers: 'acme=1',
   '|everything on this page': 'acme=1',
   acme_url: 'acme=1&acme_ca=custom', acme_ca_pem: 'acme=1&acme_ca=custom',
   '|DNS-01': 'acme=1&acme_challenge=dns-01',
@@ -27140,6 +27146,8 @@ function drawAcme() {
     c.appendChild(big);
     c.appendChild(otFacts([
       ['For', t.name || '', 'mono'], ['Issued by', String(t.issuer || '').replace(/^CN=/, '')],
+      ['Keys', (t.keys || '') + (t.keys_asked && t.keys && t.keys !== t.keys_asked
+        ? ' - ' + t.keys_asked + ' at the next order' : '')],
       ['Good until', t.not_after ? localDay(new Date(t.not_after * 1000)) : ''],
       ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
       ['Came', t.how || ''],
@@ -27215,6 +27223,7 @@ function drawAcme() {
   if (d.account && d.account.kid) {
     var a = el('p', 'muted small ac-account', 'The account at the CA: ');
     a.appendChild(el('span', 'mono', d.account.kid));
+    if (d.account.kind) a.appendChild(el('span', '', ' \u00b7 ' + d.account.kind));
     host.appendChild(a);
   }
 }

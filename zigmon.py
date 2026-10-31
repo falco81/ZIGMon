@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.33.2'
+__version__ = '5.33.3'
 
 import argparse
 import base64
@@ -554,7 +554,8 @@ DEFAULTS = {
     'acme_ca_pem': '',            # custom: its root, where the system does not trust it
     'acme_name': '',              # the DNS name; empty: the one nginx answers to
     'acme_days': 30,              # renewed when fewer days are left (a third of a short life)
-    'acme_key': 'ec',             # ec (P-256), ec384, rsa2048, rsa3072, rsa4096, or dual (RSA + ECDSA)
+    'acme_key': 'dual',           # dual (RSA 2048 + ECDSA P-256), dual-strong, ec, ec384, rsa2048/3072/4096
+    'acme_account_key': 'ec',     # the account's own key: ec, ec384, rsa2048, rsa3072, rsa4096
     'acme_challenge': 'http-01',  # http-01 (port 80) or dns-01
     'acme_dns': 'manual',         # dns-01: manual, rfc2136, cloudflare, acmedns, desec
     'acme_dns_server': '',
@@ -9631,7 +9632,7 @@ class Daemon(object):
         'upgrade_check': (0, 1), 'upgrade_url': 'str', 'downgrade_show': (0, 1),
         # Automatic certificates (5.30)
         'acme': (0, 1), 'acme_email': 'str', 'acme_ca': 'str', 'acme_url': 'str',
-        'acme_ca_pem': 'str', 'acme_name': 'str', 'acme_days': (7, 60), 'acme_key': 'str',
+        'acme_ca_pem': 'str', 'acme_name': 'str', 'acme_days': (7, 60), 'acme_key': 'str', 'acme_account_key': 'str',
         'acme_challenge': 'str', 'acme_dns': 'str', 'acme_dns_server': 'str',
         'acme_dns_zone': 'str', 'acme_dns_tsig_name': 'str', 'acme_dns_tsig_alg': 'str',
         'acme_dns_tsig_secret': 'str', 'acme_dns_token': 'str', 'acme_dns_url': 'str',
@@ -9881,7 +9882,8 @@ class Daemon(object):
         return changed
 
     ACME_CHOICES = {'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
-                    'acme_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096', 'dual'),
+                    'acme_key': ('dual', 'dual-strong', 'ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
+                    'acme_account_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096'),
                     'acme_challenge': ('http-01', 'dns-01'),
                     'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns', 'desec'),
                     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384',
@@ -9972,9 +9974,12 @@ class Daemon(object):
         'acme_ca': [('letsencrypt', 'Let’s Encrypt'),
                     ('letsencrypt-staging', 'Let’s Encrypt - staging (to try it)'),
                     ('custom', 'another ACME CA (step-ca, your own)')],
-        'acme_key': [('ec', 'ECDSA P-256'), ('ec384', 'ECDSA P-384'), ('rsa2048', 'RSA 2048'),
-                     ('rsa3072', 'RSA 3072'), ('rsa4096', 'RSA 4096'),
-                     ('dual', 'Both: RSA 2048 by default, ECDSA P-256 to who can take it')],
+        'acme_key': [('dual', 'Both: RSA 2048 + ECDSA P-256 (advised)'), ('dual-strong', 'Both: RSA 4096 + ECDSA P-384'),
+                     ('ec', 'ECDSA P-256'), ('ec384', 'ECDSA P-384'), ('rsa2048', 'RSA 2048'),
+                     ('rsa3072', 'RSA 3072'), ('rsa4096', 'RSA 4096')],
+        'acme_account_key': [('ec', 'ECDSA P-256 (ES256)'), ('ec384', 'ECDSA P-384 (ES384)'),
+                             ('rsa2048', 'RSA 2048 (RS256)'), ('rsa3072', 'RSA 3072 (RS256)'),
+                             ('rsa4096', 'RSA 4096 (RS256)')],
         'acme_challenge': [('http-01', 'HTTP-01 - the CA asks port 80 of the name'),
                            ('dns-01', 'DNS-01 - a TXT record in DNS, nothing open to the internet')],
         'acme_dns': [('manual', 'by hand - the record is shown here, you put it in'),
@@ -44880,28 +44885,57 @@ class Acme(object):
                 f.write(self.key_pem)
         return p
 
+    def _alg(self):
+        """(JWS alg, digest, bytes of r and s) of the account's key (5.33.3,
+        upsmon 4.1.6): ES256, ES384, or RS256 for an RSA one."""
+        kind = getattr(self, 'akind', 'ec')
+        if kind == 'ec384':
+            return 'ES384', '-sha384', 48
+        if kind.startswith('rsa'):
+            return 'RS256', '-sha256', 0
+        return 'ES256', '-sha256', 32
+
     def _jwk(self):
-        der = _acme_openssl(['pkey', '-in', self._key_file(), '-pubout', '-outform', 'DER'],
-                            what='the account key')
-        point = der[-64:]
-        return {'crv': 'P-256', 'kty': 'EC', 'x': _b64u(point[:32]), 'y': _b64u(point[32:])}
+        if getattr(self, '_jwk_done', None):
+            return self._jwk_done
+        alg, _, size = self._alg()
+        if alg == 'RS256':
+            txt = _acme_openssl(['pkey', '-in', self._key_file(), '-noout', '-text_pub'],
+                                what='the account key').decode()
+            m = re.search(r'(?s)Modulus:\s*\n(.*?)\n\S', txt)
+            e = re.search(r'Exponent:\s*(\d+)', txt)
+            if not m or not e:
+                raise AcmeError('the RSA account key does not read')
+            n = bytes.fromhex(re.sub(r'[^0-9a-fA-F]', '', m.group(1))).lstrip(b'\x00')
+            ev = int(e.group(1))
+            jwk = {'e': _b64u(ev.to_bytes((ev.bit_length() + 7) // 8, 'big')), 'kty': 'RSA', 'n': _b64u(n)}
+        else:
+            der = _acme_openssl(['pkey', '-in', self._key_file(), '-pubout', '-outform', 'DER'],
+                                what='the account key')
+            point = der[-2 * size:]
+            jwk = {'crv': 'P-384' if size == 48 else 'P-256', 'kty': 'EC',
+                   'x': _b64u(point[:size]), 'y': _b64u(point[size:])}
+        self._jwk_done = jwk
+        return jwk
 
     def thumbprint(self):
-        jwk = self._jwk()
+        # RFC 7638: the required members only, sorted - the JWK holds just those
         return _b64u(hashlib.sha256(json.dumps(
-            {'crv': jwk['crv'], 'kty': jwk['kty'], 'x': jwk['x'], 'y': jwk['y']},
-            separators=(',', ':'), sort_keys=True).encode()).digest())
+            self._jwk(), separators=(',', ':'), sort_keys=True).encode()).digest())
 
     def _sign(self, data):
-        der = _acme_openssl(['dgst', '-sha256', '-sign', self._key_file()], data=data,
+        alg, digest, size = self._alg()
+        der = _acme_openssl(['dgst', digest, '-sign', self._key_file()], data=data,
                             what='signing for the CA')
-        # DER SEQUENCE { INTEGER r, INTEGER s } -> r || s, 32 bytes each
+        if alg == 'RS256':
+            return der                       # PKCS#1 v1.5, as JWS has it
+        # DER SEQUENCE { INTEGER r, INTEGER s } -> r || s, `size` bytes each
         i = 2 if der[1] < 0x80 else 3
 
         def integer(at):
             n = der[at + 1]
             v = der[at + 2:at + 2 + n].lstrip(b'\x00')
-            return v.rjust(32, b'\x00'), at + 2 + n
+            return v.rjust(size, b'\x00'), at + 2 + n
         r, i = integer(i)
         s, _ = integer(i)
         return r + s
@@ -44911,7 +44945,7 @@ class Acme(object):
         for attempt in (1, 2, 3):
             if not self.nonce:
                 self._req(self.dir['newNonce'], method='HEAD')
-            protected = {'alg': 'ES256', 'nonce': self.nonce, 'url': url}
+            protected = {'alg': self._alg()[0], 'nonce': self.nonce, 'url': url}
             if use_jwk or not self.kid:
                 protected['jwk'] = self._jwk()
             else:
@@ -44959,7 +44993,13 @@ class Acme(object):
     def _account(self, fresh=False):
         row = {} if fresh else _acme_meta(self.d, 'acme_account')
         pem = str(row.get('key') or '')
-        if row.get('directory') != self.dir_url or '-----BEGIN' not in pem:
+        # the kind of key asked for (5.33.3): another than the account has
+        # makes a new account with a key of that kind
+        self.akind = str(CONFIG.get('acme_account_key') or 'ec')
+        if self.akind not in ACME_KEYS:
+            self.akind = 'ec'
+        if row.get('directory') != self.dir_url or '-----BEGIN' not in pem or \
+                (row.get('kind') or 'ec') != self.akind:
             pem = ''
         if fresh:
             self.kid = None
@@ -44968,9 +45008,14 @@ class Acme(object):
             except OSError:
                 pass
         if not pem:
-            pem = _acme_openssl(['genpkey', '-algorithm', 'EC', '-pkeyopt',
-                                 'ec_paramgen_curve:P-256'], what='the account key').decode()
+            pem = acme_new_key(self.akind)
             row = {}
+            self.kid = None
+            try:
+                os.unlink(os.path.join(self.work, 'account.pem'))
+            except OSError:
+                pass
+        self._jwk_done = None
         self.key_pem = pem
         if row.get('kid'):
             self.kid = row['kid']
@@ -44985,7 +45030,7 @@ class Acme(object):
             raise AcmeError('the CA made no account')
         self.d.store.set_meta('acme_account', json.dumps({
             'key': pem, 'kid': self.kid, 'directory': self.dir_url, 'email': mail,
-            'at': time.time()}))
+            'at': time.time(), 'kind': self.akind}))
 
     # -- an order --------------------------------------------------------------------
     def _poll(self, url, done, what, secs=90):
@@ -45048,7 +45093,7 @@ class Acme(object):
             finally:
                 with ACME_LOCK:
                     ACME_CHAL.pop(token, None)
-        key, der = acme_make_request(self.work, names, key_kind or CONFIG.get('acme_key') or 'ec')
+        key, der = acme_make_request(self.work, names, key_kind or 'ec')
         say('the certificate is made')
         o, _ = self.post_json(got['finalize'], {'csr': _b64u(der)})
         if o.get('status') != 'valid':
@@ -45066,7 +45111,28 @@ ACME_KEYS = {'ec': ('ECDSA P-256', ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_cu
              'rsa2048': ('RSA 2048', ['-newkey', 'rsa:2048']),
              'rsa3072': ('RSA 3072', ['-newkey', 'rsa:3072']),
              'rsa4096': ('RSA 4096', ['-newkey', 'rsa:4096'])}
-ACME_DUAL = ('rsa2048', 'ec')                    # 'dual': the default one, then the one beside it
+# A certificate's choice (5.33.3, as upsmon 4.1.6): one key, or two
+# certificates - the first served by default, the second to who takes it.
+ACME_CERT_KEYS = {'dual': ('rsa2048', 'ec'), 'dual-strong': ('rsa4096', 'ec384'),
+                  'ec': ('ec',), 'ec384': ('ec384',), 'rsa2048': ('rsa2048',),
+                  'rsa3072': ('rsa3072',), 'rsa4096': ('rsa4096',)}
+
+
+def acme_key_words(choice):
+    """'RSA 2048 + ECDSA P-256' for a choice of the certificate's key."""
+    return ' + '.join(ACME_KEYS[k][0] for k in ACME_CERT_KEYS.get(choice, ('ec',)))
+
+
+def acme_new_key(kind):
+    """A new private key of a kind, PEM - for the account."""
+    if kind.startswith('ec'):
+        return _acme_openssl(['genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:%s' % (
+            'P-384' if kind == 'ec384' else 'P-256')], what='the account key').decode()
+    bits = {'rsa2048': 2048, 'rsa3072': 3072, 'rsa4096': 4096}.get(kind)
+    if not bits:
+        raise AcmeError('the key is ec, ec384, rsa2048, rsa3072 or rsa4096')
+    return _acme_openssl(['genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:%d' % bits],
+                         what='the account key').decode()
 
 
 def acme_make_request(work, names, kind):
@@ -45225,18 +45291,18 @@ def acme_order(d, name, by, say=None):
     a = None
     try:
         a = Acme(d)
-        kind = str(CONFIG.get('acme_key') or 'ec')
-        if kind == 'dual':
+        kinds = ACME_CERT_KEYS.get(str(CONFIG.get('acme_key') or 'dual'), ACME_CERT_KEYS['dual'])
+        if len(kinds) == 2:
             # two orders: the second finds the name already proven and is
             # given its certificate at once
-            key, chain = a.order([name], said, ACME_DUAL[0])
+            key, chain = a.order([name], said, kinds[0])
             pem = d.tls_sort(chain + '\n' + key)
-            key, chain = a.order([name], said, ACME_DUAL[1])
+            key, chain = a.order([name], said, kinds[1])
             alt = d.tls_sort(chain + '\n' + key)
             pem['alt'] = {'cert': alt['cert'], 'key': alt['key'], 'chain': alt['chain']}
             alt = None
         else:
-            key, chain = a.order([name], said, kind)
+            key, chain = a.order([name], said, kinds[0])
             pem = d.tls_sort(chain + '\n' + key)
         key = None
         info = acme_cert_dates(pem['cert'])
@@ -45420,8 +45486,13 @@ def acme_view(d):
     info = acme_info(d)
     name = acme_name_of(d)
     look = d.root_look().get('acme')
+    alt = (d.root_look().get('tls') or {}).get('alt_info') or {}
     target = {'target': ACME_TARGET, 'name': name, 'state': acme_state(d), 'how': acme_how(d),
               'subject': info.get('subject') or info.get('cn'), 'issuer': info.get('issuer'),
+              # the keys of what it serves now (5.33.3): 'RSA 2048 + ECDSA P-256'
+              'keys': ' + '.join(re.sub(r'^EC (\d+)$', r'ECDSA P-\1', x) for x in
+                                 [info.get('key') or '', alt.get('key') or ''] if x),
+              'keys_asked': acme_key_words(str(CONFIG.get('acme_key') or 'dual')),
               'not_after': info.get('not_after'), 'care': acme_care(d), 'wanted': True,
               'before': acme_before(d), 'named': bool(str(CONFIG.get('acme_name') or '').strip()),
               'server_name': (d.root_look().get('tls') or {}).get('server_name') or ''}
@@ -45431,7 +45502,8 @@ def acme_view(d):
     return {'ok': True, 'on': bool(int(CONFIG.get('acme') or 0)), 'targets': [target],
             'mine': [t for t, _ in acme_targets(d)], 'directory': acme_directory_url(),
             'account': {'kid': acc.get('kid'), 'email': acc.get('email'), 'at': acc.get('at'),
-                        'key': bool(acc.get('key'))},
+                        'key': bool(acc.get('key')),
+                        'kind': ACME_KEYS.get(acc.get('kind') or 'ec', ACME_KEYS['ec'])[0]},
             'work': dict(ACME_WORK), 'node': socket.gethostname().split('.')[0] or 'this machine',
             'challenge': CONFIG.get('acme_challenge') or 'http-01',
             'dns_guide': acme_dns_guide(d),

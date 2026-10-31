@@ -2083,7 +2083,34 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.33.2**
+Current version: **5.33.3**
+
+5.33.3 — the keys as upsmon has them: both by default, the account's own.
+
+* **The key of the certificate** (Automatic certificates), as upsmon 4.1.6:
+  * **Both: RSA 2048 + ECDSA P-256 (advised)** - the new default: two
+    certificates for the name, RSA served by default, the much smaller ECDSA
+    one to the clients that take it. The second order does not prove the name
+    again; the CA only signs.
+  * **Both: RSA 4096 + ECDSA P-384**
+  * one key alone: ECDSA P-256, ECDSA P-384, RSA 2048, 3072 or 4096.
+* **The key of the ACME account**, a setting of its own: ECDSA P-256 (ES256),
+  ECDSA P-384 (ES384), RSA 2048, 3072 or 4096 (RS256) - never one of a
+  certificate, as Let's Encrypt asks. A change makes a new account at the
+  CA at the next order.
+* Where the keys are said: *Keys* on the card of Automatic certificates (and
+  what the next order brings when the setting differs), *Key* and *And* on
+  the certificate's card, the key beside the account at the CA, and each
+  order's steps.
+* nginx names two pairs, `server.pem` (RSA, the broker's) and
+  `server-ecdsa.pem`; a certificate uploaded on Certificates takes the ECDSA
+  one out of use.
+* After the upgrade: a house that never chose a key gets both at the next
+  renewal (*Order it now* for it at once); one that saved a key keeps it.
+
+`test/acme.py`: its CA checks ES256, ES384 and RS256 signatures; RSA 4096 +
+ECDSA P-384, an ES384 and an RS256 account, each a new account once. It
+fails on 5.33.2.
 
 5.33.2 — the certificate's key as Let's Encrypt takes it, and both at once.
 

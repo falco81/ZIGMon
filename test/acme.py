@@ -96,8 +96,38 @@ sh(['openssl', 'x509', '-req', '-in', str(CAD / 'srv.csr'), '-CA', str(CAD / 'ca
 
 
 def thumb(jwk):
-    return b64u(hashlib.sha256(json.dumps({'crv': jwk['crv'], 'kty': jwk['kty'], 'x': jwk['x'], 'y': jwk['y']},
+    need = ('e', 'kty', 'n') if jwk.get('kty') == 'RSA' else ('crv', 'kty', 'x', 'y')
+    return b64u(hashlib.sha256(json.dumps({k: jwk[k] for k in need},
                                           separators=(',', ':'), sort_keys=True).encode()).digest())
+
+
+def jws_ok(alg, jwk, signing_input, sig):
+    """ES256, ES384 or RS256 (5.33.3), checked with the cryptography package
+    against the public key in the JWK - the account's key kind decides."""
+    try:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    except ImportError:
+        return alg == 'ES256' and es256_ok(jwk, signing_input, sig)
+    try:
+        if alg == 'RS256' and jwk.get('kty') == 'RSA':
+            pub = rsa.RSAPublicNumbers(int.from_bytes(b64d(jwk['e']), 'big'),
+                                       int.from_bytes(b64d(jwk['n']), 'big')).public_key()
+            pub.verify(sig, signing_input, padding.PKCS1v15(), hashes.SHA256())
+            return True
+        size, curve, h = {'ES256': (32, ec.SECP256R1(), hashes.SHA256()),
+                          'ES384': (48, ec.SECP384R1(), hashes.SHA384())}[alg]
+        if jwk.get('kty') != 'EC' or jwk.get('crv') != {'ES256': 'P-256', 'ES384': 'P-384'}[alg] \
+                or len(sig) != 2 * size:
+            return False
+        pub = ec.EllipticCurvePublicNumbers(int.from_bytes(b64d(jwk['x']), 'big'),
+                                            int.from_bytes(b64d(jwk['y']), 'big'), curve).public_key()
+        pub.verify(encode_dss_signature(int.from_bytes(sig[:size], 'big'), int.from_bytes(sig[size:], 'big')),
+                   signing_input, ec.ECDSA(h))
+        return True
+    except Exception:                                   # noqa: BLE001 - a bad signature, said
+        return False
 
 
 def es256_ok(jwk, signing_input, sig):
@@ -133,6 +163,7 @@ class CA(object):
     def __init__(self):
         self.lock = threading.Lock()
         self.nonces = set()
+        self.algs = []
         self.accounts = {}          # kid -> jwk
         self.made = 0               # accounts made
         self.orders = {}
@@ -251,8 +282,9 @@ class CAHandler(BaseHTTPRequestHandler):
             CAS.nonces.discard(prot.get('nonce'))
         if not fresh:
             return self.err(400, 'badNonce', 'that nonce is not one of mine')
-        if prot.get('alg') != 'ES256':
+        if prot.get('alg') not in ('ES256', 'ES384', 'RS256'):
             CAS.bad.append('alg %r' % prot.get('alg'))
+        CAS.algs.append(prot.get('alg'))
         if prot.get('url') != BASE + self.path:
             CAS.bad.append('url %r for %s' % (prot.get('url'), self.path))
         if ('jwk' in prot) == ('kid' in prot):
@@ -269,7 +301,7 @@ class CAHandler(BaseHTTPRequestHandler):
             if kid not in CAS.accounts:
                 return self.err(400, 'accountDoesNotExist', 'no account at %s' % kid)
             jwk = CAS.accounts[kid]
-        if not es256_ok(jwk, ('%s.%s' % (jws['protected'], jws['payload'])).encode(), sig):
+        if not jws_ok(prot.get('alg'), jwk, ('%s.%s' % (jws['protected'], jws['payload'])).encode(), sig):
             CAS.bad.append('a signature that does not verify at %s' % self.path)
             return self.err(400, 'malformed', 'bad signature')
         CAS.signed += 1
@@ -897,7 +929,41 @@ json.dump(recs, open(zone, 'w'))
               'the key put in is not %s' % kind)
         check(len(re.findall(r'(?m)^\s*ssl_certificate\s', NGINX_CONF.read_text())) == 1,
               'one key, but two certificates named (%s)' % kind)
-    d.save_config_overrides({'acme_key': 'dual'})
+    check(zigmon.DEFAULTS.get('acme_key') == 'dual', 'both is not what a house that never chose gets')
+    d.save_config_overrides({'acme_key': 'dual-strong'})
+    try:
+        zigmon.acme_order(d, NAME, 'test')
+    except zigmon.AcmeError as e:
+        check(False, 'an order of RSA 4096 + ECDSA P-384 failed: %s' % e)
+    strong = re.findall(r'(?m)^\s*ssl_certificate_key\s+(\S+);', NGINX_CONF.read_text())
+    check(len(strong) == 2 and 'Private-Key: (4096 bit' in key_text(strong[0])
+          and ('P-384' in key_text(strong[1]) or 'secp384r1' in key_text(strong[1])),
+          'RSA 4096 + ECDSA P-384 is not what was put in')
+    # the account's own key: ES384, then RS256 - each a new account at the CA
+    for akind, alg in (('ec384', 'ES384'), ('rsa2048', 'RS256')):
+        made = CAS.made
+        del CAS.algs[:]
+        d.save_config_overrides({'acme_account_key': akind, 'acme_key': 'ec'})
+        try:
+            zigmon.acme_order(d, NAME, 'test')
+        except zigmon.AcmeError as e:
+            check(False, 'an order with an %s account failed: %s' % (akind, e))
+        check(CAS.made == made + 1, 'a new account was not made for an %s key' % akind)
+        check(CAS.algs and set(CAS.algs) == {alg}, 'the account did not sign with %s: %r' % (alg, sorted(set(CAS.algs))))
+        acc = json.loads(d.store.get_meta('acme_account') or '{}')
+        check(acc.get('kind') == akind, 'the account\'s key kind is not kept: %r' % acc.get('kind'))
+        v = acme({'action': 'care', 'on': True})[1]
+        check((v.get('account') or {}).get('kind', '').startswith(zigmon.ACME_KEYS[akind][0]),
+              'the card does not say the account\'s key: %r' % (v.get('account') or {}))
+        made = CAS.made
+        try:
+            zigmon.acme_order(d, NAME, 'test')
+        except zigmon.AcmeError as e:
+            check(False, 'a second order with an %s account failed: %s' % (akind, e))
+        check(CAS.made == made, 'the account was made again though its key did not change (%s)' % akind)
+    certkey = key_text(CERTS / 'server.key')
+    check('P-256' in certkey or 'prime256v1' in certkey, 'the certificate\'s key followed the account\'s')
+    d.save_config_overrides({'acme_account_key': 'ec', 'acme_key': 'dual'})
     try:
         zigmon.acme_order(d, NAME, 'test')
     except zigmon.AcmeError as e:
@@ -918,6 +984,9 @@ json.dump(recs, open(zone, 'w'))
     look = d.root_look(fresh=True).get('tls') or {}
     check((look.get('alt_info') or {}).get('key', '').startswith('EC'), 'the card is not told of the second one: %r'
           % look.get('alt_info'))
+    t = (acme({'action': 'care', 'on': True})[1].get('targets') or [{}])[0]
+    check(t.get('keys') == 'RSA 2048 + ECDSA P-256' and t.get('keys_asked') == 'RSA 2048 + ECDSA P-256',
+          'the card does not say the keys: %r / %r' % (t.get('keys'), t.get('keys_asked')))
     check(not keys_left(), 'a key was left in the daemon\'s folder: %r' % keys_left())
     # back to one: the second goes from nginx
     d.save_config_overrides({'acme_key': 'ec'})
