@@ -2118,8 +2118,19 @@ Current version: **5.36.0**
   answer), the first that failed and why. `zigmon --webproxy-test [URL]`, and
   in the console under Network, time and power.
 
+* **Upgrades and maintenance** looks and works as OTP's, checked side by side
+  in Chromium: the three settings of *From the web* each a name on top, the
+  control under it and its words under that, saved with the bar at the end
+  of the pane (*Save the changes*, *Put them back*, how many not saved yet)
+  as OTP saves them - no Save button of the card's own; *What changed in X*
+  a bar that opens; a package of the version that runs already may be put
+  in again (as OTP lets it), the button enabled, no red band; *What root
+  said last* with the output folded, *Going back to an older version* as
+  OTP's rows; OTP's sizes and spacing throughout, on a narrow screen too.
+
 `test/webproxy.py` (a proxy with a password and targets of its own, the real
-page in Chromium); it fails on 5.35.0.
+page in Chromium) and `test/upgradepane.py` (the pane in Chromium); both
+fail on 5.35.0.
 
 5.35.0 — Upgrades and maintenance, as OTP has it.
 
