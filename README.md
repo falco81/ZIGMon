@@ -2083,7 +2083,40 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.36.1**
+Current version: **5.37.0**
+
+5.37.0 — the backups to other machines, as plexmon has them.
+
+* **Settings → Backup** looks and works as plexmon 2.5.3's *Backups*, checked
+  side by side in Chromium:
+  * a card of how the last backup went - when, the next, locked with the
+    password, how many destinations, when one was last tried - with *Back up
+    now*, *Try the newest*, *Download one here*, *Put one back…*, *How to put
+    it back*;
+  * *When, how many, and the password* in a grid, each setting's name above
+    it and its words under it; *Make a strong one* under the password; saved
+    with the bar at the end of the pane;
+  * *Where they go*: a card for each destination - its kind, the switch, the
+    path, PASSWORD / SMB3 ENCRYPTED, when it was last sent there - with *Try
+    it*, *Edit*, *Backups there*;
+  * *What was sent*: when, the machine, the file, its size, where it went, who.
+  * *Where should the backups go?* six kinds in a grid; the destination's
+    editor in three parts: what it is called, where, signing in.
+* **Try the newest** (new): the newest backup fetched back from a
+  destination, its checksum compared, opened with the password as it
+  streams, every file checked against its manifest and the database read
+  through (`quick_check`) - nothing put back; the result kept, a failure in
+  the events and sent as an alert. *Try the backups*: only by hand, after
+  every backup, or once a week.
+* **Download one here** (new): a backup made now, locked with the password,
+  to download; **Put one back…**: a backup uploaded, checked by root, and
+  the parts chosen.
+* A folder on this machine as a destination is shown and refused: the
+  daemon may write only to its own folders - an NFS or SMB share is reached
+  as SMB or SFTP.
+
+`test/backuppane.py` (the real page in Chromium) and `test/rbackup.py` (Try
+the newest and Download one here, end to end); both fail on 5.36.1.
 
 5.36.1 — the band of maintenance in its place.
 
