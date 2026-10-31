@@ -545,6 +545,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/acme');
         exit;
     }
+    if ($what === 'osup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // the updates of the system (5.34): what dnf has waiting and the
+        // update going on - an administrator's, behind the sign-in in the daemon
+        zigmon_relay('/api/osup');
+        exit;
+    }
     if ($what === 'rbackup-download') {
         // one backup at a destination, fetched by the daemon and handed on;
         // locked as it went there, and the session proves the right to it
@@ -865,7 +871,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -916,12 +922,12 @@ if (isset($_GET['api'])) {
                   'fullbackup-upload' => '/api/fullbackup/upload',
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
                   'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about',
-                  'acme-do' => '/api/acme'];
+                  'acme-do' => '/api/acme', 'osup-do' => '/api/osup'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
         $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do',
-                                                                    'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do'], true);
+                                                                    'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do', 'osup-do'], true);
         zigmon_relay($paths[$what], 'POST', $body, $slow ? 180.0 : 30.0);
         exit;
     }
@@ -3823,6 +3829,24 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .ac-manual{margin:12px 0;border-left:4px solid var(--warn)}
   .ot .ac-account{margin-top:12px;overflow-wrap:anywhere}
   .ot > #ac-host > .going{margin:0 0 12px}
+  /* System updates (5.34), as otp.css has them */
+  .ot .pw-head .pw-break{flex-basis:100%;height:0}
+  .ot pre.zlines.ou-log{max-height:420px}
+  .ot .notice.warn{border-color:rgba(210,153,34,.45);background:var(--warn-bg)}
+  .ot .ou-reboot{margin:0 0 16px}
+  .ot .ou-reboot h2{margin:0 0 4px}
+  .ot .ou-reboot .btnrow,.ot .ou-reboot > .btn{margin-top:10px}
+  #ou-host > .card + .card,#ou-host > .pw-grid + .card,#ou-host > .card + .pw-grid{margin-top:16px}
+  #ou-host > .note{margin:0 0 12px}
+  #ou-host .set-item{margin:14px 0 4px}
+  #ou-host .seg{align-self:flex-start;flex-wrap:wrap;max-width:100%}
+  #ou-host .card > .btnrow{margin-top:14px}
+  #ou-host .card > .up-bar{margin:6px 0 14px}
+  #ou-host .pw-node details.ou-fold{margin-top:12px}
+  .ot details.ou-fold > summary{cursor:pointer;font-size:12.5px;color:var(--tx-dim)}
+  .ot details.ou-fold > pre{margin-top:6px;max-height:300px}
+  .ot .ou-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
+  @media (max-width:620px){.ot .ou-grid{grid-template-columns:1fr}}
   .ot > #ac-host > .note{margin:0 0 12px}
   .acme-dns{margin-top:14px}
   .acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--tx-dim)}
@@ -4392,6 +4416,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="ctl-group">Monitoring and updates</div>
     <button type="button" data-sec="sys-diag" data-icon="pulse">Diagnostics</button>
     <button type="button" data-sec="sys-upgrade" data-icon="upload">Upgrades</button>
+    <button type="button" data-sec="sys-osup" data-icon="download" title="The operating system's packages updated by dnf - all, or the security ones only; a restart offered when one is needed.">System updates</button>
     <button type="button" data-sec="sys-all" data-icon="list">All other settings</button>
     <button type="button" data-sec="sys-values" data-icon="grid">All values</button>
     <button type="button" data-sec="sys-about" data-icon="info">About</button>
@@ -4990,6 +5015,17 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small set-note-alt"></span>
       </div>
     </div>
+    <div class="full ot pw-wrap" data-sec="sys-osup" id="ou-card">
+      <div id="ou-host"></div>
+    </div>
+    <div class="card full set-card" data-sec="sys-osup">
+      <h2>On a schedule</h2>
+      <div class="set-host" id="set-host-sys-osup" data-for="sys-osup"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-card">
       <h2>This server</h2>
       <div id="up-nodes"></div>
@@ -5430,7 +5466,7 @@ function api(what, options) {
       // repaint of the page waited for it.
       // The panes root looks after (firewall, certificates, upgrades, the whole
       // backup) ask every few seconds too, and say "locked" in place.
-      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup)(&|$)/.test(String(what));
+      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup)(&|$)/.test(String(what));
       if (r.status === 403 && data && /view locked/.test(data.error || '')
           && !VIEWLOCK.asking && !VIEWLOCK.declined && !quiet) {
         VIEWLOCK.asking = true;
@@ -18394,6 +18430,24 @@ var SETTINGS_LAYOUT = [
      + 'the console do it. Off, none of them does; root on the command line can still go back with a package '
      + 'file (sudo zigmon --downgrade FILE). Going back leaves the database as it is, and only where that is safe'],
   ]],
+  // the updates of the system on a schedule (5.34): otp's own words, for one machine
+  ['On a schedule', [
+    ['|', 'a look for updates every day'],
+    ['osup_check', 'Look for updates every day',
+     'dnf is asked what it has waiting, every day at the time below - for the card above, the alerts and the '
+     + 'daily summary; nothing is put in'],
+    ['osup_check_at', 'At', 'When, as <code>HH:MM</code> on this machine’s clock.'],
+    ['|', 'the updates put in by themselves'],
+    ['osup_auto', 'Updates on a schedule',
+     'The updates put in by themselves in the window below - once on their day, within three hours of the time; '
+     + 'one that cannot start then (an upgrade, a restart, a backup going on) is said in the events, not tried over and over'],
+    ['osup_auto_what', 'Which', 'Only the security updates (<code>dnf --security</code>), or every update.'],
+    ['osup_auto_every', 'How often', 'A day, a week or a month (on the 1st).'],
+    ['osup_auto_day', 'On the day', 'The day a weekly update goes.'],
+    ['osup_auto_at', 'At', 'When, as <code>HH:MM</code> - a quiet hour, away from the backups and the regular restart.'],
+    ['osup_auto_reboot', 'After the update',
+     'Where an update needs a restart - restarted by itself, as Restart and power off does it, or the restart offered here.'],
+  ]],
   // Automatic certificates (5.30): otp's own words, for one machine
   ['Settings', [
     ['acme', 'Certificates from an ACME CA',
@@ -18974,7 +19028,7 @@ var SETTINGS_WHERE = {
   'The server that faces the internet': 'sec-front', 'The router that carries the list': 'sec-front',
   'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access',
   'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power',
-  'Looking for new versions': 'sys-upgrade', 'Settings': 'sys-acme',
+  'Looking for new versions': 'sys-upgrade', 'Settings': 'sys-acme', 'On a schedule': 'sys-osup',
   'When, how many, and the password': 'sys-backup-rb'
 };
 function settingsHosts() {
@@ -20300,7 +20354,11 @@ var SETTINGS_WHEN = {
   acme_dns_subdomain: 'acme=1&acme_challenge=dns-01&acme_dns=acmedns',
   acme_desec_domain: 'acme=1&acme_challenge=dns-01&acme_dns=desec',
   acme_desec_token: 'acme=1&acme_challenge=dns-01&acme_dns=desec',
-  acme_dns_alias: 'acme=1&acme_challenge=dns-01&acme_dns!=acmedns'
+  acme_dns_alias: 'acme=1&acme_challenge=dns-01&acme_dns!=acmedns',
+  // the updates of the system on a schedule (5.34), as otp shows them
+  osup_check_at: 'osup_check=1', osup_auto_what: 'osup_auto=1', osup_auto_every: 'osup_auto=1',
+  osup_auto_day: 'osup_auto=1&osup_auto_every=weekly', osup_auto_at: 'osup_auto=1',
+  osup_auto_reboot: 'osup_auto=1'
 };
 function applySettingsWhen() {
   if (!$('settings-grid')) return;
@@ -27378,6 +27436,249 @@ function acmeCertChips(chips, d) {
   if (ac.care && ac.failed) chips.appendChild(el('span', 'cchip warn', 'the last order failed'));
 }
 
+/* ==== System updates (5.34, otp 1.0.158 - 1.0.193) ===============================
+   What dnf has waiting on this machine - how many, how many of them security,
+   the packages, whether the update will need a restart - the update itself,
+   every package or the security ones only, with a bar and what dnf says as it
+   goes, and the restart it needs offered at the end or made by itself. Laid
+   out and worded as otp's Settings → System updates, for one machine: its
+   card, the update, how far it is, the window. */
+var OU = {d: null, poll: null, hide: false, reboot: 'ask', what: 'all', asked: 0, pkOpen: false, away: 0};
+try { OU.hide = localStorage.getItem('zigmon-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
+var OU_STATE = {asking: ['waiting for root', 'dim'], updating: ['updating', 'info'], rebooting: ['restarting', 'warn'],
+                done: ['done', 'ok'], failed: ['failed', 'crit']};
+function loadOsup(quiet) {
+  var host = $('ou-host');
+  if (!host) return;
+  rootTimer('sys-osup', function () { if (!OU.poll) loadOsup(true); }, 15000);
+  if (!isUnlocked()) {
+    ouPoll(false);
+    rootLocked(host, 'An administrator’s to see. The system’s packages are root’s to update, asked for by an administrator.', loadOsup);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('osup').then(function (d) { OU.d = d; OU.away = 0; drawOsup(); ouPoll(ouLive(d)); })
+    .catch(function (e) { if (!quiet) zoops(e); });
+}
+function ouLive(d) {
+  d = d || OU.d || {};
+  /* just asked: root has not begun yet - followed until it says (otp 1.0.159) */
+  if (Date.now() - OU.asked < 30000) return true;
+  var run = d.run || {}, ck = d.check || {};
+  return ['asking', 'updating', 'rebooting'].indexOf(run.state) >= 0 || ['asking', 'running'].indexOf(ck.state) >= 0
+    || !!(d.power && d.power.id);
+}
+function ouPoll(on) {
+  if (on && !OU.poll) {
+    OU.poll = setInterval(function () {
+      if (STATE.tab !== 'control' || CONTROL_SEC !== 'sys-osup') { ouPoll(false); return; }
+      if (document.hidden) return;
+      api('osup').then(function (d) { OU.d = d; OU.away = 0; drawOsup(); if (!ouLive(d)) ouPoll(false); })
+        .catch(function () { OU.away = OU.away || Date.now(); drawOsup(); });
+    }, 2500);
+  }
+  if (!on && OU.poll) { clearInterval(OU.poll); OU.poll = null; }
+}
+/* Something asked of root: followed from now on. */
+function ouAsked() { OU.asked = Date.now(); ouPoll(true); }
+function ouAct(b, body, then) {
+  if (b) zbusy(b, true);
+  return post('osup-do', body).then(function (x) {
+    if (b) zbusy(b, false);
+    if (x.message) toast(x.message, true);
+    if (x.check) OU.d = x;
+    drawOsup();
+    if (then) then(x);
+    return x;
+  }, function (e) { if (b) zbusy(b, false); zoops(e); });
+}
+function ouPercent(r) {
+  var st = (r || {}).state;
+  if (st === 'done' || st === 'failed') return 100;
+  if (st === 'updating') return Math.max(3, Math.min(95, Number(r.pct || 0)));
+  if (st === 'rebooting') return 96;
+  return st === 'asking' ? 2 : 0;
+}
+function drawOsup() {
+  var host = $('ou-host');
+  if (!host || !OU.d || host.dataset.locked === '1') return;
+  var d = OU.d, ck = d.check || {}, run = d.run || {};
+  var running = ['asking', 'updating', 'rebooting'].indexOf(run.state) >= 0;
+  var looking = ['asking', 'running'].indexOf(ck.state) >= 0;
+  /* the window scrolled up by hand stays where it was; at the bottom it follows */
+  var was = host.querySelector('pre.ou-log');
+  var stick = !was || was.scrollTop + was.clientHeight >= was.scrollHeight - 8;
+  var top = was ? was.scrollTop : 0;
+  host.innerHTML = '';
+  if (!d.helper) rootNotInstalled(host);
+  if (OU.away) host.appendChild(el('p', 'note warn', 'This server is not answering for ' + sysSpan((Date.now() - OU.away) / 1000) + ' - restarting, most likely; asked again every few seconds.'));
+  /* A restart the update left to do. */
+  if (d.reboot && !(d.power && d.power.id)) {
+    var rb = el('div', 'card full notice warn ou-reboot');
+    rb.appendChild(el('h2', '', (d.node || 'This server') + ' needs a restart'));
+    rb.appendChild(el('p', 'note', 'A new kernel or libraries are in that only a restart brings into use. For a minute or two nothing answers - the house, its rules and its alerts included.'));
+    var go = cmdButton('Restart ' + (d.node || 'it'), 'reboot', 'primary');
+    go.disabled = running;
+    go.onclick = function () {
+      zconfirm('Restart after the update', 'The server restarts now - as Restart and power off does it - and is looked at again when it is back.', 'Restart', function () {
+        ouAct(go, {action: 'reboot'}, ouAsked);
+      }, false);
+    };
+    rb.appendChild(go);
+    host.appendChild(rb);
+  }
+  if (d.power && d.power.id) host.appendChild(el('p', 'note', 'Restarting - followed on Restart and power off.'));
+  /* What this machine has waiting. */
+  var grid = el('div', 'pw-grid ou-grid');
+  var c = el('div', 'card pw-node ou-node');
+  var hd = el('div', 'pw-head');
+  hd.appendChild(el('span', 'dot ' + (OU.away ? 'bad' : (d.reboot || ck.security ? 'warn' : 'ok'))));
+  hd.appendChild(el('b', '', d.node || 'this server'));
+  hd.appendChild(el('span', 'tag info', 'this page'));
+  if (looking) hd.appendChild(el('span', 'tag info', 'looking…'));
+  else if (ck.checked) {
+    hd.appendChild(el('span', 'tag ' + (ck.count ? 'warn' : 'ok'), ck.count ? ck.count + ' waiting' : 'up to date'));
+    if (ck.security) hd.appendChild(el('span', 'tag crit', ck.security + ' security'));
+  }
+  /* the restart on a line of its own, always (otp 1.0.193) */
+  var after = !!(ck.reboot_after && ck.count);
+  if (d.reboot || after) hd.appendChild(el('span', 'pw-break'));
+  if (d.reboot) hd.appendChild(el('span', 'tag warn', 'restart needed'));
+  else if (after) hd.appendChild(el('span', 'tag info', 'restart after the update'));
+  c.appendChild(hd);
+  var sc = d.schedule || {};
+  c.appendChild(otFacts([
+    ['Updates waiting', ck.checked ? String(ck.count || 0) : 'not looked yet'],
+    ['Of them security', ck.checked && ck.security !== undefined && ck.security !== null ? String(ck.security) : ''],
+    ['A restart', !ck.checked ? '' : (d.reboot ? 'needed now' + (ck.reboot_now ? ', before any update' : '')
+      : (after ? 'needed after the update - ' + (ck.reboot_why || []).join(', ') : 'not needed by these updates')), d.reboot ? 'warn' : ''],
+    ['Looked', ck.checked ? ago(ck.checked) + (ck.by ? ' (' + ck.by + ')' : '') : ''],
+    ['Next look', sc.check && sc.check_next ? sysStamp(sc.check_next) : 'by hand only - set it below'],
+    ['Updated by', ck.pm || 'dnf', 'mono']
+  ]));
+  if (ck.state === 'failed' && ck.error) c.appendChild(el('p', 'note bad', 'The last look: ' + ck.error));
+  if ((ck.packages || []).length) {
+    var more = el('details', 'ou-fold');
+    more.appendChild(el('summary', '', 'what is waiting (' + ck.packages.length + ')'));
+    more.appendChild(el('pre', 'zlines', ck.packages.slice(0, 300).join('\n') + (ck.packages.length > 300 ? '\n…' : '')));
+    if (OU.pkOpen) more.open = true;
+    more.ontoggle = function () { OU.pkOpen = more.open; };
+    c.appendChild(more);
+  }
+  var row = el('div', 'btnrow');
+  var look = cmdButton('Look for updates', 'search', '');
+  look.disabled = !d.helper || looking || running;
+  explain(look, 'dnf asked what is new - nothing put in: the packages waiting, which of them are security updates, and whether the update will need a restart.');
+  look.onclick = function () { ouAct(look, {action: 'check'}, ouAsked); };
+  row.appendChild(look);
+  c.appendChild(row);
+  grid.appendChild(c);
+  host.appendChild(grid);
+  /* The update itself. */
+  if (!running) {
+    var uc = el('div', 'card full');
+    uc.appendChild(el('h2', '', 'Update this server'));
+    uc.appendChild(el('p', 'note', 'dnf updates every package - or only the security ones. The house goes on meanwhile; a restart it needs is offered at the end, or made by itself.'));
+    if (after) uc.appendChild(el('p', 'note warn', (d.node || 'This server') + ' needs a restart after this update: ' + (ck.reboot_why || []).join(', ') + '.'));
+    var seg2 = el('div', 'seg');
+    [['all', 'Every update'], ['security', 'Only the security updates']].forEach(function (o) {
+      var b = el('button', OU.what === o[0] ? 'on' : '', o[1]);
+      b.type = 'button';
+      b.onclick = function () { OU.what = o[0]; drawOsup(); };
+      seg2.appendChild(b);
+    });
+    var segb = el('div', 'seg');
+    [['ask', 'Ask me when a restart is needed'], ['auto', 'Restart by itself when needed']].forEach(function (o) {
+      var b = el('button', OU.reboot === o[0] ? 'on' : '', o[1]);
+      b.type = 'button';
+      b.onclick = function () { OU.reboot = o[0]; drawOsup(); };
+      segb.appendChild(b);
+    });
+    uc.appendChild(zField('Which', seg2));
+    uc.appendChild(zField('After the update', segb));
+    var row2 = el('div', 'btnrow');
+    var start = cmdButton('Update it now', 'download', 'primary');
+    start.disabled = !d.helper || !!d.blocked;
+    start.onclick = function () {
+      zconfirm('Update this server', (OU.what === 'security' ? 'The security updates of the system are put in by dnf.' : 'Every package of the system is updated by dnf.')
+        + (OU.reboot === 'auto' ? ' Where it needs one, the server is restarted by itself.' : ' A restart it needs is offered when it is done.'),
+        'Update', function () {
+          ouAct(start, {action: 'start', reboot: OU.reboot, security: OU.what === 'security'}, ouAsked);
+        }, false);
+    };
+    row2.appendChild(start);
+    uc.appendChild(row2);
+    if (d.blocked && d.helper) uc.appendChild(el('p', 'note warn', 'Not now: ' + d.blocked + '.'));
+    host.appendChild(uc);
+  }
+  /* How far it is. */
+  if (run.id) {
+    var pc = el('div', 'card full');
+    pc.appendChild(el('h2', '', 'The update'));
+    pc.appendChild(el('p', 'note', 'Started by ' + (run.by || '?') + ' · ' + ago(run.began || run.at) + ' · '
+      + ({asking: 'going on', updating: 'going on', rebooting: 'restarting', done: 'done', failed: 'failed'})[run.state || 'asking']
+      + (run.reboot === 'auto' ? ' · restarted where needed' : '') + (run.security ? ' · security updates only' : '')));
+    var p = ouPercent(run);
+    var kind = run.state === 'failed' ? 'bad' : (run.state === 'done' ? 'good' : '');
+    pc.appendChild(upBar(p, kind, p + ' %' + (run.state === 'updating' && run.phase ? ' · ' + run.phase : ''), true));
+    var t = zTable(['Server', 'Step', 'How far', 'What happened', 'When'], [run], function (r) {
+      var tr = el('tr');
+      tr.appendChild(el('td', 'mono', d.node || 'this server'));
+      var w = OU_STATE[r.state] || OU_STATE.asking;
+      var td = el('td'); td.appendChild(el('span', 'tag ' + w[1], w[0])); tr.appendChild(td);
+      var how = el('td', 'up-how');
+      how.appendChild(upBar(p, kind, p + ' %'));
+      tr.appendChild(how);
+      tr.appendChild(el('td', 'small', r.said || ''));
+      tr.appendChild(el('td', 'muted', r.at ? ago(r.at) : '–'));
+      return tr;
+    }, 'plain');
+    (t.querySelector('table') || t).classList.add('up-plan-table');
+    pc.appendChild(t);
+    if (!running) {
+      var hr = el('div', 'btnrow');
+      var hide = cmdButton('Hide this', 'close', 'small');
+      hide.onclick = function () { ouAct(hide, {action: 'hide'}); };
+      hr.appendChild(hide);
+      pc.appendChild(hr);
+    }
+    host.appendChild(pc);
+  }
+  /* What dnf says: the update's, or the look's - whichever is the newer. */
+  var src = null;
+  var rl = run.lines || [], cl = ck.lines || [];
+  if (rl.length && cl.length) src = looking || Number(ck.began || 0) > Number(run.began || 0) ? ck : run;
+  else if (rl.length) src = run;
+  else if (cl.length) src = ck;
+  if (src) {
+    var lines = src.lines;
+    var lc = el('div', 'card full');
+    var lh = el('h2', '', 'What it says');
+    var lt = el('span', 'right');
+    var hb = cmdButton(OU.hide ? 'Show it' : 'Hide it', OU.hide ? 'down' : 'fold', 'small');
+    hb.onclick = function () {
+      OU.hide = !OU.hide;
+      try { localStorage.setItem('zigmon-ou-hide', OU.hide ? '1' : '0'); } catch (e) { /* only a convenience */ }
+      drawOsup();
+    };
+    var cb = cmdButton('Clear the window', 'trash', 'small');
+    explain(cb, 'Empty the window - for every page, and after a reload too; what comes after is shown.');
+    cb.onclick = function () { ouAct(cb, {action: 'clear'}); };
+    lt.appendChild(hb); lt.appendChild(cb);
+    lh.appendChild(lt);
+    lc.appendChild(lh);
+    lc.appendChild(el('p', 'muted small', src === run ? 'The update' + (run.security ? ' (the security updates only)' : '') : 'The look for updates'));
+    if (!OU.hide) {
+      var pre = el('pre', 'zlines ou-log', lines.join('\n') || '–');
+      lc.appendChild(pre);
+      setTimeout(function () { pre.scrollTop = stick ? pre.scrollHeight : top; }, 0);
+    } else {
+      lc.appendChild(el('p', 'muted small', 'Hidden - ' + lines.length + ' line(s).'));
+    }
+    host.appendChild(lc);
+  }
+}
+
 /* ==== Upgrades ======================================================================== */
 var UP = {last: null, misses: 0, loaded: null, timer: null, tailOpen: false};
 var UP_STEP = {'waiting for root': ['waiting for root', 'dim', 3], 'checking the package': ['checking the package', 'info', 8],
@@ -29465,6 +29766,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-acme') loadAcme(); else acPoll(false);
   if (sec === 'sec-access') { loadAccounts(); renderSessions.at = 0; renderSessions(); }
   if (sec === 'sys-upgrade') { upgradeWire(); loadUpgrade(); }
+  if (sec === 'sys-osup') loadOsup(); else ouPoll(false);
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-time') { NTPP.dirty = false; loadNtp(); }
@@ -29500,6 +29802,7 @@ var CONTROL_SECTIONS = {
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
   'sys-acme': ['Automatic certificates', 'The certificate of this machine ordered from Let’s Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for a server it cannot see from the internet.'],
   'sys-upgrade': ['Upgrades', 'A new version of zigmon, signed, put in from here - and taken back by itself when it does not answer.'],
+  'sys-osup': ['System updates', 'The operating system\u2019s packages, updated by dnf: what is waiting, how many of them security updates, and whether the update will need a restart - then every update or only the security ones, with what dnf says as it goes. A restart it needs is offered when it is done, or made by itself.'],
   'sys-data': ['Data & database', 'What is written down and for how long, the database itself, and erasing it.'],
   'sys-diag': ['Diagnostics', 'Where the time goes, how devices reach the mesh, and the daemon itself.'],
   'sys-all': ['All other settings', 'Settings that do not belong to any one section.'],

@@ -535,6 +535,17 @@ DEFAULTS = {
     'reboot_auto': 'off',         # a regular restart of the machine: off, daily, weekly
     'reboot_at': '04:30',         # local HH:MM
     'reboot_day': 7,              # weekly: 1 Monday - 7 Sunday
+    # the updates of the system (5.34, otp 1.0.164): a look for what dnf has
+    # waiting every day, and the updates put in by themselves in a window of
+    # their own - both off until switched on (Control - System updates)
+    'osup_check': 0,
+    'osup_check_at': '06:15',     # local HH:MM
+    'osup_auto': 0,
+    'osup_auto_what': 'security', # security (dnf --security) or all
+    'osup_auto_every': 'weekly',  # daily, weekly, monthly (on the 1st)
+    'osup_auto_day': 7,           # weekly: 1 Monday - 7 Sunday
+    'osup_auto_at': '04:45',      # local HH:MM - a quiet hour, away from the backups
+    'osup_auto_reboot': 'auto',   # auto: restarted where needed; ask: the restart offered
     # where new versions are published, looked at once a day (5.21): a
     # GitHub folder, a folder listing, or one package's own address. Only
     # ever offered on the dashboard - nothing is put in by itself
@@ -9629,6 +9640,10 @@ class Daemon(object):
         'full_backup_nightly': (0, 1), 'full_backup_keep': (1, 60),
         'net_confirm_min': (0, 120), 'fw_confirm_min': (0, 120),
         'reboot_auto': 'str', 'reboot_at': 'str', 'reboot_day': (1, 7),
+        # the updates of the system (5.34)
+        'osup_check': (0, 1), 'osup_check_at': 'str', 'osup_auto': (0, 1),
+        'osup_auto_what': 'str', 'osup_auto_every': 'str', 'osup_auto_day': (1, 7),
+        'osup_auto_at': 'str', 'osup_auto_reboot': 'str',
         'upgrade_check': (0, 1), 'upgrade_url': 'str', 'downgrade_show': (0, 1),
         # Automatic certificates (5.30)
         'acme': (0, 1), 'acme_email': 'str', 'acme_ca': 'str', 'acme_url': 'str',
@@ -9751,9 +9766,11 @@ class Daemon(object):
                     raise ValueError('upgrade_url takes no name or password')
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
-                if key in ('backup_time', 'reboot_at') and \
+                if key in ('backup_time', 'reboot_at', 'osup_check_at', 'osup_auto_at') and \
                         not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
                     raise ValueError('%s must look like 03:30' % key)
+                if key in self.OSUP_SETTING_WORDS and value not in self.OSUP_SETTING_WORDS[key]:
+                    raise ValueError('%s is %s' % (key, ' or '.join(self.OSUP_SETTING_WORDS[key])))
                 if key == 'reboot_auto' and value not in ('off', 'daily', 'weekly'):
                     raise ValueError('reboot_auto is off, daily or weekly')
                 if key == 'rbackup_at' and not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
@@ -9955,6 +9972,11 @@ class Daemon(object):
     TUNABLE_SECRETS = ('duo_skey', 'mikrotik_password', 'proxy_password', 'intel_shodan_key',
                        'acme_dns_key')
 
+    # the words the settings of the system's updates take (5.34), checked on save
+    OSUP_SETTING_WORDS = {'osup_auto_what': ('security', 'all'),
+                          'osup_auto_every': ('daily', 'weekly', 'monthly'),
+                          'osup_auto_reboot': ('auto', 'ask')}
+
     TUNABLE_CHOICES = {
         'sms_cmms': [('always', 'always - kept on by zigmon'),
                      ('per_message', 'before each long text'),
@@ -9970,6 +9992,14 @@ class Daemon(object):
                            ('10', 'and look again every ten minutes'),
                            ('30', 'and look again every half hour')],
         'rbackup_every': [('daily', 'every day'), ('weekly', 'once a week')],
+        # the updates of the system on a schedule (5.34), in otp's words
+        'osup_auto_what': [('security', 'only the security updates'), ('all', 'every update')],
+        'osup_auto_every': [('daily', 'every day'), ('weekly', 'every week, on the day below'),
+                            ('monthly', 'every month, on the 1st')],
+        'osup_auto_day': [('1', 'Monday'), ('2', 'Tuesday'), ('3', 'Wednesday'), ('4', 'Thursday'),
+                          ('5', 'Friday'), ('6', 'Saturday'), ('7', 'Sunday')],
+        'osup_auto_reboot': [('auto', 'restarted by itself where an update needs it'),
+                             ('ask', 'the restart offered on the page')],
         # Automatic certificates (5.30), in otp's words
         'acme_ca': [('letsencrypt', 'Let’s Encrypt'),
                     ('letsencrypt-staging', 'Let’s Encrypt - staging (to try it)'),
@@ -14210,6 +14240,9 @@ class Daemon(object):
         ('upgrade', 'A new version',
          'a newer one found on the web, a package sent to the dashboard or fetched, an upgrade '
          'started, put in, or taken back because the new version did not answer', 'System', ''),
+        ('updates', 'The system\u2019s updates',
+         'security updates or a restart waiting, as the look for updates found them; an update of '
+         'the system started, done or failed', 'System', ''),
         ('root', 'What root put in place',
          'the certificate, who may reach the pages, the firewall, a backup of the whole '
          'installation made, put back or refused', 'System', 'level'),
@@ -16557,6 +16590,8 @@ class Daemon(object):
         return False
 
     def upgrade_start(self, who=''):
+        if osup_updating(self):
+            raise ValueError('the system is being updated - upgrade zigmon when that is done')
         st = self.upgrade_state()
         pkg = st['package']
         if not pkg:
@@ -17575,6 +17610,9 @@ class Daemon(object):
             raise ValueError('reboot or poweroff')
         if self.power_busy():
             raise ValueError('a restart or a power-off is under way already')
+        if osup_updating(self):
+            # dnf cut off half way leaves packages half put in
+            raise ValueError('the system is being updated - restart it when that is done')
         if self.net_job_active(self._mj('net:job')) or (self._mj('net:job') or {}).get('state') == 'trial':
             raise ValueError('the network is being changed - finish that first')
         at = None
@@ -17700,11 +17738,24 @@ class Daemon(object):
         how = str(CONFIG.get('reboot_auto') or 'off')
         if how not in ('daily', 'weekly'):
             return
+        # its minute came while the system was being updated (5.34, otp
+        # 1.0.168): it waits for the update, up to three hours, rather than
+        # cut dnf off - or be given up for the day
+        wait = self._mj('power:auto_wait') or {}
         nxt = self.power_auto_next(time.time() - 120)
-        if nxt is None or not (nxt <= time.time() < nxt + 120):
+        if wait.get('day') and wait.get('day') != self.store.get_meta('power:auto_day') and \
+                time.time() - float(wait.get('at') or 0) < 3 * 3600:
+            nxt = float(wait['at'])
+        elif nxt is None or not (nxt <= time.time() < nxt + 120):
             return
         day = time.strftime('%Y-%m-%d', time.localtime(nxt))
         if self.store.get_meta('power:auto_day') == day:
+            return
+        if osup_settling(self):
+            if wait.get('day') != day:
+                self._mj_put('power:auto_wait', {'day': day, 'at': nxt})
+                self.say_event('control', 'the regular restart waits for the update of the system '
+                               'to end', 'info', about='restart')
             return
         self.store.set_meta('power:auto_day', day)
         if self.boot_time() > nxt - 3600:
@@ -18057,7 +18108,10 @@ class Daemon(object):
             return
         while not self._stop.is_set():
             for name, job in (('network', self.net_tick), ('power', self.power_tick),
-                              ('firewall on trial', self.fw_trial_tick), ('time', self.ntp_tick)):
+                              ('firewall on trial', self.fw_trial_tick), ('time', self.ntp_tick),
+                              # what root's job of dnf says, and the schedule
+                              # of the updates (5.34): files read, threads started
+                              ('updates of the system', lambda: osup_tick(self))):
                 try:
                     job()
                 except Exception as e:                  # noqa: BLE001 - the next one still runs
@@ -21079,6 +21133,15 @@ class Daemon(object):
                 self._host_told[key] = now
                 self.say_event('control', words, 'warn', about='host', title='The machine itself',
                                dedup='host|' + key)
+            # security updates or a restart waiting (5.34, otp 1.0.162): said
+            # once a day while it lasts, as the look for updates found it
+            words = osup_trouble(self)
+            day = time.strftime('%Y-%m-%d', time.localtime(now))
+            if words and self.store.get_meta('osup:told') != day:
+                self.store.set_meta('osup:told', day)
+                self.say_event('control', 'the system: %s - Control, System updates' % words, 'warn',
+                               about='updates', title='The system\u2019s updates',
+                               dedup='updates|' + day)
 
     def host_trouble(self):
         """What is wrong with the machine zigmon runs on: [(key, words)]."""
@@ -34089,6 +34152,13 @@ class Daemon(object):
         offline = [p.name for p in self.plugs.values() if p.failures >= 2]
         if offline:
             lines.append('Not answering: ' + ', '.join(sorted(offline)[:6]))
+        # the system's updates, as the last look found them (5.34)
+        chk = osup_row(self, 'osup:check')
+        if chk.get('checked') and (chk.get('count') or osup_reboot_needed(self, chk)):
+            lines.append('The system: %d update(s) waiting%s%s' % (
+                int(chk.get('count') or 0),
+                ', %d of them security' % int(chk['security']) if chk.get('security') else '',
+                '; a restart needed' if osup_reboot_needed(self, chk) else ''))
         if warned:
             lines.append('Worst of the day: ' + (warned[0].get('detail') or '')[:90])
         text = '\n'.join(lines)
@@ -39029,7 +39099,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # where the backups go, and with which keys (5.21)
                      '/api/rbackup', '/api/rbackup/download',
                      # the certificates ordered from an ACME CA (5.31)
-                     '/api/acme')
+                     '/api/acme',
+                     # the updates of the system (5.34): what is waiting, and the update
+                     '/api/osup')
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -40061,6 +40133,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Automatic certificates (5.30): nothing secret in it - the
                 # account's key only as there or not
                 return self._send(200, acme_view(d))
+            if path == '/api/osup':
+                # the updates of the system (5.34): what dnf has waiting, the
+                # update going on and what dnf says
+                return self._send(200, osup_view(d))
             if path == '/api/people':
                 # the people with their real numbers, for an unlocked page to
                 # edit: the status carries them hidden (see mask_phone), and
@@ -41615,6 +41691,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 try:
                     out = acme_post(d, body, by)
                 except (ValueError, AcmeError) as e:
+                    return self._error(400, str(e)[:600])
+                out.setdefault('ok', True)
+                return self._send(200, out)
+            if path == '/api/osup':
+                # the updates of the system (5.34): an administrator's, every action
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = osup_post(d, body, by)
+                except ValueError as e:
                     return self._error(400, str(e)[:600])
                 out.setdefault('ok', True)
                 return self._send(200, out)
@@ -46237,6 +46327,446 @@ def acme_dns_check(d):
     return g
 
 
+# ---- the updates of the operating system (5.34, otp 1.0.158 - 1.0.193) -------------------
+# Ported from otp's Settings → System updates, for a house that is one
+# machine: no other node to go first, no address to move out of the way.
+# What dnf has waiting - how many, how many of them security, the packages,
+# whether the update will need a restart and whether one is waiting already
+# - and the update itself, every package or the security ones only, with a
+# bar and what dnf says as it goes; a restart it needs offered at the end, or
+# made by itself, through Restart and power off (power_ask) as any other.
+#
+# The daemon never runs dnf. root does, as a job of its own (zigmon_root.py,
+# asked in root/osup.ask beside request.json and never behind it, started as
+# a transient unit of systemd's so that it outlives the helper's service and
+# this daemon both), and writes how it goes into root/osup.json; this side
+# asks, follows that file from the system loop - a thread of its own, never
+# the beat that makes a lamp come on - and keeps what it saw in the database:
+#   osup:check   the last look for updates, and the one going on
+#   osup:run     the last update, and the one going on
+#   osup:cleared what the window was cleared of (for every page, after a reload)
+#   osup:seen    the update hidden from the page once it was over
+# On a schedule (otp 1.0.164): a look every day at osup_check_at, and the
+# updates put in by themselves in a window of their own - only the security
+# ones or all of them, every day, week or month - each once on its day.
+OSUP_LOCK = threading.Lock()
+OSUP_BY = 'zigmon (system update)'
+OSUP_SCHED_BY = 'zigmon (on a schedule)'
+OSUP_LIVE_S = 1800                   # a job that says nothing for this long is over
+OSUP_ASK_WAIT_S = 60                 # how long root is given to start one
+OSUP_AUTO_WINDOW_S = 3 * 3600        # how long after its time an update may still start
+OSUP_GOING = ('asking', 'running', 'updating')
+
+
+def osup_row(d, key):
+    return d._mj(key) or {}
+
+
+def osup_put(d, key, row, **kw):
+    row.update(kw, at=time.time())
+    d._mj_put(key, row, bump=True)
+    return row
+
+
+def osup_going(row):
+    return (row or {}).get('state') in OSUP_GOING
+
+
+def osup_updating(d):
+    """An update going on - or root asked for one and not answered yet."""
+    return osup_going(osup_row(d, 'osup:run'))
+
+
+def osup_reboot_needed(d, chk=None, run=None):
+    """Whether this machine waits for a restart: an update said so and it has
+    not been restarted since, or the last look found one waiting."""
+    chk = osup_row(d, 'osup:check') if chk is None else chk
+    run = osup_row(d, 'osup:run') if run is None else run
+    if run.get('needs_reboot') and run.get('state') in ('done', 'rebooting') and not run.get('rebooted') \
+            and not d.rebooted_since(run):
+        return True
+    return bool(chk.get('state') == 'done' and chk.get('reboot_now') and not d.rebooted_since(chk))
+
+
+def osup_blocked(d):
+    """Why an update cannot start now, or ''."""
+    if not d.root_installed():
+        return ('root has not been given this to do on this machine yet: run install.sh '
+                '--upgrade once, which installs zigmon-root.path')
+    run = osup_row(d, 'osup:run')
+    if osup_going(run):
+        return 'an update of the system is going on already'
+    if run.get('state') == 'rebooting' and not d.rebooted_since(run) and \
+            time.time() - float(run.get('at') or 0) < OSUP_LIVE_S:
+        return 'the restart after the update is under way'
+    if osup_going(osup_row(d, 'osup:check')):
+        return 'a look for updates is going on - wait for it to end'
+    up = d.upgrade_status()
+    if (up.get('state') == 'running' and time.time() - float(up.get('at') or 0) < 1800) or \
+            d.upgrade_asked():
+        return 'an upgrade of zigmon is going on - wait for it to end'
+    if d.power_busy():
+        return 'a restart or a power-off is going on - wait for it to end'
+    busy = d.root_busy()
+    if busy:
+        # what root holds: the request laid down, or the one it took
+        kind = ''
+        try:
+            name = 'request.taken' if busy.get('working') else 'request.json'
+            kind = str(json.loads(d.root_dir(name).read_text() or '{}').get('kind') or '')
+        except (OSError, ValueError, AttributeError):
+            pass
+        if kind.startswith('full_'):
+            return 'root is making or putting back a backup of the whole installation - wait for it to end'
+        return 'root is still busy with what was asked a moment ago - try again when that is done'
+    if RB_JOB.get('running'):
+        return 'a backup to other machines is being made - wait for it to end'
+    return ''
+
+
+def _osup_go(d, key, kind, job, security=False):
+    """root asked to start the job, in a thread of its own: root_call waits
+    for its answer, which a backup in request.json may hold up for minutes."""
+    def ask_root():
+        try:
+            d.root_call('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind, 'job': job,
+                                                 'security': bool(security)}, OSUP_ASK_WAIT_S)
+            with OSUP_LOCK:
+                row = osup_row(d, key)
+                if row.get('job') == job and row.get('state') == 'asking':
+                    osup_put(d, key, row, state='running' if kind == 'check' else 'updating')
+        except Exception as e:                          # noqa: BLE001 - said on the page
+            with OSUP_LOCK:
+                row = osup_row(d, key)
+                if row.get('job') == job and osup_going(row):
+                    if kind == 'check':
+                        osup_put(d, key, row, state='failed', error=str(e)[:300])
+                    else:
+                        osup_put(d, key, row, state='failed', said=str(e)[:300], ended=time.time())
+            if kind == 'upgrade':
+                d.say_event('control', 'the update of the system did not start: %s' % e, 'warn',
+                            about='updates')
+        d._net_kick.set()
+    threading.Thread(target=ask_root, name='osup-ask', daemon=True).start()
+
+
+def osup_check_ask(d, by):
+    """A look for what dnf has waiting - nothing put in."""
+    if not d.root_installed():
+        raise ValueError('root has not been given this to do on this machine yet: run install.sh '
+                         '--upgrade once, which installs zigmon-root.path')
+    with OSUP_LOCK:
+        chk = osup_row(d, 'osup:check')
+        if osup_going(chk):
+            raise ValueError('a look for updates is going on already')
+        if osup_updating(d):
+            raise ValueError('the system is being updated - it is looked at again when that is done')
+        job = secrets.token_hex(8)
+        keep = {k: chk.get(k) for k in ('packages', 'count', 'security', 'reboot_after', 'reboot_why',
+                                         'reboot_now', 'checked', 'pm', 'boot', 'boot_id') if k in chk}
+        osup_put(d, 'osup:check', dict(keep, state='asking', job=job, by=by, began=time.time(),
+                                       error='', lines=[], n=0))
+    _osup_go(d, 'osup:check', 'check', job)
+    return job
+
+
+def osup_start(d, by, reboot='ask', security=False):
+    """The update of the system: every package, or the security ones only."""
+    if reboot not in ('ask', 'auto'):
+        raise ValueError('after the update: ask or auto')
+    with OSUP_LOCK:
+        why = osup_blocked(d)
+        if why:
+            raise ValueError(why)
+        job = secrets.token_hex(8)
+        run = {'id': secrets.token_hex(6), 'job': job, 'by': by, 'began': time.time(),
+               'state': 'asking', 'reboot': reboot, 'security': bool(security), 'pct': 1,
+               'phase': 'waiting for root', 'lines': [], 'n': 0, 'said': 'asked of root',
+               'boot': d.boot_time(), 'boot_id': d.boot_id(), 'needs_reboot': False}
+        osup_put(d, 'osup:run', run)
+    d.say_event('control', '%s started the update of the system%s%s' % (
+        by, ' (the security updates only)' if security else '',
+        ', restarted by itself when it needs it' if reboot == 'auto' else ''), 'warn', about='updates')
+    _osup_go(d, 'osup:run', 'upgrade', job, security)
+    return run
+
+
+def osup_follow(d):
+    """From the system loop: what root's job says, into the rows the page
+    reads; an update's end - the restart made or offered, a look again."""
+    got = d.root_read('osup.json')
+    after = []
+    with OSUP_LOCK:
+        for key in ('osup:check', 'osup:run'):
+            row = osup_row(d, key)
+            if not osup_going(row):
+                continue
+            if got.get('id') != row.get('job'):
+                if time.time() - float(row.get('began') or 0) > OSUP_LIVE_S:
+                    words = 'root did not start it in half an hour'
+                    if key == 'osup:check':
+                        osup_put(d, key, row, state='failed', error=words)
+                    else:
+                        osup_put(d, key, row, state='failed', said=words, ended=time.time())
+                continue
+            lines = [str(x)[:300] for x in (got.get('lines') or [])][-300:]
+            n = int(got.get('n') or len(lines))
+            if got.get('state') == 'running':
+                if time.time() - float(got.get('at') or 0) > OSUP_LIVE_S:
+                    words = 'it has said nothing for half an hour'
+                    if key == 'osup:check':
+                        osup_put(d, key, row, state='failed', error=words, lines=lines, n=n)
+                    else:
+                        osup_put(d, key, row, state='failed', said=words, lines=lines, n=n,
+                                 ended=time.time())
+                    continue
+                pct = int(got.get('pct') or 0)
+                if n != row.get('n') or pct != row.get('pct') or row.get('state') == 'asking':
+                    osup_put(d, key, row, state='running' if key == 'osup:check' else 'updating',
+                             lines=lines, n=n, pct=pct, phase=str(got.get('phase') or '')[:80])
+                continue
+            ok = got.get('state') == 'done'
+            if key == 'osup:check':
+                osup_put(d, key, row, state='done' if ok else 'failed', lines=lines, n=n, pct=100,
+                         checked=time.time() if ok else row.get('checked'),
+                         packages=[str(x)[:120] for x in (got.get('packages') or [])][:1000]
+                         if ok else row.get('packages') or [],
+                         count=int(got.get('count') or 0) if ok else row.get('count'),
+                         security=got.get('security') if ok else row.get('security'),
+                         reboot_after=bool(got.get('reboot_after')) if ok else row.get('reboot_after'),
+                         reboot_why=[str(x)[:40] for x in (got.get('reboot_why') or [])][:20]
+                         if ok else row.get('reboot_why') or [],
+                         reboot_now=bool(got.get('reboot_now')) if ok else row.get('reboot_now'),
+                         pm=str(got.get('pm') or 'dnf')[:10], relook=False,
+                         boot=d.boot_time(), boot_id=d.boot_id(),
+                         error='' if ok else str(got.get('said') or 'it failed')[:300])
+                continue
+            reboot = bool(got.get('reboot')) and ok
+            row.update(lines=lines, n=n, pct=100, ended=time.time(), needs_reboot=reboot,
+                       rebooted=False)
+            if not ok:
+                osup_put(d, key, row, state='failed', said=str(got.get('said') or 'it failed')[:300])
+                after.append(('event', 'the update of the system failed: %s' % row['said'], 'warn'))
+                after.append(('look', None, None))
+                continue
+            if reboot and row.get('reboot') == 'auto':
+                osup_put(d, key, row, state='rebooting', said='updated - restarting, as it needs')
+                after.append(('reboot', None, None))
+                continue
+            osup_put(d, key, row, state='done', said='updated' + (' - it needs a restart' if reboot else ''))
+            after.append(('event', 'the system is updated%s' % (
+                ' - it needs a restart' if reboot else ''), 'warn' if reboot else 'info'))
+            after.append(('look', None, None))
+        # back up after a restart: the update over, what is waiting looked at again
+        run = osup_row(d, 'osup:run')
+        if run.get('needs_reboot') and not run.get('rebooted') and d.rebooted_since(run):
+            run['rebooted'] = True
+            if run.get('state') == 'rebooting':
+                run.update(state='done', said='up again after the restart')
+            osup_put(d, 'osup:run', run)
+            after.append(('look', None, None))
+        chk = osup_row(d, 'osup:check')
+        if chk.get('state') == 'done' and chk.get('reboot_now') and not chk.get('relook') and \
+                d.rebooted_since(chk):
+            osup_put(d, 'osup:check', chk, relook=True)
+            after.append(('look', None, None))
+    looked = False
+    for what, words, level in after:
+        try:
+            if what == 'event':
+                d.say_event('control', words, level, about='updates')
+            elif what == 'reboot':
+                try:
+                    d.power_ask('reboot', OSUP_BY)
+                    d.say_event('control', 'the system is updated - restarting by itself, as it needs',
+                                'warn', about='updates')
+                except ValueError as e:
+                    with OSUP_LOCK:
+                        run = osup_row(d, 'osup:run')
+                        osup_put(d, 'osup:run', run, state='done',
+                                 said='updated; the restart was not started: %s' % e)
+                    d.say_event('control', 'the system is updated, and needs a restart that was not '
+                                'started: %s' % e, 'warn', about='updates')
+            elif what == 'look' and not looked:
+                looked = True
+                osup_check_ask(d, OSUP_BY)
+        except ValueError as e:
+            log('the updates of the system: %s' % e, 'debug')
+
+
+def osup_lines(row, cleared):
+    """The lines of a job, without those the window was cleared of (otp
+    1.0.160): of the job they were cleared in, only what came after."""
+    lines = list(row.get('lines') or [])
+    if cleared and cleared.get('job') and cleared.get('job') == row.get('job'):
+        first = int(row.get('n') or len(lines)) - len(lines)
+        lines = lines[max(0, int(cleared.get('n') or 0) - first):]
+    return lines
+
+
+def osup_clear(d):
+    cl = {}
+    for part, key in (('check', 'osup:check'), ('run', 'osup:run')):
+        row = osup_row(d, key)
+        if row.get('job'):
+            cl[part] = {'job': row['job'], 'n': int(row.get('n') or len(row.get('lines') or []))}
+    d.store.set_meta('osup:cleared', json.dumps(cl))
+
+
+def _osup_due(every, day, at, now, window):
+    """(due now, the day it is due on) for a schedule of HH:MM on a day."""
+    lt = time.localtime(now)
+    m = re.match(r'^([01]?\d|2[0-3]):([0-5]\d)$', str(at or ''))
+    hh, mm = (int(m.group(1)), int(m.group(2))) if m else (4, 45)
+    if every == 'weekly' and lt.tm_wday + 1 != int(day or 7):
+        return False, ''
+    if every == 'monthly' and lt.tm_mday != 1:
+        return False, ''
+    start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, 0, 0, 0, -1))
+    return start <= now < start + window, time.strftime('%Y-%m-%d', lt)
+
+
+def osup_next(every, day, at, now=None):
+    """When a schedule comes next, for the page and the command line."""
+    now = time.time() if now is None else now
+    m = re.match(r'^([01]?\d|2[0-3]):([0-5]\d)$', str(at or ''))
+    hh, mm = (int(m.group(1)), int(m.group(2))) if m else (4, 45)
+    lt = time.localtime(now)
+    for add in range(0, 40):
+        t = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + add, hh, mm, 0, 0, 0, -1))
+        tl = time.localtime(t)
+        if t <= now or (every == 'weekly' and tl.tm_wday + 1 != int(day or 7)) or \
+                (every == 'monthly' and tl.tm_mday != 1):
+            continue
+        return t
+    return None
+
+
+def osup_sched_tick(d, now=None):
+    """A look every day, and the updates in their window - each once on its
+    day, claimed in the database, so a restart of this daemon in the window
+    does not start a second one. One that cannot start is said in the
+    events, not tried over and over."""
+    now = time.time() if now is None else now
+    if int(CONFIG.get('osup_check') or 0):
+        due, day = _osup_due('daily', 0, CONFIG.get('osup_check_at'), now, 86400)
+        if due and d.store.get_meta('osup:check:day') != day and not osup_going(osup_row(d, 'osup:check')) \
+                and not osup_updating(d):
+            d.store.set_meta('osup:check:day', day)
+            try:
+                osup_check_ask(d, OSUP_SCHED_BY)
+            except ValueError as e:
+                log('the daily look for updates: %s' % e, 'warn')
+    if int(CONFIG.get('osup_auto') or 0):
+        due, day = _osup_due(str(CONFIG.get('osup_auto_every') or 'weekly'),
+                             CONFIG.get('osup_auto_day') or 7, CONFIG.get('osup_auto_at'), now,
+                             OSUP_AUTO_WINDOW_S)
+        if due and d.store.get_meta('osup:auto:day') != day:
+            if osup_going(osup_row(d, 'osup:check')):
+                return                                  # the daily look first; in a moment
+            d.store.set_meta('osup:auto:day', day)
+            try:
+                osup_start(d, OSUP_SCHED_BY, str(CONFIG.get('osup_auto_reboot') or 'auto'),
+                           security=str(CONFIG.get('osup_auto_what') or 'security') == 'security')
+            except ValueError as e:
+                d.say_event('control', 'the update of the system on a schedule did not start: %s' % e,
+                            'warn', about='updates')
+
+
+def osup_settling(d):
+    """An update going on, or a look for updates - which says whether a
+    restart is needed - not over yet (otp 1.0.168): the regular restart waits."""
+    return osup_updating(d) or osup_going(osup_row(d, 'osup:check'))
+
+
+def osup_tick(d, now=None):
+    osup_follow(d)
+    osup_sched_tick(d, now)
+
+
+def osup_trouble(d):
+    """What the alerts and the daily summary say of the updates, or ''."""
+    chk = osup_row(d, 'osup:check')
+    out = []
+    if chk.get('checked') and chk.get('security'):
+        out.append('%d security update(s) waiting' % int(chk['security']))
+    if osup_reboot_needed(d, chk):
+        out.append('a restart an update needs')
+    return ', '.join(out)
+
+
+def osup_view(d):
+    chk = osup_row(d, 'osup:check')
+    run = osup_row(d, 'osup:run')
+    live = run.get('state') in OSUP_GOING + ('rebooting',)
+    if run and not live and d.store.get_meta('osup:seen') == str(run.get('id') or ''):
+        run = {}
+    try:
+        cl = json.loads(d.store.get_meta('osup:cleared') or '{}')
+    except ValueError:
+        cl = {}
+    cl = cl if isinstance(cl, dict) else {}
+    every = str(CONFIG.get('osup_auto_every') or 'weekly')
+    sched = {'check': bool(int(CONFIG.get('osup_check') or 0)),
+             'check_at': CONFIG.get('osup_check_at'),
+             'auto': bool(int(CONFIG.get('osup_auto') or 0)), 'every': every,
+             'what': CONFIG.get('osup_auto_what'), 'reboot': CONFIG.get('osup_auto_reboot')}
+    if sched['check']:
+        sched['check_next'] = osup_next('daily', 0, CONFIG.get('osup_check_at'))
+    if sched['auto']:
+        sched['auto_next'] = osup_next(every, CONFIG.get('osup_auto_day') or 7, CONFIG.get('osup_auto_at'))
+    power = d.power_plan() if d.power_busy() else {}
+    return {'ok': True, 'node': socket.gethostname().split('.')[0] or 'this machine',
+            'check': dict(chk, lines=osup_lines(chk, cl.get('check'))) if chk else {},
+            'run': dict(run, lines=osup_lines(run, cl.get('run'))) if run else {},
+            'reboot': osup_reboot_needed(d, chk, osup_row(d, 'osup:run')),
+            'blocked': osup_blocked(d), 'helper': d.root_installed(),
+            'power': {k: power.get(k) for k in ('id', 'how', 'by', 'at', 'when')} if power else {},
+            'schedule': sched, 'now': time.time()}
+
+
+def osup_post(d, b, by):
+    """POST /api/osup: what the page (and the command line) may do."""
+    act = str(b.get('action') or '')
+    if act == 'check':
+        osup_check_ask(d, by)
+        return dict(osup_view(d), message='looking for updates')
+    if act == 'start':
+        security = b.get('security', False)
+        if not isinstance(security, bool):
+            raise ValueError('security is yes or no')
+        run = osup_start(d, by, str(b.get('reboot') or 'ask'), security=security)
+        return dict(osup_view(d), message='the update starts%s' % (
+            ' - the security updates only' if run.get('security') else ''))
+    if act == 'reboot':
+        # the restart an update left, made as any other restart is
+        plan = d.power_ask('reboot', by)
+        return dict(osup_view(d), message='the server restarts in a few seconds', plan=plan)
+    if act == 'clear':
+        osup_clear(d)
+        return dict(osup_view(d), message='the window is empty')
+    if act == 'hide':
+        run = osup_row(d, 'osup:run')
+        if run.get('state') in OSUP_GOING + ('rebooting',):
+            raise ValueError('it is still going on')
+        if run.get('id'):
+            d.store.set_meta('osup:seen', str(run['id']))
+        return dict(osup_view(d), message='hidden')
+    if act == 'log':
+        # the whole of what dnf said in the last update (or the last look),
+        # as root wrote it
+        name = 'osup-check.log' if b.get('which') == 'check' else 'osup.log'
+        try:
+            with open(str(d.root_dir(name)), 'rb') as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 1024 * 1024))
+                text = f.read().decode('utf-8', 'replace')
+        except OSError:
+            text = ''
+        return {'ok': True, 'log': text}
+    raise ValueError('check, start, reboot, clear, hide or log')
+
+
 # ---- mDNS discovery -------------------------------------------------------
 def local_ipv4_addresses():
     """Every IPv4 address this machine holds, one per interface.
@@ -48502,6 +49032,10 @@ HELP_LINES = [
     ('zigmon --root-status', 'what root last did for the dashboard, and what it saw'),
     ('sudo zigmon --acme', 'the certificate by ACME: its name, its end, who renews it, its last order'),
     ('sudo zigmon --acme-order', 'order it from the ACME CA now, followed here'),
+    ('sudo zigmon --updates', 'the system\u2019s updates: what dnf has waiting, the security ones, a restart'),
+    ('sudo zigmon --updates look', 'look for updates now (nothing put in), followed here'),
+    ('sudo zigmon --updates update --security', 'update the system now - all, or the security ones only; '
+     '--reboot auto restarts it where needed'),
     ('sudo zigmon --console', 'menus for everything here, on a full screen; q leaves'),
     ('sudo zigmon --console-at-login off', 'whether root signing in lands in it: on, off, status'),
     ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
@@ -48742,6 +49276,15 @@ def build_parser():
     a.add_argument('--acme-order', nargs='?', const='all', metavar='web|all',
                    help='(root) order the certificate from the ACME CA now and follow it here; '
                         'ACME looks after it from then on')
+    a.add_argument('--updates', nargs='?', const='show', choices=('show', 'look', 'update', 'log'),
+                   help='(root) the system\u2019s updates (Control - System updates): show what dnf has '
+                        'waiting, look for updates now, update the system now (--security for the '
+                        'security updates only, --reboot ask|auto), log: what dnf said in the last update')
+    a.add_argument('--security', action='store_true',
+                   help='for --updates update: the security updates only (dnf --security)')
+    a.add_argument('--reboot', choices=('ask', 'auto'), default='ask',
+                   help='for --updates update: ask (the restart offered on the page) or auto '
+                        '(restarted by itself where the update needs it)')
     a.add_argument('--root-status', action='store_true',
                    help='what root last did for the dashboard: the certificate, the firewall, the '
                         'page lists, the whole backups, the last upgrade')
@@ -50887,6 +51430,113 @@ def cmd_acme(args, pal):
     acc = v.get('account') or {}
     if acc.get('kid'):
         print('  %-14s %s, made %s' % ('account', acc.get('email') or '(no mail)', stamp_of(acc.get('at'))))
+    return 0
+
+
+def cmd_updates(args, pal):
+    """zigmon --updates [show|look|update|log]: the system's updates through
+    the daemon - root's command line, as on the page (otp 1.0.168). dnf is
+    run by root, never here; a look and an update are followed until done."""
+    def when_of(ts):
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(float(ts))) if ts else '-'
+
+    def follow(key, began):
+        printed = 0
+        job = None
+        while True:
+            time.sleep(1)
+            code, v = api_call('/api/osup', timeout=20.0)
+            if code != 200 or not isinstance(v, dict):
+                if time.time() - began > 7200:
+                    return {}
+                continue                                # a restart of the daemon, most likely
+            row = v.get(key) or {}
+            if job is None:
+                job = row.get('job')
+            lines = row.get('lines') or []
+            n = int(row.get('n') or len(lines))
+            if row.get('job') == job and n > printed:
+                for ln in lines[-(n - printed):]:
+                    print(pal.dim('  ' + ln))
+                printed = n
+            if row.get('state') not in ('asking', 'running', 'updating') or time.time() - began > 7200:
+                return v
+
+    what = args.updates
+    if what == 'log':
+        code, out = api_call('/api/osup', method='POST', payload={'action': 'log'}, timeout=30.0)
+        if code != 200 or not isinstance(out, dict):
+            print(pal.crit('the daemon said: %s' % (out or {}).get('error', code)))
+            return 2
+        print(out.get('log') or 'no update has been made from here yet')
+        return 0
+    if what in ('look', 'update'):
+        if what == 'update' and not args.yes:
+            words = 'the security updates' if args.security else 'every package of the system'
+            try:
+                answer = input('Update %s now%s? [y/N] ' % (
+                    words, ', restarted by itself where needed' if args.reboot == 'auto' else ''))
+            except EOFError:
+                answer = ''
+            if answer.strip().lower() not in ('y', 'yes'):
+                print('nothing done')
+                return 1
+        body = {'action': 'check'} if what == 'look' else \
+            {'action': 'start', 'security': bool(args.security), 'reboot': args.reboot}
+        began = time.time()
+        code, out = api_call('/api/osup', method='POST', payload=body, timeout=30.0)
+        if code != 200 or not isinstance(out, dict) or not out.get('ok'):
+            print(pal.crit('refused: %s' % (out or {}).get('error', 'no answer')))
+            return 1
+        print(pal.ok(out.get('message') or 'asked'))
+        v = follow('check' if what == 'look' else 'run', began)
+        row = v.get('check' if what == 'look' else 'run') or {}
+        if row.get('state') == 'failed':
+            print(pal.crit(row.get('error') or row.get('said') or 'it failed'))
+            return 1
+        if what == 'update':
+            print(pal.ok(row.get('said') or 'updated'))
+            return 0
+    code, v = api_call('/api/osup', timeout=20.0)
+    if code != 200 or not isinstance(v, dict):
+        print(pal.crit('the daemon said: %s' % (v or {}).get('error', code)))
+        return 2
+    if args.json:
+        print(json.dumps(v, indent=2, ensure_ascii=False))
+        return 0
+    chk, run, sc = v.get('check') or {}, v.get('run') or {}, v.get('schedule') or {}
+    print(pal.title('the system\u2019s updates on %s%s' % (
+        v.get('node') or 'this machine', '' if v.get('helper') else
+        ' - root has not been given this yet (install.sh --upgrade)')))
+    if chk.get('state') in ('asking', 'running'):
+        print(pal.warn('  looking for updates now'))
+    if chk.get('checked'):
+        print('  %-14s %d' % ('waiting', int(chk.get('count') or 0)))
+        print('  %-14s %s' % ('security', '?' if chk.get('security') is None else chk.get('security')))
+        print('  %-14s %s' % ('looked', when_of(chk['checked'])))
+    else:
+        print('  %-14s %s' % ('waiting', 'not looked yet - zigmon --updates look'))
+    if chk.get('state') == 'failed' and chk.get('error'):
+        print(pal.crit('  the last look: %s' % chk['error']))
+    if v.get('reboot'):
+        print(pal.warn('  %-14s %s' % ('a restart', 'needed now')))
+    elif chk.get('reboot_after') and chk.get('count'):
+        print('  %-14s %s' % ('a restart', 'after the update - ' + ', '.join(chk.get('reboot_why') or [])))
+    for pk in (chk.get('packages') or [])[:40]:
+        print(pal.dim('    ' + pk))
+    if len(chk.get('packages') or []) > 40:
+        print(pal.dim('    ... and %d more' % (len(chk['packages']) - 40)))
+    if run.get('id'):
+        print('  %-14s %s, %s%s - %s' % ('the update', run.get('state'), when_of(run.get('began')),
+                                       ' (security only)' if run.get('security') else '',
+                                       run.get('said') or ''))
+    print('  %-14s %s' % ('a daily look', ('at %s, next %s' % (sc.get('check_at'), when_of(sc.get('check_next'))))
+                          if sc.get('check') else 'off'))
+    print('  %-14s %s' % ('on a schedule', ('%s, %s, next %s' % (sc.get('every'), sc.get('what'),
+                                                                 when_of(sc.get('auto_next'))))
+                          if sc.get('auto') else 'off'))
+    if v.get('blocked'):
+        print(pal.dim('  an update cannot start now: %s' % v['blocked']))
     return 0
 
 
@@ -53043,6 +53693,26 @@ def _console_acme(c):
 
 CONSOLE_MORE['main'].append(('SMS gateway', _console_sms))
 CONSOLE_MORE['main'].append(('Automatic certificates', _console_acme))
+
+
+def _console_updates(c):
+    """System updates from the console (otp 1.0.168): how they stand, a look
+    and an update - each followed, as on the page."""
+    def update(security):
+        if c.confirm('Update the system', '%s put in by dnf now; a restart it needs is offered '
+                     'on the page (Control - System updates).' % (
+                         'The security updates are' if security else 'Every package is'), 'Update'):
+            c.act('--updates', 'update', *(['--security', '--yes'] if security else ['--yes']))
+    return c.sub('System updates', [
+        ('How the updates stand', lambda: c.act('--updates')),
+        ('Look for updates now, followed here', lambda: c.act('--updates', 'look')),
+        ('Update every package', lambda: update(False)),
+        ('Update the security packages only', lambda: update(True)),
+        ('What dnf said in the last update', lambda: c.act('--updates', 'log')),
+    ], 'updates')
+
+
+CONSOLE_MORE['main'].append(('System updates', _console_updates))
 CONSOLE_MORE['main'].append(('Network, time and power', _console_machine))
 CONSOLE_MORE['backups'].extend([
     ('Backups to other machines: how they went', lambda c: c.act('--rbackup-status')),
@@ -53257,6 +53927,8 @@ def _dispatch(args, pal):
         return cmd_rbackup(args, pal)
     if getattr(args, 'acme', False) or getattr(args, 'acme_order', None):
         return cmd_acme(args, pal)
+    if getattr(args, 'updates', None):
+        return cmd_updates(args, pal)
     if getattr(args, 'run_script', None):
         return cmd_run_script(args, pal)
     if getattr(args, 'unblock', None):
