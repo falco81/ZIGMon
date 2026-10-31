@@ -2088,24 +2088,25 @@ Current version: **5.32.0**
 5.32.0 — Python 3.14.
 
 * **The daemon and the `zigmon` command run on Python 3.14** after this
-  upgrade (or an install). AlmaLinux 9's AppStream carries 3.11 and 3.12
-  only, so where no repository (AppStream, EPEL) has python3.14, the newest
-  3.14 release is built from python.org's source - 3.14.6 now - into
-  `/usr/local` (`make altinstall`), against the system's own OpenSSL, SQLite,
-  zlib and the rest, so dnf keeps those patched. The build runs at the lowest
-  CPU and disk priority, so sensors and sockets are not held up, takes a few
-  minutes once, and is given up after 15. It is built again when a newer 3.14
-  release is out; with python.org out of reach the one built stays.
-* The system's own python3 (3.9, which dnf runs on) is not touched. A build
-  that fails leaves its log in `/var/log/zigmon-python-build.log` and the
-  daemon goes to the newest Python the repositories carry (3.12), or stays
-  where it was. Nothing is switched until the new one imports everything the
-  daemon needs and runs it.
-* `install.sh --no-python-build` never builds: the newest python3.X of the
-  repositories. `--keep-python` leaves the daemon on the Python it runs on.
+  upgrade (or an install): `python3.14` from the repositories - 3.14.8 on
+  AlmaLinux 9.7 - put in beside the system's python3 and brought to its
+  latest patch at every upgrade, the way the `ai` project does.
+* Where no repository (AppStream, EPEL) has python3.14 - an older 9.x - the
+  newest 3.14 release is built from python.org's source into `/usr/local`
+  (`make altinstall`), against the system's own OpenSSL, SQLite, zlib and the
+  rest, so dnf keeps those patched; at the lowest CPU and disk priority, so
+  sensors and sockets are not held up; given up after 15 minutes; built again
+  when a newer 3.14 release is out, kept as it is with python.org out of
+  reach. A build that fails leaves its log in
+  `/var/log/zigmon-python-build.log`, and the daemon goes to the newest
+  Python the repositories carry (3.12), or stays where it was.
+* The system's own python3 (3.9, which dnf runs on) is not touched. Nothing
+  is switched until the new one imports everything the daemon needs and runs
+  it. `install.sh --no-python-build` never builds; `--keep-python` leaves the
+  daemon on the Python it runs on.
 * **PHP 8.3** (8.3.36 or newer, with the php2shell fix) as since 5.30, at
   every upgrade.
-* The whole test suite passes on Python 3.14.6.
+* The test suite passes on Python 3.14.
 
 `test/python.py` holds the build, its newest release, the build again for a
 newer one, python.org away, a failed build and the repositories' own 3.14;
