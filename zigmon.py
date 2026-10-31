@@ -612,6 +612,7 @@ DEFAULTS = {
     'rbackup_keep': 30,           # this machine's backups kept at each destination
     'rbackup_keep_days': 0,       # and none older than this many days (0 = no limit)
     'rbackup_password': '',       # locks every backup sent; never shown back or logged
+    'rbackup_verify': 'off',      # try the newest: off (by hand), after every backup, weekly
     'backup_zigbee': 1,           # 1 = also ask Zigbee2MQTT for its coordinator backup
     'chart_outages': 0,            # 1 = shade stretches where a chatty source went quiet, on every chart
     'link_plugs': 1,               # 1 = a plug's name / chart button opens its history
@@ -10018,6 +10019,7 @@ class Daemon(object):
         'webproxy_duo': (0, 1),
         'rbackup': (0, 1), 'rbackup_at': 'str', 'rbackup_every': 'str', 'rbackup_day': (1, 7),
         'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650), 'rbackup_password': 'str',
+        'rbackup_verify': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
         'session_idle_min': (0, 43200), 'session_hours': (1, 8760),
         'chart_outages': (0, 1), 'link_plugs': (0, 1), 'link_sensors': (0, 1), 'link_buttons': (0, 1),
@@ -10139,6 +10141,8 @@ class Daemon(object):
                     raise ValueError('rbackup_at must look like 04:15')
                 if key == 'rbackup_every' and value not in ('daily', 'weekly'):
                     raise ValueError('rbackup_every is daily or weekly')
+                if key == 'rbackup_verify' and value not in ('off', 'after', 'weekly'):
+                    raise ValueError('rbackup_verify is off, after or weekly')
                 if key == 'rbackup_password':
                     # what root locks the copy with wants eight at least; the
                     # whole of it is the only way into every backup sent
@@ -10379,6 +10383,9 @@ class Daemon(object):
                            ('10', 'and look again every ten minutes'),
                            ('30', 'and look again every half hour')],
         'rbackup_every': [('daily', 'every day'), ('weekly', 'once a week')],
+        # Try the backups (5.36.2), in plexmon's words
+        'rbackup_verify': [('off', 'only by hand'), ('after', 'after every backup, the one just sent'),
+                           ('weekly', 'once a week, the newest one')],
         # the updates of the system on a schedule (5.34), in otp's words
         'osup_auto_what': [('security', 'only the security updates'), ('all', 'every update')],
         'osup_auto_every': [('daily', 'every day'), ('weekly', 'every week, on the day below'),
@@ -39874,8 +39881,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                             about='data_erased', title='The installation is being put back')
                 return {'message': 'root is putting it back'}
         if path == '/api/fullbackup/upload':
+            # Put one back... (5.36.2): a backup sent to another machine is
+            # locked with the password of the backups - used when none is typed
+            pw = body.get('passphrase') or (rb_password() if body.get('rbackup_password') else '')
             return d.full_upload(body.get('part') or 1, body.get('of') or 1, body.get('data'),
-                                 body.get('upload_id'), body.get('passphrase') or '')
+                                 body.get('upload_id'), pw)
         raise ValueError('nothing is done for that')
 
     def _send_file(self, path, download_name):
@@ -51467,19 +51477,20 @@ def rb_history_forget(d, at=None, file=None):
         return len(runs) - len(left)
 
 
-def rb_make_locked(d, work, progress):
+def rb_root_locked(d, progress, why='to other machines'):
     """Root makes a backup of the whole installation and hands over a copy
-    locked with the password of the backups: it is moved into `work` at once,
-    so neither the next hand-over nor the hourly tidy takes it from under
-    the sending. Its path."""
+    locked with the password of the backups, into its hand-over folder. The
+    path of the copy there."""
     pw = rb_password()
+    if not pw or len(pw) < 8:
+        raise RbError('the backups have no password yet: set one first (When, how many, and the password)')
     if not root_ok(d):
         raise RbError('root has not been given this to do on this machine yet: run install.sh --upgrade '
                       'once, which installs zigmon-root.path')
     progress(1, 5, 'waiting for root to be free')
     rb_root_free(d)
     progress(1, 5, 'root is making a backup of the whole installation')
-    st = rb_root_wait(d, d.full_make('to other machines'))
+    st = rb_root_wait(d, d.full_make(why))
     if st.get('state') != 'done' or not (st.get('made') or {}).get('file'):
         raise RbError('root did not make the backup: %s' % '; '.join(st.get('said') or ['it said nothing']))
     made = st['made']['file']
@@ -51491,6 +51502,13 @@ def rb_make_locked(d, work, progress):
     src = d.root_dir('out', os.path.basename(st['out']))
     if not RB_NAME_RE.match(src.name):
         raise RbError('root handed over %r, which is not a locked backup' % src.name)
+    return src
+
+
+def rb_make_locked(d, work, progress):
+    """A locked backup moved into `work` at once, so neither the next
+    hand-over nor the hourly tidy takes it from under the sending. Its path."""
+    src = rb_root_locked(d, progress)
     path = os.path.join(work, src.name)
     try:
         os.replace(str(src), path)
@@ -51598,7 +51616,218 @@ def rb_run(d, by, only=None, progress=None):
     elif getattr(d, '_rb_failed_told', False):
         d._rb_failed_told = False
         d.notify('The backup to other machines works again.', 'info', dedup='rbackup-back', about='backup')
+    # Try the backups after every backup (5.36.2): the one just sent
+    if run['ok'] and str(CONFIG.get('rbackup_verify') or 'off') == 'after':
+        try:
+            run['tried'] = bool(rb_verify(d, by, progress, name=run.get('file'))['ok'])
+        except Exception as e:                          # noqa: BLE001 - the backup went all the same
+            log('trying the backup just sent: %s' % rb_said(e), 'warn')
     return run
+
+
+# ---- the backups tried (5.36.2, plexmon's Try the newest) ----------------------------------
+RB_MOST_VERIFIED = 20
+
+
+def rb_verified(d):
+    got = d._json_meta('rbackup:verified', [])
+    return [x for x in (got if isinstance(got, list) else []) if isinstance(x, dict)]
+
+
+def rb_verified_add(d, one):
+    with RB_LOCK:
+        d.store.set_meta('rbackup:verified', json.dumps(([one] + rb_verified(d))[:RB_MOST_VERIFIED], default=str))
+
+
+def rb_verified_forget(d, at=None):
+    """One try off the list, or all of them. The backups stay where they are."""
+    with RB_LOCK:
+        rows = rb_verified(d)
+        left = [] if at is None else [r for r in rows if abs(float(r.get('at') or 0) - float(at)) >= 0.001]
+        d.store.set_meta('rbackup:verified', json.dumps(left, default=str))
+        return len(rows) - len(left)
+
+
+def rb_verify(d, by, progress=None, name=None, only=None):
+    """The newest backup of this machine fetched back from the first
+    destination switched on that holds one, its .sha256 compared, opened with
+    the password, every file in it read through against MANIFEST.json and the
+    database read through by SQLite - nothing is put back, and root is not
+    asked: the daemon holds the password. Each check said; the whole kept in
+    the list of the backups tried."""
+    progress = progress or (lambda *a: None)
+    checks = []
+
+    def tried_check(what, ok, words=''):
+        checks.append({'what': what, 'ok': bool(ok), 'said': rb_scrub(str(words or ''))[:300]})
+        return ok
+    one = {'at': time.time(), 'by': by, 'host': rb_host(), 'file': '', 'target_name': '', 'ok': False,
+           'checks': checks}
+    work = tempfile.mkdtemp(prefix='try-', dir=rb_work_root())
+    try:
+        pw = rb_password()
+        if len(pw) < 8:
+            raise RbError('the backups have no password: there is nothing to open them with')
+        targets = [t for t in rb_targets(d) if (only and t['id'] in only) or (not only and t.get('enabled'))]
+        if not targets:
+            raise RbError('no destination is switched on')
+        progress(1, 5, 'looking for the newest backup of this machine')
+        t, newest = None, None
+        for cand in targets:
+            try:
+                files = [x for x in rb_remote_list(d, cand['id']) if x['mine'] and (not name or x['name'] == name)]
+            except (RbError, ValueError) as e:
+                tried_check('%s answers' % cand['name'], False, rb_said(e, cand))
+                continue
+            if files:
+                t, newest = cand, files[0]
+                break
+        if not newest:
+            raise RbError('no backup of this machine is at a destination switched on')
+        one.update(file=newest['name'], target_name=t['name'], target_id=t['id'])
+        tried_check('found at %s' % t['name'], True, newest['name'])
+        local = os.path.join(work, newest['name'])
+        progress(2, 5, 'fetching %s from %s' % (newest['name'], t['name']))
+        tr = rb_transport(t)
+        sha_file = None
+        try:
+            tr.open()
+            tr.get(newest['name'], local)
+            if newest.get('sha256'):
+                sha_file = local + '.sha256'
+                tr.get(newest['name'] + '.sha256', sha_file)
+        except RbError:
+            raise
+        except Exception as e:                          # noqa: BLE001 - in words
+            raise RbError(rb_said(e, t))
+        finally:
+            tr.close()
+        size = os.path.getsize(local)
+        tried_check('fetched back whole', not newest.get('bytes') or size == int(newest['bytes']), human_size(size))
+        if sha_file:
+            h = hashlib.sha256()
+            with open(local, 'rb') as f:
+                for lump in iter(lambda: f.read(1 << 20), b''):
+                    h.update(lump)
+            with open(sha_file, 'r', errors='replace') as f:
+                want = (f.read(200).split() or [''])[0].lower()
+            tried_check('the same as its .sha256', want == h.hexdigest(), 'SHA-256 ' + h.hexdigest()[:16] + '…')
+        with open(local, 'rb') as f:
+            magic = f.read(8)
+        if not tried_check('locked (AES-256)', magic == b'Salted__', '' if magic == b'Salted__' else 'it is not locked'):
+            raise RbError('it is not locked')
+        progress(3, 5, 'opening it with the password')
+        import tarfile
+        proc = subprocess.Popen(['openssl', 'enc', '-d', '-aes-256-cbc', '-pbkdf2', '-iter', '600000', '-in', local,
+                                 '-pass', 'env:ZIGMON_RB_PASS'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=dict(os.environ, ZIGMON_RB_PASS=pw))
+        sums, manifest, db_path, broke = {}, None, None, ''
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode='r|gz') as tar:
+                for m in tar:
+                    if not m.isfile():
+                        continue
+                    fh = tar.extractfile(m)
+                    if m.name.endswith('/MANIFEST.json') and m.name.count('/') == 1:
+                        manifest = json.loads(fh.read(16 << 20).decode('utf-8'))
+                        continue
+                    hh, out = hashlib.sha256(), None
+                    if db_path is None and m.name.split('/')[1:2] == ['database']:
+                        db_path = os.path.join(work, 'history.db')
+                        out = open(db_path, 'wb')
+                    try:
+                        for lump in iter(lambda: fh.read(1 << 20), b''):
+                            hh.update(lump)
+                            if out:
+                                out.write(lump)
+                    finally:
+                        if out:
+                            out.close()
+                    sums[m.name] = hh.hexdigest()
+        except Exception as e:                          # noqa: BLE001 - a broken file is the answer
+            broke = str(e) or e.__class__.__name__
+        finally:
+            proc.stdout.close()
+            err = proc.stderr.read().decode('utf-8', 'replace').strip()
+            proc.wait()
+        opened = proc.returncode == 0 and not broke
+        if not opened:
+            why = 'it does not open with the password set here' if proc.returncode else 'it is broken: %s' % broke
+            tried_check('opened with the password', False, why + ((' (%s)' % err[:120]) if err and proc.returncode else ''))
+            raise RbError(why)
+        tried_check('opened with the password', True)
+        progress(4, 5, 'checking every file in it')
+        files = manifest.get('files') if isinstance(manifest, dict) else None
+        if not tried_check('MANIFEST.json in it', isinstance(files, list) and manifest.get('kind') == 'zigmon-full',
+                    '' if isinstance(files, list) else 'there is none'):
+            raise RbError('it is not a backup of the whole installation')
+        bad = [f.get('archive') for f in files if sums.get(f.get('archive')) != f.get('sha256')]
+        tried_check('every file as MANIFEST.json says', not bad, ('%d files, %s' % (len(files), human_size(
+            sum(int(f.get('bytes') or 0) for f in files)))) if not bad else 'not as listed: ' + ', '.join(
+            str(x) for x in bad[:4]))
+        if db_path:
+            try:
+                con = sqlite3.connect('file:%s?mode=ro' % db_path, uri=True)
+                try:
+                    got = con.execute('PRAGMA quick_check').fetchone()
+                finally:
+                    con.close()
+                tried_check('the database reads through (SQLite)', bool(got) and got[0] == 'ok', (got or [''])[0])
+            except sqlite3.Error as e:
+                tried_check('the database reads through (SQLite)', False, str(e))
+        else:
+            tried_check('the database in it', False, 'there is none')
+        one['ok'] = all(c['ok'] for c in checks if not c['what'].endswith(' answers'))
+    except Exception as e:                              # noqa: BLE001 - written down, never lost
+        one['error'] = rb_said(e)
+        if all(c['ok'] for c in checks):
+            tried_check('tried', False, one['error'])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    progress(5, 5, 'done')
+    one['secs'] = round(time.time() - one['at'], 1)
+    rb_verified_add(d, one)
+    d.store.add_event('control', ('the backup %s at %s tried: %s' % (
+        one['file'] or '-', one['target_name'] or '-', 'it can be put back' if one['ok'] else
+        (one.get('error') or '; '.join('%s: %s' % (c['what'], c['said']) for c in checks if not c['ok']))))[:300],
+        'info' if one['ok'] else 'warn')
+    if not one['ok']:
+        d.notify('The newest backup could not be opened and read: %s' % (
+            one.get('error') or '; '.join(c['what'] for c in checks if not c['ok']))[:200],
+            'warn', dedup='rbackup-tried', about='backup', title='A backup does not open')
+    return one
+
+
+def rb_verify_due(d, now=None):
+    """Once a week, the newest one (rbackup_verify = weekly): the week it is
+    due for, now - written into the database before it starts, so a restart
+    neither loses it nor makes it twice."""
+    if str(CONFIG.get('rbackup_verify') or 'off') != 'weekly' or RB_JOB['running']:
+        return None
+    m = re.match(r'^([01]?\d|2[0-3]):([0-5]\d)$', str(CONFIG.get('rbackup_at') or '04:15'))
+    hh, mm = (int(m.group(1)), int(m.group(2))) if m else (4, 15)
+    now = now or datetime.now()
+    if (now.hour, now.minute) < (hh, mm):
+        return None
+    week = '%d-W%02d' % tuple(now.isocalendar()[:2])
+    if d.store.get_meta('rbackup:tried_week') == week:
+        return None
+    if not any(r.get('ok') for r in rb_history(d)) or not any(t.get('enabled') for t in rb_targets(d)):
+        return None
+    d.store.set_meta('rbackup:tried_week', week)
+    return week
+
+
+def rb_make_here(d, by, progress):
+    """Download one here: root makes one now and hands it over locked with
+    the password of the backups, for the page to fetch once (as a backup of
+    the whole installation is downloaded) - gone from the hand-over folder
+    when fetched, or in an hour."""
+    src = rb_root_locked(d, progress, 'to download')
+    d.say_event('control', 'a locked backup of the whole installation made to be downloaded%s'
+                % ((' by %s' % by) if by else ''), 'warn', about='secrets_out')
+    progress(5, 5, 'ready')
+    return {'ready': src.name, 'bytes': src.stat().st_size}
 
 
 def rb_job_start(d, by, what, work):
@@ -51647,16 +51876,18 @@ def rb_tick(d, now=None):
     - the day is written into the database before it starts, so a restart
     neither loses it nor makes it twice."""
     day = rb_due(now)
-    if not day or RB_JOB['running']:
+    if day and not RB_JOB['running'] and d.store.get_meta('rbackup:day') != day:
+        d.store.set_meta('rbackup:day', day)
+        if any(t.get('enabled') for t in rb_targets(d)):
+            rb_job_start(d, 'zigmon (on the clock)', 'backup', lambda progress: rb_run(d, 'zigmon (on the clock)',
+                                                                                     None, progress))
+            return day
         return None
-    if d.store.get_meta('rbackup:day') == day:
-        return None
-    d.store.set_meta('rbackup:day', day)
-    if not any(t.get('enabled') for t in rb_targets(d)):
-        return None
-    rb_job_start(d, 'zigmon (on the clock)', 'backup', lambda progress: rb_run(d, 'zigmon (on the clock)',
-                                                                             None, progress))
-    return day
+    # Try the backups once a week (5.36.2): the newest, at the same hour
+    if rb_verify_due(d, now):
+        rb_job_start(d, 'zigmon (on the clock)', 'verify', lambda progress: rb_verify(d, 'zigmon (on the clock)',
+                                                                                    progress))
+    return None
 
 
 def rb_next(now=None):
@@ -51779,7 +52010,8 @@ def rb_page(d):
             'job': dict(RB_JOB), 'host': rb_host(), 'locked': len(rb_password()) >= 8,
             'kinds': [{'kind': k, 'words': RB_KIND_WORDS[k], 'port': RB_PORTS[k]} for k in RB_KINDS],
             'tools': rb_tools(), 'next': rb_next(), 'helper': root_ok(d),
-            'on': bool(int(CONFIG.get('rbackup') or 0)),
+            'on': bool(int(CONFIG.get('rbackup') or 0)), 'verified': rb_verified(d)[:RB_MOST_VERIFIED],
+            'verify': str(CONFIG.get('rbackup_verify') or 'off'),
             'keep': int(CONFIG.get('rbackup_keep') or 0), 'keep_days': int(CONFIG.get('rbackup_keep_days') or 0)}
 
 
@@ -51903,6 +52135,34 @@ def rb_post(d, b, by):
         return {'message': 'the backup is being made', 'job': job}
     if act == 'job':
         return {'job': dict(RB_JOB)}
+    if act == 'verify':
+        # Try the newest (5.36.2): fetched back, opened, read through
+        only = [str(x) for x in (b.get('ids') or []) if isinstance(x, str)] or None
+        if len(rb_password()) < 8:
+            raise ValueError('the backups have no password yet: there is nothing to open them with')
+        job = rb_job_start(d, by, 'verify', lambda progress: rb_verify(d, by, progress, only=only))
+        return {'message': 'the newest backup is being fetched and tried', 'job': job}
+    if act == 'verified_forget':
+        if b.get('all'):
+            n = rb_verified_forget(d)
+            d.store.add_event('control', 'the list of backups tried cleared (%d line(s))%s; the backups stay '
+                              'where they are' % (n, (' by %s' % by) if by else ''))
+            return {'message': 'the list is empty; the backups stay where they are', 'verified': rb_verified(d)}
+        try:
+            at = float(b.get('at'))
+        except (TypeError, ValueError):
+            raise ValueError('which try?')
+        if not rb_verified_forget(d, at):
+            raise ValueError('that try is not on the list any more')
+        return {'message': 'taken off the list', 'verified': rb_verified(d)}
+    if act == 'here':
+        # Download one here (5.36.2): made now, locked, handed over once
+        if len(rb_password()) < 8:
+            raise ValueError('the backups have no password yet: set one first (When, how many, and the password)')
+        if not root_ok(d):
+            raise ValueError('root has not been given this to do on this machine yet: run install.sh --upgrade once')
+        job = rb_job_start(d, by, 'here', lambda progress: rb_make_here(d, by, progress))
+        return {'message': 'the backup is being made - the download starts when it is ready', 'job': job}
     if act == 'list':
         return {'files': rb_remote_list(d, b.get('id'))}
     if act == 'delete_file':

@@ -520,6 +520,48 @@ check(runs and runs[0].get('ok') and runs[0].get('file') == name, 'the history h
 check((page['targets'][0].get('last') or {}).get('ok'), 'the destination does not say it was sent')
 check(page.get('locked') is True, 'the page does not say the backups are locked')
 
+# Try the newest (5.36.2): fetched back, its .sha256, opened with the password,
+# every file against MANIFEST.json, the database read through - and kept
+print('Try the newest, and Download one here')
+code, got = post({'action': 'verify'})
+check(code == 200, 'Try the newest: %s %s' % (code, got))
+job = job_end()
+res = job.get('result') or {}
+check(job.get('what') == 'verify' and res.get('ok') and res.get('file') == name,
+      'the newest was not tried, or not good: %s' % json.dumps(job)[:800])
+whats = [c.get('what') for c in res.get('checks') or []]
+for want in ('the same as its .sha256', 'opened with the password', 'every file as MANIFEST.json says',
+             'the database reads through (SQLite)'):
+    check(want in whats, 'the try did not check %r: %r' % (want, whats))
+code, page = call('/api/rbackup', session=S)
+check((page.get('verified') or [{}])[0].get('ok') and (page.get('verified') or [{}])[0].get('file') == name,
+      'the try is not on the page: %s' % (page.get('verified') or [])[:1])
+check(PASSWORD not in json.dumps(page), 'the password is in what the page is told')
+# a damaged copy there: said NOT GOOD, never put back
+good = sent.read_bytes()
+sent.write_bytes(good[:-40] + b'x' * 40)
+post({'action': 'verify'})
+res = job_end().get('result') or {}
+check(not res.get('ok'), 'a damaged backup was tried as good: %s' % json.dumps(res)[:400])
+sent.write_bytes(good)
+code, got = post({'action': 'verified_forget', 'all': 1})
+check(code == 200 and got.get('verified') == [], 'the list of tries was not cleared: %s %s' % (code, got))
+# Download one here: made by root now, locked, handed over to be fetched once
+code, got = post({'action': 'here'})
+check(code == 200, 'Download one here: %s %s' % (code, got))
+job = job_end()
+ready = (job.get('result') or {}).get('ready') or ''
+check(zigmon.RB_NAME_RE.match(ready) is not None, 'nothing was made to download: %s' % json.dumps(job)[:600])
+if ready:
+    there_out = STATE / 'root' / 'out' / ready
+    check(there_out.is_file() and there_out.read_bytes()[:8] == b'Salted__', 'the copy to download is not locked')
+    code, data = call('/api/fullbackup/download?file=%s' % ready, session=S, raw=True)
+    check(code == 200 and data[:8] == b'Salted__', 'the copy was not handed over: %s' % code)
+    try:
+        there_out.unlink()
+    except OSError:
+        pass
+
 # a failing destination: said, in the history and once by message
 zigmon.rb_put_targets(d, zigmon.rb_targets(d) + [dict(zigmon.rb_targets(d)[0], id='bbbbbbbbbbbb', name='gone',
                                                        port=free_port())])

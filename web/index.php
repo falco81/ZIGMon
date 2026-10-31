@@ -4126,8 +4126,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      padding and title, a note's words, a table's head and rows, the controls
      38 px high (32 px small), a primary button filled, a fold drawn as a bar
      with its chevron, and the save bar at the end of the pane. */
-  #ctl-head[data-sec="sys-upgrade"] .ctl-title{font-size:22px;line-height:1.5}
-  #ctl-head[data-sec="sys-upgrade"] .ctl-lede{font-size:14px;line-height:1.6;max-width:980px}
+  #ctl-head:is([data-sec="sys-upgrade"], [data-sec="sys-backup"]) .ctl-title{font-size:22px;line-height:1.5}
+  #ctl-head:is([data-sec="sys-upgrade"], [data-sec="sys-backup"]) .ctl-lede{font-size:14px;line-height:1.6;max-width:980px}
   #tab-control .grid.charts > .card.up{padding:20px 22px;border-radius:14px;font-size:14.5px;line-height:1.5}
   .grid.charts > .card.up + .card.up{margin-top:-2px}
   #tab-control .grid.charts > .card.up > h2{font-size:16px;line-height:1.5;margin:0 0 12px}
@@ -4183,10 +4183,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .card.up details.zfold > summary:hover::before{opacity:1}
   .card.up details.zfold[open] > summary{border-bottom:1px solid var(--line)}
   #up-log-fold{margin:0}
-  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp:not(.open){display:-webkit-box;
+  :is(#ctl-head:is([data-sec="sys-upgrade"], [data-sec="sys-backup"]) .ctl-lede, .card.up > p.note).clamp:not(.open){display:-webkit-box;
     -webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp.cut{cursor:pointer}
-  :is(#ctl-head[data-sec="sys-upgrade"] .ctl-lede, .card.up > p.note).clamp.cut:not(.open):hover{color:var(--tx)}
+  :is(#ctl-head:is([data-sec="sys-upgrade"], [data-sec="sys-backup"]) .ctl-lede, .card.up > p.note).clamp.cut{cursor:pointer}
+  :is(#ctl-head:is([data-sec="sys-upgrade"], [data-sec="sys-backup"]) .ctl-lede, .card.up > p.note).clamp.cut:not(.open):hover{color:var(--tx)}
   /* going back: a row a version, its buttons at the right (otp 1.0.145) */
   .card.up .dg-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;
     padding:8px 10px;border-bottom:1px solid var(--line)}
@@ -4222,11 +4222,110 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   /* otp's save bar: below the last card until something is changed, then
      stuck to the bottom of the page with the page fading out above it */
   .up-save-bar{position:static;margin:0 0 4px;padding:12px 0;border:1px solid transparent;border-radius:14px}
-  .up-save-bar:not(.dirty) #up-save{opacity:.55}
+  .up-save-bar:not(.dirty) :is(#up-save, #rb-save){opacity:.55}
   .up-save-bar.dirty{position:sticky;bottom:12px;z-index:20;padding:12px 16px;background:var(--panel2);
     border-color:rgba(88,166,255,.4);box-shadow:0 12px 30px rgba(0,0,0,.45)}
   .up-save-bar.dirty::before{content:'';position:absolute;left:-8px;right:-8px;bottom:calc(100% + 1px);height:26px;
     pointer-events:none;background:linear-gradient(to top,var(--bg) 20%,rgba(13,17,23,0))}
+  /* Backups to other machines (5.36.2), as plexmon 2.5.3 draws its Settings -> Backups:
+     the last backup and its buttons in a card with a coloured edge, the settings
+     side by side - the name in bold over its control, the words under it in three
+     lines - the destinations as cards, and the kinds as tiles of three */
+  #tab-control .grid.charts > #rb-card{padding:20px 22px}
+  #rb-card .rb-hero-head{gap:16px}
+  #rb-card .rb-hero-words > b{font-size:16px;line-height:1.5;margin-bottom:8px}
+  #rb-card .rb-hero-acts{gap:8px}
+  #rb-card .rb-hero-acts .btn{height:38px}
+  #rb-card .rb-hero-ic{background:var(--panel2)}
+  .rb-hero-why{color:var(--crit)}
+  #tab-control #rb-when-card .set-host .set-cluster > .set-sub,
+  #rb-when-card .set-grid > .set-head{display:none}
+  #tab-control #rb-when-card .set-host .set-cluster{grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
+    gap:22px 28px;margin:0}
+  /* plexmon's set-item: a column - the name, the control, what it says - not
+     the rows shared across a line that the other cards have */
+  #tab-control #rb-when-card .set-host .set-cluster > .set-item{display:flex;flex-direction:column;gap:7px;
+    grid-row:auto;align-self:start;margin:0;min-width:0}
+  #tab-control #rb-when-card .set-item > label{display:flex;align-items:center;gap:6px;align-self:stretch;
+    font-size:13.5px;font-weight:650;line-height:1.3;color:var(--tx);letter-spacing:0;text-transform:none;margin:0}
+  #tab-control #rb-when-card .set-item > label .iinfo{order:3;margin:0 0 0 auto}
+  #tab-control #rb-when-card .set-item > label .obj-mark{order:2;margin:0}
+  #rb-when-card .set-says code{background:none;border:0;padding:0;font-size:inherit}
+  #tab-control #rb-when-card .set-item > .sw{align-self:flex-start;margin:0}
+  #tab-control #rb-when-card .set-item > :is(input, select){width:100%;height:38px;box-sizing:border-box}
+  #tab-control #rb-when-card .set-item > .rb-gen{align-self:flex-start;margin:0}
+  #tab-control #rb-when-card .set-item > .set-says{font-size:12.5px;line-height:1.5;color:var(--tx-mut);flex:none}
+  #tab-control #rb-when-card .set-item > .idle-note{margin:0;font-size:12.5px;flex:none}
+  #tab-control #rb-when-card .set-item.idle > :is(.set-says, .sw){opacity:.45}
+  #rb-when-card .set-says.clamp:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;
+    -webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+  #rb-when-card .set-says.clamp.cut:not(.open):hover{color:var(--tx-dim)}
+  #rb-save-bar{margin-top:-2px}
+  .ot .tag.violet{background:var(--violet-bg);color:var(--violet)}
+  .ot .tag.namepill{text-transform:none;font-size:10.5px;padding:0 5px;letter-spacing:0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .ot .rb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px}
+  .ot .rb-tcard{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:12px 14px;display:flex;
+    flex-direction:column;gap:8px;min-width:0}
+  .ot .rb-tcard.off{opacity:.62}
+  .ot .rb-tcard-top{display:flex;align-items:center;gap:10px}
+  .ot .rb-tcard-name{flex:1;min-width:0;display:flex;flex-direction:column}
+  .ot .rb-tcard-name b{font-size:14.5px;overflow-wrap:anywhere}
+  .ot .rb-kind-words{font-size:11.5px;color:var(--tx-dim)}
+  .ot .rb-kind,#zmodal .rb-kind{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    color:var(--info);background:var(--info-bg)}
+  :is(.ot, #zmodal) .rb-kind.k-ftps,:is(.ot, #zmodal) .rb-kind.k-sftp{color:var(--ok);background:var(--ok-bg)}
+  :is(.ot, #zmodal) .rb-kind.k-scp{color:var(--violet);background:var(--violet-bg)}
+  :is(.ot, #zmodal) .rb-kind.k-smb{color:var(--load);background:rgba(240,136,62,.14)}
+  :is(.ot, #zmodal) .rb-kind.k-ftp{color:var(--warn);background:var(--warn-bg)}
+  .ot .rb-where{font-size:12px;color:var(--tx-dim);overflow-wrap:anywhere;font-weight:400}
+  .ot .rb-chips{display:flex;flex-wrap:wrap;gap:4px}
+  .ot .rb-last{font-size:12.5px} .ot .rb-last.good{color:var(--ok)} .ot .rb-last.bad{color:var(--crit)}
+  .ot .rb-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:2px}
+  .ot .rb-acts > :last-child{margin-left:auto}
+  .card.up .rb-acts .btn.small{height:32px}
+  .ot .rb-empty{padding:18px;border:1px dashed var(--line);border-radius:12px;color:var(--tx-dim)}
+  .ot .rb-empty p{margin:0}
+  #rb-runs table td:is(.num, .mono, :first-child){white-space:nowrap}
+  #rb-runs .scroll{overflow-x:auto}
+  #zmodal .rb-kinds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  #zmodal .rb-kind-tile{all:unset;box-sizing:border-box;cursor:pointer;border:1px solid var(--line);border-radius:12px;
+    padding:12px;display:flex;flex-direction:column;gap:6px;background:var(--panel2);font-size:14px;line-height:1.5}
+  #zmodal .rb-kind-tile b{font-size:14.5px;color:var(--tx)}
+  #zmodal .rb-kind-tile .small{font-size:12.5px;line-height:1.5}
+  #zmodal .rb-kind-tile .warn{color:var(--warn)}
+  #zmodal .rb-kind-tile:hover:not(:disabled),#zmodal .rb-kind-tile:focus-visible{border-color:var(--accent)}
+  #zmodal .rb-kind-tile:disabled{cursor:default;opacity:.62}
+  #zmodal .box.large{width:min(1120px,100%)}
+  #zmodal .rb-ed .rb-sec{border-top:1px solid var(--line);padding-top:12px;margin:12px 0 0}
+  #zmodal .rb-ed .rb-sec:first-child{border-top:0;margin-top:0;padding-top:0}
+  #zmodal .rb-ed .rb-sec > h4{margin:0 0 6px;font-size:13px;font-weight:650;line-height:1.5;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--tx-dim)}
+  #zmodal .rb-ed .rb-sec > .formgrid{margin-top:0;gap:14px 18px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  #zmodal .rb-ed input.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px}
+  #zmodal .box.rbx .foot .btn.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  #zmodal .box.rbx .foot .btn.primary:hover:not(:disabled){background:#388bfd;border-color:#388bfd}
+  #zmodal .box.rbx .foot .btn.primary svg{opacity:1}
+  #zmodal .rb-ed .formgrid > .set-item{display:flex;flex-direction:column;gap:6px;min-width:0;padding:0;border:0;background:none}
+  #zmodal .rb-ed .formgrid > .set-item > label{font-size:13px;font-weight:650;letter-spacing:0;text-transform:none;
+    color:var(--tx);line-height:1.5;margin:0}
+  #zmodal .rb-ed .formgrid > .set-item > :is(input, select){height:38px;font-size:14px;border-radius:10px}
+  #zmodal .rb-ed .formgrid > .set-item > .switch{align-self:flex-start}
+  #zmodal .rb-ed .formgrid > .set-item > .says{font-size:12px;color:var(--tx-mut);line-height:1.5;margin:0}
+  #zmodal .rb-ed .rb-sec > p.small{margin:0 0 8px}
+  .ot .rb-tried{display:flex;flex-direction:column;gap:6px}
+  .ot .rb-try{border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+  .ot .rb-try.bad{border-color:rgba(248,81,73,.5)}
+  .ot .rb-try summary{cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap;list-style:none}
+  .ot .rb-try summary::-webkit-details-marker{display:none}
+  .ot .rb-try-x{margin-left:auto}
+  .ot .rb-checks{margin:8px 0 2px 16px;display:flex;flex-direction:column;gap:4px}
+  .ot .rb-check{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+  @media (max-width:640px){
+    #zmodal .rb-kinds{grid-template-columns:minmax(0,1fr)}
+    #rb-card .rb-hero-acts{width:100%}
+    .ot .rb-grid{grid-template-columns:minmax(0,1fr)}
+  }
   .ot a.fgo{color:var(--info);text-decoration:none} .ot a.fgo:hover{text-decoration:underline}
   .ot .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--tx-mut);flex:0 0 auto}
   .ot .dot.ok{background:var(--ok)} .ot .dot.warn{background:var(--warn)} .ot .dot.crit{background:var(--crit)}
@@ -5290,6 +5389,34 @@ sudo ./install.sh --upgrade                # a backup first, and the old one put
       <button class="btn cmd" type="button" id="up-reset">Put them back</button>
       <span class="muted small" id="up-save-said"></span>
     </div>
+    <!-- Backups to other machines (5.36.2), drawn as plexmon 2.5.3's Settings ->
+         Backups: what the last one did and its buttons, then when, how many and
+         the password, where they go, and what was sent; the settings saved by
+         the save bar at the end of them. The backups kept on this machine follow. -->
+    <div class="card full ot up rb-hero" data-sec="sys-backup" id="rb-card">
+      <div id="rb-top"></div>
+    </div>
+    <div class="card full ot up" data-sec="sys-backup" id="rb-tried-card" hidden>
+      <h2>Backups tried <span class="right" id="rb-tried-tools"></span></h2>
+      <div id="rb-tried"></div>
+    </div>
+    <div class="card full ot up set-card" data-sec="sys-backup" id="rb-when-card">
+      <h2>When, how many, and the password</h2>
+      <div class="set-host" id="set-host-sys-backup-rb" data-for="sys-backup"></div>
+    </div>
+    <div class="card full ot up" data-sec="sys-backup" id="rb-where-card">
+      <h2>Where they go <span class="right" id="rb-add-host"></span></h2>
+      <div id="rb-targets"></div>
+    </div>
+    <div class="card full ot up" data-sec="sys-backup" id="rb-runs-card">
+      <h2>What was sent <span class="right" id="rb-runs-tools"></span></h2>
+      <div id="rb-runs"></div>
+    </div>
+    <div class="full up-save-bar" data-sec="sys-backup" id="rb-save-bar">
+      <button class="btn cmd primary" type="button" id="rb-save">Save the changes</button>
+      <button class="btn cmd" type="button" id="rb-reset">Put them back</button>
+      <span class="muted small" id="rb-save-said"></span>
+    </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="backup-card">
       <h2>Backup</h2>
       <p class="note">A backup also runs by itself: daily at the time set under Settings (retention there too), into <code>/var/lib/zigmon/backups/</code> — the dashboard settings as JSON and, when enabled, <b>Zigbee2MQTT's coordinator backup</b> (the zip that lets a dead stick be replaced without re-pairing). One file with everything configured here: devices (passwords included — keep the file private), bindings, rules, scenes, schedules, little scripts, layout, aliases, notification choices, and the public half of every SSH key (the private halves only in the export that asks for the secrets). Import replaces those wholesale; recorded history is not part of it. The Zigbee network itself lives in Zigbee2MQTT — back up <code>/opt/zigbee2mqtt/data</code> separately.</p>
@@ -5314,28 +5441,6 @@ sudo ./install.sh --upgrade                # a backup first, and the old one put
       <div id="full-list" style="margin-top:12px"></div>
       <div id="full-drop-slot" style="margin-top:12px"></div>
       <p class="note">On the command line, as root: <code>zigmon --full-backup</code>, <code>zigmon --full-inspect FILE</code>, <code>zigmon --full-restore FILE [--parts database,config,&hellip;]</code></p>
-    </div>
-    <div class="card full ot rb-hero" data-sec="sys-backup" id="rb-card">
-      <h2>Backups to other machines</h2>
-      <p class="note">A backup kept only on this machine is lost with it. The backup of the whole installation is made by root, locked with the password of the backups (AES-256, as <code>openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000</code> opens it) and sent to every destination switched on &mdash; FTP, FTPS, SFTP, SCP or an SMB share &mdash; with its <code>.sha256</code> and a <code>RESTORE.txt</code>. Nothing is ever sent unlocked. Old ones there are taken away as the settings below say: only this machine&rsquo;s, never the newest.</p>
-      <div id="rb-top"></div>
-      <p class="note">On the command line, as root: <code>zigmon --rbackup-status</code>, <code>zigmon --rbackup-now</code></p>
-    </div>
-    <div class="card full ot set-card" data-sec="sys-backup" id="rb-when-card">
-      <h2>When, how many, and the password</h2>
-      <div class="set-host" id="set-host-sys-backup-rb" data-for="sys-backup"></div>
-      <div class="btnrow set-bar">
-        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
-        <span class="muted small set-note-alt"></span>
-      </div>
-    </div>
-    <div class="card full ot" data-sec="sys-backup" id="rb-where-card">
-      <h2>Where they go <span class="right" id="rb-add-host"></span></h2>
-      <div id="rb-targets"></div>
-    </div>
-    <div class="card full ot" data-sec="sys-backup" id="rb-runs-card">
-      <h2>What was sent <span class="right" id="rb-runs-tools"></span></h2>
-      <div id="rb-runs"></div>
     </div>
     <div class="card full" data-sec="sys-backup" data-old="system" id="snap-card">
       <h2>Going back a step</h2>
@@ -15424,6 +15529,10 @@ $('reset-device-btn').onclick = function () {
 // ---- icons and hints, as in upsmon -------------------------------------------------
 var ICONS = {
   power: '<path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/>',
+  // the kinds of a destination of the backups, and the guide (5.36.2), as plexmon draws them
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M12.5 15H17"/>',
+  book: '<path d="M12 6.5C10 5 7 4.5 3.5 5v13.5C7 18 10 18.5 12 20c2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5z"/><path d="M12 6.5V20"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   // a key and a going-round-again: asked for by name and drawn as nothing at
   // all until now, since an unknown name makes an empty <svg> rather than a
   // complaint
@@ -18755,6 +18864,9 @@ var SETTINGS_LAYOUT = [
     ['rbackup_password', 'The password of the backups',
      'Every backup sent is locked with it. Without it no backup can be opened, by anybody - keep it in a password vault, apart '
      + 'from the backups. Eight characters or more; nothing is sent until there is one. Never shown back.'],
+    ['rbackup_verify', 'Try the backups',
+     'The newest backup fetched back, opened with the password, every file checked against its list and the database read '
+     + 'through - nothing is put back. By hand: Try the newest.'],
   ]],
   ['Notification channels', [
     ['|', 'where messages go'],
@@ -19908,6 +20020,19 @@ function netMark(what) {
 // Settings whose words stand under them rather than under the pointer
 // (otp 1.0.197's three of Upgrades and maintenance, side by side in From the web).
 var SETTING_SAYS_UNDER = {
+  // the backups to other machines (5.36.2), in plexmon's words
+  rbackup: 'A backup made and sent to every destination switched on, at the time below. Without it, only Back up now '
+    + 'sends one.',
+  rbackup_at: 'When, as <code>HH:MM</code> on this machine’s clock - after the nightly backup, so the two do not ask root at once.',
+  rbackup_every: 'Daily, or weekly on the day below.',
+  rbackup_day: 'The day of a weekly backup: 1 is Monday, 7 Sunday.',
+  rbackup_keep: 'How many backups each destination keeps; the oldest go first, the newest never - and never anything '
+    + 'another machine or a person put there.',
+  rbackup_keep_days: 'Older ones are taken away too - 0: only the count above decides.',
+  rbackup_password: 'Every backup is locked with it (AES-256, opened with zigmon or with openssl alone). Keep it apart '
+    + 'from the backups too - in a password vault: without it nobody, you included, opens them. Without it no backup is sent.',
+  rbackup_verify: 'The newest backup fetched back, opened with the password, every file checked and the database read '
+    + 'through - nothing is put back.',
   upgrade_check: 'Once a day (and when Look now is pressed) the address below is asked for zigmon-X.Y.Z.tar.gz '
     + 'packages; a newer one than runs here is offered on this page - put in with one click, after its signature '
     + 'has been checked like any package sent by hand. Nothing is put in by itself.',
@@ -19918,6 +20043,18 @@ var SETTING_SAYS_UNDER = {
     + '<i>Going back to an older version</i> - only the versions it is safe to go back to, each with what changed '
     + 'in it. On the server, root can always: <code>sudo zigmon --downgrade FILE</code>.'
 };
+// what a setting does, under it - otp's way for the three of Upgrades, and
+// plexmon's for the backups: in three lines (1.0.156), a click opens the rest
+// in place, and only a text that is cut looks like one
+function saysUnder(item, key) {
+  if (!SETTING_SAYS_UNDER[key]) return;
+  var says = el('div', 'set-says');
+  says.innerHTML = SETTING_SAYS_UNDER[key];       // our own words, not anybody's input
+  says.classList.add('clamp');
+  says.onclick = function () { says.classList.toggle('open'); };
+  says.onmouseenter = function () { says.classList.toggle('cut', says.scrollHeight > says.clientHeight + 2); };
+  item.appendChild(says);
+}
 function renderSettings(st) {
   if (settingsHosts().some(function (h) { return h.id && editorBusy(h.id); })) return;
   if (SETTINGS.dirty) return;
@@ -20061,6 +20198,7 @@ function renderSettings(st) {
           box.dataset.k = key;
           box.onchange = function () { mark(); applySettingsWhen(); };
           item.appendChild(lbl); item.appendChild(box);
+          saysUnder(item, key);
           into.appendChild(item);
           return;
         }
@@ -20095,17 +20233,7 @@ function renderSettings(st) {
         box.oninput = mark;
         item.appendChild(lbl); item.appendChild(box);
       }
-      // what it does, under it - otp's way for the three of Upgrades
-      if (SETTING_SAYS_UNDER[key]) {
-        var says = el('div', 'set-says');
-        says.innerHTML = SETTING_SAYS_UNDER[key];       // our own words, not anybody's input
-        // in three lines, as otp has it (1.0.156): a click opens the rest in
-        // place, and only a text that is cut looks like one
-        says.classList.add('clamp');
-        says.onclick = function () { says.classList.toggle('open'); };
-        says.onmouseenter = function () { says.classList.toggle('cut', says.scrollHeight > says.clientHeight + 2); };
-        item.appendChild(says);
-      }
+      saysUnder(item, key);
       into.appendChild(item);
     });
     host.appendChild(grid);
@@ -20118,7 +20246,7 @@ function renderSettings(st) {
       proxyKeys.dataset.when = 'proxy_auth=key';
       host.appendChild(proxyKeys);
     }
-    if (group[0] === 'When, how many, and the password') host.appendChild(rbPassTools());
+    if (group[0] === 'When, how many, and the password') rbPassTools(grid);
     if (group[0] === 'The router that carries the list') {
       host.appendChild(mikrotikPanel());
       var keybox = sshKeyPanel('mikrotik', 'the router');   // while a key is what it logs in with
@@ -20128,9 +20256,11 @@ function renderSettings(st) {
   });
   applySettingsWhen();
   setSettingsNote('');
-  // what Upgrades and maintenance's save bar measures a change against
-  upSaveBoxes().forEach(function (b) { b.dataset.was = upBoxValue(b); });
-  upSaveMark();
+  // what the save bars of Upgrades and of the backups measure a change against
+  (typeof SAVE_BARS === 'undefined' ? [] : SAVE_BARS).forEach(function (bar) {
+    saveBarBoxes(bar).forEach(function (b) { b.dataset.was = upBoxValue(b); });
+    saveBarMark(bar);
+  });
   // a settings card with nothing in it is not shown, nor is a section left empty
   Array.prototype.forEach.call(document.querySelectorAll('.set-card'), function (card) {
     var h = card.querySelector('.set-host');
@@ -20712,7 +20842,7 @@ var SETTINGS_IDLE = {};
       [OFF('backup_enabled'), 'not used while nothing is backed up by itself']);
   add(['rbackup_at', 'rbackup_every', 'rbackup_day'],
       [OFF('rbackup'), 'not used while backups go out by hand only']);
-  add(['rbackup_day'], [IS('rbackup_every', 'daily'), 'not used while it is every day']);
+  add(['rbackup_day'], [IS('rbackup_every', 'daily'), 'Not in use while How often is "every day".']);
   add(['weather_name', 'weather_place', 'weather_interval_s'],
       [OFF('weather'), 'not used while the forecast is off']);
   add(['heating_enforce_delta', 'heating_enforce_gap_s', 'heating_enforce_tries',
@@ -26178,6 +26308,7 @@ function zmodal(title, build, buttons, size) {
   $('zmodal-box').className = 'box ot' + (size ? ' ' + size : '');
   var body = $('zmodal-body');
   body.innerHTML = '';
+  body.className = 'body';               // a class one popup gave its body is not the next one's
   if (typeof build === 'function') build(body); else if (build) body.appendChild(build);
   var foot = $('zmodal-foot');
   foot.innerHTML = '';
@@ -29478,19 +29609,33 @@ function drawNtpConf(d) {
    1.0.138 has it, in its words. Everything a server or a person typed reaches
    the page as text (el, esc), never as markup. */
 var RB = {last: null, poll: null, tryOut: null, pinBox: null, checkBox: null, paintHost: null};
+/* Drawn as plexmon 2.5.3 draws its Settings -> Backups (5.36.2): the kinds
+   with an icon of their own, in its words. */
+var RB_KIND_ICON = {folder: 'db', ftp: 'upload', ftps: 'lock', sftp: 'terminal', scp: 'terminal', smb: 'net'};
 var RB_KIND_SAYS = {
-  ftp: 'Plain FTP. The password and the file travel unencrypted - only inside a network you trust.',
-  ftps: 'FTP over TLS, explicit or implicit, the server’s certificate checked or pinned; a client certificate if it wants one.',
-  sftp: 'Over SSH, with a key made here or your own, or a password; the server’s host key trusted once.',
-  scp: 'Over SSH with scp, for a server that has no SFTP.',
-  smb: 'A Windows share or Samba (a NAS), SMB2 at least, SMB3 encryption by default.'
+  folder: 'A folder on this machine - an NFS or other share mounted here.',
+  ftp: 'Plain FTP: the password and the file go over unencrypted - only inside a network you trust (the file itself is locked).',
+  ftps: 'FTP over TLS - explicit (port 21) or implicit (990); the server’s certificate checked, a client certificate if it wants one.',
+  sftp: 'SSH file transfer: a key made here or your own, or a password; the server’s host key checked.',
+  scp: 'scp over SSH, and ssh to list and take away old ones - needs a shell on the server.',
+  smb: 'A Windows or Samba share: the account, its domain, SMB3 encryption.'
 };
 function rbWhen(ts) { return ts ? stamp(ts).slice(0, 16) : '–'; }
+// sizes as plexmon says them: 654 MB, 1.2 GB
+function rbBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  var u = ['kB', 'MB', 'GB', 'TB'], i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+}
+function rbLocal(ts) { return new Date(ts * 1000).toLocaleString(); }
 function loadRb(quiet) {
   var host = $('rb-top');
   if (!host) return;
   if (!isUnlocked()) {
-    ['rb-targets', 'rb-runs', 'rb-runs-tools', 'rb-add-host'].forEach(function (id) { if ($(id)) $(id).innerHTML = ''; });
+    ['rb-targets', 'rb-runs', 'rb-runs-tools', 'rb-add-host', 'rb-tried', 'rb-tried-tools'].forEach(function (id) { if ($(id)) $(id).innerHTML = ''; });
+    if ($('rb-tried-card')) $('rb-tried-card').hidden = true;
     rootLocked(host, 'An administrator’s to see. Where the backups go holds the passwords and keys of other machines.', loadRb);
     return;
   }
@@ -29503,11 +29648,13 @@ function loadRb(quiet) {
     if (d.job && d.job.running) rbWatch();
   }).catch(function (e) { if (!quiet) zoops(e); });
 }
-/* "Make a strong one" beside the password of the backups: a long random one,
-   shown once to be put into the password vault. */
-function rbPassTools() {
-  var box = el('div', 'rb-pass-tools');
-  var b = cmdButton('Make a strong one', 'key', 'small');
+/* "Make a strong one" under the password of the backups, as plexmon has it:
+   a long random one, shown once to be put into the password vault. */
+function rbPassTools(grid) {
+  var box = grid && grid.querySelector('input[data-k="rbackup_password"]');
+  var item = box && box.closest('.set-item');
+  if (!item || item.querySelector('.rb-gen')) return;
+  var b = cmdButton('Make a strong one', 'key', 'small rb-gen');
   b.onclick = function () {
     var a = new Uint8Array(24);
     crypto.getRandomValues(a);
@@ -29521,16 +29668,15 @@ function rbPassTools() {
     }
     zmodal('The password of the backups', function (body) {
       body.appendChild(el('p', 'note', 'Put it into your password vault now - this is the only time it is shown whole. '
-        + 'Without it no backup can be opened, by anybody. Then press Save settings.'));
+        + 'Without it no backup can be opened, by anybody. Then press Save the changes.'));
       var p = el('code', 'rb-copyme rb-pass', pw);
       p.title = 'Click to copy';
       p.onclick = function () { copyText(pw); };
       body.appendChild(p);
-    }, [{words: 'Copy', icon: 'list', go: function () { copyText(pw); }}, {words: 'Close', close: true}], 'narrow');
+    }, [{words: 'Copy', icon: 'copy', go: function () { copyText(pw); }}, {words: 'Close', close: true}], 'narrow');
   };
-  box.appendChild(b);
-  box.appendChild(el('span', 'muted small', 'Every backup sent is locked with it (AES-256, as openssl opens it). Kept here, never shown back.'));
-  return box;
+  // under the box, before what it says
+  item.insertBefore(b, item.querySelector('.set-says'));
 }
 function drawRbTop() {
   var host = $('rb-top');
@@ -29538,10 +29684,11 @@ function drawRbTop() {
   host.innerHTML = '';
   var d = RB.last || {};
   if (!d.helper) rootNotInstalled(host);
+  var name = d.host || 'this machine';
   var mine = (d.runs || [])[0];
   var on = (d.targets || []).filter(function (t) { return t.enabled; });
   var state = !on.length ? 'warn' : (!mine ? 'warn' : (mine.ok ? 'good' : 'bad'));
-  // the card itself says it, as otp's does: a coloured edge and an icon
+  // the card itself says it, as plexmon's does: a coloured edge and an icon
   var card = $('rb-card');
   if (card) ['good', 'warn', 'bad'].forEach(function (k) { card.classList.toggle(k, k === state); });
   var head = el('div', 'rb-hero-head');
@@ -29550,9 +29697,9 @@ function drawRbTop() {
   head.appendChild(ic);
   var words = el('div', 'rb-hero-words');
   words.appendChild(el('b', '', !on.length ? 'No destination yet - backups go nowhere'
-    : (!mine ? 'No backup has been sent yet'
-      : (mine.ok ? 'The last backup of ' + (d.host || 'this machine') + ' went to every destination'
-        : 'The last backup of ' + (d.host || 'this machine') + ' did not reach every destination'))));
+    : (!mine ? 'No backup of ' + name + ' has been sent yet'
+      : (mine.ok ? 'The last backup of ' + name + ' went to every destination'
+        : 'The last backup of ' + name + ' did not reach every destination'))));
   var facts = el('div', 'rb-hero-facts');
   var fact = function (k, v, cls) {
     var f = el('span', 'rb-fact ' + (cls || ''));
@@ -29560,10 +29707,15 @@ function drawRbTop() {
     f.appendChild(el('span', 'v', v));
     facts.appendChild(f);
   };
-  if (mine) fact('Last', ago(mine.at) + (mine.bytes ? ' · ' + sizeText(mine.bytes) : ''));
-  fact('Next', d.next ? d.next.replace('T', ' ') : 'by hand only', d.next ? '' : 'warn');
+  if (mine) fact('Last', ago(mine.at) + (mine.bytes ? ' · ' + rbBytes(mine.bytes) : ''));
+  var next = d.next ? new Date(d.next) : null;
+  fact('Next', next && !isNaN(next) ? next.toLocaleString(undefined, {weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'})
+    : (d.next ? String(d.next).replace('T', ' ') : 'by hand only'), d.next ? '' : 'warn');
   fact('Locked', d.locked ? 'with the password (AES-256)' : 'NOT locked - set the password: nothing is sent without it', d.locked ? 'good' : 'bad');
   fact('Destinations', on.length + ' of ' + (d.targets || []).length + ' switched on');
+  // the last try: whether the newest backup can be put back
+  var tried = (d.verified || []).filter(function (v) { return !v.host || v.host === d.host; })[0];
+  fact('Tried', tried ? (tried.ok ? 'can be put back' : 'NOT GOOD') + ' · ' + ago(tried.at) : 'never', tried ? (tried.ok ? 'good' : 'bad') : 'warn');
   words.appendChild(facts);
   if (mine && !mine.ok) {
     var bad = (mine.targets || []).filter(function (x) { return !x.ok; });
@@ -29571,10 +29723,11 @@ function drawRbTop() {
   }
   head.appendChild(words);
   var acts = el('div', 'rb-hero-acts');
+  var running = !!(d.job && d.job.running);
   var now = cmdButton('Back up now', 'upload', 'primary');
   now.id = 'rb-now';
   now.title = 'A backup made now and sent to every destination switched on - the same as the scheduled one.';
-  now.disabled = !on.length || !d.locked || !!(d.job && d.job.running);
+  now.disabled = !on.length || !d.locked || running;
   now.onclick = function () {
     zbusy(now, true);
     rootPost('rbackup-do', {action: 'run'}).then(function (x) {
@@ -29584,7 +29737,45 @@ function drawRbTop() {
     }).catch(function (e) { zbusy(now, false); zoops(e); });
   };
   acts.appendChild(now);
-  var guide = cmdButton('How to put it back', 'info', '');
+  var tryb = cmdButton('Try the newest', 'check', '');
+  tryb.id = 'rb-try-newest';
+  tryb.title = 'The newest backup of this machine fetched back from the first destination, opened with the password, '
+    + 'every file checked against its list and the database read through - nothing is put back.';
+  tryb.disabled = !on.length || !d.locked || running;
+  tryb.onclick = function () {
+    zbusy(tryb, true);
+    rootPost('rbackup-do', {action: 'verify'}).then(function (x) {
+      toast(x.message, true);
+      RB.last.job = x.job;
+      rbWatch();
+    }).catch(function (e) { zbusy(tryb, false); zoops(e); });
+  };
+  acts.appendChild(tryb);
+  var dl = cmdButton('Download one here', 'download', '');
+  dl.id = 'rb-here';
+  dl.title = 'A backup made now, saved on the computer you are sitting at - locked with the password as the others.';
+  dl.disabled = !d.locked || running;
+  dl.onclick = function () {
+    zbusy(dl, true);
+    rootPost('rbackup-do', {action: 'here'}).then(function (x) {
+      toast(x.message, true);
+      RB.last.job = x.job;
+      rbWatch(function (j) {
+        zbusy(dl, false);
+        if (j.error || !j.result || !j.result.ready) { zoops(new Error(j.error || 'it was not made')); loadRb(true); return; }
+        downloadBehindPin('fullbackup-download&file=' + encodeURIComponent(j.result.ready), j.result.ready);
+        loadRb(true);
+      });
+    }).catch(function (e) { zbusy(dl, false); zoops(e); });
+  };
+  acts.appendChild(dl);
+  var back = cmdButton('Put one back…', 'undo', '');
+  back.id = 'rb-put-back';
+  back.title = 'A backup from the computer you are sitting at, sent here: root looks into it first, and nothing is put back until you choose what.';
+  back.onclick = rbPutBackFile;
+  acts.appendChild(back);
+  var guide = cmdButton('How to put it back', 'book', '');
+  guide.id = 'rb-guide';
   guide.title = 'RESTORE.txt - the steps to bring everything back from a backup, as every backup carries it beside itself.';
   guide.onclick = rbGuide;
   acts.appendChild(guide);
@@ -29592,7 +29783,7 @@ function drawRbTop() {
   host.appendChild(head);
   var going = el('div', 'going wide');
   going.id = 'rb-going';
-  going.hidden = !(d.job && d.job.running);
+  going.hidden = !running;
   var bar = el('div', 'bar'), fill = el('span');
   fill.id = 'rb-going-fill';
   bar.appendChild(fill);
@@ -29602,12 +29793,102 @@ function drawRbTop() {
   going.appendChild(says);
   host.appendChild(going);
   if (d.tools && !d.tools.openssl) host.appendChild(el('p', 'note bad', 'openssl is not on this machine: backups cannot be locked (dnf install openssl).'));
+  drawRbTried();
+}
+/* The backups tried, as plexmon lists them: each try, every check of it; the
+   list can be emptied, or a try taken off - the backups themselves stay. */
+function drawRbTried() {
+  var card = $('rb-tried-card'), host = $('rb-tried'), tools = $('rb-tried-tools');
+  if (!card || !host) return;
+  var rows = (RB.last || {}).verified || [];
+  card.hidden = !rows.length;
+  host.innerHTML = '';
+  if (tools) tools.innerHTML = '';
+  if (!rows.length) return;
+  var forget = function (q) {
+    rootPost('rbackup-do', Object.assign({action: 'verified_forget'}, q)).then(function (x) {
+      toast(x.message, true); RB.last.verified = x.verified || []; drawRbTop();
+    }).catch(zoops);
+  };
+  if (tools) {
+    var wipe = cmdButton('Clear the list', 'trash', 'small');
+    wipe.onclick = function () {
+      zconfirm('Clear the list of backups tried?', 'Every try goes from this list. The backups themselves stay where they are. '
+        + 'Events keeps a line saying it was cleared.', 'Clear the list', function () { forget({all: 1}); });
+    };
+    tools.appendChild(wipe);
+  }
+  var list = el('div', 'rb-tried');
+  rows.slice(0, 8).forEach(function (v, i) {
+    var it = el('details', 'rb-try ' + (v.ok ? 'good' : 'bad'));
+    if (i === 0 && !v.ok) it.open = true;
+    var sm = el('summary');
+    sm.appendChild(el('span', 'dot ' + (v.ok ? 'ok' : 'crit')));
+    sm.appendChild(el('b', '', v.ok ? 'Can be put back' : 'Not good'));
+    sm.appendChild(el('span', 'mono small', v.file || '?'));
+    sm.appendChild(el('span', 'muted small', '· ' + ago(v.at) + ' · ' + (v.host || '') + ' → ' + (v.target_name || '')));
+    var x = iconButton('close', 'Take it off the list');
+    x.classList.add('rb-try-x');
+    x.onclick = function (e) { e.preventDefault(); e.stopPropagation(); forget({at: v.at}); };
+    sm.appendChild(x);
+    it.appendChild(sm);
+    var ul = el('div', 'rb-checks');
+    (v.checks || []).forEach(function (k) {
+      var row = el('div', 'rb-check');
+      row.appendChild(el('span', 'dot ' + (k.ok ? 'ok' : 'crit')));
+      row.appendChild(el('span', '', k.what));
+      if (k.said) row.appendChild(el('span', 'muted small', '- ' + k.said));
+      ul.appendChild(row);
+    });
+    it.appendChild(ul);
+    list.appendChild(it);
+  });
+  host.appendChild(list);
+}
+/* Put one back...: a backup from the computer at hand, sent in pieces to root,
+   which looks into it first; then the parts are chosen as for any backup of
+   the whole installation. Locked with the password of the backups unless
+   another one is given. */
+function rbPutBackFile() {
+  var pick = el('input');
+  pick.type = 'file';
+  pick.accept = '.enc,.gz';
+  pick.onchange = function () {
+    var file = pick.files[0];
+    if (!file) return;
+    var f = {};
+    zmodal('Put ' + file.name + ' back?', function (body) {
+      body.appendChild(el('p', 'note', rbBytes(file.size) + ', sent here in pieces. Root looks into it first; nothing is put back '
+        + 'until you choose what - the database, the configuration, the certificate… A backup of how it is now is made before '
+        + 'anything is put back.'));
+      f.pw = zSecret('empty: the password of the backups set here');
+      body.appendChild(zField('Its password', f.pw, 'Only when it was locked with another password than the one set here now.'));
+    }, [{words: 'No, leave it', close: true},
+        {words: 'Send it and look into it', cls: 'primary', icon: 'undo', go: function (b) {
+          zbusy(b, true);
+          closeZModal();
+          toast('sending ' + file.name + '…', true);
+          sendInPieces('fullbackup-upload', file, {passphrase: f.pw.value || '', rbackup_password: 1}).then(function (x) {
+            toast('root is looking into it…', true);
+            return rootWait('fullbackup', x.asked);
+          }).then(function (d) {
+            var st = d.status || {};
+            if (st.state !== 'done' || !st.inspected) throw new Error((st.said || ['it could not be read']).join('; '));
+            loadFull(true);
+            fullRestoreAsk(st.inspected);
+          }).catch(zoops);
+        }}], 'narrow');
+  };
+  pick.click();
 }
 function rbGuide() {
   rootPost('rbackup-do', {action: 'restore_txt'}).then(function (d) {
     zmodal('How to put a backup back', function (body) {
       body.appendChild(el('p', 'note', 'The RESTORE.txt every backup carries beside itself. Keep a copy apart from the backups - and the password of the backups in a vault.'));
       body.appendChild(el('pre', 'zlines', d.text));
+      var cli = el('p', 'note');
+      cli.innerHTML = 'On the command line, as root: <code>zigmon --rbackup-status</code>, <code>zigmon --rbackup-now</code>';
+      body.appendChild(cli);
     }, [{words: 'Close', close: true},
         {words: 'Download it', cls: 'primary', icon: 'download', go: function () {
           var a = el('a');
@@ -29634,14 +29915,18 @@ function rbWatch(then) {
       if (then) { then(j); return; }
       if (j.error) toast('the backup: ' + j.error, false);
       else if (j.result && j.what === 'backup') toast(j.result.ok ? 'the backup went to every destination' : 'the backup did not reach every destination', !!j.result.ok);
+      else if (j.result && j.what === 'verify') toast(j.result.ok ? 'the newest backup can be put back' : 'the newest backup is NOT GOOD: ' + (j.result.error || 'see Backups tried'), !!j.result.ok);
       loadRb(true);
     }).catch(function () { RB.poll = null; });
   };
   step();
 }
+// where a destination is, as plexmon writes it: \\server\share\folder for SMB
 function rbWhere(t) {
-  return t.kind + '://' + (t.user ? t.user + '@' : '') + t.host + (t.port ? ':' + t.port : '')
-    + (t.kind === 'smb' ? '/' + (t.share || '') : '') + (t.path ? '/' + String(t.path).replace(/^\/+/, '') : '');
+  if (t.kind === 'folder') return t.path || '';
+  if (t.kind === 'smb') return '\\\\' + t.host + (t.port && +t.port !== 445 ? ':' + t.port : '') + '\\' + (t.share || '')
+    + (t.path ? '\\' + String(t.path).replace(/\//g, '\\') : '');
+  return (t.user ? t.user + '@' : '') + t.host + (t.port ? ':' + t.port : '') + '/' + String(t.path || '').replace(/^\//, '');
 }
 function drawRbTargets() {
   var host = $('rb-targets'), ah = $('rb-add-host');
@@ -29650,52 +29935,56 @@ function drawRbTargets() {
   if (ah) {
     ah.innerHTML = '';
     var add = cmdButton('Add a destination', 'add', 'primary small');
+    add.id = 'rb-add';
     add.onclick = rbPickKind;
     ah.appendChild(add);
   }
   var ts = (RB.last || {}).targets || [];
   if (!ts.length) {
-    host.appendChild(el('p', 'note', 'No destination yet. A backup kept only on this machine is lost with it: add a place on another machine.'));
+    var empty = el('div', 'rb-empty');
+    empty.appendChild(el('p', '', 'No destination yet. A backup kept only on this machine is lost with it: add a place on another machine.'));
+    host.appendChild(empty);
     return;
   }
-  var grid = el('div', 'cert-grid');
+  var grid = el('div', 'rb-grid');
   ts.forEach(function (t) {
-    var c = el('div', 'cert-card' + (t.enabled ? '' : ' rb-off'));
-    var head = el('div', 'cert-h');
-    var title = el('div', 'cert-title');
-    title.appendChild(el('span', 'cert-target', t.kind_words || t.kind));
-    title.appendChild(el('b', '', t.name));
-    head.appendChild(title);
+    var c = el('div', 'rb-tcard' + (t.enabled ? '' : ' off'));
+    var top = el('div', 'rb-tcard-top');
+    var ic = el('span', 'rb-kind k-' + t.kind);
+    ic.innerHTML = iconMarkup(RB_KIND_ICON[t.kind] || 'db', 18);
+    top.appendChild(ic);
+    var nm = el('div', 'rb-tcard-name');
+    nm.appendChild(el('b', '', t.name));
+    nm.appendChild(el('span', 'rb-kind-words', t.kind_words || t.kind));
+    top.appendChild(nm);
     var sw = zSwitch(t.enabled);
     sw.title = t.enabled ? 'Backups go here. Switch off to stop sending, keeping everything set.' : 'Switched off: nothing is sent here.';
     sw._input.onchange = function () {
       rootPost('rbackup-do', {action: 'save', id: t.id, target: rbTargetFields(t, {enabled: sw._get()})})
         .then(function () { loadRb(true); }).catch(function (e) { zoops(e); loadRb(true); });
     };
-    head.appendChild(sw);
-    c.appendChild(head);
-    c.appendChild(el('div', 'cert-cn', rbWhere(t)));
-    var chips = el('div', 'cert-chips');
-    var chip = function (w, cls, tip) { var x = el('span', 'cchip ' + (cls || ''), w); if (tip) x.title = tip; chips.appendChild(x); };
-    if (t.has_password) chip('password');
-    if (t.has_key) chip('ssh key');
-    if (t.ssh_cert) chip('ssh certificate');
-    if (t.kind === 'sftp' || t.kind === 'scp') chip(t.hostkey ? 'host key trusted' : 'host key not trusted yet', t.hostkey ? '' : 'warn', (t.hostkey_fp || []).join('\n'));
-    if (t.kind === 'ftps') chip({system: 'certificate: system authorities', ca: 'certificate: own authority', pin: 'certificate pinned', none: 'certificate NOT checked'}[t.tls_check] || '', t.tls_check === 'none' ? 'warn' : '');
-    if (t.has_client_key) chip('client certificate');
-    if (t.kind === 'smb' && t.smb_encrypt) chip('SMB3 encrypted');
+    top.appendChild(sw);
+    c.appendChild(top);
+    c.appendChild(el('div', 'rb-where mono', rbWhere(t)));
+    var chips = el('div', 'rb-chips');
+    var chip = function (w, cls, tip) { var x = el('span', 'tag ' + (cls || 'dim'), w); if (tip) x.title = tip; chips.appendChild(x); };
+    if (t.has_password) chip('password', 'dim');
+    if (t.has_key) chip('ssh key', 'violet');
+    if (t.ssh_cert) chip('ssh certificate', 'violet');
+    if (t.kind === 'sftp' || t.kind === 'scp') chip(t.hostkey ? 'host key trusted' : 'host key not trusted yet', t.hostkey ? 'ok' : 'warn', (t.hostkey_fp || []).join('\n'));
+    if (t.kind === 'ftps') chip({system: 'certificate: system authorities', ca: 'certificate: own authority', pin: 'certificate pinned', none: 'certificate NOT checked'}[t.tls_check] || '', t.tls_check === 'none' ? 'warn' : 'ok');
+    if (t.has_client_key) chip('client certificate', 'violet');
+    if (t.kind === 'smb' && t.smb_encrypt) chip('SMB3 encrypted', 'ok');
     if (t.kind === 'ftp') chip('not encrypted on the way', 'warn');
     c.appendChild(chips);
     var last = t.last;
-    var st = el('div', 'cert-state');
-    st.appendChild(el('span', 'dot ' + (last ? (last.ok ? 'ok' : 'crit') : '')));
-    st.appendChild(el('span', '', last ? (last.ok ? 'last sent ' + ago(last.at) + ' · ' + sizeText(last.bytes || 0)
-      : ago(last.at) + ': ' + (last.error || 'failed')) : 'nothing sent here yet'));
-    c.appendChild(st);
-    var tools = el('div', 'cert-tools');
+    c.appendChild(el('div', 'rb-last ' + (last ? (last.ok ? 'good' : 'bad') : 'muted'),
+      last ? (last.ok ? '✓ last sent ' + ago(last.at) + ' · ' + rbBytes(last.bytes || 0) : '✗ ' + ago(last.at) + ': ' + (last.error || 'failed'))
+        : 'nothing sent here yet'));
+    var tools = el('div', 'rb-acts');
     var tr = cmdButton('Try it', 'play', 'small');
     tr.onclick = function () { rbTry(t, null, tr, false); };
-    var ed = cmdButton('Edit', 'pencil', 'small');
+    var ed = cmdButton('Edit', 'edit', 'small');
     ed.onclick = function () { rbEdit(t); };
     var ls = cmdButton('Backups there', 'list', 'small');
     ls.onclick = function () { rbListThere(t); };
@@ -29725,7 +30014,8 @@ function drawRbRuns() {
   var host = $('rb-runs'), tools = $('rb-runs-tools');
   if (!host) return;
   host.innerHTML = '';
-  var runs = (RB.last || {}).runs || [];
+  var d = RB.last || {};
+  var runs = d.runs || [];
   if (tools) {
     tools.innerHTML = '';
     if (runs.length) {
@@ -29741,15 +30031,21 @@ function drawRbRuns() {
       tools.appendChild(wipe);
     }
   }
-  host.appendChild(zTable(['When', 'File', 'Size', 'Where it went', 'Who', ''], runs, function (r) {
+  if (!runs.length) { host.appendChild(el('p', 'note', 'No backup sent yet.')); return; }
+  host.appendChild(zTable(['When', 'Node', 'File', 'Size', 'Where it went', 'Who', ''], runs, function (r) {
     var tr = el('tr');
-    tr.appendChild(el('td', 'muted', stamp(r.at)));
-    tr.appendChild(el('td', 'mono small', r.file || '–'));
-    tr.appendChild(el('td', 'num', r.bytes ? sizeText(r.bytes) : '–'));
+    tr.appendChild(el('td', 'muted', rbLocal(r.at)));
+    // one machine: the node is this one, by the name it had when it was sent
+    tr.appendChild(el('td', '', r.host || d.host || ''));
+    var f = el('td', 'mono small');
+    f.appendChild(el('span', '', r.file || '–'));
+    if (r.file && r.encrypted === false) { f.appendChild(document.createTextNode(' ')); f.appendChild(el('span', 'tag crit', 'not locked')); }
+    tr.appendChild(f);
+    tr.appendChild(el('td', 'num', r.bytes ? rbBytes(r.bytes) : '–'));
     var w = el('td');
-    if (r.error) w.appendChild(el('div', 'small bad', r.error));
+    if (r.error) w.appendChild(el('span', 'small bad', r.error));
     (r.targets || []).forEach(function (x) {
-      var s = el('span', 'tag ' + (x.ok ? 'ok' : 'crit'), (x.ok ? '✓ ' : '✗ ') + x.name);
+      var s = el('span', 'tag namepill ' + (x.ok ? 'ok' : 'crit'), (x.ok ? '✓ ' : '✗ ') + x.name);
       s.title = x.ok ? (x.secs + ' s' + ((x.taken_away || []).length ? ' · taken away: ' + x.taken_away.join(', ') : ''))
         : (x.error || '');
       w.appendChild(s);
@@ -29757,7 +30053,7 @@ function drawRbRuns() {
     });
     tr.appendChild(w);
     tr.appendChild(el('td', 'muted small', r.by || ''));
-    var a = el('td', 'acts');
+    var a = el('td', 'rowtools');
     var del = iconButton('trash', 'Take it off the list');
     del.onclick = function () {
       rootPost('rbackup-do', {action: 'runs_forget', at: r.at, file: r.file || ''}).then(function (x) {
@@ -29772,28 +30068,38 @@ function drawRbRuns() {
 function rbPickKind() {
   var d = RB.last || {};
   zmodal('Where should the backups go?', function (body) {
-    var g = el('div', 'tls-tiles rb-kinds');
-    (d.kinds || []).forEach(function (k) {
-      var b = el('button', 'tls-tile');
+    var g = el('div', 'rb-kinds');
+    // a folder on this machine, as plexmon offers it - not here: the daemon
+    // may write only into its own folders (ProtectSystem=strict)
+    var kinds = (d.kinds || []).slice();
+    if (!kinds.some(function (k) { return k.kind === 'folder'; })) kinds.unshift({kind: 'folder', words: 'A folder', port: 0, not_here: true});
+    kinds.forEach(function (k) {
+      var b = el('button', 'rb-kind-tile');
       b.type = 'button';
+      b.dataset.kind = k.kind;
+      var ic = el('span', 'rb-kind k-' + k.kind);
+      ic.innerHTML = iconMarkup(RB_KIND_ICON[k.kind] || 'db', 20);
+      b.appendChild(ic);
       b.appendChild(el('b', '', k.words));
       b.appendChild(el('span', 'small muted', RB_KIND_SAYS[k.kind] || ''));
+      if (k.not_here) {
+        b.disabled = true;
+        b.appendChild(el('span', 'small warn', 'not here: zigmon may write only into its own folders - reach a share as SMB or SFTP'));
+      }
       var need = {sftp: ['ssh', 'sftp'], scp: ['ssh', 'scp'], smb: ['smbclient']}[k.kind] || [];
       var missing = need.filter(function (x) { return !(d.tools || {})[x]; });
       if (missing.length) b.appendChild(el('span', 'small bad', 'missing here: ' + missing.join(', ')
         + (k.kind === 'smb' ? ' (dnf install samba-client)' : ' (dnf install openssh-clients)')));
-      b.onclick = function () { rbEdit({kind: k.kind, enabled: 1, port: k.port, kind_words: k.words}); };
+      if (!k.not_here) b.onclick = function () { rbEdit({kind: k.kind, enabled: 1, port: k.port, kind_words: k.words}); };
       g.appendChild(b);
     });
     body.appendChild(g);
-    body.appendChild(el('p', 'note', 'A folder on this machine is not offered: the daemon may write only into its own folders, '
-      + 'and a NAS is reached as well, and checked better, as SMB or SFTP.'));
-  }, [{words: 'Close', close: true}], 'medium');
+  }, [{words: 'Close', close: true}], 'medium rbx');
 }
 function rbSec(body, title, says) {
   var s = el('div', 'form-sec rb-sec');
   s.appendChild(el('h4', '', title));
-  if (says) s.appendChild(el('p', 'note', says));
+  if (says) s.appendChild(el('p', 'small muted', says));
   var g = el('div', 'formgrid');
   s.appendChild(g);
   body.appendChild(s);
@@ -29827,6 +30133,7 @@ function rbEdit(t) {
   RB.form = f;
   RB.pinBox = null; RB.checkBox = null; RB.paintHost = null;
   zmodal(t.id ? t.name : 'A new destination: ' + (t.kind_words || t.kind), function (body) {
+    body.classList.add('rb-ed');                 // plexmon's editor: sections in small capitals, four across
     var g0 = rbSec(body, 'What it is called', '');
     f.name = zText(t.name || '', 'the NAS in the cellar');
     g0.grid.appendChild(zField('Name', f.name));
@@ -29849,10 +30156,10 @@ function rbEdit(t) {
     var g2 = rbSec(body, 'Signing in', t.kind === 'sftp' || t.kind === 'scp' ? 'A key (below) or a password - or both.' : '');
     f.user = zText(t.user || '', t.kind === 'smb' ? 'backup' : 'zigmon-backup', 'mono');
     g2.grid.appendChild(zField('Account', f.user));
-    f.password = zSecret(t.has_password ? '(kept)' : '(none)');
-    g2.grid.appendChild(zField('Password', f.password, t.has_password ? 'Kept here, never shown back. Type a new one to change it.' : ''));
+    f.password = zSecret(t.has_password ? '' : '(none)');
+    g2.grid.appendChild(zField('Password', f.password, t.has_password ? 'Kept, sealed. Type a new one to change it.' : ''));
     if (t.kind === 'smb') {
-      f.domain = zText(t.domain || '', 'WORKGROUP', 'mono');
+      f.domain = zText(t.domain || '', 'CORP', 'mono');
       g2.grid.appendChild(zField('Domain (workgroup)', f.domain));
       f.smb_encrypt = zSwitch(t.smb_encrypt === undefined ? 1 : t.smb_encrypt);
       g2.grid.appendChild(zField('SMB3 encryption required', f.smb_encrypt, 'Everything on the wire encrypted; a server that cannot is refused.'));
@@ -29872,7 +30179,7 @@ function rbEdit(t) {
         zbusy(b, true);
         rbSaveForm(cur).then(function () { zbusy(b, false); toast('saved', true); closeZModal(); loadRb(true); })
           .catch(function (e) { zbusy(b, false); zoops(e); });
-      }}], 'medium');
+      }}], 'large rbx');
 }
 function rbFields(kind) {
   var f = RB.form || {};
@@ -30381,7 +30688,13 @@ var CONTROL_SECTIONS = {
   'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
   'sys-about': ['About', 'What this is, what it runs on, and whether root signing in at the machine or over SSH lands in its console.'],
   'sys-energy': ['Energy & charts', 'What electricity costs, where the house is, and what the charts show.'],
-  'sys-backup': ['Backup', 'The whole installation, and sent to other machines; settings files, imports on trial, nightly backups and going back a step.'],
+  // plexmon's pane (2.5.3): what a backup is, in three lines - the rest a click away
+  'sys-backup': ['Backups', 'A backup is everything zigmon is: its database (the devices, rules, scenes, schedules, accounts, '
+    + 'the history and the events), its configuration, nginx and the certificate with its key, the broker with its users, '
+    + 'the firewall, the units and Zigbee2MQTT\u2019s backup - with RESTORE.txt, the exact steps to bring it back on a machine '
+    + 'installed from nothing. Locked with the password below; sent to every destination switched on - FTP, FTPS, SFTP, SCP or a '
+    + 'Windows/Samba share. Below them the backups kept on this machine, the settings in a file, imports on trial and going '
+    + 'back a step.'],
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
   'sys-acme': ['Automatic certificates', 'The certificate of this machine ordered from Let’s Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for a server it cannot see from the internet.'],
   // otp's pane (1.0.197): the side menu says Upgrades, the pane its whole name
@@ -30428,7 +30741,7 @@ function drawControlHead(sec) {
   t.appendChild(el('span', '', info[0]));
   head.appendChild(t);
   head.appendChild(el('p', 'ctl-lede', info[1]));
-  if (sec === 'sys-upgrade') upFoldWords(head);
+  if (sec === 'sys-upgrade' || sec === 'sys-backup') upFoldWords(head);
 }
 // Long explaining words in three lines, as otp 1.0.157 has them on
 // Upgrades and maintenance - the pane's lede and its cards' notes: a click
@@ -30643,40 +30956,49 @@ function pinCtlNav(on) {
 // back, and how many are changed - rather than a Save of the card's own.
 // Below the last card until something is changed, then stuck to the bottom.
 // Save is the one Save it always was: every setting, wherever it is drawn.
-function upSaveBoxes() {
-  var h = $('set-host-sys-upgrade');
+// The save bars (otp's, and plexmon's on the backups, 5.36.2): which settings
+// each one counts, and its buttons.
+var SAVE_BARS = [
+  {bar: 'up-save-bar', host: 'set-host-sys-upgrade', card: 'up-web-card', save: 'up-save', reset: 'up-reset', said: 'up-save-said'},
+  {bar: 'rb-save-bar', host: 'set-host-sys-backup-rb', card: 'rb-when-card', save: 'rb-save', reset: 'rb-reset', said: 'rb-save-said'}
+];
+function saveBarBoxes(sb) {
+  var h = $(sb.host);
   return h ? Array.prototype.slice.call(h.querySelectorAll('input[data-k], select[data-k], textarea[data-k]')) : [];
 }
+function upSaveBoxes() { return saveBarBoxes(SAVE_BARS[0]); }
 function upBoxValue(b) { return b.dataset.bool ? (b.checked ? '1' : '0') : String(b.value); }
-function upSaveMark() {
-  var bar = $('up-save-bar');
+function saveBarMark(sb) {
+  var bar = $(sb.bar);
   if (!bar) return;
-  var n = upSaveBoxes().filter(function (b) { return b.dataset.was !== undefined && upBoxValue(b) !== b.dataset.was; }).length;
+  var n = saveBarBoxes(sb).filter(function (b) { return b.dataset.was !== undefined && upBoxValue(b) !== b.dataset.was; }).length;
   bar.classList.toggle('dirty', n > 0);
-  $('up-save-said').textContent = n ? n + ' change(s) not saved yet' : '';
+  $(sb.said).textContent = n ? n + ' change(s) not saved yet' : '';
 }
-(function () {
-  var card = $('up-web-card');
-  if (!card || !$('up-save')) return;
-  card.addEventListener('input', upSaveMark);
-  card.addEventListener('change', upSaveMark);
-  setButtonIcon($('up-save'), 'save');
-  setButtonIcon($('up-reset'), 'undo');
-  $('up-save').onclick = function () {
-    if (!$('up-save-bar').classList.contains('dirty') && !SETTINGS.dirty) { toast('nothing has changed', true); return; }
+function upSaveMark() { saveBarMark(SAVE_BARS[0]); }
+SAVE_BARS.forEach(function (sb) {
+  var card = $(sb.card);
+  if (!card || !$(sb.save)) return;
+  var mark = function () { saveBarMark(sb); };
+  card.addEventListener('input', mark);
+  card.addEventListener('change', mark);
+  setButtonIcon($(sb.save), 'save');
+  setButtonIcon($(sb.reset), 'undo');
+  $(sb.save).onclick = function () {
+    if (!$(sb.bar).classList.contains('dirty') && !SETTINGS.dirty) { toast('nothing has changed', true); return; }
     $('settings-save').onclick();
   };
-  $('up-reset').onclick = function () {
-    upSaveBoxes().forEach(function (b) {
+  $(sb.reset).onclick = function () {
+    saveBarBoxes(sb).forEach(function (b) {
       if (b.dataset.was === undefined) return;
       if (b.dataset.bool) b.checked = b.dataset.was === '1'; else b.value = b.dataset.was;
     });
     SETTINGS.dirty = false;
     setSettingsNote('');
     applySettingsWhen();
-    upSaveMark();
+    mark();
   };
-})();
+});
 // Every Save on a settings card saves every setting, wherever it is drawn -
 // the same one Save it always was.
 Array.prototype.forEach.call(document.querySelectorAll('.set-save-alt'), function (b) {
