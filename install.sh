@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.35.0"
+VERSION="5.36.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
