@@ -2491,6 +2491,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      card (5.30 - ACME's DNS boxes; Duo's were the same) */
   :is(#settings-grid, .set-host) .set-item[hidden],
   :is(#settings-grid, .set-host) .set-cluster[hidden]{display:none}
+  /* ...and a tall one, whose own rule outweighed both (5.34.1): the CA's
+     certificate stayed on the card with ACME switched off */
+  :is(#settings-grid, .set-host) :is(.set-grid, .set-cluster) > .set-item.set-tall[hidden]{display:none}
+  /* a certificate in PEM (5.34.1): a box its 64-character lines fit across,
+     and tall enough for a whole one */
+  :is(#settings-grid, .set-host) :is(.set-grid, .set-cluster) > .set-item.set-tall.set-pem{max-width:none}
+  .set-item.set-pem textarea{width:min(100%, 74ch);min-height:22em;font-size:12.5px;line-height:1.45;
+    white-space:pre;overflow-wrap:normal;overflow-x:auto}
   .subpanel{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
   .subpanel > .note:first-child{margin-top:0}
   .subpanel .btnrow{flex-wrap:wrap}
@@ -19792,8 +19800,9 @@ function renderSettings(st) {
         // breaks, and what is saved is no certificate at all
         if (key === 'acme_ca_pem') {
           item.classList.add('set-tall');
+          item.classList.add('set-pem');
           var ta = el('textarea', 'mono');
-          ta.rows = 5; ta.spellcheck = false;
+          ta.rows = 16; ta.spellcheck = false; ta.wrap = 'off';
           ta.placeholder = '-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----';
           ta.value = info.value === null || info.value === undefined ? '' : String(info.value);
           ta.dataset.k = key;

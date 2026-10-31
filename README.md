@@ -2115,8 +2115,13 @@ Current version: **5.34.0**
 * `zigmon --updates [show|look|update|log] [--security] [--reboot ask|auto]`,
   and *System updates* in the console.
 
-`test/osupdates.py` (dnf, needs-restarting and systemctl stood in for); it
-fails on 5.33.3.
+* **The CA's own certificate** (Automatic certificates) is hidden again with
+  ACME off or Let's Encrypt chosen - the rule laying out a tall box outweighed
+  the one hiding it - and its box is wide enough for a PEM's 64-character
+  lines and sixteen lines high.
+
+`test/osupdates.py` (dnf, needs-restarting and systemctl stood in for) and
+`test/review5341.py` (the real page in Chromium); both fail on 5.33.3.
 
 5.33.3 — the keys as upsmon has them: both by default, the account's own.
 
