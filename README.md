@@ -2085,18 +2085,29 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 
 Current version: **5.36.0**
 
-5.36.0 — a proxy for the updates, as OTP has it.
+5.36.0 — a proxy for what zigmon asks of the web, each use chosen, as OTP has it.
 
 * **Settings → Proxy** (under Server, after Network; off until switched on):
   an HTTP proxy (`http://host:port`), a user name and a password kept sealed
   (the page only says whether it is set), the names, domains, addresses and
-  nets reached straight, and whether the system updates go through it too.
-* **For the updates only**: zigmon's new versions (looked for and fetched) and
-  the system updates (dnf). **Nothing else ever goes through it** - the
-  plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router,
-  the Wi-Fi controller, the alerts, ntfy, Telegram, the certificates from the
-  ACME CA, the weather, the lists, Shodan and Duo go as they always went,
-  whatever is set: a proxy that is slow or down cannot touch the house.
+  nets reached straight.
+* **What goes through it - each use a switch of its own, every one off until
+  chosen**, so with nothing chosen nothing goes through it:
+  * zigmon's new versions (looked for and fetched),
+  * the system updates (dnf),
+  * Automatic certificates - the ACME CA and the DNS APIs (Cloudflare, deSEC,
+    acme-dns),
+  * the alerts by ntfy and Telegram, and presence read from ntfy,
+  * the weather,
+  * the block lists, snort.org's and the country list,
+  * Shodan,
+  * Duo.
+* **Never, whatever is set**: the house itself - the plugs, the sensors,
+  Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front,
+  the Wi-Fi controller - and mail; nor any private, loopback or link-local
+  address, a name without a dot or under .local, .lan, .home.arpa, a name DNS
+  knows only inside, or one in the list. A proxy that is slow or down cannot
+  touch the house.
 * **dnf** gets it from root - handed over in the ask, kept in a file only root
   reads, given to dnf in its environment, never on a command line; the log
   says "through the proxy host:port" and nothing more.

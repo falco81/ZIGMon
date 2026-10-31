@@ -308,9 +308,15 @@ print('Complete!')
 
     # ---- the settings --------------------------------------------------------------------
     print('the settings')
-    for k in ('webproxy', 'webproxy_url', 'webproxy_user', 'webproxy_password', 'webproxy_no', 'webproxy_os'):
+    for k in ('webproxy', 'webproxy_url', 'webproxy_user', 'webproxy_password', 'webproxy_no') + \
+            tuple('webproxy_' + u for u in zigmon.WEBPROXY_USES):
         check(k in zigmon.DEFAULTS and k in zigmon.Daemon.TUNABLE, '%s is not a setting' % k)
     check(zigmon.DEFAULTS.get('webproxy') == 0, 'the proxy is not off until switched on')
+    # each use its own switch, every one off until chosen (5.36.0)
+    check(set(zigmon.WEBPROXY_USES) == {'updates', 'os', 'acme', 'alerts', 'weather', 'lists', 'intel', 'duo'},
+          'the uses are not the ones offered: %r' % (zigmon.WEBPROXY_USES,))
+    check(all(zigmon.DEFAULTS.get('webproxy_' + u) == 0 for u in zigmon.WEBPROXY_USES),
+          'a use goes through the proxy by default')
     for key, value in (('webproxy_url', 'http://user:pw@proxy.example.cz:3128'),
                        ('webproxy_url', 'https://proxy.example.cz:3128'),
                        ('webproxy_url', 'proxy.example.cz:3128'), ('webproxy_url', 'http://a b:1'),
@@ -347,6 +353,13 @@ print('Complete!')
     print('on: through the proxy, with the user name and password')
     settings(webproxy=1, webproxy_no='localhost')
     check(zigmon.webproxy_on(), 'the proxy is not on')
+    # on, but nothing chosen: nothing goes through it
+    PROXIED.clear()
+    got = fetch('http://plain%s:%d/nothing-chosen' % (WEB, HTTP_PORT))
+    check(got[0] != 200 and not PROXIED, 'with no use chosen something went through the proxy: %r' % (got,))
+    for u in zigmon.WEBPROXY_USES:
+        check(not zigmon.webproxy_on(u), '%s goes through the proxy unchosen' % u)
+    settings(webproxy_updates=1)
     PROXIED.clear()
     SEEN.clear()
     got = fetch('http://plain%s:%d/through' % (WEB, HTTP_PORT))
@@ -474,6 +487,7 @@ print('Complete!')
 
     # ---- dnf ----------------------------------------------------------------------------------
     print('dnf: handed the proxy in a file only root reads, never on its command line')
+    settings(webproxy_os=1)
     asked = []
     real_call = d.root_call
 
@@ -542,12 +556,20 @@ print('Complete!')
         at = src.index('def %s(' % name)
         nxt = re.search(r'\n(    )?def ', src[at + 10:])
         return src[at:at + 10 + (nxt.start() if nxt else len(src))]
-    check("purpose='updates'" in body_of('_online_get'), 'the new versions do not go through the proxy')
-    check(src.count("purpose='updates'") == 1 + src.count("purpose != 'updates'"),
-          'something besides the new versions asks for the proxy: %d' % src.count("purpose='updates'"))
-    for fn in ('acme_urlopen', 'weather', 'geo_fetch', 'shodan_ask', '_duo_once', '_feed_fetch',
-               'presence_ntfy_loop', 'notify_loop', '_snort_fetch'):
-        check("purpose='updates'" not in body_of(fn), '%s goes through the proxy - only the updates may' % fn)
+    for fn, use in (('_online_get', 'updates'), ('acme_urlopen', 'acme'), ('weather', 'weather'),
+                    ('geo_fetch', 'lists'), ('_feed_fetch', 'lists'), ('_snort_fetch', 'lists'),
+                    ('shodan_ask', 'intel'), ('_duo_once', 'duo'), ('presence_ntfy_loop', 'alerts'),
+                    ('notify_loop', 'alerts')):
+        check("purpose='%s'" % use in body_of(fn), '%s does not go by its own switch (%s)' % (fn, use))
+    # every call to the web says what it is for - its line, or the next one
+    lines = src.splitlines()
+    bare = []
+    for i, ln in enumerate(lines):
+        code = ln.split('#')[0]
+        if re.search(r'\bweb_open(er)?\(', code) and not code.lstrip().startswith('def ') \
+                and 'purpose' not in code + lines[i + 1] and code.strip().endswith((')', ',', ':')):
+            bare.append(ln.strip())
+    check(not bare, 'a call to the web goes without saying what it is for: %r' % bare[:3])
     for fn in ('_rest_once', '_sms_open', '_sms_login', 'gateway_fetch', '_unifi_opener', 'api_call'):
         check('web_open' not in body_of(fn), '%s (the house\'s own) goes the proxy\'s way' % fn)
 
@@ -689,7 +711,9 @@ const { chromium } = require('playwright');
             check(r.get('cards') == ['px-set-card', 'px-card'], 'the pane\'s cards: %r' % r.get('cards'))
             check(r.get('setTitle') == 'Settings' and r.get('tryTitle') == 'Try it' and r.get('input'),
                   'the cards are not Settings and Try it: %r %r' % (r.get('setTitle'), r.get('tryTitle')))
-            want = ['webproxy', 'webproxy_url', 'webproxy_user', 'webproxy_password', 'webproxy_no', 'webproxy_os']
+            want = ['webproxy', 'webproxy_url', 'webproxy_user', 'webproxy_password', 'webproxy_no',
+                    'webproxy_updates', 'webproxy_os', 'webproxy_acme', 'webproxy_alerts', 'webproxy_weather',
+                    'webproxy_lists', 'webproxy_intel', 'webproxy_duo']
             check(r.get('boxes') == want, 'the settings card does not hold the proxy\'s settings: %r %s'
                   % (r.get('boxes'), r.get('err2', '')))
             check(r.get('pw') and r['pw']['type'] == 'password' and r['pw']['value'] == '' and r['pw']['ph'] == '(kept)',

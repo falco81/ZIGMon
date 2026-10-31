@@ -4480,7 +4480,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sec-firewall" data-icon="net">Firewall</button>
     <div class="ctl-group">Server</div>
     <button type="button" data-sec="sys-network" data-icon="net">Network</button>
-    <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for the updates only - zigmon's new versions and the system's (dnf). Nothing else of the house goes through it.">Proxy</button>
+    <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for what zigmon asks of the web - each use chosen by itself, none by default. The house's own devices never go through it.">Proxy</button>
     <button type="button" data-sec="sys-time" data-icon="clock">Time</button>
     <button type="button" data-sec="sys-certs" data-icon="key">Certificates</button>
     <button type="button" data-sec="sys-acme" data-icon="lock" title="The certificate ordered from Let's Encrypt (or another ACME CA) and renewed by itself.">Automatic certificates</button>
@@ -18500,17 +18500,25 @@ var SETTINGS_LAYOUT = [
   ]],
   // the way out to the web through an HTTP proxy (5.35): otp's own words, for one machine
   ['Going out through a proxy', [
-    ['webproxy', 'The updates through a proxy',
-     'An HTTP proxy for the updates only: zigmon\u2019s new versions (looked for and fetched) and, with the switch '
-     + 'below, the system updates (dnf). Nothing else uses it - the plugs, the sensors, Zigbee2MQTT, the broker, the '
-     + 'SMS gateway, the alerts, ntfy, the certificates, the weather and the lists go as they always went'],
+    ['webproxy', 'Go out through a proxy',
+     'An HTTP proxy for what zigmon asks of the web - only for what is switched on below; with everything off, '
+     + 'nothing goes through it. The house itself - the plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, '
+     + 'the router, the Wi-Fi controller - and mail never do, whatever is set'],
     ['webproxy_url', 'The proxy', '<code>http://proxy.example.cz:3128</code>'],
     ['webproxy_user', 'User name at the proxy', 'Where the proxy asks for one. Empty: none.'],
     ['webproxy_password', 'Password at the proxy', 'Kept like the other passwords - never shown again, never written down.'],
     ['webproxy_no', 'Straight, not through the proxy',
      'Names and addresses reached without it, separated by commas: <code>.example.cz</code> is every name under it, '
      + '<code>10.0.0.0/8</code> a net. Addresses of this network go straight anyway.'],
-    ['webproxy_os', 'The system updates through it too', 'dnf fetches the updates of System updates through it.'],
+    ['|', 'what goes through it - each by itself, all off until switched on'],
+    ['webproxy_updates', 'zigmon\u2019s new versions', 'Looking for a new version of zigmon and fetching it (Upgrades → From the web).'],
+    ['webproxy_os', 'The system updates', 'dnf, for System updates - handed the proxy by root in a file only root reads, never on a command line.'],
+    ['webproxy_acme', 'Automatic certificates', 'The ACME CA (Let\u2019s Encrypt or yours) and the DNS APIs for DNS-01: Cloudflare, deSEC, acme-dns. The CA\u2019s question on port 80 comes in, not out, and is not affected.'],
+    ['webproxy_alerts', 'Alerts by ntfy and Telegram', 'The alerts sent to ntfy and Telegram, and presence read from ntfy. Mail never goes through it.'],
+    ['webproxy_weather', 'The weather', 'The forecast for the heating and the scenes.'],
+    ['webproxy_lists', 'The block lists', 'The lists of addresses to keep out, snort.org\u2019s, and the country list.'],
+    ['webproxy_intel', 'What is known of an address', 'Shodan, asked about an address kept out.'],
+    ['webproxy_duo', 'Duo', 'Duo\u2019s approvals for the one-tap links.'],
   ]],
   ['Restarting by itself', [
     ['|', 'a regular restart of the machine'],
@@ -20494,7 +20502,10 @@ var SETTINGS_WHEN = {
   osup_auto_reboot: 'osup_auto=1',
   // the way out through a proxy (5.35), as otp shows it: the rest once it is on
   webproxy_url: 'webproxy=1', webproxy_user: 'webproxy=1', webproxy_password: 'webproxy=1',
-  webproxy_no: 'webproxy=1', webproxy_os: 'webproxy=1'
+  webproxy_no: 'webproxy=1', webproxy_os: 'webproxy=1', webproxy_updates: 'webproxy=1',
+  webproxy_acme: 'webproxy=1', webproxy_alerts: 'webproxy=1', webproxy_weather: 'webproxy=1',
+  webproxy_lists: 'webproxy=1', webproxy_intel: 'webproxy=1', webproxy_duo: 'webproxy=1',
+  '|what goes through it - each by itself, all off until switched on': 'webproxy=1'
 };
 function applySettingsWhen() {
   if (!$('settings-grid')) return;
@@ -30207,7 +30218,7 @@ var CONTROL_SECTIONS = {
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
   'sec-firewall': ['Firewall', 'Who may reach the pages, and what the firewall lets in - put in by root, checked first, never shutting you out.'],
   'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
-  'sys-proxy': ['Proxy', 'An HTTP proxy for the updates only: zigmon\u2019s new versions (looked for and fetched) and the system updates (dnf). Nothing else ever goes through it - the plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller, the alerts, ntfy, the certificates, the weather, the lists - so a proxy that is slow or down cannot touch the house.'],
+  'sys-proxy': ['Proxy', 'An HTTP proxy for what zigmon asks of the web, each use chosen by itself - the new versions, the system updates, the certificates, the alerts by ntfy and Telegram, the weather, the lists, Shodan, Duo - and none until chosen. The house itself never goes through it - the plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller - nor mail, so a proxy that is slow or down cannot touch the house.'],
   'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],
   'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
   'sys-about': ['About', 'What this is, what it runs on, and whether root signing in at the machine or over SSH lands in its console.'],

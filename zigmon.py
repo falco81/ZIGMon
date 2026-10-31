@@ -592,7 +592,16 @@ DEFAULTS = {
     'webproxy_user': '',          # where the proxy asks for one
     'webproxy_password': '',      # never shown back or logged
     'webproxy_no': 'localhost, 127.0.0.1, ::1',   # names, .domains, addresses and nets reached straight
-    'webproxy_os': 1,             # dnf fetches the system's updates through it too
+    # what goes through it (5.36.0): each one chosen, none by default - the
+    # house's own devices never do, whatever is set
+    'webproxy_updates': 0,        # zigmon's new versions, looked for and fetched
+    'webproxy_os': 0,             # the system updates (dnf, through root)
+    'webproxy_acme': 0,           # the ACME CA and the DNS APIs (Cloudflare, deSEC, acme-dns)
+    'webproxy_alerts': 0,         # ntfy and Telegram, and presence by ntfy
+    'webproxy_weather': 0,        # the forecast
+    'webproxy_lists': 0,          # the block lists, snort.org, the country list
+    'webproxy_intel': 0,          # Shodan
+    'webproxy_duo': 0,            # Duo
     # ...and that backup sent to other machines (5.21): FTP, FTPS, SFTP, SCP,
     # SMB - the destinations are set on the dashboard (Control - Backup) and
     # kept in the database; never sent without the password, which locks it
@@ -7689,14 +7698,20 @@ WEBPROXY_HOME_SUFFIXES = ('.local', '.lan', '.home', '.home.arpa', '.internal', 
                           '.localhost')
 
 
-def webproxy_on(purpose='web'):
-    """Whether the proxy is to be used - for the web (zigmon's own asking), or
-    'os' (dnf, when the system updates go through it too)."""
+WEBPROXY_USES = ('updates', 'os', 'acme', 'alerts', 'weather', 'lists', 'intel', 'duo')
+
+
+def webproxy_on(purpose=''):
+    """Whether the proxy is to be used for one purpose (5.36.0) - each of
+    WEBPROXY_USES its own switch, all off by default. With no purpose: only
+    whether a proxy is set and switched on at all (the page, Try it)."""
     if not int(CONFIG.get('webproxy') or 0) or not str(CONFIG.get('webproxy_url') or '').strip():
         return False
-    if purpose == 'os':
-        return bool(int(CONFIG.get('webproxy_os', 1) or 0))
-    return True
+    if not purpose:
+        return True
+    if purpose not in WEBPROXY_USES:
+        return False
+    return bool(int(CONFIG.get('webproxy_' + purpose) or 0))
 
 
 def webproxy_address():
@@ -7714,7 +7729,7 @@ def webproxy_address():
     return (('[%s]:%d' if ':' in host else '%s:%d') % (host, port)) if host else ''
 
 
-def webproxy_full(purpose='web'):
+def webproxy_full(purpose=''):
     """The proxy's address with its user name and password in it - for urllib
     and for dnf; '' where none is to be used. Never logged, never shown."""
     if not webproxy_on(purpose):
@@ -7817,12 +7832,12 @@ def web_opener(url, *handlers, purpose=''):
     For the updates: through the proxy where one is set and the address is
     not one reached straight; straight where it is."""
     import urllib.request
-    if purpose != 'updates' or not webproxy_on():
+    if not webproxy_on(purpose or '-'):
         return urllib.request.build_opener(*handlers)
     host = urlsplit(str(url)).hostname or ''
     if webproxy_straight(host):
         return urllib.request.build_opener(urllib.request.ProxyHandler({}), *handlers)
-    return urllib.request.build_opener(_webproxy_handler(webproxy_full()), *handlers)
+    return urllib.request.build_opener(_webproxy_handler(webproxy_full(purpose)), *handlers)
 
 
 def web_open(req, timeout=30, context=None, purpose=''):
@@ -7831,6 +7846,11 @@ def web_open(req, timeout=30, context=None, purpose=''):
     import urllib.request
     if not isinstance(req, urllib.request.Request):
         req = urllib.request.Request(req)
+    if not webproxy_on(purpose or '-'):
+        # exactly as before there was a proxy: urllib's own urlopen
+        if context is not None:
+            return urllib.request.urlopen(req, timeout=timeout, context=context)
+        return urllib.request.urlopen(req, timeout=timeout)
     handlers = [urllib.request.HTTPSHandler(context=context)] if context is not None else []
     return web_opener(req.full_url, *handlers, purpose=purpose).open(req, timeout=timeout)
 
@@ -9993,6 +10013,9 @@ class Daemon(object):
         # the way out to the web through an HTTP proxy (5.35)
         'webproxy': (0, 1), 'webproxy_url': 'str', 'webproxy_user': 'str',
         'webproxy_password': 'str', 'webproxy_no': 'str', 'webproxy_os': (0, 1),
+        'webproxy_updates': (0, 1), 'webproxy_acme': (0, 1), 'webproxy_alerts': (0, 1),
+        'webproxy_weather': (0, 1), 'webproxy_lists': (0, 1), 'webproxy_intel': (0, 1),
+        'webproxy_duo': (0, 1),
         'rbackup': (0, 1), 'rbackup_at': 'str', 'rbackup_every': 'str', 'rbackup_day': (1, 7),
         'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650), 'rbackup_password': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
@@ -12650,7 +12673,7 @@ class Daemon(object):
                    ', '.join(sorted(params)) or 'none'), 'debug')
         started = time.perf_counter()
         try:
-            with web_open(req, timeout=timeout) as answer:
+            with web_open(req, timeout=timeout, purpose='duo') as answer:
                 out = json.loads(answer.read().decode('utf-8', 'replace'))
             if CONFIG.get('debug'):
                 log('duo <- %s in %.0f ms: %s' % (path, (time.perf_counter() - started) * 1000,
@@ -14858,7 +14881,7 @@ class Daemon(object):
                                                          headers=headers)
                             # an ntfy of the house's own goes straight, ntfy.sh
                             # through Control - Proxy where one is set (5.35)
-                            web_open(req, timeout=10).read()
+                            web_open(req, timeout=10, purpose='alerts').read()
                         except Exception as e:
                             log('ntfy: %s' % e, 'warn')
                     token, chat = CONFIG.get('notify_telegram_token'), CONFIG.get('notify_telegram_chat')
@@ -14874,7 +14897,7 @@ class Daemon(object):
                             req = urllib.request.Request('https://api.telegram.org/bot%s/%s' % (token, method),
                                                          data=json.dumps(body).encode(),
                                                          headers={'Content-Type': 'application/json'})
-                            web_open(req, timeout=10).read()
+                            web_open(req, timeout=10, purpose='alerts').read()
                         except Exception as e:
                             log('telegram: %s' % e, 'warn')
                     # The texts last, and by a worker of their own. Sent first and
@@ -26426,7 +26449,7 @@ class Daemon(object):
             else:
                 req = urllib.request.Request(url, headers={'User-Agent': 'zigmon/%s' % __version__,
                                                            'Accept': 'text/plain, */*'})
-                with web_open(req, timeout=60) as answer:
+                with web_open(req, timeout=60, purpose='lists') as answer:
                     text = answer.read(20 * 1024 * 1024).decode('utf-8', 'replace')
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -26584,7 +26607,7 @@ class Daemon(object):
         import urllib.error
         import urllib.request
         jar = self._snort_jar()
-        web = web_opener('https://www.snort.org/', urllib.request.HTTPCookieProcessor(jar))
+        web = web_opener('https://www.snort.org/', urllib.request.HTTPCookieProcessor(jar), purpose='lists')
         web.addheaders = [('User-Agent', 'zigmon/%s' % __version__),
                           ('Accept', 'text/plain, text/html, */*')]
         seen = {}
@@ -26824,7 +26847,7 @@ class Daemon(object):
             url = 'https://download.db-ip.com/free/dbip-country-lite-%s.csv.gz' % month
             try:
                 req = urllib.request.Request(url, headers={'User-Agent': 'zigmon'})
-                with web_open(req, timeout=120) as answer:
+                with web_open(req, timeout=120, purpose='lists') as answer:
                     raw = gzip.decompress(answer.read(60 * 1024 * 1024))
                 break
             except Exception as e:
@@ -27104,7 +27127,7 @@ class Daemon(object):
                     try:
                         req = urllib.request.Request(where, headers={'User-Agent': 'zigmon/%s' % __version__,
                                                                      'Accept': 'application/json'})
-                        with web_open(req, timeout=12) as answer:
+                        with web_open(req, timeout=12, purpose='intel') as answer:
                             data = json.loads(answer.read(8_000_000).decode('utf-8', 'replace') or '{}')
                         break
                     except urllib.error.HTTPError as e:
@@ -34539,7 +34562,7 @@ class Daemon(object):
                '&hourly=temperature_2m,weather_code&daily=sunrise,sunset,temperature_2m_max,'
                'temperature_2m_min,precipitation_sum&forecast_days=2&timezone=auto') % (lat, lon)
         try:
-            raw = json.loads(web_open(url, timeout=10).read())
+            raw = json.loads(web_open(url, timeout=10, purpose='weather').read())
         except Exception as e:
             self.debug('weather', str(e))
             self._weather_failed_at = time.time()
@@ -37333,7 +37356,7 @@ class Daemon(object):
                 # nothing for two minutes means the link died quietly, and
                 # a reconnect is the only way to find out. Without this the
                 # listener could sit on a dead socket forever.
-                with web_open(req, timeout=120) as response:
+                with web_open(req, timeout=120, purpose='alerts') as response:
                     backoff = 2
                     log('listening for presence reports on %s' % url)
                     for raw in response:
@@ -45478,7 +45501,7 @@ def acme_urlopen(req, timeout=30, context=None):
     (5.35; with none, the system's way out - a proxy in the environment is
     taken), names looked up by ACME's DNS servers."""
     with acme_dns_scope():
-        return web_open(req, timeout=timeout, context=context)
+        return web_open(req, timeout=timeout, context=context, purpose='acme')
 
 
 class Acme(object):
