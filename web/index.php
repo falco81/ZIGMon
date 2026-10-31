@@ -3865,10 +3865,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .acme-dns .dns-val > div{flex-basis:100%}
   /* the copy buttons in a column of their own, right after the text (5.34.1):
      one under the other, not wherever a line of text happened to end */
-  .acme-dns td.dns-cell{padding-right:4px;white-space:nowrap}
-  .acme-dns table th,.acme-dns table td{white-space:nowrap}
-  .acme-dns table th:last-child,.acme-dns table td:last-child{width:100%;white-space:normal}
-  .acme-dns td.dns-copy{width:1%;white-space:nowrap;padding-left:0;padding-right:18px}
+  .acme-dns table.dns-tbl{table-layout:fixed;width:100%;min-width:980px}
+  .acme-dns table.dns-tbl th,.acme-dns table.dns-tbl td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .acme-dns table.dns-tbl td.dns-cell .dns-val{flex-wrap:nowrap}
+  .acme-dns table.dns-tbl td.dns-cell .dns-val > span:first-child{overflow:hidden;text-overflow:ellipsis}
+  .acme-dns td.dns-copy{padding-left:0;overflow:visible}
   .acme-steps-done{margin:10px 0 0}.acme-steps-done summary{cursor:pointer}
   .acme-steps-done .si-row{display:flex;gap:8px;padding:2px 0}
   .acme-steps-done .si-row > .mono{flex:none;min-width:52px;text-align:right}
@@ -27314,13 +27315,15 @@ function drawAcme() {
     grid.appendChild(c);
   });
   host.appendChild(grid);
+  /* the last Check DNS as the daemon keeps it (5.34.2): the same after F5 */
+  var kept = d.dns_checked;
+  if (kept && kept.at && (!AC_DNS.at || kept.at > AC_DNS.at)) AC_DNS = {at: kept.at, rows: kept.rows, own: kept.own};
   if (d.on && d.dns_guide) {
     /* drawn again only when what it says changed (5.34.1): every refresh
        made it anew, and its copy buttons blinked each time */
-    var dsig = JSON.stringify([d.dns_guide, AC_DNS.at, AC_DNS.rows, AC_DNS.own,
-                               Date.now() / 1000 - AC_DNS.at < 600]);
+    var dsig = JSON.stringify([d.dns_guide, AC_DNS.at, AC_DNS.rows, AC_DNS.own]);
     if (!AC.dnsCard || AC.dnsSig !== dsig) { AC.dnsCard = acmeDnsGuide(d); AC.dnsSig = dsig; }
-    else if (AC.dnsCard._ago) AC.dnsCard._ago.textContent = 'checked ' + ago(AC_DNS.at);
+    else if (AC.dnsCard._ago && AC_DNS.at) AC.dnsCard._ago.textContent = 'checked ' + ago(AC_DNS.at);
     host.appendChild(AC.dnsCard);
   }
   if (d.account && d.account.kid) {
@@ -27415,12 +27418,12 @@ function acmeDnsGuide(d) {
   var ol = el('ol', 'acme-steps');
   (ACME_DNS_STEPS[key] || []).forEach(function (w) { ol.appendChild(el('li', '', w)); });
   card.appendChild(ol);
-  var checked = AC_DNS.rows && Date.now() / 1000 - AC_DNS.at < 600 ? AC_DNS.rows : null;
+  var checked = AC_DNS.rows && AC_DNS.at ? AC_DNS.rows : null;
   var rows = (g.rows || []).map(function (r, i) {
     var c = checked && checked[i] && checked[i].record === r.record ? checked[i] : {};
     return Object.assign({}, r, {ok: c.ok, said: c.said});
   });
-  card.appendChild(zTable(['Certificate', 'Record', '', 'Type', 'Points at / value', '', 'In DNS now'], rows, function (r) {
+  var tw = zTable(['Certificate', 'Record', '', 'Type', 'Points at / value', '', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
     tr.appendChild(el('td', '', r.type === 'NS' ? 'its zone at deSEC' : 'this machine'));
     if (r.record) tr.appendChild(acmeDnsCell(r.record));
@@ -27448,7 +27451,17 @@ function acmeDnsGuide(d) {
     } else st.appendChild(el('span', 'muted', r.type === 'TXT' && !r.value ? 'zigmon puts it in' : '–'));
     tr.appendChild(st);
     return tr;
-  }, 'plain|Nothing to put in.'));
+  }, 'plain|Nothing to put in.');
+  /* columns of fixed widths across the card (5.34.2): nothing moves when a
+     check comes back, a reload or a click - the narrow screen scrolls */
+  var tbl = tw.querySelector('table');
+  if (tbl) {
+    tbl.classList.add('dns-tbl');
+    var cg = el('colgroup');
+    [14, 21, 5, 12, 27, 5, 16].forEach(function (w) { var c = el('col'); c.style.width = w + '%'; cg.appendChild(c); });
+    tbl.insertBefore(cg, tbl.firstChild);
+  }
+  card.appendChild(tw);
   var row = el('div', 'btnrow');
   var chk = cmdButton('Check DNS', 'search', 'small');
   explain(chk, 'Each record looked up from this machine now, through its DNS servers - as the CA will look. A record just put in may take a while to show (its TTL).');
@@ -27464,7 +27477,8 @@ function acmeDnsGuide(d) {
   if (checked && AC_DNS.own === false) {
     card.appendChild(el('p', 'note warn small', 'Checked with this machine’s DNS servers - inside your network they may see what the internet does not. Set DNS servers for ACME (below) to public ones, 1.1.1.1, 9.9.9.9, to see what the CA sees.'));
   }
-  if (checked) { card._ago = el('span', 'muted small', 'checked ' + ago(AC_DNS.at)); row.appendChild(card._ago); }
+  card._ago = el('span', 'muted small', checked ? 'checked ' + ago(AC_DNS.at) : 'not checked yet');
+  row.appendChild(card._ago);
   card.appendChild(row);
   return card;
 }

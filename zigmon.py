@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.34.1'
+__version__ = '5.34.2'
 
 import argparse
 import base64
@@ -45597,6 +45597,7 @@ def acme_view(d):
             'work': dict(ACME_WORK), 'node': socket.gethostname().split('.')[0] or 'this machine',
             'challenge': CONFIG.get('acme_challenge') or 'http-01',
             'dns_guide': acme_dns_guide(d),
+            'dns_checked': _acme_meta(d, 'acme_dns_checked') or None,
             'port80': look, 'helper': d.root_installed(),
             'manual': {k: v for k, v in (manual or {}).items()
                        if k in ('rr', 'txt', 'at', 'done')} or None}
@@ -46324,6 +46325,11 @@ def acme_dns_check(d):
     g['at'] = time.time()
     g['resolvers'] = acme_resolvers() or ['this machine\'s DNS']
     g['own_resolvers'] = bool(acme_resolvers())
+    # kept (5.34.2): the card says the same after a reload as right after the
+    # click - it said "not checked yet" until Check DNS was pressed again
+    d.store.set_meta('acme_dns_checked', json.dumps({
+        'at': g['at'], 'own': g['own_resolvers'],
+        'rows': [{'record': r.get('record'), 'ok': r.get('ok'), 'said': r.get('said')} for r in g['rows']]}))
     return g
 
 

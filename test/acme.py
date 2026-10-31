@@ -998,6 +998,15 @@ json.dump(recs, open(zone, 'w'))
           'the second certificate stayed named after one was ordered')
     check(nginx_ok(), 'nginx does not take one certificate after two')
 
+    # ---- Check DNS kept, for the card after a reload (5.34.2) -----------------------------
+    zigmon.dns_ask_rc = lambda name, kind: (0, [('NS', 'ns1.desec.io.')] if kind == 2 else [])
+    code, out = acme({'action': 'dns_check'})
+    check(code == 200 and out.get('rows') is not None, 'Check DNS did not answer: %s %s' % (code, out))
+    view = acme({'action': 'care', 'on': True})[1]
+    kept = view.get('dns_checked') or {}
+    check(kept.get('at') and kept.get('rows') and len(kept['rows']) == len(out.get('rows') or []),
+          'the last Check DNS is not kept for the card after a reload: %r' % kept)
+
     # ---- switched off -------------------------------------------------------------------
     d.save_config_overrides({'acme': 0, 'acme_challenge': 'http-01', 'acme_dns_alias': ''})
     check(plain80(NGINX_CONF.read_text()) == plain80(ORIGINAL_CONF), 'switched off, port 80 is not as it was')

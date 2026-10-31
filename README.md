@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.34.1**
+Current version: **5.34.2**
+
+5.34.2 — In your DNS: laid out once, the same after a reload.
+
+* **In your DNS** (Automatic certificates) is laid out across the card in
+  columns of their own widths - the certificate, the record and its copy
+  button, the type, what it points at and its copy button, whether it is in
+  DNS now - as isemon has it; nothing moves when a check comes back. The
+  texts are not wrapped; on a narrow screen the table scrolls.
+* **The last Check DNS is kept** by the daemon: after a reload (F5) the card
+  says what it said right after the click - *there*, *checked … ago* -
+  instead of *not checked yet*; the line under the table is always there.
+
+`test/review5342.py` and `test/acme.py`; both fail on 5.34.1.
 
 5.34.1 — the pages of the certificates, steadied.
 

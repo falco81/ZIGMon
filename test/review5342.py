@@ -59,6 +59,25 @@ const { chromium } = require('playwright');
       return t && bt ? Math.round(bt.getBoundingClientRect().left - t.getBoundingClientRect().right) : null; });
     return {kept: !!first && first === again, record: xs(0), value: xs(1), gap: gap};
   }, %(guide)s);
+  r.steady = await p.evaluate((guide) => {
+    /* a reload: the last check from the daemon; then a click on Check DNS */
+    AC_DNS = {at: 0, rows: null};
+    AC.dnsCard = null;
+    const now = Date.now() / 1000;
+    const rows = guide.rows.map(x => ({record: x.record, ok: true, said: 'there'}));
+    AC.d = {ok: true, on: true, helper: true, targets: [], mine: [], directory: '', account: {}, work: {}, node: 'x',
+            challenge: 'dns-01', dns_guide: guide, dns_checked: {at: now - 3600, rows: rows, own: true}};
+    drawAcme();
+    const look = () => {
+      const c = document.querySelector('.acme-dns');
+      const cells = Array.from(c.querySelectorAll('tbody tr:first-child td')).map(td => Math.round(td.getBoundingClientRect().left));
+      return {cells: cells, h: Math.round(c.getBoundingClientRect().height), ago: (c._ago || {}).textContent || ''};
+    };
+    const afterReload = look();
+    AC_DNS = {at: now, rows: rows, own: true};
+    drawAcme();
+    return {reload: afterReload, click: look()};
+  }, %(guide)s);
   r.level = await p.evaluate(() => {
     try { showControlSection('sys-certs'); } catch (e) {}
     let up = document.getElementById('web-certs');
@@ -112,6 +131,12 @@ for col in ('record', 'value'):
     xs = [x for x in r[col] if x is not None]
     if len(xs) != 2 or len(set(xs)) != 1:
         bad.append('the copy buttons of the %s are not one under the other: %r' % (col, r[col]))
+sd = r.get('steady') or {}
+if not (sd.get('reload') or {}).get('ago', '').startswith('checked'):
+    bad.append('after a reload the last Check DNS is not shown: %r' % (sd.get('reload') or {}).get('ago'))
+if sd.get('reload', {}).get('cells') != sd.get('click', {}).get('cells') or \
+        sd.get('reload', {}).get('h') != sd.get('click', {}).get('h'):
+    bad.append('the card moves between a reload and a click on Check DNS: %r' % sd)
 lv = r.get('level') or {}
 for part, words in (('cn', 'the names'), ('bar', 'the bars')):
     t = lv.get(part) or []
