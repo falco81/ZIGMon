@@ -551,6 +551,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/osup');
         exit;
     }
+    if ($what === 'webproxy' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // the way out to the web through a proxy (5.35): how it is set, the
+        // password only as there or not - an administrator's, in the daemon
+        zigmon_relay('/api/webproxy');
+        exit;
+    }
     if ($what === 'rbackup-download') {
         // one backup at a destination, fetched by the daemon and handed on;
         // locked as it went there, and the session proves the right to it
@@ -871,7 +877,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -922,12 +928,13 @@ if (isset($_GET['api'])) {
                   'fullbackup-upload' => '/api/fullbackup/upload',
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
                   'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about',
-                  'acme-do' => '/api/acme', 'osup-do' => '/api/osup'];
+                  'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
         $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do',
-                                                                    'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do', 'osup-do'], true);
+                                                                    'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do', 'osup-do',
+                                                                    'webproxy-do'], true);
         zigmon_relay($paths[$what], 'POST', $body, $slow ? 180.0 : 30.0);
         exit;
     }
@@ -3855,6 +3862,39 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot details.ou-fold > pre{margin-top:6px;max-height:300px}
   .ot .ou-grid{grid-template-columns:repeat(auto-fill,minmax(520px,1fr))}
   @media (max-width:620px){.ot .ou-grid{grid-template-columns:1fr}}
+  /* Control - Proxy - Try it (5.35, otp 1.0.169): the way it went */
+  .px-out{margin-top:14px;display:flex;flex-direction:column;gap:12px}
+  .px-node .px-out{margin-top:0}
+  .px-result{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel2)}
+  .px-verdict{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .px-verdict.ok b{color:var(--ok)} .px-verdict.bad b{color:var(--crit)}
+  .px-path{display:flex;align-items:center;gap:0;flex-wrap:wrap;row-gap:12px}
+  .px-stop{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:150px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);text-align:center}
+  .px-stop .px-ic{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--panel2);color:var(--tx-mut)}
+  .px-stop.me .px-ic{color:var(--info)}
+  .px-stop.good{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
+  .px-stop.good .px-ic{color:var(--ok)}
+  .px-stop.bad{border-color:color-mix(in srgb,var(--crit) 55%,var(--line))}
+  .px-stop.bad .px-ic{color:var(--crit)}
+  .px-stop b{font-size:12.5px;word-break:break-all}
+  .px-link{flex:1;min-width:90px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:0 6px}
+  .px-wire{display:block;width:100%;height:3px;border-radius:2px;background:var(--line)}
+  .px-link.ok .px-wire{background:var(--ok)}
+  .px-link.bad .px-wire{background:repeating-linear-gradient(90deg,var(--crit) 0 8px,transparent 8px 14px)}
+  .px-link.going .px-wire{background:repeating-linear-gradient(90deg,var(--info) 0 10px,transparent 10px 20px);background-size:40px 3px;animation:px-run .8s linear infinite}
+  @keyframes px-run{from{background-position:0 0}to{background-position:40px 0}}
+  .px-lw{color:var(--tx-mut)}
+  .px-link.ok .px-lw{color:var(--ok)} .px-link.bad .px-lw{color:var(--crit)}
+  .px-steps{display:flex;flex-direction:column;gap:6px}
+  .px-step{display:flex;gap:12px;align-items:flex-start;padding:8px 12px;border:1px solid var(--line);border-radius:8px}
+  .px-step .px-n{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--panel2)}
+  .px-step.ok .px-n{color:var(--ok);background:var(--ok-bg)}
+  .px-step.bad .px-n{color:var(--crit);background:var(--crit-bg)}
+  .px-step.off{opacity:.55}
+  .px-st{flex:1;min-width:0}
+  .px-st .mono{overflow-wrap:anywhere}
+  .px-ms{flex:none}
+  @media (max-width:700px){.px-link{min-width:100%;padding:4px 0}.px-stop{min-width:100%}}
   .ot > #ac-host > .note{margin:0 0 12px}
   .acme-dns{margin-top:14px}
   .acme-steps{margin:6px 0 12px 18px;padding:0;display:flex;flex-direction:column;gap:4px;color:var(--tx-dim)}
@@ -4420,6 +4460,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sec-firewall" data-icon="net">Firewall</button>
     <div class="ctl-group">Server</div>
     <button type="button" data-sec="sys-network" data-icon="net">Network</button>
+    <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for what zigmon asks of the web - new versions, the certificates, the system updates.">Proxy</button>
     <button type="button" data-sec="sys-time" data-icon="clock">Time</button>
     <button type="button" data-sec="sys-certs" data-icon="key">Certificates</button>
     <button type="button" data-sec="sys-acme" data-icon="lock" title="The certificate ordered from Let's Encrypt (or another ACME CA) and renewed by itself.">Automatic certificates</button>
@@ -4979,6 +5020,18 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small set-note-alt"></span>
       </div>
     </div>
+    <!-- the way out to the web through an HTTP proxy (5.35): otp's Settings - Proxy, for one machine -->
+    <div class="card full set-card" data-sec="sys-proxy" id="px-set-card">
+      <h2>Settings</h2>
+      <div class="set-host" id="set-host-sys-proxy" data-for="sys-proxy"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
+    <div class="full ot" data-sec="sys-proxy" id="px-card">
+      <div id="px-host"></div>
+    </div>
     <div class="full ot pw-wrap" data-sec="sys-time" id="ntp-card">
       <div class="pw-grid ntp-grid"><div class="card ntp-node"><div id="ntp-now"></div></div></div>
     </div>
@@ -5481,7 +5534,7 @@ function api(what, options) {
       // repaint of the page waited for it.
       // The panes root looks after (firewall, certificates, upgrades, the whole
       // backup) ask every few seconds too, and say "locked" in place.
-      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup)(&|$)/.test(String(what));
+      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|webproxy)(&|$)/.test(String(what));
       if (r.status === 403 && data && /view locked/.test(data.error || '')
           && !VIEWLOCK.asking && !VIEWLOCK.declined && !quiet) {
         VIEWLOCK.asking = true;
@@ -15292,7 +15345,10 @@ var ICONS = {
   // a range of addresses: one box holding a row of smaller ones
   net: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 12h.01M10.5 12h.01M14 12h.01M17.5 12h.01"/>',
   // the router read back: a box with a tick
-  router: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 16.5h.01M11 16.5h.01"/><path d="M8 7l3 3 5-6"/>'
+  router: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 16.5h.01M11 16.5h.01"/><path d="M8 7l3 3 5-6"/>',
+  // the web, and the proxy standing in front of it (5.35, otp's own)
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z"/>',
+  wall: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.3h18M3 14.7h18"/><path d="M9 4v5.3M15 9.3v5.4M9 14.7V20"/>'
 };
 function iconMarkup(key, size) {
   return '<svg viewBox="0 0 24 24" width="' + (size || 17) + '" height="' + (size || 17)
@@ -18415,6 +18471,21 @@ var SETTINGS_LAYOUT = [
     ['fw_confirm_min', 'A change of the firewall goes back unless kept within (min)',
      'The firewall and who may reach the pages. 0: kept at once'],
   ]],
+  // the way out to the web through an HTTP proxy (5.35): otp's own words, for one machine
+  ['Going out through a proxy', [
+    ['webproxy', 'Go out through a proxy',
+     'An HTTP proxy for what zigmon asks of the web: the new versions, the certificates from the ACME CA and its '
+     + 'DNS APIs, the forecast, the lists, Shodan, Duo, ntfy and Telegram, the system updates. The house itself '
+     + '(the plugs, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller) '
+     + 'and mail never use it, nor anything at an address of this network'],
+    ['webproxy_url', 'The proxy', '<code>http://proxy.example.cz:3128</code>'],
+    ['webproxy_user', 'User name at the proxy', 'Where the proxy asks for one. Empty: none.'],
+    ['webproxy_password', 'Password at the proxy', 'Kept like the other passwords - never shown again, never written down.'],
+    ['webproxy_no', 'Straight, not through the proxy',
+     'Names and addresses reached without it, separated by commas: <code>.example.cz</code> is every name under it, '
+     + '<code>10.0.0.0/8</code> a net. Addresses of this network go straight anyway.'],
+    ['webproxy_os', 'The system updates through it too', 'dnf fetches the updates of System updates through it.'],
+  ]],
   ['Restarting by itself', [
     ['|', 'a regular restart of the machine'],
     ['reboot_auto', 'Restart the server by itself'],
@@ -19043,6 +19114,7 @@ var SETTINGS_WHERE = {
   'The server that faces the internet': 'sec-front', 'The router that carries the list': 'sec-front',
   'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access',
   'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power',
+  'Going out through a proxy': 'sys-proxy',
   'Looking for new versions': 'sys-upgrade', 'Settings': 'sys-acme', 'On a schedule': 'sys-osup',
   'When, how many, and the password': 'sys-backup-rb'
 };
@@ -20374,7 +20446,10 @@ var SETTINGS_WHEN = {
   // the updates of the system on a schedule (5.34), as otp shows them
   osup_check_at: 'osup_check=1', osup_auto_what: 'osup_auto=1', osup_auto_every: 'osup_auto=1',
   osup_auto_day: 'osup_auto=1&osup_auto_every=weekly', osup_auto_at: 'osup_auto=1',
-  osup_auto_reboot: 'osup_auto=1'
+  osup_auto_reboot: 'osup_auto=1',
+  // the way out through a proxy (5.35), as otp shows it: the rest once it is on
+  webproxy_url: 'webproxy=1', webproxy_user: 'webproxy=1', webproxy_password: 'webproxy=1',
+  webproxy_no: 'webproxy=1', webproxy_os: 'webproxy=1'
 };
 function applySettingsWhen() {
   if (!$('settings-grid')) return;
@@ -27509,6 +27584,162 @@ function acmeCertChips(chips, d) {
    goes, and the restart it needs offered at the end or made by itself. Laid
    out and worded as otp's Settings → System updates, for one machine: its
    card, the update, how far it is, the window. */
+/* ---- Control - Proxy (5.35): otp 1.0.166 - 1.0.169's Settings - Proxy, for one
+   machine. The settings are the pane's own card; Try it asks an address the
+   way zigmon asks the web - through the proxy as it is saved, or straight
+   where none is set or the address is in the list - and draws the way it
+   went: this machine, the proxy, the address; each step with its time. */
+var PX = {d: null, busy: false, last: null};
+function drawProxy() {
+  var host = $('px-host');
+  if (!host) return;
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see. The way out to the web is asked for by an administrator.', drawProxy);
+    return;
+  }
+  rootUnlockedHost(host);
+  if (host.querySelector('.px-try')) return;     /* drawn once; what was tried stays */
+  host.innerHTML = '';
+  var c = el('div', 'card full px-try');
+  c.appendChild(el('h2', '', 'Try it'));
+  c.appendChild(el('p', 'note', 'An address asked from this machine the way zigmon asks the web: through the proxy as it is saved, or straight where none is set or the address is in the list. Each step is shown. Empty: where the new versions are looked for.'));
+  var row = el('div', 'btnrow');
+  var url = el('input');
+  url.type = 'text';
+  url.id = 'px-url';
+  url.placeholder = 'https://github.com/';
+  url.style.flex = '1';
+  url.style.minWidth = '260px';
+  var go = cmdButton('Try it', 'play', 'primary');
+  go.id = 'px-go';
+  var said = el('div', 'px-out');
+  said.id = 'px-said';
+  api('webproxy').then(function (d) {
+    PX.d = d;
+    if (d && d.default_url) url.placeholder = d.default_url;
+  }).catch(function () { /* the placeholder stays as it is */ });
+  go.onclick = function () {
+    if (PX.busy) return;
+    PX.busy = true;
+    zbusy(go, true);
+    said.innerHTML = '';
+    var me = (PX.d && PX.d.node) || 'this machine';
+    var cd = pxCard(me, 'dim', 'being tried', 'info');
+    var body = el('div', 'px-out');
+    body.appendChild(pxPath(null, me));
+    cd.appendChild(body);
+    said.appendChild(cd);
+    post('webproxy-do', {action: 'try', url: url.value.trim()}).then(function (x) {
+      PX.busy = false; zbusy(go, false);
+      PX.last = x;
+      var hd = cd.querySelector('.pw-head');
+      hd.querySelector('.dot').className = 'dot ' + (x.ok ? 'ok' : 'bad');
+      var tg = hd.querySelector('.tag:last-child');
+      hd.replaceChild(el('span', 'tag ' + (x.ok ? 'ok' : 'crit'), x.ok ? (x.mode === 'proxy' ? 'through the proxy' : 'straight') : 'not reached'), tg);
+      body.innerHTML = '';
+      body.appendChild(pxPath(x));
+      body.appendChild(pxSteps(x));
+    }).catch(function (e) {
+      PX.busy = false; zbusy(go, false);
+      body.innerHTML = '';
+      body.appendChild(el('p', 'note bad', String((e && e.message) || e)));
+    });
+  };
+  url.addEventListener('keydown', function (e) { if (e.key === 'Enter') go.click(); });
+  row.appendChild(url); row.appendChild(go);
+  c.appendChild(row);
+  c.appendChild(said);
+  host.appendChild(c);
+}
+/* The machine's card, as every card of a machine is drawn on these panes. */
+function pxCard(name, dot, tag, tagCls) {
+  var c = el('div', 'card ntp-node px-node');
+  var head = el('div', 'pw-head');
+  head.appendChild(el('span', 'dot ' + dot));
+  head.appendChild(el('b', '', name));
+  head.appendChild(el('span', 'tag info', 'this machine'));
+  if (tag) head.appendChild(el('span', 'tag ' + (tagCls || 'dim'), tag));
+  c.appendChild(head);
+  return c;
+}
+/* The way it went, drawn: this machine, the proxy (when it went through one),
+   the address - each link green, red, or still being tried. */
+function pxPath(x, nodeName) {
+  var box = el('div', 'px-path' + (x ? (x.ok ? ' ok' : ' bad') : ' going'));
+  var steps = (x && x.steps) || [];
+  var failAt = steps.filter(function (s) { return !s.ok; })[0];
+  var stop = function (icon, title, sub, cls) {
+    var n = el('div', 'px-stop ' + (cls || ''));
+    var ic = el('span', 'px-ic');
+    ic.innerHTML = iconMarkup(icon, 22);
+    n.appendChild(ic);
+    n.appendChild(el('b', 'mono', title));
+    if (sub) n.appendChild(el('span', 'muted small', sub));
+    return n;
+  };
+  var link = function (state, words) {
+    var l = el('div', 'px-link ' + state);
+    l.appendChild(el('span', 'px-wire'));
+    if (words) l.appendChild(el('span', 'px-lw small', words));
+    return l;
+  };
+  if (!x) {
+    box.appendChild(stop('router', nodeName || 'zigmon', 'this machine', 'me'));
+    box.appendChild(link('going', 'trying…'));
+    box.appendChild(stop('globe', '…', '', ''));
+    return box;
+  }
+  var reached = function (re) { return steps.some(function (s) { return s.ok && re.test(s.what); }); };
+  box.appendChild(stop('router', x.node, 'this machine', 'me'));
+  if (x.mode === 'proxy') {
+    var toProxy = reached(/^connected to the proxy/) ? 'ok' : 'bad';
+    box.appendChild(link(toProxy, toProxy === 'ok' ? 'connected' : 'not reached'));
+    box.appendChild(stop('wall', x.proxy, x.proxy_auth ? 'the proxy · with a password' : 'the proxy', toProxy === 'ok' ? 'good' : 'bad'));
+    var through = x.ok ? 'ok' : (toProxy === 'ok' ? 'bad' : 'off');
+    box.appendChild(link(through, through === 'ok' ? 'through the proxy' : (through === 'bad' ? 'stopped here' : '')));
+  } else {
+    var st = x.ok ? 'ok' : 'bad';
+    box.appendChild(link(st, 'straight'));
+  }
+  box.appendChild(stop(x.tls ? 'lock' : 'globe', x.host + ':' + x.port, x.tls ? x.tls.version + ' · ' + (x.tls.issuer || '') : '', x.ok ? 'good' : 'bad'));
+  var top = el('div', 'px-verdict ' + (x.ok ? 'ok' : 'bad'));
+  top.appendChild(el('span', 'dot ' + (x.ok ? 'ok' : 'bad')));
+  var words = x.ok
+    ? (x.mode === 'proxy' ? 'Reached through the proxy' : 'Reached straight') + ' - HTTP ' + x.status + ', ' + x.ms + ' ms'
+    : 'Not reached: ' + ((failAt && failAt.said) || '?');
+  top.appendChild(el('b', '', words));
+  if (x.mode === 'direct' && x.why_direct) top.appendChild(el('span', 'muted small', 'straight because ' + x.why_direct));
+  var wrap = el('div', 'px-result');
+  wrap.appendChild(top);
+  wrap.appendChild(box);
+  return wrap;
+}
+function pxSteps(x) {
+  var ul = el('div', 'px-steps');
+  var plan = x.mode === 'proxy'
+    ? ['the proxy looked up', 'connected to the proxy'].concat(/^https/.test(x.url) ? ['a tunnel through the proxy', 'TLS'] : []).concat(['asked for'])
+    : ['looked up', 'connected to'].concat(/^https/.test(x.url) ? ['TLS'] : []).concat(['asked for']);
+  var done = x.steps || [];
+  done.forEach(function (s) {
+    var r = el('div', 'px-step ' + (s.ok ? 'ok' : 'bad'));
+    r.appendChild(el('span', 'px-n', s.ok ? '✓' : '✗'));
+    var t = el('div', 'px-st');
+    t.appendChild(el('b', '', s.what));
+    if (s.said) t.appendChild(el('div', 'muted small mono', s.said));
+    r.appendChild(t);
+    r.appendChild(el('span', 'px-ms small muted', s.ms + ' ms'));
+    ul.appendChild(r);
+  });
+  for (var i = done.length; i < plan.length; i++) {
+    var r = el('div', 'px-step off');
+    r.appendChild(el('span', 'px-n', '○'));
+    var t = el('div', 'px-st');
+    t.appendChild(el('b', '', 'not tried - the step before stopped it'));
+    r.appendChild(t);
+    ul.appendChild(r);
+  }
+  return ul;
+}
 var OU = {d: null, poll: null, hide: false, reboot: 'ask', what: 'all', asked: 0, pkOpen: false, away: 0};
 try { OU.hide = localStorage.getItem('zigmon-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
 var OU_STATE = {asking: ['waiting for root', 'dim'], updating: ['updating', 'info'], rebooting: ['restarting', 'warn'],
@@ -29835,6 +30066,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-osup') loadOsup(); else ouPoll(false);
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
+  if (sec === 'sys-proxy') drawProxy();
   if (sec === 'sys-time') { NTPP.dirty = false; loadNtp(); }
   if (sec === 'sys-power') loadPower();
   if (sec === 'sys-about') loadAbout();
@@ -29860,6 +30092,7 @@ var CONTROL_SECTIONS = {
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
   'sec-firewall': ['Firewall', 'Who may reach the pages, and what the firewall lets in - put in by root, checked first, never shutting you out.'],
   'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
+  'sys-proxy': ['Proxy', 'Where this machine may reach the web only through an HTTP proxy: the new versions, the certificates from the ACME CA and its DNS APIs, the forecast, the lists, Shodan, Duo, ntfy and Telegram, and the system updates (dnf) go through it. The house itself - the plugs, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller - and mail never do, nor anything at an address of this network.'],
   'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],
   'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
   'sys-about': ['About', 'What this is, what it runs on, and whether root signing in at the machine or over SSH lands in its console.'],

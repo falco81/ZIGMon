@@ -584,6 +584,15 @@ DEFAULTS = {
     'acme_dns_alias': '',         # a zone of its own for the TXT records (a CNAME to it, once)
     'acme_dns_wait': 30,          # seconds given to DNS to carry the record
     'acme_resolvers': '',         # the DNS servers ACME asks; empty: the machine's
+    # the way out to the web through an HTTP proxy (5.35, otp 1.0.166), off
+    # until switched on (Control - Proxy) - not the server in front, whose
+    # settings are the proxy_* ones
+    'webproxy': 0,
+    'webproxy_url': '',           # http://host:port - no name or password in it
+    'webproxy_user': '',          # where the proxy asks for one
+    'webproxy_password': '',      # never shown back or logged
+    'webproxy_no': 'localhost, 127.0.0.1, ::1',   # names, .domains, addresses and nets reached straight
+    'webproxy_os': 1,             # dnf fetches the system's updates through it too
     # ...and that backup sent to other machines (5.21): FTP, FTPS, SFTP, SCP,
     # SMB - the destinations are set on the dashboard (Control - Backup) and
     # kept in the database; never sent without the password, which locks it
@@ -7661,6 +7670,329 @@ def php_now(force=False):
 
 
 # ---------------------------------------------------------------------------
+# The way out to the web through an HTTP proxy (5.35, otp 1.0.166 - 1.0.169)
+#
+# Control - Proxy, off until switched on: what zigmon asks of the internet
+# itself - the new versions, the CA and the DNS APIs of Automatic
+# certificates, the forecast, the lists of bad addresses and of countries,
+# Shodan, Duo, ntfy and Telegram - goes through the proxy, with its user name
+# and password; and, handed to root in its ask (never on a command line), dnf
+# fetching the system's updates. The house itself never does: the plugs, the
+# Zigbee gateways, the broker, the SMS gateway, the router, the server in
+# front, the Wi-Fi controller, root's helper and mail - none of them is asked
+# through here at all - and anything at an address of this network or of the
+# machine itself goes straight whatever it is asked by, as do the names and
+# nets in the list. With the proxy off, nothing changes from before.
+# ---------------------------------------------------------------------------
+# names that are this network's own, whatever DNS says of them
+WEBPROXY_HOME_SUFFIXES = ('.local', '.lan', '.home', '.home.arpa', '.internal', '.localdomain',
+                          '.localhost')
+
+
+def webproxy_on(purpose='web'):
+    """Whether the proxy is to be used - for the web (zigmon's own asking), or
+    'os' (dnf, when the system updates go through it too)."""
+    if not int(CONFIG.get('webproxy') or 0) or not str(CONFIG.get('webproxy_url') or '').strip():
+        return False
+    if purpose == 'os':
+        return bool(int(CONFIG.get('webproxy_os', 1) or 0))
+    return True
+
+
+def webproxy_address():
+    """host:port of the proxy, with nothing secret in it - for the page, the
+    events and the logs; '' with none."""
+    url = str(CONFIG.get('webproxy_url') or '').strip()
+    if not url:
+        return ''
+    u = urlsplit(url)
+    try:
+        port = u.port or 3128
+    except ValueError:
+        port = 3128
+    host = u.hostname or ''
+    return (('[%s]:%d' if ':' in host else '%s:%d') % (host, port)) if host else ''
+
+
+def webproxy_full(purpose='web'):
+    """The proxy's address with its user name and password in it - for urllib
+    and for dnf; '' where none is to be used. Never logged, never shown."""
+    if not webproxy_on(purpose):
+        return ''
+    url = str(CONFIG.get('webproxy_url') or '').strip().rstrip('/')
+    user = str(CONFIG.get('webproxy_user') or '').strip()
+    if not user:
+        return url
+    pw = str(CONFIG.get('webproxy_password') or '')
+    scheme, _, rest = url.partition('://')
+    return '%s://%s:%s@%s' % (scheme, quote(user, safe=''), quote(pw, safe=''), rest)
+
+
+def webproxy_no_list():
+    """The names, .domains, addresses and nets reached straight."""
+    return [w.strip().lower() for w in re.split(r'[\s,;]+', str(CONFIG.get('webproxy_no') or ''))
+            if w.strip()]
+
+
+def _webproxy_home_ip(ip):
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
+        or ip.is_unspecified or ip.is_reserved
+
+
+def webproxy_straight(host, look=True):
+    """Why this host is reached straight rather than through the proxy - ''
+    when it goes through it. In the list (a name, every name under .domain,
+    an address or a net, * for all), or this network's own: an address of
+    the machine or of the house's network, a name with no dot or one of the
+    house's own endings, and - with `look` - a name that DNS says is only at
+    addresses like that. A name that cannot be looked up goes through the
+    proxy: behind one, often only the proxy knows the names of the web."""
+    host = str(host or '').strip().strip('[]').lower().rstrip('.')
+    if not host:
+        return 'there is no host'
+    try:
+        ip = ipaddress.ip_address(host.split('%')[0])
+    except ValueError:
+        ip = None
+    for one in webproxy_no_list():
+        if one == '*':
+            return 'everything is in the list reached straight'
+        if ip is not None and ('/' in one or re.match(r'^[0-9a-f.:\[\]]+\Z', one)):
+            try:
+                if ip in ipaddress.ip_network(one.strip('[]'), strict=False):
+                    return '%s is in the list reached straight (%s)' % (host, one)
+            except ValueError:
+                pass
+            continue
+        bare = one.lstrip('*')
+        if bare.startswith('.'):
+            if host.endswith(bare) or host == bare[1:]:
+                return '%s is in the list reached straight (%s)' % (host, one)
+        elif host == bare:
+            return '%s is in the list reached straight' % host
+    if ip is not None:
+        return ('%s is an address of this network' % host) if _webproxy_home_ip(ip) else ''
+    if '.' not in host or host.endswith(WEBPROXY_HOME_SUFFIXES):
+        return '%s is a name of this network' % host
+    if look:
+        try:
+            got = {g[4][0] for g in socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)}
+        except (OSError, UnicodeError):
+            got = set()
+        addrs = []
+        for a in got:
+            try:
+                addrs.append(ipaddress.ip_address(a.split('%')[0]))
+            except ValueError:
+                pass
+        if addrs and all(_webproxy_home_ip(a) for a in addrs):
+            return '%s is at an address of this network (%s)' % (host, ', '.join(sorted(got))[:80])
+    return ''
+
+
+def _webproxy_handler(via):
+    """urllib's ProxyHandler for Proxy - the user name and password in
+    Proxy-Authorization (for the tunnel too, where http.client carries it
+    over), and nothing taken from the environment."""
+    import urllib.request
+
+    class ProxyOnly(urllib.request.ProxyHandler):
+        def proxy_open(self, req, proxy, type):
+            ptype, user, password, hostport = urllib.request._parse_proxy(proxy)
+            if user:
+                creds = base64.b64encode(('%s:%s' % (unquote(user), unquote(password or '')))
+                                         .encode('utf-8')).decode('ascii')
+                req.add_header('Proxy-authorization', 'Basic ' + creds)
+            req.set_proxy(unquote(hostport), ptype or req.type)
+            return None
+    return ProxyOnly({'http': via, 'https': via})
+
+
+def web_opener(url, *handlers):
+    """An opener for one address on the web: through the proxy where one is
+    set and the address is not one reached straight; straight where it is
+    (never through what the environment says, then); and with the proxy
+    off, as it always was."""
+    import urllib.request
+    if not webproxy_on():
+        return urllib.request.build_opener(*handlers)
+    host = urlsplit(str(url)).hostname or ''
+    if webproxy_straight(host):
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}), *handlers)
+    return urllib.request.build_opener(_webproxy_handler(webproxy_full()), *handlers)
+
+
+def web_open(req, timeout=30, context=None):
+    """urllib.request.urlopen for what zigmon asks of the web, the proxy's
+    way (web_opener)."""
+    import urllib.request
+    if not isinstance(req, urllib.request.Request):
+        req = urllib.request.Request(req)
+    handlers = [urllib.request.HTTPSHandler(context=context)] if context is not None else []
+    return web_opener(req.full_url, *handlers).open(req, timeout=timeout)
+
+
+def _webproxy_error(e):
+    """What went wrong, said plainly - never with the proxy's password."""
+    said = str(getattr(e, 'reason', '') or e) or e.__class__.__name__
+    pw = str(CONFIG.get('webproxy_password') or '')
+    if pw and len(pw) >= 3:
+        said = said.replace(pw, '***').replace(quote(pw, safe=''), '***')
+    return said[:300]
+
+
+def webproxy_try(url=''):
+    """Control - Proxy - Try it (otp 1.0.169): an address asked the way zigmon
+    asks the web - through the proxy where one is set and the address is not
+    one reached straight, else straight - one step at a time: the name looked
+    up, the connection, the tunnel through the proxy, TLS and the
+    certificate, the answer. Always tried; each step with how long it took,
+    and where it stopped, what was said. Run by an API thread or the command
+    line, never by the broker's thread or the timer's beat."""
+    url = str(url or '').strip() or str(CONFIG.get('upgrade_url') or '').strip() or 'https://github.com/'
+    if not re.match(r'^https?://[^\s/@]+(/[^\s]*)?\Z', url):
+        raise ValueError('an address starting https:// (or http://), with no name or password in it')
+    u = urlsplit(url)
+    host = u.hostname or ''
+    tls_on = u.scheme == 'https'
+    try:
+        port = u.port or (443 if tls_on else 80)
+    except ValueError:
+        raise ValueError('the port of %s is not a number' % url)
+    via, why = '', ''
+    if not webproxy_on():
+        why = 'no proxy is set' if not int(CONFIG.get('webproxy') or 0) else 'the proxy has no address'
+    else:
+        why = webproxy_straight(host)
+        if not why:
+            via = webproxy_full()
+    px = urlsplit(via) if via else None
+    out = {'url': url, 'host': host, 'port': port, 'mode': 'proxy' if via else 'direct',
+           'why_direct': why, 'node': socket.gethostname().split('.')[0] or 'this machine',
+           'steps': [], 'ok': False, 'proxy': webproxy_address() if via else '',
+           'proxy_auth': bool(px and px.username), 'at': time.time()}
+    began = time.time()
+    sock = [None]
+
+    def try_step(what, fn):
+        t0 = time.time()
+        try:
+            said = fn() or ''
+        except Exception as e:                          # noqa: BLE001 - said in the step
+            out['steps'].append({'what': what, 'ok': False, 'ms': int((time.time() - t0) * 1000),
+                                 'said': _webproxy_error(e)})
+            raise
+        out['steps'].append({'what': what, 'ok': True, 'ms': int((time.time() - t0) * 1000),
+                             'said': said})
+
+    def try_resolve(name, p):
+        addrs = []
+        for g in socket.getaddrinfo(name, p, 0, socket.SOCK_STREAM):
+            if g[4][0] not in addrs:
+                addrs.append(g[4][0])
+        return ', '.join(addrs[:4])
+
+    def connect(name, p):
+        sock[0] = socket.create_connection((name, p), timeout=10)
+        sock[0].settimeout(15)
+        peer = sock[0].getpeername()
+        return '%s port %d' % (peer[0], peer[1])
+
+    def read_head():
+        data = b''
+        while b'\r\n\r\n' not in data and len(data) < 65536:
+            chunk = sock[0].recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        line = data.split(b'\r\n', 1)[0].decode('latin-1', 'replace')
+        m = re.match(r'^HTTP/\d(?:\.\d)?\s+(\d{3})\s*(.*)$', line)
+        if not m:
+            raise ValueError(('no HTTP answer: %r' % line[:80]) if line else 'the connection was closed')
+        return int(m.group(1)), m.group(2).strip()
+
+    def auth_header():
+        if not (px and px.username):
+            return ''
+        creds = '%s:%s' % (unquote(px.username), unquote(px.password or ''))
+        return 'Proxy-Authorization: Basic %s\r\n' % base64.b64encode(creds.encode('utf-8')).decode()
+
+    ua = 'zigmon/%s (+proxy check)' % __version__
+    try:
+        if via:
+            pport = px.port or 3128
+            try_step('the proxy looked up (%s)' % px.hostname, lambda: try_resolve(px.hostname, pport))
+            try_step('connected to the proxy', lambda: connect(px.hostname, pport))
+            if tls_on:
+                def tunnel():
+                    sock[0].sendall(('CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n%sUser-Agent: %s\r\n\r\n'
+                                     % (host, port, host, port, auth_header(), ua)).encode())
+                    code, words = read_head()
+                    if code == 407:
+                        raise ValueError('the proxy asks for a user name and a password (407) - they are %s'
+                                         % ('wrong' if px.username else 'missing'))
+                    if code != 200:
+                        raise ValueError('the proxy said %d %s' % (code, words))
+                    return '%d %s%s' % (code, words, ' - with the user name and password'
+                                        if px.username else '')
+                try_step('a tunnel through the proxy to %s:%d' % (host, port), tunnel)
+        else:
+            try_step('%s looked up' % host, lambda: try_resolve(host, port))
+            try_step('connected to %s' % host, lambda: connect(host, port))
+        if tls_on:
+            def handshake():
+                ctx = ssl.create_default_context()
+                sock[0] = ctx.wrap_socket(sock[0], server_hostname=host)
+                c = sock[0].getpeercert() or {}
+                subj = dict(x[0] for x in c.get('subject', ()) if x)
+                iss = dict(x[0] for x in c.get('issuer', ()) if x)
+                out['tls'] = {'version': sock[0].version(), 'cipher': (sock[0].cipher() or [''])[0],
+                              'subject': subj.get('commonName', ''),
+                              'issuer': iss.get('organizationName') or iss.get('commonName', ''),
+                              'until': c.get('notAfter', '')}
+                return '%s, %s - %s, by %s' % (out['tls']['version'], out['tls']['cipher'],
+                                               out['tls']['subject'], out['tls']['issuer'])
+            try_step('TLS, the certificate of %s checked' % host, handshake)
+
+        def ask():
+            path = (u.path or '/') + ('?' + u.query if u.query else '')
+            target = url if (via and not tls_on) else path
+            sock[0].sendall(('HEAD %s HTTP/1.1\r\nHost: %s\r\n%sUser-Agent: %s\r\nConnection: close\r\n\r\n'
+                             % (target, u.netloc, auth_header() if (via and not tls_on) else '',
+                                ua)).encode())
+            code, words = read_head()
+            out['status'] = code
+            if code == 407:
+                raise ValueError('the proxy asks for a user name and a password (407) - they are %s'
+                                 % ('wrong' if px and px.username else 'missing'))
+            if via and not tls_on and code in (502, 503, 504):
+                raise ValueError('the proxy could not reach %s: %d %s' % (host, code, words))
+            return '%d %s' % (code, words)
+        try_step('asked for %s' % (u.path or '/'), ask)
+        out['ok'] = True
+    except Exception:                                   # noqa: BLE001 - in the steps
+        pass
+    finally:
+        try:
+            if sock[0]:
+                sock[0].close()
+        except OSError:
+            pass
+    out['ms'] = int((time.time() - began) * 1000)
+    return out
+
+
+def webproxy_view():
+    """GET /api/webproxy: how the way out is set - nothing secret in it, the
+    user name and the password only as there or not."""
+    return {'ok': True, 'on': webproxy_on(), 'switched': bool(int(CONFIG.get('webproxy') or 0)),
+            'proxy': webproxy_address(), 'user': bool(str(CONFIG.get('webproxy_user') or '').strip()),
+            'password': bool(CONFIG.get('webproxy_password')), 'no': webproxy_no_list(),
+            'os': webproxy_on('os'), 'default_url': str(CONFIG.get('upgrade_url') or '').strip(),
+            'node': socket.gethostname().split('.')[0] or 'this machine'}
+
+
+# ---------------------------------------------------------------------------
 # New versions from the web (5.21)
 #
 # Settings - Upgrades - upgrade_url is asked once a day (upgrade_check) and
@@ -7701,7 +8033,8 @@ def _online_get(url, limit=ONLINE_PAGE_MOST, accept='*/*', timeout=30, into=None
         raise ValueError('only https:// addresses are asked: %s' % str(url)[:200])
     req = urllib.request.Request(url, headers={
         'User-Agent': 'zigmon/%s (+upgrade check)' % __version__, 'Accept': accept})
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+    # through Control - Proxy where one is set (5.35)
+    with web_open(req, timeout=timeout, context=ssl.create_default_context()) as r:
         final = r.geturl()
         if not str(final).startswith('https://'):
             raise ValueError('it was sent on to an address that is not https: %s' % str(final)[:200])
@@ -9654,6 +9987,9 @@ class Daemon(object):
         'acme_dns_user': 'str', 'acme_dns_key': 'str', 'acme_dns_subdomain': 'str',
         'acme_desec_domain': 'str', 'acme_desec_token': 'str', 'acme_dns_alias': 'str',
         'acme_dns_wait': (0, 600), 'acme_resolvers': 'str',
+        # the way out to the web through an HTTP proxy (5.35)
+        'webproxy': (0, 1), 'webproxy_url': 'str', 'webproxy_user': 'str',
+        'webproxy_password': 'str', 'webproxy_no': 'str', 'webproxy_os': (0, 1),
         'rbackup': (0, 1), 'rbackup_at': 'str', 'rbackup_every': 'str', 'rbackup_day': (1, 7),
         'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650), 'rbackup_password': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
@@ -9797,6 +10133,8 @@ class Daemon(object):
                     raise ValueError('sms_cmms is always, per_message or off')
                 if key.startswith('acme_'):
                     value = self.acme_setting_checked(key, raw, value)
+                if key.startswith('webproxy_'):
+                    value = self.webproxy_setting_checked(key, raw, value)
                 if key == 'sms_stranger_alert':
                     # roads, or one of the three words that came before them
                     words = str(value or '').strip().lower()
@@ -9905,6 +10243,29 @@ class Daemon(object):
                     'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns', 'desec'),
                     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384',
                                           'hmac-sha224', 'hmac-sha1', 'hmac-md5')}
+
+    def webproxy_setting_checked(self, key, raw, value):
+        """One setting of Control - Proxy (5.35), in the one shape it may have:
+        the address without the name and password, which go in boxes of their
+        own (and the password nowhere it would be shown or written down)."""
+        if key == 'webproxy_url' and value and not re.match(
+                r'^http://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])'
+                r'(?::\d{1,5})?/?\Z', value):
+            raise ValueError('webproxy_url: http://host:port - the user name and the password go in '
+                             'the boxes below, not in the address')
+        if key == 'webproxy_user' and re.search(r'[\s:@/]', value):
+            raise ValueError('webproxy_user: no spaces, no : @ or /')
+        if key == 'webproxy_password':
+            value = str(raw or '')
+            if len(value) > 200 or re.search(r'[\r\n\x00]', value):
+                raise ValueError('webproxy_password: one line, at most 200 characters')
+        if key == 'webproxy_no':
+            value = str(raw or '').strip()[:2000]
+            if value and not re.match(r'^[A-Za-z0-9.*:/\[\]_-]+([\s,;]+[A-Za-z0-9.*:/\[\]_-]+)*[\s,;]*\Z',
+                                      value):
+                raise ValueError('webproxy_no: names, .domains, addresses and nets, separated by commas')
+            value = ', '.join(w for w in re.split(r'[\s,;]+', value) if w)
+        return value
 
     def acme_setting_checked(self, key, raw, value):
         """One setting of Automatic certificates, in the one shape it may have."""
@@ -12284,7 +12645,7 @@ class Daemon(object):
                    ', '.join(sorted(params)) or 'none'), 'debug')
         started = time.perf_counter()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as answer:
+            with web_open(req, timeout=timeout) as answer:
                 out = json.loads(answer.read().decode('utf-8', 'replace'))
             if CONFIG.get('debug'):
                 log('duo <- %s in %.0f ms: %s' % (path, (time.perf_counter() - started) * 1000,
@@ -14481,7 +14842,9 @@ class Daemon(object):
                                 headers['Authorization'] = auth
                             req = urllib.request.Request(where, data=item['message'].encode(),
                                                          headers=headers)
-                            urllib.request.urlopen(req, timeout=10).read()
+                            # an ntfy of the house's own goes straight, ntfy.sh
+                            # through Control - Proxy where one is set (5.35)
+                            web_open(req, timeout=10).read()
                         except Exception as e:
                             log('ntfy: %s' % e, 'warn')
                     token, chat = CONFIG.get('notify_telegram_token'), CONFIG.get('notify_telegram_chat')
@@ -14497,7 +14860,7 @@ class Daemon(object):
                             req = urllib.request.Request('https://api.telegram.org/bot%s/%s' % (token, method),
                                                          data=json.dumps(body).encode(),
                                                          headers={'Content-Type': 'application/json'})
-                            urllib.request.urlopen(req, timeout=10).read()
+                            web_open(req, timeout=10).read()
                         except Exception as e:
                             log('telegram: %s' % e, 'warn')
                     # The texts last, and by a worker of their own. Sent first and
@@ -25914,7 +26277,7 @@ class Daemon(object):
             else:
                 req = urllib.request.Request(url, headers={'User-Agent': 'zigmon/%s' % __version__,
                                                            'Accept': 'text/plain, */*'})
-                with urllib.request.urlopen(req, timeout=60) as answer:
+                with web_open(req, timeout=60) as answer:
                     text = answer.read(20 * 1024 * 1024).decode('utf-8', 'replace')
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -26072,7 +26435,7 @@ class Daemon(object):
         import urllib.error
         import urllib.request
         jar = self._snort_jar()
-        web = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        web = web_opener('https://www.snort.org/', urllib.request.HTTPCookieProcessor(jar))
         web.addheaders = [('User-Agent', 'zigmon/%s' % __version__),
                           ('Accept', 'text/plain, text/html, */*')]
         seen = {}
@@ -26312,7 +26675,7 @@ class Daemon(object):
             url = 'https://download.db-ip.com/free/dbip-country-lite-%s.csv.gz' % month
             try:
                 req = urllib.request.Request(url, headers={'User-Agent': 'zigmon'})
-                with urllib.request.urlopen(req, timeout=120) as answer:
+                with web_open(req, timeout=120) as answer:
                     raw = gzip.decompress(answer.read(60 * 1024 * 1024))
                 break
             except Exception as e:
@@ -26592,7 +26955,7 @@ class Daemon(object):
                     try:
                         req = urllib.request.Request(where, headers={'User-Agent': 'zigmon/%s' % __version__,
                                                                      'Accept': 'application/json'})
-                        with urllib.request.urlopen(req, timeout=12) as answer:
+                        with web_open(req, timeout=12) as answer:
                             data = json.loads(answer.read(8_000_000).decode('utf-8', 'replace') or '{}')
                         break
                     except urllib.error.HTTPError as e:
@@ -34027,7 +34390,7 @@ class Daemon(object):
                '&hourly=temperature_2m,weather_code&daily=sunrise,sunset,temperature_2m_max,'
                'temperature_2m_min,precipitation_sum&forecast_days=2&timezone=auto') % (lat, lon)
         try:
-            raw = json.loads(urllib.request.urlopen(url, timeout=10).read())
+            raw = json.loads(web_open(url, timeout=10).read())
         except Exception as e:
             self.debug('weather', str(e))
             self._weather_failed_at = time.time()
@@ -36821,7 +37184,7 @@ class Daemon(object):
                 # nothing for two minutes means the link died quietly, and
                 # a reconnect is the only way to find out. Without this the
                 # listener could sit on a dead socket forever.
-                with urllib.request.urlopen(req, timeout=120) as response:
+                with web_open(req, timeout=120) as response:
                     backoff = 2
                     log('listening for presence reports on %s' % url)
                     for raw in response:
@@ -39101,7 +39464,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the certificates ordered from an ACME CA (5.31)
                      '/api/acme',
                      # the updates of the system (5.34): what is waiting, and the update
-                     '/api/osup')
+                     '/api/osup',
+                     # the way out to the web through a proxy (5.35)
+                     '/api/webproxy')
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -40137,6 +40502,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # the updates of the system (5.34): what dnf has waiting, the
                 # update going on and what dnf says
                 return self._send(200, osup_view(d))
+            if path == '/api/webproxy':
+                # Control - Proxy (5.35): how the way out is set, the password
+                # only as there or not
+                return self._send(200, webproxy_view())
             if path == '/api/people':
                 # the people with their real numbers, for an unlocked page to
                 # edit: the status carries them hidden (see mask_phone), and
@@ -41708,6 +42077,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                     return self._error(400, str(e)[:600])
                 out.setdefault('ok', True)
                 return self._send(200, out)
+            if path == '/api/webproxy':
+                # Control - Proxy - Try it (5.35): an administrator's. Tried
+                # here, in this request's own thread, every step bounded - never
+                # on the broker's thread or the timer's beat
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                act = str(body.get('action') or '')
+                if act == 'view':
+                    return self._send(200, webproxy_view())
+                if act != 'try':
+                    return self._error(400, 'try or view')
+                try:
+                    got = webproxy_try(str(body.get('url') or ''))
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                # 'ok' here says whether the address was reached
+                return self._send(200, got)
             # ---- what root does for the dashboard (5.18) -------------------
             if path in ('/api/firewall', '/api/tls', '/api/upgrade', '/api/upgrade/upload',
                         '/api/fullbackup', '/api/fullbackup/upload',
@@ -44912,10 +45299,11 @@ def acme_workdir(prefix):
 
 
 def acme_urlopen(req, timeout=30, context=None):
-    """Out to the CA or a DNS API: the system's way out (a proxy in the
-    environment is taken), names looked up by ACME's DNS servers."""
+    """Out to the CA or a DNS API: through Control - Proxy where one is set
+    (5.35; with none, the system's way out - a proxy in the environment is
+    taken), names looked up by ACME's DNS servers."""
     with acme_dns_scope():
-        return urllib.request.urlopen(req, timeout=timeout, context=context)
+        return web_open(req, timeout=timeout, context=context)
 
 
 class Acme(object):
@@ -46435,8 +46823,15 @@ def _osup_go(d, key, kind, job, security=False):
     for its answer, which a backup in request.json may hold up for minutes."""
     def ask_root():
         try:
+            # dnf through Control - Proxy (5.35): handed to root in the ask -
+            # a file only the two of them read, taken away once read - and
+            # kept by root in a file of its own for the job, never on a
+            # command line
             d.root_call('osup.ask', 'osup.ans', {'do': 'run', 'kind': kind, 'job': job,
-                                                 'security': bool(security)}, OSUP_ASK_WAIT_S)
+                                                 'security': bool(security),
+                                                 'proxy': webproxy_full('os'),
+                                                 'proxy_no': ','.join(webproxy_no_list())},
+                        OSUP_ASK_WAIT_S)
             with OSUP_LOCK:
                 row = osup_row(d, key)
                 if row.get('job') == job and row.get('state') == 'asking':
@@ -49042,6 +49437,7 @@ HELP_LINES = [
     ('sudo zigmon --updates look', 'look for updates now (nothing put in), followed here'),
     ('sudo zigmon --updates update --security', 'update the system now - all, or the security ones only; '
      '--reboot auto restarts it where needed'),
+    ('sudo zigmon --webproxy-test', 'the way out to the web (Control - Proxy) tried, step by step; or an URL'),
     ('sudo zigmon --console', 'menus for everything here, on a full screen; q leaves'),
     ('sudo zigmon --console-at-login off', 'whether root signing in lands in it: on, off, status'),
     ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
@@ -49286,6 +49682,10 @@ def build_parser():
                    help='(root) the system\u2019s updates (Control - System updates): show what dnf has '
                         'waiting, look for updates now, update the system now (--security for the '
                         'security updates only, --reboot ask|auto), log: what dnf said in the last update')
+    a.add_argument('--webproxy-test', nargs='?', const='', metavar='URL',
+                   help='(root) the way out to the web tried (Control - Proxy): through the proxy, or '
+                        'straight where none is set or the address is in the list - each step with its '
+                        'time; an address of your own, or where new versions are looked for')
     a.add_argument('--security', action='store_true',
                    help='for --updates update: the security updates only (dnf --security)')
     a.add_argument('--reboot', choices=('ask', 'auto'), default='ask',
@@ -51437,6 +51837,40 @@ def cmd_acme(args, pal):
     if acc.get('kid'):
         print('  %-14s %s, made %s' % ('account', acc.get('email') or '(no mail)', stamp_of(acc.get('at'))))
     return 0
+
+
+def cmd_webproxy_test(args, pal):
+    """zigmon --webproxy-test [URL]: Control - Proxy - Try it from the command
+    line (otp's --proxy-test) - tried by the daemon, the way it asks the web,
+    and the way it went drawn: this machine, the proxy, the address."""
+    url = str(args.webproxy_test or '').strip()
+    code, x = api_call('/api/webproxy', method='POST', payload={'action': 'try', 'url': url},
+                       timeout=90.0)
+    if code != 200 or not isinstance(x, dict) or 'steps' not in x:
+        print(pal.crit('refused: %s' % (x or {}).get('error', code)))
+        return 2
+    if args.json:
+        print(json.dumps(x, indent=2, ensure_ascii=False))
+        return 0 if x.get('ok') else 1
+    way = [x.get('node') or 'this machine']
+    if x.get('mode') == 'proxy':
+        way.append('the proxy %s%s' % (x.get('proxy'), ' (with a password)' if x.get('proxy_auth') else ''))
+    way.append('%s:%s' % (x.get('host'), x.get('port')))
+    print(pal.title('the way out: ' + '  ->  '.join(way)))
+    if x.get('mode') == 'direct' and x.get('why_direct'):
+        print(pal.dim('  straight, because %s' % x['why_direct']))
+    for s in x.get('steps') or []:
+        mark = pal.ok('\u2714') if s.get('ok') else pal.crit('\u2718')
+        print('  %s %-52s %6d ms' % (mark, s.get('what'), int(s.get('ms') or 0)))
+        if s.get('said'):
+            print(pal.dim('      ' + str(s['said'])))
+    if x.get('ok'):
+        print(pal.ok('reached %s - HTTP %s, %s ms' % (
+            'through the proxy' if x.get('mode') == 'proxy' else 'straight', x.get('status'), x.get('ms'))))
+        return 0
+    failed = [s for s in x.get('steps') or [] if not s.get('ok')]
+    print(pal.crit('not reached: %s' % (failed[0].get('said') if failed else '?')))
+    return 1
 
 
 def cmd_updates(args, pal):
@@ -53641,7 +54075,19 @@ def _console_machine(c):
                                                       'The firewall and who may reach the pages go '
                                                       'back to what they were.', True)),
         ('What root last did (and the clock, the network it saw)', lambda: c.act('--root-status')),
+        ('The way out to the web (proxy): try it', lambda: _console_webproxy(c)),
     ], 'machine')
+
+
+def _console_webproxy(c):
+    """Control - Proxy - Try it from the console: an address asked, empty for
+    where new versions are looked for, and the way it went."""
+    url = c.ask_one('Try the way out to the web', 'the address', '', need=False, help_=(
+        'Asked the way zigmon asks the web: through the proxy (Control - Proxy), or straight where '
+        'none is set or the address is in the list. Empty: where new versions are looked for.'),
+        check=lambda v, _: None if not v or re.match(r'^https?://\S+$', v) else 'https://... or http://...')
+    if url is not None:
+        c.act('--webproxy-test', *([url] if url else []))
 
 
 def _console_upgrade_online(c):
@@ -53935,6 +54381,8 @@ def _dispatch(args, pal):
         return cmd_acme(args, pal)
     if getattr(args, 'updates', None):
         return cmd_updates(args, pal)
+    if getattr(args, 'webproxy_test', None) is not None:
+        return cmd_webproxy_test(args, pal)
     if getattr(args, 'run_script', None):
         return cmd_run_script(args, pal)
     if getattr(args, 'unblock', None):
