@@ -433,6 +433,43 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/' . $what . (isset($_GET['fresh']) && $_GET['fresh'] === '1' ? '?fresh=1' : ''));
         exit;
     }
+    if ($what === 'tls-download') {
+        // the certificate with its private key, as root handed it over for
+        // this one download (5.30): the daemon deletes it once sent
+        $file = (string) ($_GET['file'] ?? '');
+        $session = zigmon_download_session();
+        if (!preg_match('/^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$/', $file) || $session === '') {
+            http_response_code(400);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'error' => 'bad request']);
+            exit;
+        }
+        $url = 'http://' . ZIGMON_HOST . ':' . ZIGMON_PORT . '/api/tls/download?file=' . rawurlencode($file);
+        $fh = @fopen($url, 'rb', false, zigmon_download_context(60, $session));
+        if ($fh === false) {
+            http_response_code(503);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'error' => 'the daemon is not responding']);
+            exit;
+        }
+        $status = 0;
+        foreach (($http_response_header ?? []) as $h) {
+            if (preg_match('#^HTTP/\S+\s+(\d+)#', $h, $m)) { $status = (int) $m[1]; }
+        }
+        if ($status !== 200) {
+            fclose($fh);
+            http_response_code($status ?: 502);
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'error' => 'refused']);
+            exit;
+        }
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . $file . '"');
+        header('Cache-Control: no-store');
+        fpassthru($fh);
+        fclose($fh);
+        exit;
+    }
     if ($what === 'fullbackup-download') {
         // a copy root handed over for this one download: the daemon deletes it
         // once sent, and the session token proves the right to it
@@ -3767,6 +3804,28 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   @media (max-width:700px){.ot .pw-grid,.ot .ntp-grid{grid-template-columns:minmax(0,1fr)}.ot .ntp-node .net-fact .k,.ot .pw-node .net-fact .k{width:120px}}
   @media (max-width:760px){.ot .tls-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ot .tls-rows .arow{flex-direction:column;align-items:flex-start}}
   .ot .cert-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  /* the certificate's download (5.30): a format chosen from cards, then a password */
+  .ot .fmt-group{margin:2px 0 14px}
+  .ot .fmt-group > h4{margin:0 0 8px;font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--tx-dim);font-weight:700}
+  .ot .fmt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+  .ot .fmt-card{display:flex;gap:10px;align-items:flex-start;text-align:left;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--tx);font:inherit;min-width:0}
+  .ot .fmt-card:hover{border-color:var(--tx-mut)}
+  .ot .fmt-card.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;background:var(--info-bg)}
+  .ot .fmt-card .fmt-ic{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+    background:var(--panel);font-size:15px}
+  .ot .fmt-card.keyed .fmt-ic{background:var(--warn-bg)}
+  .ot .fmt-card .fmt-t{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .ot .fmt-card b{font-size:13.5px;font-weight:650}
+  .ot .fmt-card .fmt-x{font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--tx-mut)}
+  .ot .fmt-card .fmt-s{font-size:12px;color:var(--tx-mut);line-height:1.4}
+  .ot .fmt-key{border-left:4px solid var(--warn);background:var(--warn-bg);border-radius:10px;padding:12px 14px;margin:4px 0 12px}
+  .ot .fmt-key p{margin:0 0 10px;font-size:12.5px;line-height:1.5}
+  .ot .fmt-pw{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+  .ot .fmt-pw input{width:100%;box-sizing:border-box}
+  .ot .fmt-meter{height:4px;border-radius:2px;background:var(--line);margin:8px 0 4px;overflow:hidden;max-width:460px}
+  .ot .fmt-key > .says{font-size:12px;color:var(--tx-mut);margin-bottom:6px}
+  .ot .fmt-meter i{display:block;height:100%;width:0;background:var(--crit);transition:width .15s}
   .ot .cert-tools > .btn{width:100%;justify-content:center;min-width:0}
   .ot .cert-icons{grid-column:1/-1;display:flex;justify-content:flex-end;gap:6px}
   .ot .cert-icons:empty{display:none}
@@ -26310,12 +26369,8 @@ function certCard(d) {
     tools.appendChild(pol);
     if (info) {
       var dl = cmdButton('Download', 'download', 'small');
-      dl.title = 'The certificate and its chain, as PEM - without the key';
-      dl.onclick = function () {
-        rootPost('tls-do', {action: 'tls_pem'}).then(function (x) {
-          saveText((d.server_name || 'zigmon') + '.pem', x.pem);
-        }, zoops);
-      };
+      dl.title = 'The certificate - as PEM, DER or PFX, with its private key or without';
+      dl.onclick = function () { certDownload(d); };
       tools.appendChild(dl);
     }
     if (prof.managed) {
@@ -26331,6 +26386,140 @@ function certCard(d) {
     card.appendChild(tools);
   }
   return card;
+}
+/* The certificate's download (5.30): a format, and for those with the private
+   key a password. Without the key it is made here at once; with it root makes
+   the file - the key is root's and never passes through the daemon - and
+   hands it over for this one download. */
+var CERT_FORMATS = [
+  {id: 'pem_chain', icon: '\ud83d\udcc4', t: 'Certificate + chain', x: '.pem', s: 'PEM, what nginx sends: for a server, a proxy, a browser to trust it'},
+  {id: 'pem_cert', icon: '\ud83d\udcc4', t: 'Certificate only', x: '.crt', s: 'PEM, this certificate alone'},
+  {id: 'chain', icon: '\ud83d\udd17', t: 'CA chain', x: '.ca.pem', s: 'PEM, the certificates above it'},
+  {id: 'der', icon: '\ud83e\uddfe', t: 'DER', x: '.cer', s: 'binary, this certificate alone (Windows, Java)'},
+  {id: 'pfx', key: true, icon: '\ud83d\udd10', t: 'PFX / PKCS#12', x: '.pfx', s: 'certificate, chain and private key in one file, with a password - Windows, IIS, Exchange, Azure'},
+  {id: 'pfx_legacy', key: true, icon: '\ud83d\udd10', t: 'PFX (legacy)', x: '.pfx', s: '3DES/SHA1 - for Windows Server 2016 and older, old Java, appliances'},
+  {id: 'pem_key', key: true, icon: '\ud83d\udd11', t: 'PEM with private key', x: '.pem', s: 'certificate, chain and key; the key locked with a password if you give one'},
+  {id: 'key', key: true, icon: '\ud83d\udd11', t: 'Private key only', x: '.key', s: 'PEM; locked with a password if you give one'}];
+function certDownload(d) {
+  var pick = {fmt: 'pem_chain'}, f = {}, cards = {};
+  zmodal('Download the certificate', function (body) {
+    var info = ((d.now || {}).info) || {};
+    if (info.cn || d.server_name) body.appendChild(el('p', 'note', 'For ' + (info.cn || d.server_name)
+      + (info.not_after ? ' \u00b7 valid until ' + stamp(info.not_after) : '')));
+    [['Without the private key', false], ['With the private key', true]].forEach(function (g) {
+      var group = el('div', 'fmt-group');
+      group.appendChild(el('h4', '', g[0]));
+      var grid = el('div', 'fmt-grid');
+      CERT_FORMATS.filter(function (c) { return !!c.key === g[1]; }).forEach(function (c) {
+        var b = el('button', 'fmt-card' + (c.key ? ' keyed' : '') + (c.id === pick.fmt ? ' on' : ''));
+        b.type = 'button';
+        b.appendChild(el('span', 'fmt-ic', c.icon));
+        var t = el('span', 'fmt-t');
+        t.appendChild(el('b', '', c.t));
+        t.appendChild(el('span', 'fmt-x', c.x));
+        t.appendChild(el('span', 'fmt-s', c.s));
+        b.appendChild(t);
+        b.onclick = function () { pick.fmt = c.id; redraw(); };
+        cards[c.id] = b;
+        grid.appendChild(b);
+      });
+      group.appendChild(grid);
+      body.appendChild(group);
+    });
+    var keybox = el('div', 'fmt-key');
+    keybox.appendChild(el('p', '', 'The private key is what makes this certificate yours: whoever has the file can '
+      + 'pass for this server. Keep it as you keep a password. Asking for it is written into the events.'));
+    var pwrow = el('div', 'fmt-pw');
+    f.pw = zSecret('');
+    f.pw2 = zSecret('');
+    var meter = el('div', 'fmt-meter'), bar = el('i');
+    meter.appendChild(bar);
+    pwrow.appendChild(zField('Password', f.pw, ''));
+    pwrow.appendChild(zField('The same again', f.pw2, ''));
+    keybox.appendChild(pwrow);
+    // under both, so the two boxes stand side by side
+    keybox.appendChild(meter);
+    f.pwSays = el('div', 'says');
+    keybox.appendChild(f.pwSays);
+    f.root = zSwitch(false);
+    keybox.appendChild(zRow('Include the root certificate', 'Usually left out: the other side has it already.', f.root));
+    var show = el('label', 'muted small');
+    var showBox = el('input'); showBox.type = 'checkbox';
+    show.appendChild(showBox); show.appendChild(document.createTextNode(' show the password'));
+    showBox.onchange = function () { f.pw.type = f.pw2.type = showBox.checked ? 'text' : 'password'; };
+    keybox.appendChild(show);
+    body.appendChild(keybox);
+    f.keybox = keybox;
+    var strength = function () {
+      var v = f.pw.value || '', n = 0;
+      if (v.length >= 8) n++; if (v.length >= 12) n++; if (/[a-z]/.test(v) && /[A-Z]/.test(v)) n++;
+      if (/\d/.test(v)) n++; if (/[^A-Za-z0-9]/.test(v)) n++;
+      bar.style.width = (v ? Math.max(10, n * 20) : 0) + '%';
+      bar.style.background = n >= 4 ? 'var(--ok)' : n >= 2 ? 'var(--warn)' : 'var(--crit)';
+    };
+    f.pw.oninput = strength;
+    redraw = function () {
+      var c = CERT_FORMATS.filter(function (x) { return x.id === pick.fmt; })[0];
+      Object.keys(cards).forEach(function (k) { cards[k].classList.toggle('on', k === pick.fmt); });
+      keybox.hidden = !c.key;
+      f.pwSays.textContent = /^pfx/.test(c.id) ? 'Needed: a PFX is opened with it. Four characters or more.'
+        : 'Leave empty for a key that is not locked; given, the key is locked with it (AES-256).';
+      var go = document.querySelector('#zmodal-foot .btn.primary');
+      if (go) setButtonIcon(go, 'download', 'Download ' + c.x);
+    };
+  }, [{words: 'Cancel', close: true},
+      {words: 'Download .pem', cls: 'primary', icon: 'download', go: function (b) {
+        var c = CERT_FORMATS.filter(function (x) { return x.id === pick.fmt; })[0];
+        if (!c.key) {
+          zbusy(b, true);
+          rootPost('tls-do', {action: 'tls_get', format: c.id}).then(function (x) {
+            zbusy(b, false);
+            var name = (x.name || 'zigmon') + '.' + x.ext;
+            if (x.b64) {
+              var raw = atob(x.b64), bytes = new Uint8Array(raw.length);
+              for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+              var url = URL.createObjectURL(new Blob([bytes], {type: 'application/pkix-cert'}));
+              var a = document.createElement('a'); a.href = url; a.download = name;
+              document.body.appendChild(a); a.click(); a.remove();
+              setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+            } else saveText(name, x.text);
+            closeZModal();
+          }).catch(function (e) { zbusy(b, false); zoops(e); });
+          return;
+        }
+        var pw = f.pw.value || '';
+        if (/^pfx/.test(c.id) && pw.length < 4) { toast('a PFX needs a password of four characters or more', false); f.pw.focus(); return; }
+        if (pw && pw.length < 4) { toast('a password is four characters or more', false); f.pw.focus(); return; }
+        if (pw !== (f.pw2.value || '')) { toast('the two passwords are not the same', false); f.pw2.focus(); return; }
+        zbusy(b, true);
+        rootPost('tls-do', {action: 'tls_export', format: c.id, password: pw, password2: f.pw2.value || '',
+                            with_root: !!f.root._get()}).then(function (x) {
+          toast('root is making it\u2026', true);
+          return certExportWait(x.asked);
+        }).then(function (st) {
+          zbusy(b, false);
+          var ex = st.export || {};
+          if (ex.state === 'failed' || !st.ready) throw new Error(((ex.said || []).join('; ')) || 'it was not handed over');
+          closeZModal();
+          downloadBehindPin('tls-download&file=' + encodeURIComponent(st.ready.file), st.ready.file);
+        }).catch(function (e) { zbusy(b, false); zoops(e); });
+      }}], 'medium');
+  var redraw;
+  redraw();
+}
+function certExportWait(asked) {
+  return new Promise(function (ok, no) {
+    var tries = 0;
+    var again = function () {
+      if (++tries > 150) { no(new Error('root has not answered in three minutes')); return; }
+      api('tls').then(function (d) {
+        var ex = d.export || {};
+        if (ex.id === asked && (ex.state === 'done' || ex.state === 'failed')) { ok(d); return; }
+        setTimeout(again, 1000);
+      }, function (e) { if (e && e.status === 403) { no(e); return; } setTimeout(again, 1500); });
+    };
+    setTimeout(again, 300);
+  });
 }
 function readCertFiles(files) {
   return Promise.all(Array.prototype.map.call(files, function (f) {

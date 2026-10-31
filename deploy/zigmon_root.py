@@ -1625,6 +1625,114 @@ def decrypt(src, dst, passphrase):
         raise Refused('it does not open with that password')
 
 
+# ---- the certificate handed over with its key (5.30) ------------------------
+EXPORT_FORMATS = ('pem_key', 'key', 'pfx', 'pfx_legacy')
+EXPORT_FILE = re.compile(r'^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$')
+
+
+def tls_export(raw):
+    """The certificate nginx serves, with its private key, in one file for a
+    download: PEM (the certificate, its chain and the key - the key locked
+    with the password when one is given), the key alone, or PFX / PKCS#12
+    (with the chain; the legacy kind for older Windows and Java). Only the
+    files nginx's own server block names are read, the password goes to
+    openssl through its environment and is kept nowhere, and the file is
+    handed over once, readable by the service, and taken away when fetched."""
+    fmt = str(raw.get('format') or '')
+    if fmt not in EXPORT_FORMATS:
+        raise Refused('the format is one of %s' % ', '.join(EXPORT_FORMATS))
+    pw = str(raw.get('password') or '')
+    if len(pw) > 200 or re.search(r'[\r\n\x00]', pw):
+        raise Refused('the password is one line of at most 200 characters')
+    if fmt.startswith('pfx') and len(pw) < 4:
+        # Windows and most of what imports a PFX refuse one with no password
+        raise Refused('a PFX needs a password (four characters or more)')
+    if fmt in ('pem_key', 'key') and pw and len(pw) < 4:
+        raise Refused('a password for the key is four characters or more')
+    with_root = bool(raw.get('with_root'))
+    now = tls_now()
+    if not now.get('server'):
+        raise Refused('nginx has no HTTPS server block to read the certificate from')
+    files = now['files']
+    try:
+        with open(files['cert']) as f:
+            cert_text = f.read(500000)
+        with open(files['key']) as f:
+            key_text = f.read(100000)
+    except OSError as e:
+        raise Refused('the certificate or its key cannot be read: %s' % e)
+    certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', cert_text, re.S)
+    if not certs:
+        raise Refused('there is no certificate in %s' % files['cert'])
+    if with_root and os.path.exists(files['root']):
+        try:
+            with open(files['root']) as f:
+                for c in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+                                    f.read(200000), re.S):
+                    if c not in certs:
+                        certs.append(c)
+        except OSError:
+            pass
+    leaf, chain = certs[0], certs[1:]
+    # the key nginx has must be the certificate's - never hand over a pair
+    # that does not belong together
+    want = run(['openssl', 'pkey', '-pubout'], 'the key', data=key_text).strip()
+    have = run(['openssl', 'x509', '-noout', '-pubkey'], 'the certificate', data=leaf).strip()
+    if want != have:
+        raise Refused('the key nginx has does not belong to its certificate')
+    cn = ''
+    subj = run(['openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'], 'the certificate', data=leaf)
+    m = re.search(r'CN=([^,/\n]+)', subj)
+    if m:
+        cn = m.group(1).strip()
+    base = re.sub(r'[^A-Za-z0-9._-]+', '-', (cn or now.get('server_name') or 'server').replace('*', 'star'))[:80].strip('-.') or 'server'
+    ext = {'pem_key': 'pem', 'key': 'key', 'pfx': 'pfx', 'pfx_legacy': 'pfx'}[fmt]
+    name = 'zigmon-cert-%s.%s' % (base, ext)
+    out_fd = child_fd(root_fd(), 'out', make=True)
+    for n in os.listdir(out_fd):                       # one certificate handed over at a time
+        if EXPORT_FILE.match(n):
+            try:
+                os.unlink(n, dir_fd=out_fd)
+            except OSError:
+                pass
+    env = dict(os.environ, ZIGMON_PASS=pw)
+    with tempfile.TemporaryDirectory(prefix='zigmon-cert-') as t:
+        os.chmod(t, 0o700)
+        kf, cf, chf, made = (os.path.join(t, x) for x in ('key.pem', 'cert.pem', 'chain.pem', 'out'))
+        for path, text in ((kf, key_text), (cf, leaf + '\n'), (chf, '\n'.join(chain) + '\n')):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(text)
+        if fmt in ('pem_key', 'key'):
+            if pw:
+                key_out = run(['openssl', 'pkey', '-in', kf, '-aes256', '-passout', 'env:ZIGMON_PASS'],
+                              'locking the key', env=env)
+            else:
+                key_out = run(['openssl', 'pkey', '-in', kf], 'the key')
+            body = key_out if fmt == 'key' else (leaf + '\n' + ''.join(c + '\n' for c in chain) + key_out)
+            with open(made, 'w') as fh:
+                fh.write(body)
+        else:
+            cmd = ['openssl', 'pkcs12', '-export', '-inkey', kf, '-in', cf, '-out', made,
+                   '-passout', 'env:ZIGMON_PASS', '-name', cn or base]
+            if chain:
+                cmd += ['-certfile', chf]
+            if fmt == 'pfx_legacy':
+                # what Windows before 2019, older Java and many appliances read
+                cmd += ['-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1']
+            run(cmd, 'making the PFX', env=env)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=out_fd)
+        with os.fdopen(fd, 'wb') as out, open(made, 'rb') as fh:
+            shutil.copyfileobj(fh, out)
+            os.fchown(out.fileno(), 0, service_gid())
+    words = {'pem_key': 'PEM with its key', 'key': 'the key alone', 'pfx': 'PFX',
+             'pfx_legacy': 'PFX (legacy)'}[fmt]
+    return {'out': name, 'out_bytes': os.stat(name, dir_fd=out_fd).st_size}, \
+        ['the certificate%s handed over for a download: %s, %s%s' % (
+            ' and its key' if fmt != 'key' else '\'s key', name, words,
+            ' (locked with a password)' if pw else '')]
+
+
 def encrypt(src, dst, passphrase):
     env = dict(os.environ, ZIGMON_PASS=passphrase)
     run(['openssl', 'enc', '-aes-256-cbc', '-pbkdf2', '-iter', '600000', '-salt',
@@ -2661,6 +2769,8 @@ def handle(raw):
                 os.fchown(out.fileno(), 0, service_gid())
         return {'out': name, 'out_bytes': os.stat(name, dir_fd=out_fd).st_size}, \
             ['handed over for a download: %s%s' % (name, ' (with a password)' if pw else '')]
+    if kind == 'tls_export':
+        return tls_export(raw)
     if kind == 'full_put':
         name = os.path.basename(str(raw.get('file') or ''))
         if not re.match(r'^upload-[A-Za-z0-9]{1,32}\.bin$', name):

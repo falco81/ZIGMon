@@ -15901,9 +15901,67 @@ class Daemon(object):
                 'current': status.get('applied_hash') == self.apply_body()[1],
                 'progress': st['progress'], 'waiting': bool(st['busy'])}
         presets = {k: {'ciphers': v['ciphers']} for k, v in self.TLS_PRESETS.items()}
+        # the certificate handed over with its key (5.30): how root's last
+        # hand-over went, and the file while it waits to be fetched
+        export, ready = None, None
+        if status.get('kind') == 'tls_export':
+            export = {k: status.get(k) for k in ('id', 'state', 'said', 'out', 'at')}
+            name = status.get('out')
+            if name and self.TLS_EXPORT_FILE.match(str(name)) and self.root_dir('out', name).is_file():
+                ready = {'file': name, 'bytes': self.root_dir('out', name).stat().st_size}
         return {'ok': True, 'conf': conf, 'now': now, 'node': node, 'presets': presets,
                 'dh': self.TLS_DH, 'helper': st['helper'], 'may': True,
-                'server_name': now.get('server_name') or ''}
+                'server_name': now.get('server_name') or '', 'export': export, 'ready': ready}
+
+    TLS_EXPORT_FILE = re.compile(r'^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$')
+    TLS_EXPORT_KEYED = ('pem_key', 'key', 'pfx', 'pfx_legacy')
+    TLS_EXPORT_PLAIN = ('pem_chain', 'pem_cert', 'chain', 'der')
+
+    def tls_export_plain(self, fmt):
+        """The certificate without its key, in the format asked: what anybody
+        may have, made here from what nginx sends."""
+        if fmt not in self.TLS_EXPORT_PLAIN:
+            raise ValueError('the format is one of %s' % ', '.join(self.TLS_EXPORT_PLAIN + self.TLS_EXPORT_KEYED))
+        blocks = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', self.tls_pem_now(), re.S)
+        if fmt == 'pem_chain':
+            return {'text': '\n'.join(blocks) + '\n', 'ext': 'pem'}
+        if fmt == 'pem_cert':
+            return {'text': blocks[0] + '\n', 'ext': 'crt'}
+        if fmt == 'chain':
+            if len(blocks) < 2:
+                raise ValueError('the certificate is sent with no chain - there is nothing above it to give')
+            return {'text': '\n'.join(blocks[1:]) + '\n', 'ext': 'ca.pem'}
+        der = self._openssl(['x509', '-outform', 'DER'], data=blocks[0].encode(), what='the certificate')
+        return {'b64': base64.b64encode(der).decode('ascii'), 'ext': 'cer'}
+
+    def tls_export(self, body, who):
+        """With the key: root makes the file - the key is root's and never comes
+        through here - and hands it over once."""
+        fmt = str(body.get('format') or '')
+        if fmt not in self.TLS_EXPORT_KEYED:
+            raise ValueError('the format is one of %s' % ', '.join(self.TLS_EXPORT_KEYED))
+        pw = str(body.get('password') or '')
+        if fmt.startswith('pfx') and len(pw) < 4:
+            raise ValueError('a PFX needs a password (four characters or more)')
+        if pw and len(pw) < 4:
+            raise ValueError('a password is four characters or more')
+        if pw != str(body.get('password2') if body.get('password2') is not None else pw):
+            raise ValueError('the two passwords are not the same')
+        ident = self.root_ask('tls_export', {'format': fmt, 'password': pw,
+                                             'with_root': bool(body.get('with_root'))})
+        self.say_event('control', 'the certificate\'s private key asked for, to download (%s%s) by %s'
+                       % (fmt, ', locked with a password' if pw else '', who or 'the dashboard'),
+                       'warn', about='secrets_out')
+        return ident
+
+    def tls_download_path(self, name):
+        name = os.path.basename(str(name or ''))
+        if not self.TLS_EXPORT_FILE.match(name):
+            raise ValueError('not the name of a certificate handed over for a download')
+        p = self.root_dir('out', name)
+        if not p.is_file():
+            raise ValueError('that file is not here (any more): ask for it again')
+        return p
 
     def tls_pem_now(self):
         """The certificate and its chain as nginx sends them - never the key."""
@@ -38844,6 +38902,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return {'message': 'saved - root is putting it in'}
             if act == 'tls_pem':
                 return {'pem': d.tls_pem_now()}
+            if act == 'tls_get':
+                # without the key, at once: the certificate, its chain, DER
+                return dict(d.tls_export_plain(str(body.get('format') or 'pem_chain')),
+                            name=re.sub(r'[^A-Za-z0-9._-]+', '-', d.tls_state().get('server_name') or 'zigmon'))
+            if act == 'tls_export':
+                return {'message': 'root is making it', 'asked': d.tls_export(body, who)}
             if act == 'tls_forget':
                 conf = d.tls_conf()
                 conf['managed'] = False
@@ -39442,6 +39506,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(raw)
                 return
+            if path == '/api/tls/download':
+                # the certificate with its private key, handed over once by
+                # root and gone from the hand-over folder after
+                err = self._download_refused(d, q)
+                if err:
+                    return self._error(403, err)
+                try:
+                    fpath = d.tls_download_path(q.get('file') or '')
+                except ValueError as e:
+                    return self._error(404, str(e))
+                d.say_event('control', 'the certificate with its private key downloaded: %s (to %s)'
+                            % (fpath.name, self._caller()), 'warn', about='secrets_out')
+                try:
+                    return self._send_file(fpath, fpath.name)
+                finally:
+                    try:
+                        fpath.unlink()
+                    except OSError:
+                        pass
             if path == '/api/fullbackup/download':
                 # the whole house - the certificate's key and every password in
                 # it - handed over once, and gone from the hand-over folder after
