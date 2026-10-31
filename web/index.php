@@ -2533,6 +2533,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .maint-band{position:sticky;top:0;z-index:58;display:flex;gap:14px;align-items:center;justify-content:space-between;
     flex-wrap:wrap;padding:10px 18px;background:color-mix(in srgb, var(--warn) 14%, var(--panel));border-bottom:1px solid var(--warn)}
   .maint-band[hidden]{display:none}
+  .maint-band:not([hidden]){margin-bottom:14px}
   .maint-band .change-words b{color:var(--warn)}
   /* what a setting does, under it (otp's three of Upgrades and maintenance) */
   :is(#settings-grid, .set-host) .set-item > .set-says{grid-row:3;grid-column:1/-1;font-size:12px;line-height:1.45;
@@ -3556,6 +3557,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     html.app-shell-root{height:100%;overflow:hidden;overscroll-behavior:none}
     html.app-shell-root body{overscroll-behavior:none}
     body.app-shell > #alertband{flex:none}
+    /* the bands above the page keep their height (5.36.1): one shrunk by the
+       column ran its words over the header under it */
+    body.app-shell > #changes, body.app-shell > #maint-band{flex:none}
     body.app-shell > .wrap{flex:1 1 auto;min-height:0;width:100%;max-width:none;display:flex;flex-direction:column}
     body.app-shell .wrap > *{flex-shrink:0}
     body.app-shell .wrap > .tabs{margin-bottom:16px}

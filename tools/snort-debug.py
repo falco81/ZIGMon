@@ -3,7 +3,7 @@
 
 Run it on the server, as root, and send back everything it prints:
 
-    cd zigmon-5.36.0          # the folder the package was unpacked into
+    cd zigmon-5.36.1          # the folder the package was unpacked into
     sudo python3 tools/snort-debug.py            # two requests, no more
     sudo python3 tools/snort-debug.py --accept   # also press Accept, as zigmon does
 

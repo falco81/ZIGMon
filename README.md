@@ -2083,7 +2083,16 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.36.0**
+Current version: **5.36.1**
+
+5.36.1 — the band of maintenance in its place.
+
+* The band at the top of every page saying the server is in maintenance kept
+  no room under it and ran over the header: the page is a column the height
+  of the window, and the band could be shrunk by it. It keeps its height now,
+  with room under it, as the band of changes on trial does.
+
+`test/review5361.py` (the real page in Chromium); it fails on 5.36.0.
 
 5.36.0 — a proxy for what zigmon asks of the web, each use chosen, as OTP has it.
 
