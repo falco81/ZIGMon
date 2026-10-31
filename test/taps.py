@@ -3140,10 +3140,12 @@ zigmon.CONFIG['block_ladder'] = ''
 # while testing it, ends up kept out for good with no way back but by hand.
 zigmon.CONFIG.update({'block_ladder': '10, 60, 1440, forever', 'block_ladder_forget_days': 30})
 _long_ago = time.time() - 120 * 86400
-for _i in range(7):
-    d.store.db.execute('INSERT INTO block_events (ts, ip, what, why, auto, by) VALUES (?,?,?,?,?,?)',
-                       (_long_ago + _i * 3600, '45.9.148.20', 'blocked', 'long ago', 1, 'by itself'))
-d.store.db.commit()
+d.store.flush()
+with d.store.lock:                 # the connection is shared with the writer thread
+    for _i in range(7):
+        d.store.db.execute('INSERT INTO block_events (ts, ip, what, why, auto, by) VALUES (?,?,?,?,?,?)',
+                           (_long_ago + _i * 3600, '45.9.148.20', 'blocked', 'long ago', 1, 'by itself'))
+    d.store.db.commit()
 assert d.store.blocked_before('45.9.148.20') == 7, 'the story of the address was not written'
 assert d.store.blocked_before('45.9.148.20', within_days=30) == 0, \
     'blocks from four months ago are counted as recent'
@@ -3791,6 +3793,34 @@ d._rest, d.sms_ready, d._sms_rest, d.sms_modem_id = _gateway, (lambda: True), (l
 d._sms_sending = d._sms_sent_at = d._sms_status_at = 0
 d._sms_status_busy = False
 d._sms_counted_inbox_at = 0
+# the AT+CMMS check is another test's (review532): kept off the box here
+d._sms_cmms_checked = _time.time()
+# a reply still going out from the checks above has the box first, as it
+# should, and the status gives way to it for half a minute after: it is let
+# go out first, and then the status is what is watched
+d._sms_push_at = 0
+_free_by = _time.time() + 60
+while d._sms_replies and _time.time() < _free_by:
+    _time.sleep(0.1)
+
+
+def _box_free():
+    _got = []
+
+    def _try():
+        if d._sms_send_lock.acquire(timeout=30):
+            _got.append(1)
+            d._sms_send_lock.release()
+    _t = _th.Thread(target=_try)
+    _t.start()
+    _t.join(35)
+    return bool(_got)
+
+
+assert not d._sms_replies and _box_free(), 'the gateway is held for a minute by nothing going out'
+_time.sleep(0.3)
+assert _box_free(), 'the gateway is held by nothing going out'
+d._sms_sending = d._sms_sent_at = d._sms_status_at = 0
 d._stop.clear()
 _timer = _th.Thread(target=d.timer_loop, daemon=True)
 _timer.start()
