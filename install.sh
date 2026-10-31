@@ -33,6 +33,9 @@ ASSUME_YES=""
 WITH_WEB="yes"
 DO_UPGRADE=""
 DO_UNINSTALL=""
+KEEP_PHP=""                 # --keep-php: leave PHP as it is (no move to 8.3)
+PHP_BRANCH="8.3"            # the branch the dashboard runs on, and the first
+PHP_PATCH="36"              # release of it with the php2shell fix (8.3.36)
 
 MQTT_HOST="127.0.0.1"
 MQTT_PORT=""
@@ -149,6 +152,7 @@ Usage: sudo ./install.sh [options]
   --dry-run               print every command it would run, change nothing
   --upgrade               replace the program files and restart, touching nothing else
   --uninstall             remove the service and dashboard, keep the history
+  --keep-php              leave PHP as it is (by default it is brought to 8.3.36 or newer)
   -h, --help              this text
 EOF
 }
@@ -180,6 +184,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run)        DRY_RUN="yes"; shift ;;
         --upgrade)        DO_UPGRADE="yes"; shift ;;
         --uninstall)      DO_UNINSTALL="yes"; shift ;;
+        --keep-php)       KEEP_PHP="yes"; shift ;;
         -h|--help)        usage; exit 0 ;;
         *)                fail "unknown option $1 (see --help)" ;;
     esac
@@ -602,6 +607,7 @@ install_web() {
         if ! php -l "$WEB_DIR/index.php" >/dev/null 2>&1; then
             warn "php -l reports a problem in index.php"
         fi
+        ensure_php                        # 5.30: PHP 8.3.36
         tune_php_fpm
         harden_php
     fi
@@ -682,6 +688,112 @@ PHPINI
     else
         good "PHP $v carries the php2shell fix"
     fi
+}
+
+# PHP 8.3.36 (5.30): the dashboard's PHP brought to the 8.3 branch at its
+# first release with the php2shell fix, at every install and upgrade. First
+# the stream the machine has, updated; where that does not reach 8.3.36, the
+# system's own php:8.3 stream if it carries it, else Remi's (php:remi-8.3,
+# which follows PHP's own releases - with EPEL, which zigmon needs anyway).
+# The configuration of php-fpm is kept (rpm keeps changed files), the stream
+# it came from is written down, and if php-fpm does not start on the new one
+# - or the dashboard does not read - the old stream is put back as it was.
+# A branch newer than 8.3 that already carries the fix is left alone, and
+# --keep-php leaves PHP as it is.
+php_version() {
+    local v; v="$( (php-fpm -v 2>/dev/null || php -v 2>/dev/null) | sed -n 's/^PHP \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+    printf '%s' "$v"
+}
+
+php_good_enough() {      # 0 when the version is 8.3.36 or newer
+    local v="$1" major minor patch
+    [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
+    major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+    local wmaj="${PHP_BRANCH%%.*}" wmin="${PHP_BRANCH##*.}"
+    (( major > wmaj )) && return 0
+    (( major == wmaj && minor > wmin )) && return 0
+    (( major == wmaj && minor == wmin && patch >= PHP_PATCH )) && return 0
+    return 1
+}
+
+php_works() {            # php-fpm takes its own configuration, starts, and reads the dashboard
+    php-fpm -t >/dev/null 2>&1 || return 1
+    systemctl restart php-fpm >/dev/null 2>&1 || return 1
+    [[ ! -f "$WEB_DIR/index.php" ]] || php -l "$WEB_DIR/index.php" >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet php-fpm
+}
+
+php_stream_now() {       # the php module stream enabled now, or nothing
+    dnf -q module list --enabled php 2>/dev/null | awk '$1 == "php" {print $2; exit}'
+}
+
+php_to_stream() {        # switch to a stream and bring every php package to it
+    local stream="$1"
+    dnf -y -q module reset php >/dev/null 2>&1 || true
+    if [[ -n "$stream" ]]; then
+        dnf -y -q module enable "php:$stream" >/dev/null 2>&1 || return 1
+    fi
+    dnf -y -q distro-sync 'php*' >/dev/null 2>&1 || return 1
+    # what the dashboard needs, in case the new stream names them apart
+    rpm -q php-fpm >/dev/null 2>&1 || dnf -y -q install php-fpm >/dev/null 2>&1 || return 1
+    rpm -q php-opcache >/dev/null 2>&1 || dnf -y -q install php-opcache >/dev/null 2>&1 || true
+    return 0
+}
+
+ensure_php() {
+    [[ -n "$WITH_WEB" ]] || return 0
+    step "PHP $PHP_BRANCH.$PHP_PATCH"
+    if [[ -n "$KEEP_PHP" ]]; then
+        say "--keep-php: PHP is left as it is ($(php_version))"
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then
+        note "[would bring PHP to $PHP_BRANCH.$PHP_PATCH or newer: dnf update, else the php:$PHP_BRANCH stream, else Remi's php:remi-$PHP_BRANCH]"
+        return 0
+    fi
+    command -v dnf >/dev/null 2>&1 || { warn "no dnf here: bring PHP to $PHP_BRANCH.$PHP_PATCH by hand"; return 0; }
+    local v; v="$(php_version)"
+    if php_good_enough "$v"; then
+        good "PHP $v (already $PHP_BRANCH.$PHP_PATCH or newer)"
+        return 0
+    fi
+    local old_stream; old_stream="$(php_stream_now)"
+    say "PHP ${v:-not installed}; moving to $PHP_BRANCH.$PHP_PATCH (stream now: ${old_stream:-none})"
+    # 1. what the machine's own stream has now
+    dnf -y -q upgrade 'php*' >/dev/null 2>&1 || true
+    v="$(php_version)"
+    if php_good_enough "$v" && php_works; then
+        good "PHP $v"
+        return 0
+    fi
+    # 2. the system's own 8.3 stream, where it carries the release, then Remi's
+    local tried="" stream
+    for stream in "$PHP_BRANCH" "remi-$PHP_BRANCH"; do
+        if [[ "$stream" == remi-* ]] && ! rpm -q remi-release >/dev/null 2>&1; then
+            local el; el="$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID%%.*}")"
+            rpm -q epel-release >/dev/null 2>&1 || dnf -y -q install epel-release >/dev/null 2>&1 || true
+            if ! dnf -y -q install "https://rpms.remirepo.net/enterprise/remi-release-${el:-9}.rpm" >/dev/null 2>&1; then
+                warn "Remi's repository could not be added (no network to rpms.remirepo.net?)"
+                continue
+            fi
+            good "Remi's repository added (remi-release-${el:-9})"
+        fi
+        dnf -q module list php 2>/dev/null | awk '$1 == "php" {print $2}' | grep -qx "$stream" || continue
+        tried="$tried $stream"
+        if php_to_stream "$stream"; then
+            v="$(php_version)"
+            if php_good_enough "$v" && php_works; then
+                good "PHP $v (stream php:$stream; it was ${old_stream:-none})"
+                return 0
+            fi
+            warn "php:$stream gave PHP ${v:-nothing that runs}"
+        fi
+    done
+    # 3. none of it: the stream that was, put back as it was
+    warn "PHP could not be brought to $PHP_BRANCH.$PHP_PATCH (tried:${tried:- nothing that offers it}); putting back what was there"
+    php_to_stream "$old_stream" || true
+    php_works || warn "php-fpm does not start on the stream put back either - systemctl status php-fpm"
+    warn "PHP is $(php_version); the dashboard is in front of the php2shell holes until it is $PHP_BRANCH.$PHP_PATCH or newer"
 }
 
 # The dashboard holds one php-fpm worker per open tab (the live wait) and
@@ -1156,6 +1268,9 @@ MPATCH
     }
     run install -m 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
     run systemctl daemon-reload
+    if [[ -f /etc/php-fpm.d/www.conf ]]; then
+        ensure_php                       # 5.30: PHP 8.3.36, at every upgrade
+    fi
     if [[ -z "$DRY_RUN" ]] && [[ -f /etc/php-fpm.d/www.conf ]]; then
         tune_php_fpm                     # 2.65: idle workers + opcache for the dashboard
         harden_php                       # 5.15: php2shell, and the version that mends it
