@@ -7808,13 +7808,16 @@ def _webproxy_handler(via):
     return ProxyOnly({'http': via, 'https': via})
 
 
-def web_opener(url, *handlers):
-    """An opener for one address on the web: through the proxy where one is
-    set and the address is not one reached straight; straight where it is
-    (never through what the environment says, then); and with the proxy
-    off, as it always was."""
+def web_opener(url, *handlers, purpose=''):
+    """An opener for one address on the web. The proxy is for the updates
+    only (5.36.0): zigmon's new versions here, dnf through root. Everything
+    else - the ACME CA, ntfy, the weather, the lists, and above all every
+    device of the house - goes as it always went, whatever is set, so a
+    proxy that is slow or down can never touch a plug, a sensor or a text.
+    For the updates: through the proxy where one is set and the address is
+    not one reached straight; straight where it is."""
     import urllib.request
-    if not webproxy_on():
+    if purpose != 'updates' or not webproxy_on():
         return urllib.request.build_opener(*handlers)
     host = urlsplit(str(url)).hostname or ''
     if webproxy_straight(host):
@@ -7822,14 +7825,14 @@ def web_opener(url, *handlers):
     return urllib.request.build_opener(_webproxy_handler(webproxy_full()), *handlers)
 
 
-def web_open(req, timeout=30, context=None):
-    """urllib.request.urlopen for what zigmon asks of the web, the proxy's
-    way (web_opener)."""
+def web_open(req, timeout=30, context=None, purpose=''):
+    """urllib.request.urlopen for what zigmon asks of the web - through the
+    proxy only for purpose='updates' (web_opener)."""
     import urllib.request
     if not isinstance(req, urllib.request.Request):
         req = urllib.request.Request(req)
     handlers = [urllib.request.HTTPSHandler(context=context)] if context is not None else []
-    return web_opener(req.full_url, *handlers).open(req, timeout=timeout)
+    return web_opener(req.full_url, *handlers, purpose=purpose).open(req, timeout=timeout)
 
 
 def _webproxy_error(e):
@@ -8034,7 +8037,7 @@ def _online_get(url, limit=ONLINE_PAGE_MOST, accept='*/*', timeout=30, into=None
     req = urllib.request.Request(url, headers={
         'User-Agent': 'zigmon/%s (+upgrade check)' % __version__, 'Accept': accept})
     # through Control - Proxy where one is set (5.35)
-    with web_open(req, timeout=timeout, context=ssl.create_default_context()) as r:
+    with web_open(req, timeout=timeout, context=ssl.create_default_context(), purpose='updates') as r:
         final = r.geturl()
         if not str(final).startswith('https://'):
             raise ValueError('it was sent on to an address that is not https: %s' % str(final)[:200])

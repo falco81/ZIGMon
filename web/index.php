@@ -4480,7 +4480,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sec-firewall" data-icon="net">Firewall</button>
     <div class="ctl-group">Server</div>
     <button type="button" data-sec="sys-network" data-icon="net">Network</button>
-    <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for what zigmon asks of the web - new versions, the certificates, the system updates.">Proxy</button>
+    <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for the updates only - zigmon's new versions and the system's (dnf). Nothing else of the house goes through it.">Proxy</button>
     <button type="button" data-sec="sys-time" data-icon="clock">Time</button>
     <button type="button" data-sec="sys-certs" data-icon="key">Certificates</button>
     <button type="button" data-sec="sys-acme" data-icon="lock" title="The certificate ordered from Let's Encrypt (or another ACME CA) and renewed by itself.">Automatic certificates</button>
@@ -18500,11 +18500,10 @@ var SETTINGS_LAYOUT = [
   ]],
   // the way out to the web through an HTTP proxy (5.35): otp's own words, for one machine
   ['Going out through a proxy', [
-    ['webproxy', 'Go out through a proxy',
-     'An HTTP proxy for what zigmon asks of the web: the new versions, the certificates from the ACME CA and its '
-     + 'DNS APIs, the forecast, the lists, Shodan, Duo, ntfy and Telegram, the system updates. The house itself '
-     + '(the plugs, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller) '
-     + 'and mail never use it, nor anything at an address of this network'],
+    ['webproxy', 'The updates through a proxy',
+     'An HTTP proxy for the updates only: zigmon\u2019s new versions (looked for and fetched) and, with the switch '
+     + 'below, the system updates (dnf). Nothing else uses it - the plugs, the sensors, Zigbee2MQTT, the broker, the '
+     + 'SMS gateway, the alerts, ntfy, the certificates, the weather and the lists go as they always went'],
     ['webproxy_url', 'The proxy', '<code>http://proxy.example.cz:3128</code>'],
     ['webproxy_user', 'User name at the proxy', 'Where the proxy asks for one. Empty: none.'],
     ['webproxy_password', 'Password at the proxy', 'Kept like the other passwords - never shown again, never written down.'],
@@ -30208,7 +30207,7 @@ var CONTROL_SECTIONS = {
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
   'sec-firewall': ['Firewall', 'Who may reach the pages, and what the firewall lets in - put in by root, checked first, never shutting you out.'],
   'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
-  'sys-proxy': ['Proxy', 'Where this machine may reach the web only through an HTTP proxy: the new versions, the certificates from the ACME CA and its DNS APIs, the forecast, the lists, Shodan, Duo, ntfy and Telegram, and the system updates (dnf) go through it. The house itself - the plugs, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller - and mail never do, nor anything at an address of this network.'],
+  'sys-proxy': ['Proxy', 'An HTTP proxy for the updates only: zigmon\u2019s new versions (looked for and fetched) and the system updates (dnf). Nothing else ever goes through it - the plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller, the alerts, ntfy, the certificates, the weather, the lists - so a proxy that is slow or down cannot touch the house.'],
   'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],
   'sys-power': ['Restart and power off', 'The machine restarted or switched off from here, now or at an hour of its own - and a regular restart, if wanted. The page follows it down and up again.'],
   'sys-about': ['About', 'What this is, what it runs on, and whether root signing in at the machine or over SSH lands in its console.'],

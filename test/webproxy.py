@@ -292,11 +292,11 @@ print('Complete!')
 
     TLS_CTX = ssl.create_default_context(cafile=str(CA)) if HAVE_TLS else None
 
-    def fetch(url, ctx=None):
+    def fetch(url, ctx=None, purpose='updates'):
         """(status or the error, the target's body) of one address the way
-        zigmon asks the web."""
+        zigmon asks the web - for the updates unless said otherwise."""
         try:
-            with zigmon.web_open(url, timeout=10, context=ctx) as r:
+            with zigmon.web_open(url, timeout=10, context=ctx, purpose=purpose) as r:
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as e:
             return e.code, ''
@@ -355,6 +355,11 @@ print('Complete!')
     check(PROXIED and PROXIED[0][0] == 'GET' and PROXIED[0][1].startswith('http://plain' + WEB)
           and PROXIED[0][2] == want_auth, 'the proxy was not asked, or not with the password: %r' % PROXIED)
     check(any(s[2] == '/through' and s[3] for s in SEEN), 'the target was not reached through the proxy: %r' % SEEN)
+    # the proxy is for the updates only (5.36.0): anything else goes as it
+    # always went, with the proxy on - it can never touch the house
+    PROXIED.clear()
+    got = fetch('http://plain%s:%d/not-an-update' % (WEB, HTTP_PORT), purpose='')
+    check(got[0] != 200 and not PROXIED, 'something not an update went through the proxy: %r %r' % (got, PROXIED))
     if HAVE_TLS:
         PROXIED.clear()
         got = fetch('https://versions%s:%d/tunnel' % (WEB, HTTPS_PORT), TLS_CTX)
@@ -537,10 +542,12 @@ print('Complete!')
         at = src.index('def %s(' % name)
         nxt = re.search(r'\n(    )?def ', src[at + 10:])
         return src[at:at + 10 + (nxt.start() if nxt else len(src))]
-    for fn in ('_online_get', 'acme_urlopen', 'weather', 'geo_fetch', 'shodan_ask', '_duo_once', '_feed_fetch',
-               'presence_ntfy_loop', 'notify_loop'):
-        check('web_open(' in body_of(fn), '%s does not go the proxy\'s way' % fn)
-    check("web_opener('https://www.snort.org/'" in body_of('_snort_fetch'), 'snort.org does not go the proxy\'s way')
+    check("purpose='updates'" in body_of('_online_get'), 'the new versions do not go through the proxy')
+    check(src.count("purpose='updates'") == 1 + src.count("purpose != 'updates'"),
+          'something besides the new versions asks for the proxy: %d' % src.count("purpose='updates'"))
+    for fn in ('acme_urlopen', 'weather', 'geo_fetch', 'shodan_ask', '_duo_once', '_feed_fetch',
+               'presence_ntfy_loop', 'notify_loop', '_snort_fetch'):
+        check("purpose='updates'" not in body_of(fn), '%s goes through the proxy - only the updates may' % fn)
     for fn in ('_rest_once', '_sms_open', '_sms_login', 'gateway_fetch', '_unifi_opener', 'api_call'):
         check('web_open' not in body_of(fn), '%s (the house\'s own) goes the proxy\'s way' % fn)
 

@@ -2085,29 +2085,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 
 Current version: **5.36.0**
 
-5.36.0 — a proxy for what zigmon asks of the web, as OTP has it.
+5.36.0 — a proxy for the updates, as OTP has it.
 
 * **Settings → Proxy** (under Server, after Network; off until switched on):
   an HTTP proxy (`http://host:port`), a user name and a password kept sealed
   (the page only says whether it is set), the names, domains, addresses and
   nets reached straight, and whether the system updates go through it too.
-* **What goes through it**: new versions, the ACME CA and the DNS APIs
-  (Cloudflare, deSEC, acme-dns), ntfy and Telegram, the presence listener on
-  ntfy, the weather, the block lists and snort.org, the country list,
-  Shodan and Duo. **Straight, always**: everything of the house - the SMS
-  gateway, the sockets, the Zigbee gateways, the Wi-Fi controller, the
-  root helper, mail - and every private, loopback or link-local address, a
-  name without a dot or under .local, .lan, .home.arpa, a name DNS knows
-  only inside, and the list.
+* **For the updates only**: zigmon's new versions (looked for and fetched) and
+  the system updates (dnf). **Nothing else ever goes through it** - the
+  plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router,
+  the Wi-Fi controller, the alerts, ntfy, Telegram, the certificates from the
+  ACME CA, the weather, the lists, Shodan and Duo go as they always went,
+  whatever is set: a proxy that is slow or down cannot touch the house.
 * **dnf** gets it from root - handed over in the ask, kept in a file only root
   reads, given to dnf in its environment, never on a command line; the log
   says "through the proxy host:port" and nothing more.
-* **Try it**: an address tried as it would go - straight, and why, or through
-  the proxy - and the way drawn: this machine, the proxy, the address; each
-  step with its time (the name, the connection, CONNECT - a 407 said as a
-  wrong or missing password - TLS with its certificate, the answer), the
-  first that failed and why. `zigmon --webproxy-test [URL]`, and in the
-  console under Network, time and power.
+* **Try it**: an address tried as an update would go - straight, and why, or
+  through the proxy - and the way drawn: this machine, the proxy, the
+  address; each step with its time (the name, the connection, CONNECT - a
+  407 said as a wrong or missing password - TLS with its certificate, the
+  answer), the first that failed and why. `zigmon --webproxy-test [URL]`, and
+  in the console under Network, time and power.
 
 `test/webproxy.py` (a proxy with a password and targets of its own, the real
 page in Chromium); it fails on 5.35.0.
