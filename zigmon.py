@@ -44597,12 +44597,12 @@ def acme_host_refresh():
         return
     ACME_HOST['at'] = time.time()
 
-    def go():
+    def look_up():
         try:
             ACME_HOST['fqdn'] = socket.getfqdn()
         except OSError:
             pass
-    threading.Thread(target=go, name='acme-host', daemon=True).start()
+    threading.Thread(target=look_up, name='acme-host', daemon=True).start()
 
 
 def acme_name_of(d):
@@ -44714,7 +44714,7 @@ def acme_order(d, name, by, say=None):
     tell = say or (lambda t: None)
     steps = []
 
-    def say(t):
+    def said(t):
         steps.append([round(time.time(), 1), str(t)[:300]])
         tell(t)
     if not ACME_NAME_RE.match(str(name or '').lower()):
@@ -44723,7 +44723,7 @@ def acme_order(d, name, by, say=None):
     a = None
     try:
         a = Acme(d)
-        key, chain = a.order([name], say)
+        key, chain = a.order([name], said)
         pem = d.tls_sort(chain + '\n' + key)
         key = None
         info = acme_cert_dates(pem['cert'])
@@ -44740,7 +44740,7 @@ def acme_order(d, name, by, say=None):
         end = time.time() + 120
         while d.root_busy() and time.time() < end:
             time.sleep(1)
-        say('root puts it in')
+        said('root puts it in')
         ident = d.tls_put(dict(pem, keep_before=keep), 'from the ACME CA for %s, until %s' % (
             name, time.strftime('%Y-%m-%d', time.localtime(info['not_after']))
             if info.get('not_after') else '?'), how='ACME')
@@ -44864,7 +44864,7 @@ def acme_start(d, which, by):
             raise ValueError('a certificate is being ordered already')
         ACME_WORK.update(busy=True, says='starting', began=time.time())
 
-    def go():
+    def order_work():
         _ACME_DNS.on = True
         try:
             for t, n in which:
@@ -44877,7 +44877,7 @@ def acme_start(d, which, by):
                     log('ACME: it broke: %s' % e, 'error')
         finally:
             ACME_WORK.update(busy=False, says='', target='')
-    threading.Thread(target=go, name='acme', daemon=True).start()
+    threading.Thread(target=order_work, name='acme', daemon=True).start()
 
 
 def acme_challenge(token):
@@ -52439,14 +52439,14 @@ def _console_sms(c):
 def _console_acme(c):
     """Automatic certificates from the console (otp 1.0.168): how the
     certificate stands, and ordering it now - followed, as on the page."""
-    def order():
+    def order_now():
         if c.confirm('Order the certificate now', 'It is ordered from the ACME CA now and put in '
                      'by root; ACME looks after it from then on (a certificate of your own is '
                      'kept, to be put back).', 'Order it'):
             c.act('--acme-order')
     return c.sub('Automatic certificates', [
         ('How the certificate stands (ACME)', lambda: c.act('--acme')),
-        ('Order it now, followed here', order),
+        ('Order it now, followed here', order_now),
         ('What root last did (the certificate, port 80)', lambda: c.act('--root-status')),
     ], 'acme')
 
