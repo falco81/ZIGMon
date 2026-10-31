@@ -62,7 +62,11 @@ NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK (5.33.1): reading which network interfaces there are -
+# getifaddrs() asks the kernel over netlink. smbclient does that before
+# anything else, and without it every backup to an SMB share ended in
+# "Could not determine network interfaces".
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes

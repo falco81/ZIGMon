@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.33.0'
+__version__ = '5.33.1'
 
 import argparse
 import base64
@@ -49944,6 +49944,11 @@ class RbSmb(object):
                 said = 'the server did not take the account and password (%s)' % said
             elif 'NT_STATUS_BAD_NETWORK_NAME' in said:
                 said = 'there is no share %s on %s' % (self.t['share'], self.t['host'])
+            elif 'determine network interfaces' in text:
+                # the service may not read the network interfaces (5.33.1:
+                # zigmon.service lets it; one from before does not)
+                said = ('smbclient may not read this machine\'s network interfaces: run install.sh '
+                        '--upgrade once more (zigmon.service needs AF_NETLINK), then try again')
             elif 'protection' in said.lower() and 'unknown' in said.lower():
                 said = ('this smbclient does not know --client-protection: switch "SMB3 encryption '
                         'required" off or install a newer samba-client')

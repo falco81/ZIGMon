@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.33.0**
+Current version: **5.33.1**
+
+5.33.1 — a backup to an SMB share works.
+
+* **smbclient may read the network interfaces.** It reads them before
+  anything else - getifaddrs(), which asks the kernel over a netlink socket
+  - and zigmon.service allowed only IPv4, IPv6 and local sockets: every
+  backup to an SMB share ended in "Could not determine network interfaces,
+  you must use a interfaces config line". The service lets it now
+  (`AF_NETLINK`, which reads the interfaces and routes and changes nothing);
+  the upgrade puts the unit in. A service from before says what to do
+  instead of samba's words.
+
+`test/review5331.py`; it fails on 5.33.0.
 
 5.33.0 — the server in front gets its certificate from here.
 
