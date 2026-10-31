@@ -18411,7 +18411,7 @@ var SETTINGS_LAYOUT = [
      + '<i>Its name…</i> above changes it too'],
     ['acme_days', 'Renewed when fewer days are left than',
      'Let’s Encrypt’s certificates last 90 days; 30 is what it advises. A certificate that lasts less is renewed at a third of its life'],
-    ['acme_key', 'The key of the certificate', 'ECDSA is smaller and quicker; RSA for old clients'],
+    ['acme_key', 'The key of the certificate', 'What Let\u2019s Encrypt takes: ECDSA P-256 or P-384 - smaller and quicker - or RSA 2048, 3072 or 4096 for old clients. Both is what it recommends: two certificates, RSA sent by default and ECDSA to every client that can take it; the broker reads the RSA one'],
     ['acme_challenge', 'How the CA checks the name',
      'HTTP-01 needs port 80 of the name reachable from the internet (or from the CA, for a CA of your own): root '
      + 'gives port 80 a location for <code>/.well-known/acme-challenge/</code>. DNS-01 needs nothing open: the CA reads a TXT record'],
@@ -26537,6 +26537,9 @@ function certCard(d) {
     var facts = [['Issued by', info.self_signed ? 'itself (self-signed)' : String(info.issuer || '').replace(/^CN=/, '')],
                  ['Valid until', info.not_after ? stamp(info.not_after) : '–'],
                  ['Key', info.key || '–']];
+    /* two at once (5.33.2): RSA by default, ECDSA to who can take it */
+    if (now.alt_info) facts.push(['And', (now.alt_info.key || 'a second key') + ' - sent to clients that take ECDSA'
+      + (now.alt_info.not_after ? ', until ' + stamp(now.alt_info.not_after) : '')]);
     if ((info.san || []).length) facts.push(['Names', info.san.join(', ')]);
     facts.push(['Chain', info.chain ? info.chain + ' between it and the root' : 'none sent with it']);
     facts.push(['Root', now.root_info ? (now.root_info.cn || 'given') : 'not given']);
@@ -26870,7 +26873,7 @@ function certSubjectFields(body, d, withDays, f) {
   var g = el('div', 'formgrid');
   f.cn = zText(d.server_name || '', 'mqtt.example.cz', 'mono');
   f.names = zText('', 'mqtt2.example.cz, 192.0.2.11', 'mono');
-  f.kind = zSelect([['rsa2048', 'RSA 2048'], ['rsa3072', 'RSA 3072'], ['rsa4096', 'RSA 4096'], ['ec', 'EC P-256']], 'rsa2048');
+  f.kind = zSelect([['rsa2048', 'RSA 2048'], ['rsa3072', 'RSA 3072'], ['rsa4096', 'RSA 4096'], ['ec', 'EC P-256'], ['ec384', 'EC P-384']], 'rsa2048');
   g.appendChild(zField('The name (CN)', f.cn, 'What people type in the browser - and what the devices on the broker connect to.'));
   g.appendChild(zField('Other names', f.names, 'More names or addresses it is good for, by commas.'));
   g.appendChild(zField('The key', f.kind));

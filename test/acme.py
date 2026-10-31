@@ -874,6 +874,61 @@ json.dump(recs, open(zone, 'w'))
     check([r['type'] for r in g['rows']] == ['NS', 'CNAME'], 'a domain of your own at deSEC: the NS records '
           'are not said: %r' % g['rows'])
 
+    # ---- the keys Let's Encrypt takes, and both at once (5.33.2) -------------------------
+    print('the key: RSA 2048 / 3072 / 4096, ECDSA P-256 / P-384, or both')
+    d.save_config_overrides({'acme_dns': 'manual', 'acme_challenge': 'http-01', 'acme_dns_alias': ''})
+    for bad_kind in ('rsa1024', 'ec521', 'dsa'):
+        try:
+            d.save_config_overrides({'acme_key': bad_kind})
+            check(zigmon.CONFIG.get('acme_key') != bad_kind, 'a key Let\'s Encrypt does not take was saved: %s' % bad_kind)
+        except ValueError:
+            pass
+
+    def key_text(path):
+        return sh(['openssl', 'pkey', '-in', str(path), '-noout', '-text']).stdout
+
+    for kind, words in (('rsa3072', 'Private-Key: (3072 bit'), ('ec384', 'P-384')):
+        d.save_config_overrides({'acme_key': kind})
+        try:
+            zigmon.acme_order(d, NAME, 'test')
+        except zigmon.AcmeError as e:
+            check(False, 'an order with a %s key failed: %s' % (kind, e))
+        check(words in key_text(CERTS / 'server.key') or (kind == 'ec384' and 'secp384r1' in key_text(CERTS / 'server.key')),
+              'the key put in is not %s' % kind)
+        check(len(re.findall(r'(?m)^\s*ssl_certificate\s', NGINX_CONF.read_text())) == 1,
+              'one key, but two certificates named (%s)' % kind)
+    d.save_config_overrides({'acme_key': 'dual'})
+    try:
+        zigmon.acme_order(d, NAME, 'test')
+    except zigmon.AcmeError as e:
+        check(False, 'an order of both failed: %s' % e)
+    conf = NGINX_CONF.read_text()
+    certs = re.findall(r'(?m)^\s*ssl_certificate\s+(\S+);', conf)
+    keys = re.findall(r'(?m)^\s*ssl_certificate_key\s+(\S+);', conf)
+    check(len(certs) == 2 and len(keys) == 2, 'both certificates are not named to nginx: %r %r' % (certs, keys))
+    if len(certs) == 2 and len(keys) == 2:
+        check('rsaEncryption' in sh(['openssl', 'x509', '-in', certs[0], '-noout', '-text']).stdout,
+              'the first certificate - the one sent by default - is not RSA')
+        check('id-ecPublicKey' in sh(['openssl', 'x509', '-in', certs[1], '-noout', '-text']).stdout,
+              'the second certificate is not ECDSA')
+        check(pubkey_of_cert(Path(certs[1])) == pubkey_of_key(Path(keys[1])), 'the ECDSA key is not its certificate\'s')
+        check(pubkey_of_cert(Path(certs[0])) == pubkey_of_key(Path(keys[0])), 'the RSA key is not its certificate\'s')
+        check(certs[0] == str(CERTS / 'server.pem'), 'the broker\'s file is not the RSA one')
+    check(nginx_ok(), 'nginx does not take two certificates as root wrote them')
+    look = d.root_look(fresh=True).get('tls') or {}
+    check((look.get('alt_info') or {}).get('key', '').startswith('EC'), 'the card is not told of the second one: %r'
+          % look.get('alt_info'))
+    check(not keys_left(), 'a key was left in the daemon\'s folder: %r' % keys_left())
+    # back to one: the second goes from nginx
+    d.save_config_overrides({'acme_key': 'ec'})
+    try:
+        zigmon.acme_order(d, NAME, 'test')
+    except zigmon.AcmeError as e:
+        check(False, 'an order of one after both failed: %s' % e)
+    check(len(re.findall(r'(?m)^\s*ssl_certificate\s', NGINX_CONF.read_text())) == 1,
+          'the second certificate stayed named after one was ordered')
+    check(nginx_ok(), 'nginx does not take one certificate after two')
+
     # ---- switched off -------------------------------------------------------------------
     d.save_config_overrides({'acme': 0, 'acme_challenge': 'http-01', 'acme_dns_alias': ''})
     check(plain80(NGINX_CONF.read_text()) == plain80(ORIGINAL_CONF), 'switched off, port 80 is not as it was')

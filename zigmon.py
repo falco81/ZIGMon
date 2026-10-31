@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.33.1'
+__version__ = '5.33.2'
 
 import argparse
 import base64
@@ -554,7 +554,7 @@ DEFAULTS = {
     'acme_ca_pem': '',            # custom: its root, where the system does not trust it
     'acme_name': '',              # the DNS name; empty: the one nginx answers to
     'acme_days': 30,              # renewed when fewer days are left (a third of a short life)
-    'acme_key': 'ec',             # the certificate's key: ec (P-256) or rsa2048
+    'acme_key': 'ec',             # ec (P-256), ec384, rsa2048, rsa3072, rsa4096, or dual (RSA + ECDSA)
     'acme_challenge': 'http-01',  # http-01 (port 80) or dns-01
     'acme_dns': 'manual',         # dns-01: manual, rfc2136, cloudflare, acmedns, desec
     'acme_dns_server': '',
@@ -9881,7 +9881,8 @@ class Daemon(object):
         return changed
 
     ACME_CHOICES = {'acme_ca': ('letsencrypt', 'letsencrypt-staging', 'custom'),
-                    'acme_key': ('ec', 'rsa2048'), 'acme_challenge': ('http-01', 'dns-01'),
+                    'acme_key': ('ec', 'ec384', 'rsa2048', 'rsa3072', 'rsa4096', 'dual'),
+                    'acme_challenge': ('http-01', 'dns-01'),
                     'acme_dns': ('manual', 'rfc2136', 'cloudflare', 'acmedns', 'desec'),
                     'acme_dns_tsig_alg': ('hmac-sha256', 'hmac-sha512', 'hmac-sha384',
                                           'hmac-sha224', 'hmac-sha1', 'hmac-md5')}
@@ -9971,7 +9972,9 @@ class Daemon(object):
         'acme_ca': [('letsencrypt', 'Let’s Encrypt'),
                     ('letsencrypt-staging', 'Let’s Encrypt - staging (to try it)'),
                     ('custom', 'another ACME CA (step-ca, your own)')],
-        'acme_key': [('ec', 'ECDSA P-256'), ('rsa2048', 'RSA 2048')],
+        'acme_key': [('ec', 'ECDSA P-256'), ('ec384', 'ECDSA P-384'), ('rsa2048', 'RSA 2048'),
+                     ('rsa3072', 'RSA 3072'), ('rsa4096', 'RSA 4096'),
+                     ('dual', 'Both: RSA 2048 by default, ECDSA P-256 to who can take it')],
         'acme_challenge': [('http-01', 'HTTP-01 - the CA asks port 80 of the name'),
                            ('dns-01', 'DNS-01 - a TXT record in DNS, nothing open to the internet')],
         'acme_dns': [('manual', 'by hand - the record is shown here, you put it in'),
@@ -15949,8 +15952,10 @@ class Daemon(object):
         else:
             self.tls_save(conf)
 
-    @staticmethod
-    def tls_subject(v):
+    TLS_KEY_KINDS = ('rsa2048', 'rsa3072', 'rsa4096', 'ec', 'ec384')
+
+    @classmethod
+    def tls_subject(cls, v):
         cn = str(v.get('cn') or '').strip().lower().rstrip('.')
         if not re.match(r'^(?=.{1,253}$)[A-Za-z0-9*]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$', cn):
             raise ValueError('the name (CN) is a host name: mqtt.example.cz')
@@ -15977,9 +15982,10 @@ class Daemon(object):
         if country:
             parts.insert(0, 'C=%s' % country)
         kind = str(v.get('kind') or 'rsa2048')
-        if kind not in ('rsa2048', 'rsa3072', 'rsa4096', 'ec'):
-            raise ValueError('the key is RSA 2048, 3072, 4096 or EC P-256')
-        newkey = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256'] if kind == 'ec' else \
+        if kind not in cls.TLS_KEY_KINDS:
+            raise ValueError('the key is RSA 2048, 3072, 4096 or EC P-256, P-384')
+        newkey = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-384'] if kind == 'ec384' else \
+            ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256'] if kind == 'ec' else \
             ['-newkey', 'rsa:%s' % kind[3:]]
         return '/' + '/'.join(parts), ','.join(dict.fromkeys(sans)), newkey, cn
 
@@ -44997,9 +45003,9 @@ class Acme(object):
                 raise AcmeError('%s: the CA has not said in %d s (%s)' % (what, secs, st))
             time.sleep(float(os.environ.get('ZIGMON_ACME_POLL') or 2))
 
-    def order(self, names, say):
+    def order(self, names, say, key_kind=None):
         """The certificate for `names`: (its key, PEM; the chain, PEM)."""
-        say('ordered from the CA')
+        say('ordered from the CA' + (' (%s)' % ACME_KEYS[key_kind][0] if key_kind in ACME_KEYS else ''))
         got, headers = self.post_json(self.dir['newOrder'], {
             'identifiers': [{'type': 'dns', 'value': n} for n in names]})
         order_url = headers.get('Location')
@@ -45042,7 +45048,7 @@ class Acme(object):
             finally:
                 with ACME_LOCK:
                     ACME_CHAL.pop(token, None)
-        key, der = acme_make_request(self.work, names, CONFIG.get('acme_key') or 'ec')
+        key, der = acme_make_request(self.work, names, key_kind or CONFIG.get('acme_key') or 'ec')
         say('the certificate is made')
         o, _ = self.post_json(got['finalize'], {'csr': _b64u(der)})
         if o.get('status') != 'valid':
@@ -45051,12 +45057,23 @@ class Acme(object):
         return key, body.decode('utf-8')
 
 
+# The keys Let's Encrypt takes for a certificate (5.33.2): RSA of 2048, 3072
+# or 4096 bits, ECDSA on P-256 or P-384 - never the account's own key. And
+# both at once, as it recommends: nginx sends the RSA one by default and the
+# much smaller ECDSA one to every client that says it can take it.
+ACME_KEYS = {'ec': ('ECDSA P-256', ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256']),
+             'ec384': ('ECDSA P-384', ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-384']),
+             'rsa2048': ('RSA 2048', ['-newkey', 'rsa:2048']),
+             'rsa3072': ('RSA 3072', ['-newkey', 'rsa:3072']),
+             'rsa4096': ('RSA 4096', ['-newkey', 'rsa:4096'])}
+ACME_DUAL = ('rsa2048', 'ec')                    # 'dual': the default one, then the one beside it
+
+
 def acme_make_request(work, names, kind):
     """A new key and a request (CSR, DER) for the names: the name as its
     subject and among its alternative names - an ACME CA takes nothing else.
     The key only for the moment, in `work` (0700, the file 0600)."""
-    newkey = ['-newkey', 'rsa:2048'] if kind == 'rsa2048' else \
-        ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256']
+    newkey = ACME_KEYS.get(kind, ACME_KEYS['ec'])[1]
     k = os.path.join(work, 'cert.key')
     fd = os.open(k, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.close(fd)
@@ -45208,8 +45225,19 @@ def acme_order(d, name, by, say=None):
     a = None
     try:
         a = Acme(d)
-        key, chain = a.order([name], said)
-        pem = d.tls_sort(chain + '\n' + key)
+        kind = str(CONFIG.get('acme_key') or 'ec')
+        if kind == 'dual':
+            # two orders: the second finds the name already proven and is
+            # given its certificate at once
+            key, chain = a.order([name], said, ACME_DUAL[0])
+            pem = d.tls_sort(chain + '\n' + key)
+            key, chain = a.order([name], said, ACME_DUAL[1])
+            alt = d.tls_sort(chain + '\n' + key)
+            pem['alt'] = {'cert': alt['cert'], 'key': alt['key'], 'chain': alt['chain']}
+            alt = None
+        else:
+            key, chain = a.order([name], said, kind)
+            pem = d.tls_sort(chain + '\n' + key)
         key = None
         info = acme_cert_dates(pem['cert'])
         # the one it has now is kept whenever it did not come from the CA -

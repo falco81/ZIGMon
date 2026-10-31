@@ -354,6 +354,9 @@ def tls_checked(t):
     # Automatic certificates (5.30): the certificate in place kept in root's
     # own folder when the first one from the ACME CA replaces it - its key
     # with it, never handed to the daemon - and put back from there when asked
+    # a second certificate beside it (5.33.2): RSA and ECDSA at once
+    alt = t.get('alt') if isinstance(t.get('alt'), dict) else None
+    out['alt'] = pem_set(alt.get('cert'), alt.get('key'), alt.get('chain')) if alt and out['pem'] else None
     out['keep_before'] = bool(t.get('keep_before')) and bool(out['pem'])
     out['put_back'] = bool(t.get('put_back'))
     if out['put_back']:
@@ -463,6 +466,41 @@ def directive(block, name):
     return None
 
 
+def directives(block, name):
+    """Every value of `name` at the server's own level, in order - a server
+    may name two certificates (RSA and ECDSA, 5.33.2)."""
+    depth, out = 0, []
+    for line in block.split('\n'):
+        if depth == 1:
+            m = re.match(r'^\s*%s\s+([^;]+);' % re.escape(name), line)
+            if m:
+                out.append(m.group(1).strip().strip('"'))
+        depth += line.count('{') - line.count('}')
+    return out
+
+
+def set_directives(block, name, values):
+    """`name` once for each of `values`, in order, where the first one was."""
+    block = set_directive(block, name, values[0])
+    lines = block.split('\n')
+    depth = 0
+    for n, line in enumerate(lines):
+        if depth == 1 and re.match(r'^\s*%s(\s|;)' % re.escape(name), line):
+            for k, v in enumerate(values[1:]):
+                lines.insert(n + 1 + k, '    %-25s %s;' % (name, v))
+            break
+        depth += line.count('{') - line.count('}')
+    return '\n'.join(lines)
+
+
+def alt_paths(cert, key):
+    """Where the second certificate of a dual pair goes: beside the first."""
+    def beside(p, ext):
+        base, _ = os.path.splitext(p)
+        return base + '-ecdsa' + ext
+    return beside(cert, '.pem'), beside(key, '.key')
+
+
 def set_directive(block, name, value):
     """`name value;` in a server { } - replaced where it is, put in after
     server_name where it is not, taken out for None. Only the server's own
@@ -500,12 +538,14 @@ def tls_files(block):
     written where they are rather than under names of zigmon's own."""
     cert = directive(block, 'ssl_certificate') or os.path.join(CERT_DIR, 'server.pem')
     key = directive(block, 'ssl_certificate_key') or os.path.join(CERT_DIR, 'server.key')
+    certs, keys = directives(block, 'ssl_certificate'), directives(block, 'ssl_certificate_key')
+    alt_cert, alt_key = (certs[1], keys[1]) if len(certs) > 1 and len(keys) > 1 else alt_paths(cert, key)
     ca = directive(block, 'ssl_trusted_certificate') or os.path.join(CERT_DIR, 'server.ca')
     dh = directive(block, 'ssl_dhparam') or os.path.join(CERT_DIR, 'zigmon-dh.pem')
-    for p in (cert, key, ca, dh):
+    for p in (cert, key, ca, dh, alt_cert, alt_key):
         if not p.startswith('/') or '..' in p.split('/'):
             raise Refused('nginx names a certificate file that is not a plain path: %s' % p[:120])
-    return {'cert': cert, 'key': key, 'root': ca, 'dh': dh}
+    return {'cert': cert, 'key': key, 'root': ca, 'dh': dh, 'alt_cert': alt_cert, 'alt_key': alt_key}
 
 
 PROGRESS = {'step': 0, 'total': 5, 'id': ''}
@@ -563,8 +603,18 @@ def tls_into(block, t, files, had_dh):
         write_root(files['cert'], t['pem']['cert'] + t['pem']['chain'], 0o644)
         write_root(files['key'], t['pem']['key'], 0o600)
         wrote_cert = True
-        block = set_directive(block, 'ssl_certificate', files['cert'])
-        block = set_directive(block, 'ssl_certificate_key', files['key'])
+        if t.get('alt'):
+            # both (5.33.2): the first is what a client is sent by default, the
+            # second what one that says it takes ECDSA is sent
+            write_root(files['alt_cert'], t['alt']['cert'] + t['alt']['chain'], 0o644)
+            write_root(files['alt_key'], t['alt']['key'], 0o600)
+            block = set_directives(block, 'ssl_certificate', [files['cert'], files['alt_cert']])
+            block = set_directives(block, 'ssl_certificate_key', [files['key'], files['alt_key']])
+            said.append('a second certificate beside it: %s' % openssl(
+                ['x509', '-noout', '-subject'], 'the certificate', t['alt']['cert']).strip())
+        else:
+            block = set_directive(block, 'ssl_certificate', files['cert'])
+            block = set_directive(block, 'ssl_certificate_key', files['key'])
         trust = t['pem']['root'] + t['pem']['chain']
         if trust:
             write_root(files['root'], trust, 0o644)
@@ -1089,6 +1139,8 @@ def tls_now():
     files = tls_files(block)
     out = {'conf': conf, 'readable': True, 'server': True, 'files': files,
            'info': cert_info(files['cert']),
+           'dual': len(directives(block, 'ssl_certificate')) > 1,
+           'alt_info': cert_info(files['alt_cert']) if len(directives(block, 'ssl_certificate')) > 1 else None,
            'root_info': cert_info(files['root']) if os.path.exists(files['root']) else None,
            'protocols': (directive(block, 'ssl_protocols') or '').split(),
            'ciphers': directive(block, 'ssl_ciphers') or '',
@@ -2145,8 +2197,21 @@ def tls_proxy(raw):
         pol = tls_checked({k: t.get(k) for k in ('protocols', 'ciphers', 'prefer', 'dh', 'hsts')})
     pem = None
     source = str(raw.get('source') or '')
+    alt = None
     if source == 'here':
         cert_text, key_text = proxy_pem_here()
+        here_now = tls_now()
+        here_files = here_now.get('files') or {}
+        if here_now.get('dual'):
+            try:
+                with open(here_files['alt_cert']) as f:
+                    at = f.read(500000)
+                with open(here_files['alt_key']) as f:
+                    ak = f.read(100000)
+                ac = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', at, re.S)
+                alt = pem_set(ac[0], ak, '\n'.join(ac[1:])) if ac else None
+            except OSError:
+                alt = None
         certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', cert_text, re.S)
         if not certs:
             raise Refused('there is no certificate here to put there')
@@ -2167,9 +2232,13 @@ def tls_proxy(raw):
         raise Refused('nothing to put on the server in front')
     progress('making the files for %s' % ssh['host'], 2)
     put = []                                    # (data, mode, path)
+    alt_paths_there = alt_paths(paths['cert'], paths['key'])
     if pem:
         put.append((pem['cert'] + pem['chain'], '644', paths['cert']))
         put.append((pem['key'], '600', paths['key']))
+        if alt:
+            put.append((alt['cert'] + alt['chain'], '644', alt_paths_there[0]))
+            put.append((alt['key'], '600', alt_paths_there[1]))
         trust = pem['root'] + pem['chain']
         if trust:
             put.append((trust, '644', paths['root']))
@@ -2178,12 +2247,18 @@ def tls_proxy(raw):
     if dh_pem:
         put.append((dh_pem, '644', paths['dh']))
     said = []
-    if pol or (pem and (pem['root'] + pem['chain'])):
+    if pol or pem:
         changed = {}
         for path, start, end in sorted(where, key=lambda w: (w[0], -w[1])):
             text = changed.get(path, files[path])
             block = text[start:end]
             if pem:
+                if alt:
+                    block = set_directives(block, 'ssl_certificate', [paths['cert'], alt_paths_there[0]])
+                    block = set_directives(block, 'ssl_certificate_key', [paths['key'], alt_paths_there[1]])
+                elif len(directives(block, 'ssl_certificate')) > 1:
+                    block = set_directive(block, 'ssl_certificate', paths['cert'])
+                    block = set_directive(block, 'ssl_certificate_key', paths['key'])
                 trust = pem['root'] + pem['chain']
                 if trust and (directive(block, 'ssl_stapling') or '') == 'on' or \
                         directive(block, 'ssl_trusted_certificate'):

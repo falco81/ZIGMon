@@ -2083,7 +2083,30 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.33.1**
+Current version: **5.33.2**
+
+5.33.2 — the certificate's key as Let's Encrypt takes it, and both at once.
+
+* **The key of the certificate** (Automatic certificates): every one Let's
+  Encrypt takes - **ECDSA P-256** or **P-384**, **RSA 2048**, **3072** or
+  **4096** - where there were two. The account keeps a key of its own, never
+  the certificate's.
+* **Both**, as Let's Encrypt recommends: two certificates for the name, RSA
+  2048 sent by default and the much smaller ECDSA P-256 one to every client
+  that says it takes it. Ordered one after the other (the second finds the
+  name proven already); root writes the ECDSA pair beside the RSA one
+  (`server-ecdsa.pem`, `server-ecdsa.key`) and names both to nginx; the
+  broker goes on reading the RSA one. Back to one key, the second is taken
+  out of nginx again. The card says *And: EC 256 - sent to clients that take
+  ECDSA*.
+* The server in front, kept the same as here, is given both too.
+* A request (CSR) and a self-signed certificate may be EC P-384 as well.
+* Fixed on the way: the key chosen was never used - a variable of the order
+  held the kind of the challenge, so every certificate came with an ECDSA
+  P-256 key whatever was set.
+
+`test/acme.py` orders RSA 3072, ECDSA P-384, both, and one again from its own
+CA; it fails on 5.33.1.
 
 5.33.1 — a backup to an SMB share works.
 
