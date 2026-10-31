@@ -2083,7 +2083,40 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.33.3**
+Current version: **5.34.0**
+
+5.34.0 — System updates, as OTP has them.
+
+* **Settings → System updates** (in *Monitoring and updates*, beside
+  Upgrades), ported from OTP 1.0.158 - 1.0.193 for a single machine:
+  * the machine's card: how many updates wait, how many of them security
+    ones, and - always on a line of its own - *restart needed* or *restart
+    after the update* (the packages that will need it: kernel, glibc,
+    systemd, linux-firmware…, said before the update); the packages; when it
+    was looked and when it is looked next; *Look for updates*, followed until
+    dnf is done;
+  * **Update this server**: every update or only the security ones
+    (`dnf --security`), and after it a restart asked for or made by itself;
+    a bar while it runs, and what dnf says in a window - *Hide it* / *Show
+    it*, *Clear the window* (for good);
+  * **On a schedule** (off until switched on): a look every day at a set time
+    - for the card, the alerts and the summary, nothing put in - and the
+    updates put in by themselves in a window, the security ones or all,
+    every day, week or month, restarting by itself where needed or offering
+    it.
+* Root does every dnf call, as a job of its own (`systemd-run`) that outlives
+  the daemon and never waits behind - or holds up - anything else asked of
+  root. An update is refused while another one or a look runs, while
+  zigmon is being upgraded, while the machine is being restarted or powered
+  off, or a backup is being made; a restart and an upgrade wait for dnf.
+* The alerts tell of security updates and a restart waiting, once a day, and
+  of an update starting, ending or failing; the daily summary has a line for
+  the system.
+* `zigmon --updates [show|look|update|log] [--security] [--reboot ask|auto]`,
+  and *System updates* in the console.
+
+`test/osupdates.py` (dnf, needs-restarting and systemctl stood in for); it
+fails on 5.33.3.
 
 5.33.3 — the keys as upsmon has them: both by default, the account's own.
 
