@@ -1845,7 +1845,7 @@ EXPORT_FORMATS = ('pem_key', 'key', 'pfx', 'pfx_legacy')
 EXPORT_FILE = re.compile(r'^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$')
 
 
-def tls_export(raw):
+def tls_export(raw, given=None):
     """The certificate nginx serves, with its private key, in one file for a
     download: PEM (the certificate, its chain and the key - the key locked
     with the password when one is given), the key alone, or PFX / PKCS#12
@@ -1865,29 +1865,35 @@ def tls_export(raw):
     if fmt in ('pem_key', 'key') and pw and len(pw) < 4:
         raise Refused('a password for the key is four characters or more')
     with_root = bool(raw.get('with_root'))
-    now = tls_now()
-    if not now.get('server'):
-        raise Refused('nginx has no HTTPS server block to read the certificate from')
-    files = now['files']
-    try:
-        with open(files['cert']) as f:
-            cert_text = f.read(500000)
-        with open(files['key']) as f:
-            key_text = f.read(100000)
-    except OSError as e:
-        raise Refused('the certificate or its key cannot be read: %s' % e)
+    now = {}
+    if given:
+        cert_text, key_text, root_text = given
+    else:
+        now = tls_now()
+        if not now.get('server'):
+            raise Refused('nginx has no HTTPS server block to read the certificate from')
+        files = now['files']
+        try:
+            with open(files['cert']) as f:
+                cert_text = f.read(500000)
+            with open(files['key']) as f:
+                key_text = f.read(100000)
+        except OSError as e:
+            raise Refused('the certificate or its key cannot be read: %s' % e)
+        root_text = ''
+        if with_root and os.path.exists(files['root']):
+            try:
+                with open(files['root']) as f:
+                    root_text = f.read(200000)
+            except OSError:
+                pass
     certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', cert_text, re.S)
     if not certs:
-        raise Refused('there is no certificate in %s' % files['cert'])
-    if with_root and os.path.exists(files['root']):
-        try:
-            with open(files['root']) as f:
-                for c in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
-                                    f.read(200000), re.S):
-                    if c not in certs:
-                        certs.append(c)
-        except OSError:
-            pass
+        raise Refused('there is no certificate to hand over')
+    if with_root:
+        for c in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', root_text or '', re.S):
+            if c not in certs:
+                certs.append(c)
     leaf, chain = certs[0], certs[1:]
     # the key nginx has must be the certificate's - never hand over a pair
     # that does not belong together
@@ -1946,6 +1952,333 @@ def tls_export(raw):
         ['the certificate%s handed over for a download: %s, %s%s' % (
             ' and its key' if fmt != 'key' else '\'s key', name, words,
             ' (locked with a password)' if pw else '')]
+
+
+# ---- the certificate on the server in front (5.33) -------------------------
+# The same certificate and the same TLS settings as here, on the nginx of the
+# server in front, over SSH: its configuration read with nginx -T, every
+# server { } that serves the certificate of the dashboard's name changed with
+# the same functions as here, written back with a copy of each file beside it,
+# nginx -t, a reload - or every file put back as it was.
+PROXY_HOST_RE = re.compile(r'^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$|^[0-9A-Fa-f:.]{2,45}$')
+PROXY_USER_RE = re.compile(r'^[a-z_][a-z0-9_.-]{0,31}$')
+PROXY_PATH_RE = re.compile(r'^/[A-Za-z0-9_./-]{2,200}$')
+SSH_KEY_RE = re.compile(r'^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----[\sA-Za-z0-9+/=:,.-]+-----END [A-Z ]*PRIVATE KEY-----\s*$')
+SSH_BIN = os.environ.get('ZIGMON_SSH_BIN') or 'ssh'
+PROXY_SSH_TIMEOUT = 120
+
+PROXY_PUT_SCRIPT = r"""set -u
+umask 077
+d=$(mktemp -d /tmp/zigmon-tls.XXXXXX) || exit 20
+trap 'rm -rf "$d"' EXIT
+tar -xf - -C "$d" || exit 21
+back() {
+  while read -r src mode dst; do
+    if [ -e "$dst.zigmon-before" ]; then cat "$dst.zigmon-before" > "$dst"; rm -f "$dst.zigmon-before"
+    elif [ -e "$d/new.$src" ]; then rm -f "$dst"; fi
+  done < "$d/list"
+}
+while read -r src mode dst; do
+  if [ -e "$dst" ]; then
+    cp -p "$dst" "$dst.zigmon-before" && cat "$d/$src" > "$dst" || { back; echo ZIGMON-NOT-WRITTEN; exit 22; }
+  else
+    : > "$d/new.$src"
+    install -D -m "$mode" "$d/$src" "$dst" || { back; echo ZIGMON-NOT-WRITTEN; exit 22; }
+    command -v restorecon >/dev/null 2>&1 && restorecon "$dst"
+  fi
+done < "$d/list"
+if ! nginx -t >"$d/t" 2>&1; then
+  back; tail -n 3 "$d/t"; echo ZIGMON-REFUSED; exit 23
+fi
+if command -v systemctl >/dev/null 2>&1; then systemctl reload nginx || nginx -s reload; else nginx -s reload; fi
+while read -r src mode dst; do rm -f "$dst.zigmon-before"; done < "$d/list"
+%(fp)s
+echo ZIGMON-DONE
+"""
+
+
+def proxy_ssh_checked(raw):
+    s = raw.get('ssh') if isinstance(raw.get('ssh'), dict) else {}
+    host = str(s.get('host') or '').strip()
+    user = str(s.get('user') or 'root').strip()
+    try:
+        port = int(s.get('port') or 22)
+    except (TypeError, ValueError):
+        port = 0
+    if not PROXY_HOST_RE.match(host) or not PROXY_USER_RE.match(user) or not 0 < port < 65536:
+        raise Refused('the server in front is named by an address, a user and a port')
+    key = str(s.get('key') or '')
+    if not key:
+        raise Refused('the server in front is reached with a password here: its certificate is '
+                      'looked after with the key way (Front server & router - a key)')
+    if len(key) > 20000 or not SSH_KEY_RE.match(key):
+        raise Refused('the SSH key does not read')
+    return {'host': host, 'user': user, 'port': port, 'key': key,
+            'known_hosts': str(s.get('known_hosts') or '')[:200000]}
+
+
+def proxy_ssh(ssh, command, data=b''):
+    """One command on the server in front: (exit code, standard output, its error)."""
+    with tempfile.TemporaryDirectory(prefix='zigmon-proxy-') as t:
+        os.chmod(t, 0o700)
+        for name, text in (('id', ssh['key'] if ssh['key'].endswith('\n') else ssh['key'] + '\n'),
+                           ('known_hosts', ssh['known_hosts'])):
+            fd = os.open(os.path.join(t, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(text)
+        argv = [SSH_BIN, '-p', str(ssh['port']), '-i', os.path.join(t, 'id'),
+                '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'UserKnownHostsFile=%s' % os.path.join(t, 'known_hosts'),
+                '-o', 'LogLevel=ERROR', '%s@%s' % (ssh['user'], ssh['host']), command]
+        try:
+            got = subprocess.run(argv, input=data, capture_output=True, timeout=PROXY_SSH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise Refused('%s did not answer within %d s' % (ssh['host'], PROXY_SSH_TIMEOUT))
+    return got.returncode, got.stdout.decode('utf-8', 'replace'), got.stderr.decode('utf-8', 'replace')
+
+
+def nginx_t_files(text):
+    """nginx -T's dump: {file: its text}, in the order nginx read them."""
+    files, cur, lines = {}, None, []
+    for line in text.split('\n'):
+        m = re.match(r'^# configuration file (/\S+):\s*$', line)
+        if m:
+            if cur:
+                files[cur] = '\n'.join(lines)
+            cur, lines = m.group(1), []
+            continue
+        if cur:
+            lines.append(line)
+    if cur:
+        files[cur] = '\n'.join(lines)
+    return files
+
+
+def server_blocks(text):
+    """Every server { } of a file: [(start, end)]."""
+    out, i = [], 0
+    while True:
+        m = re.search(r'(?m)^[ \t]*server[ \t]*\{', text[i:])
+        if not m:
+            return out
+        start = i + m.start()
+        end = block_end(text, i + m.end() - 1)
+        if end is None:
+            return out
+        out.append((start, end))
+        i = end
+
+
+def proxy_find(files, name):
+    """The certificate the server for `name` serves, and every HTTPS server
+    { } that serves the same one: (cert path, [(file, start, end)])."""
+    cert = None
+    for path, text in files.items():
+        for start, end in server_blocks(text):
+            block = text[start:end]
+            names = (directive(block, 'server_name') or '').split()
+            c = directive(block, 'ssl_certificate')
+            if c and name in names:
+                cert = c
+                break
+        if cert:
+            break
+    if not cert:
+        raise Refused('nginx on the server in front has no HTTPS server for %s' % name)
+    where = []
+    for path, text in files.items():
+        for start, end in server_blocks(text):
+            if directive(text[start:end], 'ssl_certificate') == cert:
+                where.append((path, start, end))
+    return cert, where
+
+
+def proxy_files_of(block, cert):
+    base = os.path.dirname(cert) or '/etc/nginx/certs'
+    out = {'cert': cert,
+           'key': directive(block, 'ssl_certificate_key') or os.path.join(base, 'server.key'),
+           'root': directive(block, 'ssl_trusted_certificate') or os.path.join(base, 'server.ca'),
+           'dh': directive(block, 'ssl_dhparam') or os.path.join(base, 'zigmon-dh.pem')}
+    for k, v in out.items():
+        if not PROXY_PATH_RE.match(v) or '..' in v.split('/'):
+            raise Refused('nginx on the server in front names a file that is not a plain path: %s' % v[:120])
+    return out
+
+
+def proxy_dh(choice, had):
+    """The DH parameters for the server in front, made here (a group of RFC
+    7919 at once, or made bits - minutes); the same as last time is not made
+    again, it is already there."""
+    if choice == 'none' or choice == had:
+        return None
+    if choice.startswith('ffdhe'):
+        return openssl(['genpkey', '-genparam', '-algorithm', 'DH', '-pkeyopt', 'group:%s' % choice],
+                       'the DH group %s' % choice)
+    progress('making DH parameters of %s bits for the server in front' % choice[3:], 2,
+             DH_EXPECT_S.get(choice))
+    return openssl(['dhparam', choice[3:]], 'making DH parameters of %s bits' % choice[3:])
+
+
+def tls_proxy(raw):
+    """The certificate and how TLS is spoken, on the server in front (5.33)."""
+    ssh = proxy_ssh_checked(raw)
+    name = str(raw.get('name') or '').strip().lower()
+    if not re.match(r'^[A-Za-z0-9*]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$', name):
+        raise Refused('the name of the server is a host name')
+    op = str(raw.get('op') or 'apply')
+    PROGRESS.update(step=0, total=4)
+    progress('reading nginx on %s' % ssh['host'], 1)
+    code, out, err = proxy_ssh(ssh, 'nginx -T 2>/dev/null')
+    files = nginx_t_files(out)
+    if code != 0 or not files:
+        why = (err or out).strip().splitlines()
+        raise Refused('%s: nginx -T did not answer (%s)' % (ssh['host'], why[-1][:160] if why else code))
+    cert_path, where = proxy_find(files, name)
+    first = files[where[0][0]][where[0][1]:where[0][2]]
+    paths = proxy_files_of(first, cert_path)
+    if op == 'export':
+        return proxy_export(raw, ssh, paths)
+    t = raw.get('tls')
+    pol = None
+    if isinstance(t, dict) and t.get('protocols'):
+        pol = tls_checked({k: t.get(k) for k in ('protocols', 'ciphers', 'prefer', 'dh', 'hsts')})
+    pem = None
+    source = str(raw.get('source') or '')
+    if source == 'here':
+        cert_text, key_text = proxy_pem_here()
+        certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', cert_text, re.S)
+        if not certs:
+            raise Refused('there is no certificate here to put there')
+        root_text = ''
+        here = tls_now().get('files') or {}
+        if here.get('root') and os.path.exists(here['root']):
+            try:
+                with open(here['root']) as f:
+                    root_text = ''.join(c + '\n' for c in re.findall(
+                        r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', f.read(200000), re.S)
+                        if c not in certs)
+            except OSError:
+                root_text = ''
+        pem = pem_set(certs[0], key_text, '\n'.join(certs[1:]), root_text)
+    elif source == 'given':
+        pem = pem_set(raw.get('cert'), raw.get('key'), raw.get('chain'), raw.get('root'))
+    if not pem and not pol:
+        raise Refused('nothing to put on the server in front')
+    progress('making the files for %s' % ssh['host'], 2)
+    put = []                                    # (data, mode, path)
+    if pem:
+        put.append((pem['cert'] + pem['chain'], '644', paths['cert']))
+        put.append((pem['key'], '600', paths['key']))
+        trust = pem['root'] + pem['chain']
+        if trust:
+            put.append((trust, '644', paths['root']))
+    dh_had = str(raw.get('dh_had') or '')
+    dh_pem = proxy_dh(pol['dh'], dh_had) if pol else None
+    if dh_pem:
+        put.append((dh_pem, '644', paths['dh']))
+    said = []
+    if pol or (pem and (pem['root'] + pem['chain'])):
+        changed = {}
+        for path, start, end in sorted(where, key=lambda w: (w[0], -w[1])):
+            text = changed.get(path, files[path])
+            block = text[start:end]
+            if pem:
+                trust = pem['root'] + pem['chain']
+                if trust and (directive(block, 'ssl_stapling') or '') == 'on' or \
+                        directive(block, 'ssl_trusted_certificate'):
+                    block = set_directive(block, 'ssl_trusted_certificate', paths['root'])
+            if pol:
+                block = set_directive(block, 'ssl_protocols', ' '.join(pol['protocols']))
+                block = set_directive(block, 'ssl_ciphers', pol['ciphers'] or CIPHERS_DEFAULT)
+                block = set_directive(block, 'ssl_prefer_server_ciphers', 'on' if pol['prefer'] else 'off')
+                block = set_directive(block, 'ssl_dhparam', paths['dh'] if pol['dh'] != 'none' else None)
+                if pol['hsts']:
+                    block = set_directive(block, 'add_header Strict-Transport-Security',
+                                          '"max-age=%d" always' % pol['hsts'])
+                else:
+                    block = set_directive(block, 'add_header Strict-Transport-Security', None)
+            changed[path] = text[:start] + block + text[end:]
+        for path, text in changed.items():
+            if text != files[path]:
+                if not PROXY_PATH_RE.match(path) or '..' in path.split('/'):
+                    raise Refused('nginx on the server in front reads a file that is not a plain path')
+                put.append((text if text.endswith('\n') else text + '\n', '644', path))
+        if pol:
+            said.append('%s; %s; DH %s%s' % (' '.join(pol['protocols']),
+                                             'ciphers as set' if pol['ciphers'] else 'the usual ciphers',
+                                             pol['dh'], '; HSTS %d s' % pol['hsts'] if pol['hsts'] else ''))
+    fp = ''
+    if pem:
+        fp = run(['openssl', 'x509', '-noout', '-fingerprint', '-sha256'], 'the certificate', data=pem['cert'])
+        fp = fp.strip().split('=', 1)[-1].replace(':', '').lower()
+        subj = openssl(['x509', '-noout', '-subject', '-enddate'], 'the certificate',
+                       pem['cert']).strip().replace('\n', ', ')
+        said.insert(0, 'certificate: %s' % subj)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w') as tar:
+        listing = []
+        for n, (data, mode, path) in enumerate(put):
+            raw_data = data.encode()
+            info = tarfile.TarInfo('f%d' % n)
+            info.size, info.mode = len(raw_data), 0o600
+            tar.addfile(info, io.BytesIO(raw_data))
+            listing.append('f%d %s %s' % (n, mode, path))
+        lst = ('\n'.join(listing) + '\n').encode()
+        info = tarfile.TarInfo('list')
+        info.size, info.mode = len(lst), 0o600
+        tar.addfile(info, io.BytesIO(lst))
+    script = PROXY_PUT_SCRIPT % {'fp': ('command -v openssl >/dev/null 2>&1 && openssl x509 -noout '
+                                        '-fingerprint -sha256 -in %s' % shlex.quote(paths['cert'])) if pem else ''}
+    progress('putting it on %s' % ssh['host'], 3)
+    code, out, err = proxy_ssh(ssh, 'sh -c %s' % shlex.quote(script), buf.getvalue())
+    if 'ZIGMON-REFUSED' in out:
+        last = out.split('ZIGMON-REFUSED')[0].strip().splitlines()[-1:] or ['']
+        raise Refused('nginx on %s would not take it (%s) - its files are as they were'
+                      % (ssh['host'], last[0][:200]))
+    if 'ZIGMON-DONE' not in out:
+        why = (err or out).strip().splitlines()
+        raise Refused('%s: %s' % (ssh['host'], why[-1][:200] if why else 'ssh ended with %d' % code))
+    there = re.search(r'Fingerprint=([0-9A-Fa-f:]+)', out)
+    there = there.group(1).replace(':', '').lower() if there else ''
+    if fp and there and there != fp:
+        raise Refused('%s serves a different certificate from the file it was given' % ssh['host'])
+    fields = {'proxy': {'host': ssh['host'], 'at': int(time.time()), 'source': source or None,
+                        'fingerprint': fp or None, 'files': len(put)}}
+    if pol:
+        fields['proxy']['dh'] = pol['dh']
+    return fields, ['on the server in front (%s), %d server block(s): %s; nginx reloaded'
+                    % (ssh['host'], len(where), '; '.join(said) or 'as it was')]
+
+
+def proxy_pem_here():
+    """The certificate nginx serves here, its chain and its key."""
+    now = tls_now()
+    if not now.get('server'):
+        raise Refused('nginx here has no HTTPS server block to take the certificate from')
+    files = now['files']
+    try:
+        with open(files['cert']) as f:
+            cert_text = f.read(500000)
+        with open(files['key']) as f:
+            key_text = f.read(100000)
+    except OSError as e:
+        raise Refused('the certificate or its key cannot be read: %s' % e)
+    return cert_text, key_text
+
+
+def proxy_export(raw, ssh, paths):
+    """The certificate of the server in front with its key, for a download -
+    read there by root here, made into a file as the one of this machine."""
+    q = shlex.quote
+    code, out, err = proxy_ssh(ssh, 'cat %s; echo; echo ZIGMON-KEY; cat %s; echo; echo ZIGMON-ROOT; '
+                                    'cat %s 2>/dev/null; true' % (q(paths['cert']), q(paths['key']),
+                                                                  q(paths['root'])))
+    if code != 0 or 'ZIGMON-KEY' not in out:
+        raise Refused('the certificate or its key cannot be read on %s' % ssh['host'])
+    cert_text, rest = out.split('ZIGMON-KEY', 1)
+    key_text, root_text = (rest.split('ZIGMON-ROOT', 1) + [''])[:2]
+    return tls_export(raw, given=(cert_text, key_text.strip() + '\n', root_text))
 
 
 def encrypt(src, dst, passphrase):
@@ -2987,6 +3320,8 @@ def handle(raw):
             ['handed over for a download: %s%s' % (name, ' (with a password)' if pw else '')]
     if kind == 'tls_export':
         return tls_export(raw)
+    if kind == 'tls_proxy':
+        return tls_proxy(raw)
     if kind == 'full_put':
         name = os.path.basename(str(raw.get('file') or ''))
         if not re.match(r'^upload-[A-Za-z0-9]{1,32}\.bin$', name):

@@ -2352,6 +2352,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .set-item label{text-align:left}
   .set-item select{width:100%;box-sizing:border-box}
   .set-item input:focus{border-color:var(--info);outline:none}
+  /* a certificate in a setting (5.33): the same box as every other input,
+     not the browser's grey one */
+  .set-item textarea{font:12.5px/1.45 var(--mono,ui-monospace,monospace);background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;width:100%;box-sizing:border-box;resize:vertical;
+    min-height:96px;text-align:left}
+  .set-item textarea::placeholder{color:var(--tx-dim)}
+  .set-item textarea:focus{border-color:var(--info);outline:none;box-shadow:0 0 0 3px rgba(88,166,255,.18)}
+  .set-item textarea:disabled{opacity:.55}
   /* "this one differs from what the file says" - a mark down the left edge and
      a dot beside the label, rather than a blue frame, which read as though the
      box were focused or under the pointer */
@@ -3887,6 +3895,22 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .fmt-meter{height:4px;border-radius:2px;background:var(--line);margin:8px 0 4px;overflow:hidden;max-width:460px}
   .ot .fmt-key > .says{font-size:12px;color:var(--tx-mut);margin-bottom:6px}
   .ot .fmt-meter i{display:block;height:100%;width:0;background:var(--crit);transition:width .15s}
+  /* the download (5.33): all of it at once, no scrolling - four formats a
+     line, the password and its options in one band */
+  #zmodal .box.cert-dl{width:min(1180px,100%)}
+  .ot.cert-dl .fmt-group{margin:0 0 10px}
+  .ot.cert-dl .fmt-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .ot.cert-dl .fmt-card{padding:8px 10px;gap:8px}
+  .ot.cert-dl .fmt-card .fmt-ic{width:26px;height:26px}
+  .ot.cert-dl .fmt-card .fmt-s{font-size:11.5px;line-height:1.3}
+  .ot.cert-dl .fmt-key{padding:10px 14px;margin:2px 0 4px}
+  .ot.cert-dl .fmt-key p{margin:0 0 8px}
+  .ot.cert-dl .fmt-pw{grid-template-columns:repeat(2,minmax(0,1fr)) minmax(0,1.2fr);align-items:end}
+  .ot.cert-dl .fmt-meter{max-width:none;margin:6px 0 2px}
+  .ot.cert-dl .fmt-opts{display:flex;align-items:center;gap:6px;flex-direction:column;align-self:stretch;justify-content:flex-end}
+  .ot.cert-dl .fmt-opts .zrow{margin:0;padding:0;border:0}
+  @media (max-width:900px){.ot.cert-dl .fmt-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .ot.cert-dl .fmt-pw{grid-template-columns:1fr}}
   .ot .cert-tools > .btn{width:100%;justify-content:center;min-width:0}
   .ot .cert-icons{grid-column:1/-1;display:flex;justify-content:flex-end;gap:6px}
   .ot .cert-icons:empty{display:none}
@@ -4009,6 +4033,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .tls-tile-top .tag{padding:1px 6px}
   .ot .tls-used summary{margin-bottom:2px}
   .ot .cert-grid > .note{grid-column:1/-1;margin:0}
+  .ot .cert-follow{border-top:1px solid var(--line);padding-top:8px}
+  .ot .cert-follow .note{margin:6px 0 0}
 </style>
 </head>
 <body class="app-shell">
@@ -26438,6 +26464,24 @@ function fwRuleEdit(d, r) {
 
 /* ==== Certificates and TLS ===================================================== */
 var WEB = {last: null};
+/* Which card a button belongs to (5.33): this machine, or the server in
+   front - every request of the certificate's dialogs says so. */
+var CERT_TARGET = '';
+function tlsDo(body) {
+  return rootPost('tls-do', CERT_TARGET === 'proxy' ? Object.assign({target: 'proxy'}, body) : body);
+}
+function certOn(t, go) { return function () { CERT_TARGET = t || ''; go.apply(this, arguments); }; }
+function certWhose() { return CERT_TARGET === 'proxy' ? 'the server in front' : 'the dashboard'; }
+/* The server in front as the first card reads a machine: its certificate, its
+   files, how it speaks TLS - from what was read there over SSH. */
+function proxyView(d) {
+  var p = d.proxy || {}, lk = p.look || {}, f = lk.files || {};
+  return {target: 'proxy', proxy: p, conf: p.conf || {}, node: p.node || {}, helper: d.helper,
+          may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: {},
+          now: {info: lk.info || null, protocols: lk.protocols || [], hsts: lk.hsts || 0, broker: [],
+                files: f.cert ? {cert: f.cert, key: f.key || '\u2013'} : null,
+                root_info: f.root ? {cn: f.root} : null, readable: lk.ok !== false}};
+}
 function loadWeb(quiet) {
   var host = $('web-certs');
   if (!host) return;
@@ -26459,16 +26503,22 @@ function drawWeb(d) {
   if (!d.helper) rootNotInstalled(host);
   var grid = el('div', 'cert-grid');
   grid.appendChild(certCard(d));
+  if (d.proxy) grid.appendChild(certCard(proxyView(d)));
   host.appendChild(grid);
 }
 function certCard(d) {
   var prof = d.conf || {}, now = d.now || {}, info = now.info || null;
-  var card = el('section', 'cert-card');
+  var px = d.target === 'proxy' ? d.proxy : null, T = px ? 'proxy' : '';
+  var lk = px ? (px.look || {}) : {};
+  var card = el('section', 'cert-card' + (px ? ' cert-proxy' : ''));
   var head = el('header', 'cert-h');
   var title = el('div', 'cert-title');
-  title.appendChild(el('span', 'cert-target', 'The dashboard and the broker'));
+  title.appendChild(el('span', 'cert-target', px ? 'The server in front' : 'The dashboard and the broker'));
   title.appendChild(el('b', '', d.server_name || (info && info.cn) || '–'));
-  title.appendChild(el('span', 'cert-for', 'the certificate nginx answers with on ' + (d.server_name || 'its name')
+  title.appendChild(el('span', 'cert-for', px
+    ? 'what nginx on ' + (px.host || 'the server in front') + ' answers with for ' + (d.server_name || 'the dashboard\u2019s name')
+      + (lk.blocks ? ' - ' + lk.blocks + ' server block' + (lk.blocks === 1 ? '' : 's') + ' serve it' : '')
+    : 'the certificate nginx answers with on ' + (d.server_name || 'its name')
     + ((now.broker || []).length ? ', and mosquitto on 8883 - the same files' : '')));
   head.appendChild(title);
   var days = info ? daysLeft(info.not_after) : null;
@@ -26500,9 +26550,13 @@ function certCard(d) {
     });
     b.appendChild(kv);
     card.appendChild(b);
+  } else if (px) {
+    card.appendChild(el('p', 'note' + (lk.error ? ' warn' : ''), lk.error ? 'Not read: ' + lk.error
+      : (lk.looking ? 'Reading nginx on ' + px.host + ' over SSH\u2026' : 'Not read yet.')));
   } else {
     card.appendChild(el('p', 'note', now.readable === false ? 'The dashboard’s nginx file cannot be read here.' : 'Not known yet - root is asked.'));
   }
+  if (px && info && lk.error) card.appendChild(el('p', 'note warn', 'The last look failed: ' + lk.error));
   var chips = el('div', 'cert-chips');
   var preset = prof.managed ? prof.preset : '';
   chips.appendChild(el('span', 'cchip', {standard: 'TLS 1.2 + 1.3, ECDHE', intermediate: 'Mozilla intermediate',
@@ -26513,46 +26567,80 @@ function certCard(d) {
   if (prof.pending) chips.appendChild(el('span', 'cchip warn', 'a request waits for its certificate'));
   if (!prof.managed) chips.appendChild(el('span', 'cchip dim', 'as the nginx file has it'));
   if ((now.broker || []).length) chips.appendChild(el('span', 'cchip', 'the broker reads it too'));
-  acmeCertChips(chips, d);
+  if (px) {
+    if (lk.stapling) chips.appendChild(el('span', 'cchip', 'OCSP stapling'));
+    if (prof.follow) chips.appendChild(el('span', 'cchip', 'the same as this machine'));
+    else if (info) chips.appendChild(el('span', 'cchip' + (px.same ? '' : ' dim'), px.same ? 'the same certificate as here' : 'a certificate of its own'));
+  } else acmeCertChips(chips, d);
   card.appendChild(chips);
-  if (prof.managed || (d.node || {}).progress) card.appendChild(rootStateLine(d.node || {}, 'in place'));
+  if (px) {
+    /* the same certificate there as here: renewed here only, put there by itself */
+    var fw = el('div', 'cert-follow');
+    var sw = zSwitch(!!prof.follow);
+    fw.appendChild(zRow('The same certificate as this machine', 'Renewed here only - by hand or by Automatic certificates - '
+      + 'and put on the server in front by itself, whenever the one here changes. Its key goes there through root, over SSH.', sw));
+    sw._input.onchange = function () {
+      var on = !!sw._get();
+      CERT_TARGET = 'proxy';
+      tlsDo({action: 'proxy_follow', on: on}).then(function (x) { toast(x.message, true); loadWeb(); },
+        function (e) { sw._input.checked = !on; zoops(e); });
+    };
+    if (!px.key_way) { sw._input.disabled = true; fw.appendChild(el('p', 'note warn', 'The server in front is reached with a password: its certificate is looked after with the key way (Front server & router).')); }
+    card.appendChild(fw);
+  }
+  if (prof.managed || prof.follow || (d.node || {}).progress || (px && (d.node || {}).state)) card.appendChild(rootStateLine(d.node || {}, 'in place'));
   if ((d.node || {}).state === 'failed' && !(d.node || {}).current) {
     var again = cmdButton('Try again', 'refresh', 'small');
-    again.onclick = function () { rootPost('tls-do', {action: 'retry'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops); };
+    again.onclick = certOn(T, function () { tlsDo({action: 'retry'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops); });
     card.appendChild(again);
   }
-  if (d.may) {
+  if (d.may && (!px || px.key_way)) {
     var tools = el('div', 'cert-tools');
-    var up = cmdButton('Upload', 'upload', 'small');
-    up.onclick = function () { certUpload(prof); };
-    tools.appendChild(up);
-    var req = cmdButton(prof.pending ? 'The waiting request' : 'Request (CSR)', 'list', 'small');
-    req.onclick = function () { certRequest(prof); };
-    tools.appendChild(req);
-    var ss = cmdButton('Self-signed', 'key', 'small');
-    ss.onclick = function () { certSelf(d); };
-    tools.appendChild(ss);
+    if (!(px && prof.follow)) {
+      var up = cmdButton('Upload', 'upload', 'small');
+      up.onclick = certOn(T, function () { certUpload(prof); });
+      tools.appendChild(up);
+      var req = cmdButton(prof.pending ? 'The waiting request' : 'Request (CSR)', 'list', 'small');
+      req.onclick = certOn(T, function () { certRequest(prof); });
+      tools.appendChild(req);
+      var ss = cmdButton('Self-signed', 'key', 'small');
+      ss.onclick = certOn(T, function () { certSelf(d); });
+      tools.appendChild(ss);
+    } else {
+      var push = cmdButton('Put this machine\u2019s there now', 'upload', 'small');
+      push.onclick = certOn(T, function () { tlsDo({action: 'proxy_push'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops); });
+      tools.appendChild(push);
+    }
     var pol = cmdButton('TLS settings', 'gear', 'small');
-    pol.onclick = function () { certPolicy(prof, d); };
+    pol.onclick = certOn(T, function () { certPolicy(prof, d); });
     tools.appendChild(pol);
     if (info) {
       var dl = cmdButton('Download', 'download', 'small');
       dl.title = 'The certificate - as PEM, DER or PFX, with its private key or without';
-      dl.onclick = function () { certDownload(d); };
+      dl.onclick = certOn(T, function () { certDownload(d); });
       tools.appendChild(dl);
     }
-    if (prof.managed) {
+    if (px) {
+      var lookb = cmdButton('Look again', 'refresh', 'small');
+      lookb.onclick = certOn(T, function () { tlsDo({action: 'proxy_look'}).then(function (x) { toast(x.message, true); setTimeout(loadWeb, 2500); }, zoops); });
+      tools.appendChild(lookb);
+      var nm = cmdButton('Its name\u2026', 'edit', 'small');
+      nm.title = 'Which server { } there is looked after: the one for this name';
+      nm.onclick = certOn(T, function () { certProxyName(d); });
+      tools.appendChild(nm);
+    }
+    if (prof.managed || (px && prof.follow)) {
       var fg = cmdButton('Let go', 'forget', 'small danger-soft');
       fg.title = 'zigmon stops looking after it (nginx keeps what it has)';
-      fg.onclick = function () {
+      fg.onclick = certOn(T, function () {
         zconfirm('Stop looking after TLS', 'nginx keeps the files and the settings it has now; zigmon no longer changes them.', 'Stop', function () {
-          rootPost('tls-do', {action: 'tls_forget'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops);
+          tlsDo({action: 'tls_forget'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops);
         }, false);
-      };
+      });
       tools.appendChild(fg);
     }
     /* the certificate from before ACME, put back (otp 1.0.172) */
-    var acBefore = (d.acme || {}).before;
+    var acBefore = px ? null : (d.acme || {}).before;
     if (acBefore && !acBefore.ran_out) tools.appendChild(acmePutBackButton(acBefore, function () { loadWeb(); }));
     card.appendChild(tools);
   }
@@ -26607,18 +26695,21 @@ function certDownload(d) {
     meter.appendChild(bar);
     pwrow.appendChild(zField('Password', f.pw, ''));
     pwrow.appendChild(zField('The same again', f.pw2, ''));
-    keybox.appendChild(pwrow);
-    // under both, so the two boxes stand side by side
-    keybox.appendChild(meter);
-    f.pwSays = el('div', 'says');
-    keybox.appendChild(f.pwSays);
+    // the options beside the two boxes, so all of it fits without scrolling
+    var opts = el('div', 'fmt-opts');
     f.root = zSwitch(false);
-    keybox.appendChild(zRow('Include the root certificate', 'Usually left out: the other side has it already.', f.root));
+    var rootRow = zRow('Include the root certificate', 'Usually left out: the other side has it already.', f.root);
+    opts.appendChild(rootRow);
     var show = el('label', 'muted small');
     var showBox = el('input'); showBox.type = 'checkbox';
     show.appendChild(showBox); show.appendChild(document.createTextNode(' show the password'));
     showBox.onchange = function () { f.pw.type = f.pw2.type = showBox.checked ? 'text' : 'password'; };
-    keybox.appendChild(show);
+    opts.appendChild(show);
+    pwrow.appendChild(opts);
+    keybox.appendChild(pwrow);
+    keybox.appendChild(meter);
+    f.pwSays = el('div', 'says');
+    keybox.appendChild(f.pwSays);
     body.appendChild(keybox);
     f.keybox = keybox;
     var strength = function () {
@@ -26643,7 +26734,7 @@ function certDownload(d) {
         var c = CERT_FORMATS.filter(function (x) { return x.id === pick.fmt; })[0];
         if (!c.key) {
           zbusy(b, true);
-          rootPost('tls-do', {action: 'tls_get', format: c.id}).then(function (x) {
+          tlsDo({action: 'tls_get', format: c.id}).then(function (x) {
             zbusy(b, false);
             var name = (x.name || 'zigmon') + '.' + x.ext;
             if (x.b64) {
@@ -26663,7 +26754,7 @@ function certDownload(d) {
         if (pw && pw.length < 4) { toast('a password is four characters or more', false); f.pw.focus(); return; }
         if (pw !== (f.pw2.value || '')) { toast('the two passwords are not the same', false); f.pw2.focus(); return; }
         zbusy(b, true);
-        rootPost('tls-do', {action: 'tls_export', format: c.id, password: pw, password2: f.pw2.value || '',
+        tlsDo({action: 'tls_export', format: c.id, password: pw, password2: f.pw2.value || '',
                             with_root: !!f.root._get()}).then(function (x) {
           toast('root is making it\u2026', true);
           return certExportWait(x.asked);
@@ -26674,9 +26765,24 @@ function certDownload(d) {
           closeZModal();
           downloadBehindPin('tls-download&file=' + encodeURIComponent(st.ready.file), st.ready.file);
         }).catch(function (e) { zbusy(b, false); zoops(e); });
-      }}], 'medium');
+      }}], 'medium cert-dl');
   var redraw;
   redraw();
+}
+function certProxyName(d) {
+  var box = zText((d.conf || {}).name || '', d.server_name || 'mqtt.example.cz', 'mono');
+  zmodal('Which server there', function (body) {
+    body.appendChild(el('p', 'note', 'nginx on the server in front may serve several names. The server { } for this name is the one '
+      + 'whose certificate is shown and looked after here - and every other one that serves the same certificate with it. '
+      + 'Empty: the name this machine answers to.'));
+    body.appendChild(zField('Its name', box));
+  }, [{words: 'Cancel', close: true},
+      {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
+        zbusy(b, true);
+        tlsDo({action: 'proxy_name', name: box.value.trim()}).then(function (x) {
+          toast(x.message, true); closeZModal(); setTimeout(loadWeb, 2500);
+        }, zoops).then(function () { zbusy(b, false); });
+      }}], 'medium');
 }
 function certExportWait(asked) {
   return new Promise(function (ok, no) {
@@ -26718,13 +26824,14 @@ var CERT_PASTE_HINT = '-----BEGIN CERTIFICATE-----\n1. the certificate of this n
   + '-----BEGIN PRIVATE KEY-----\n4. its private key (not needed when the request was made here)\n-----END PRIVATE KEY-----\n\n'
   + 'Any order is taken: they are sorted by themselves.';
 function certUpload(prof, asked) {
-  if (!asked) { acmeByHand(function () { certUpload(prof, true); }); return; }
+  if (!asked && CERT_TARGET !== 'proxy') { acmeByHand(function () { certUpload(prof, true); }); return; }
   var got = [];
   var ids = {};
-  zmodal('A certificate for the dashboard', function (body) {
+  zmodal('A certificate for ' + certWhose(), function (body) {
     body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. '
       + (prof && prof.pending ? 'A request waits here: the certificate the authority sent back is enough, its key is here.' : 'The key has to come with it.')
-      + ' The broker reads the same files and is told to read them again; its devices stay connected.'));
+      + (CERT_TARGET === 'proxy' ? ' Root puts it on the server in front over SSH; nginx there is checked and reloaded, or left as it was.'
+        : ' The broker reads the same files and is told to read them again; its devices stay connected.')));
     var list = el('div', 'cert-files');
     var drop = dropZone('Drop the files here, or press to choose them', '.pem,.crt,.cer,.key,.pfx,.p12,.chain,.ca,.txt', function (files) {
       readCertFiles(files).then(function (r) {
@@ -26754,7 +26861,7 @@ function certUpload(prof, asked) {
         if (pfx.length > 1) { toast('one PFX / PKCS#12 file at a time', false); return; }
         if (!pfx.length && !/-----BEGIN /.test(pem)) { toast('choose the files first, or paste the PEM', false); return; }
         zbusy(b, true);
-        rootPost('tls-do', {action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', password: ids.pw.value || ''}).then(function (x) {
+        tlsDo({action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', password: ids.pw.value || ''}).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
         }, function (e) { ids.said.className = 'said bad'; ids.said.textContent = e.message; }).then(function () { zbusy(b, false); });
       }}], 'medium');
@@ -26791,11 +26898,11 @@ function certRequest(prof) {
   zmodal('A certificate request', function (body) {
     body.appendChild(el('p', 'note', 'A new key is made here and stays here; the request (CSR) goes to your certificate authority. '
       + 'Upload what it sends back - the certificate alone is enough.'));
-    certSubjectFields(body, WEB.last || {}, false, f);
+    certSubjectFields(body, CERT_TARGET === 'proxy' ? proxyView(WEB.last || {}) : (WEB.last || {}), false, f);
   }, [{words: 'Cancel', close: true},
       {words: 'Make the request', cls: 'primary', icon: 'list', go: function (b) {
         zbusy(b, true);
-        rootPost('tls-do', Object.assign({action: 'tls_csr'}, certSubjectValues(f))).then(function (x) {
+        tlsDo(Object.assign({action: 'tls_csr'}, certSubjectValues(f))).then(function (x) {
           closeZModal(); loadWeb(); showCsr(x.csr);
         }, zoops).then(function () { zbusy(b, false); });
       }}], 'medium');
@@ -26809,7 +26916,7 @@ function showCsr(csr) {
     body.appendChild(pre);
   }, [{words: 'Drop the request', icon: 'trash', go: function () {
         zconfirm('Drop the request', 'Its waiting key goes too; a certificate made for it can then not be used.', 'Drop it', function () {
-          rootPost('tls-do', {action: 'tls_csr_drop'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops);
+          tlsDo({action: 'tls_csr_drop'}).then(function (x) { toast(x.message, true); loadWeb(); }, zoops);
         }, true);
       }},
       {words: 'Download .csr', icon: 'download', go: function () { saveText('zigmon.csr', csr); }},
@@ -26818,7 +26925,7 @@ function showCsr(csr) {
       {words: 'Close', close: true}], 'medium');
 }
 function certSelf(d, asked) {
-  if (!asked) { acmeByHand(function () { certSelf(d, true); }); return; }
+  if (!asked && CERT_TARGET !== 'proxy') { acmeByHand(function () { certSelf(d, true); }); return; }
   var f = {};
   zmodal('A self-signed certificate', function (body) {
     body.appendChild(el('p', 'note warn', 'Browsers warn about a self-signed certificate until it is trusted by hand, and a device '
@@ -26827,7 +26934,7 @@ function certSelf(d, asked) {
   }, [{words: 'Cancel', close: true},
       {words: 'Make it and put it in', cls: 'primary', icon: 'key', go: function (b) {
         zbusy(b, true);
-        rootPost('tls-do', Object.assign({action: 'tls_selfsigned'}, certSubjectValues(f))).then(function (x) {
+        tlsDo(Object.assign({action: 'tls_selfsigned'}, certSubjectValues(f))).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
         }, zoops).then(function () { zbusy(b, false); });
       }}], 'medium');
@@ -26844,7 +26951,7 @@ function certPolicy(prof, d) {
     ['intermediate', 'Mozilla intermediate', 'TLS 1.2 + 1.3', 'Adds the DHE ciphers, for old clients. Wants DH parameters.', ''],
     ['modern', 'Mozilla modern', 'TLS 1.3 only', 'The strongest; old systems and some scanners cannot connect.', ''],
     ['custom', 'Custom', 'chosen here', 'The protocols and an OpenSSL cipher list of your own.', '']];
-  zmodal('How the dashboard speaks TLS', function (body) {
+  zmodal('How ' + certWhose() + ' speaks TLS', function (body) {
     body.appendChild(el('h4', 'tls-h', 'Protocols and ciphers'));
     var tiles = el('div', 'tls-tiles');
     var custom = el('div', 'tls-custom');
@@ -26911,7 +27018,7 @@ function certPolicy(prof, d) {
   }, [{words: 'Cancel', close: true},
       {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
         zbusy(b, true);
-        rootPost('tls-do', {action: 'tls_policy', preset: st.preset, protocols: st.protocols,
+        tlsDo({action: 'tls_policy', preset: st.preset, protocols: st.protocols,
                             ciphers: String(st.ciphers || '').trim(), dh: st.dh, prefer: st.prefer ? 1 : 0, hsts: st.hsts}).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
         }, zoops).then(function () { zbusy(b, false); });

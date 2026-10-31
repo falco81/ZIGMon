@@ -2083,7 +2083,43 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.32.0**
+Current version: **5.33.0**
+
+5.33.0 — the server in front gets its certificate from here.
+
+* **A second card on Certificates: the server in front**, when one is set
+  (Front server & router) - the same card as the dashboard's. What nginx
+  there answers with for the dashboard's name, read over the same SSH key as
+  its logs (nginx -T and the certificate, nothing secret): issued by, valid
+  until, key, names, chain, files, how many server blocks serve it, OCSP
+  stapling, the TLS it speaks. And the same buttons: **Upload**, **Request
+  (CSR)** (its key kept apart from this machine's), **Self-signed**, **TLS
+  settings** (standard, intermediate, modern or your own; TLS 1.2 / 1.3,
+  ciphers, DH parameters - RFC 7919 groups or made bits - and HSTS),
+  **Download** (every format, with the private key or without), **Let go**,
+  **Look again**, and *Its name…* - which server there is the one looked
+  after.
+* **The same certificate as this machine**: one switch, and the certificate is
+  renewed here only - by hand or by Automatic certificates - and put on the
+  server in front by itself whenever the one here changes (looked at every
+  half minute; after a failure not again for an hour).
+* Root does the putting in, over SSH: every server { } that serves that
+  certificate (the default one too; one serving another certificate, ntfy's,
+  is left alone) gets the certificate with its chain, the key (0600), the
+  chain for OCSP stapling and the TLS settings - each file written over with
+  its owner, mode and SELinux label kept and a copy beside it, `nginx -t`,
+  a reload; when nginx will not take it, every file goes back as it was.
+  The certificate's key is read by root here and never passes through the
+  daemon; the SSH key goes to root for that one connection and is kept
+  nowhere. A server in front reached with a password is said to need the
+  key way, and nothing is sent.
+* **The download of a certificate fits without a scroll bar**: four formats a
+  line, the password, its repeat and the options in one band.
+* **The CA's own certificate** under Automatic certificates is a box like
+  every other one, not the browser's grey.
+
+`test/proxycert.py` - root against a server in front laid out like a real
+one's /etc/nginx, the daemon, the page; it fails on 5.32.0.
 
 5.32.0 — Python 3.14.
 
