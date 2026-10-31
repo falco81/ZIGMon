@@ -177,6 +177,11 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/health');
         exit;
     }
+    if ($what === 'healthz') {
+        // otp's /healthz: 200 in service, 503 in maintenance - the code says it
+        zigmon_relay('/api/healthz');
+        exit;
+    }
     if ($what === 'people-full') {
         // the people with their real numbers - behind the PIN in the daemon
         zigmon_relay('/api/people');
@@ -2517,6 +2522,20 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .change-words{flex:1 1 360px;min-width:0}
   .change-left{color:var(--warn);font-weight:600}
   .change-tools{display:flex;gap:8px;flex-wrap:wrap}
+  /* this server in maintenance (otp 1.0.37): a band of its own on every page */
+  .maint-band{position:sticky;top:0;z-index:58;display:flex;gap:14px;align-items:center;justify-content:space-between;
+    flex-wrap:wrap;padding:10px 18px;background:color-mix(in srgb, var(--warn) 14%, var(--panel));border-bottom:1px solid var(--warn)}
+  .maint-band[hidden]{display:none}
+  .maint-band .change-words b{color:var(--warn)}
+  /* what a setting does, under it (otp's three of Upgrades and maintenance) */
+  :is(#settings-grid, .set-host) .set-item > .set-says{grid-row:3;grid-column:1/-1;font-size:12px;line-height:1.45;
+    color:var(--tx-mut);flex-basis:100%;width:100%}
+  .set-says code{font-size:11px;overflow-wrap:anywhere}
+  /* From the web: the three settings side by side under what was found */
+  #up-web-card .up-set{margin-top:16px;padding-top:4px;border-top:1px solid var(--line)}
+  #tab-control #up-web-card .up-set .set-host .set-cluster > .set-sub{display:none}
+  #tab-control #up-web-card .up-set .set-host .set-cluster{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  #up-web-card #up-web .note{margin:0 0 6px}
   .net-steps{margin:8px 0 4px;padding-left:22px}
   .net-steps li{margin:3px 0}
   .net-steps li .mark{display:inline-block;width:1.2em;font-weight:700}
@@ -4098,6 +4117,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <span class="acts"><button class="btn cmd small danger" id="alertband-clear">Clear</button></span>
 </div>
 <div id="changes" class="changes" role="alert" hidden></div>
+<div id="maint-band" class="maint-band" role="status" hidden></div>
 <div class="wrap">
 
 <header>
@@ -5040,34 +5060,37 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small set-note-alt"></span>
       </div>
     </div>
+    <!-- Upgrades and maintenance (otp 1.0.197's pane, for one machine): the
+         nodes - this one - with its maintenance, new versions from the web
+         with the three settings of looking for them, and a package sent here. -->
     <div class="card full ot" data-sec="sys-upgrade" id="up-card">
-      <h2>This server</h2>
+      <h2>The nodes</h2>
+      <p class="note" id="up-nodes-note">A server in maintenance is being worked on: the alerts about the machine itself and about devices going quiet or offline are held &ndash; kept in the events &ndash; while it is, and for 10 min after, and its /healthz says 503. The house goes on as ever: sensors, rules, sockets, schedules, the broker and these pages. An upgrade, an update of the system and a restart put it in maintenance by themselves, and back in service when they are over.</p>
       <div id="up-nodes"></div>
     </div>
-    <div class="card full ot" data-sec="sys-upgrade" id="up-web-card">
+    <div class="card full ot" data-sec="sys-upgrade" data-old="settings" id="up-web-card">
       <h2>From the web</h2>
-      <p class="note">Where new versions are published &ndash; the address below &ndash; is looked at once a day. A newer zigmon found there is offered here, and put in with one click: fetched, its signature checked exactly as a package sent by hand is, a backup of the whole installation made first, and the old version put back by itself when the new one does not answer. Nothing is put in by itself.</p>
+      <p class="note" id="up-web-note">Where new versions are published &ndash; the address below &ndash; is looked at once a day. A newer zigmon found there is offered here, and put in with one click: fetched, its signature checked like a package sent by hand, a backup of the whole installation made first, then this server upgraded. Nothing is put in by itself.</p>
       <div id="up-web"></div>
-    </div>
-    <div class="card full set-card" data-sec="sys-upgrade">
-      <h2>Settings</h2>
-      <div class="set-host" id="set-host-sys-upgrade" data-for="sys-upgrade"></div>
-      <div class="btnrow set-bar">
-        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
-        <span class="muted small set-note-alt"></span>
+      <div class="set-card up-set" data-for="sys-upgrade">
+        <div class="set-host" id="set-host-sys-upgrade" data-for="sys-upgrade"></div>
+        <div class="btnrow set-bar">
+          <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+          <span class="muted small set-note-alt"></span>
+        </div>
       </div>
     </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-new-card">
       <h2>A new version</h2>
-      <p class="note">The package as it is released: <code>zigmon-X.Y.Z.tar.gz</code>, signed. Its signature is checked against the keys installed with zigmon before anything else is looked at; a package that is not signed, or not by one of them, or changed after it was signed, is refused. Going back to an older version is in the card below, Going back to an older version.</p>
+      <p class="note" id="up-new-note">The .tar.gz of a new zigmon, as it was released. It is checked before anything else: it must be signed by a release key this server trusts, every file in it must be the one signed, and it must not be older than what runs here. Root checks it all again before it is put in. An older one waits under Going back to an older version.</p>
       <div id="up-drop-slot"></div>
       <div id="up-pkg"></div>
-      <div id="up-ready"></div>
-      <div class="btnrow">
-        <button class="btn cmd primary needs-unlock" id="up-start" type="button" disabled>Upgrade</button>
-        <button class="btn cmd" id="up-forget" type="button" hidden>Throw the package away</button>
+      <div class="btnrow" style="margin-top:10px">
+        <button class="btn cmd primary needs-unlock" id="up-start" type="button" disabled>Upgrade this server</button>
+        <button class="btn cmd" id="up-forget" type="button" hidden>Forget the package</button>
         <span class="muted small" id="up-retry"></span>
       </div>
+      <div id="up-ready"></div>
     </div>
     <div class="card full ot" data-sec="sys-upgrade" id="up-back-card" hidden>
       <h2>Going back to an older version</h2>
@@ -5087,7 +5110,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card full ot" data-sec="sys-upgrade" id="up-cli-card">
       <h2>On the command line</h2>
       <div class="up-cli-lede muted small">The same, by hand, as root:</div>
-      <pre class="zlines">sudo zigmon --upgrade-check                # what is newer at the address above
+      <pre class="zlines">sudo zigmon --maintenance on --why "upgrade"   # in maintenance: the alerts about the machine held
+sudo zigmon --maintenance off              # back in service (if it was put there by hand)
+sudo zigmon --maintenance status           # which, since when, and why
+
+sudo zigmon --upgrade-check                # what is newer at the address above
 sudo zigmon --upgrade-online --yes         # fetch the newest, check its signature, put it in
 sudo zigmon --downgrade-check              # what going back could reach, and what it takes away
 
@@ -19683,6 +19710,19 @@ function netMark(what) {
   m.setAttribute('aria-label', m.title);
   return m;
 }
+// Settings whose words stand under them rather than under the pointer
+// (otp 1.0.197's three of Upgrades and maintenance, side by side in From the web).
+var SETTING_SAYS_UNDER = {
+  upgrade_check: 'Once a day (and when Look now is pressed) the address beside is asked for zigmon-X.Y.Z.tar.gz '
+    + 'packages; a newer one than runs here is offered on this page - put in with one click, after its signature '
+    + 'has been checked like any package sent by hand. Nothing is put in by itself.',
+  upgrade_url: 'A GitHub folder (<code>https://github.com/OWNER/REPO/tree/BRANCH/FOLDER</code>), a web page or '
+    + 'folder listing that links to the packages, or one package’s own address. HTTPS only; a package is taken '
+    + 'only when it is signed by a release key installed with zigmon.',
+  downgrade_show: 'Off: nothing on these pages offers going back to an older version. On: this page shows '
+    + '<i>Going back to an older version</i> - only the versions it is safe to go back to, each with what changed '
+    + 'in it. On the server, root can always: <code>sudo zigmon --downgrade FILE</code>.'
+};
 function renderSettings(st) {
   if (settingsHosts().some(function (h) { return h.id && editorBusy(h.id); })) return;
   if (SETTINGS.dirty) return;
@@ -19859,6 +19899,12 @@ function renderSettings(st) {
         // full-page sweep ran every four seconds for ever, finding nothing.
         box.oninput = mark;
         item.appendChild(lbl); item.appendChild(box);
+      }
+      // what it does, under it - otp's way for the three of Upgrades
+      if (SETTING_SAYS_UNDER[key]) {
+        var says = el('div', 'set-says');
+        says.innerHTML = SETTING_SAYS_UNDER[key];       // our own words, not anybody's input
+        item.appendChild(says);
       }
       into.appendChild(item);
     });
@@ -25675,6 +25721,7 @@ function applyStatus(st) {
   if (sigChanged('alertband', [st.alerts, Math.floor(Date.now() / 30000)])) renderAlertBand(st);
   if (st.server_now) CHG.skew = st.server_now - Date.now() / 1000;
   if (sigChanged('changes', [st.changes, isAdmin()])) renderChanges(st);
+  if (sigChanged('maintband', [st.maintenance, isAdmin()])) renderMaintBand(st);
   applyRuntimeFlags(st);                     // before any card is built this tick
   STATE.status = st;
   var pill = $('pill');
@@ -27862,20 +27909,56 @@ function drawUpWeb(d) {
   }
   host.appendChild(row);
 }
+/* Maintenance (otp 1.0.37, for one machine): into it with a word of why,
+   back in service at once. Nothing of the house stops for it. */
+function maintenanceAsk(on, then) {
+  var done = function (r) { toast(r.message, true); if (then) then(r); tick(true); };
+  if (!on) {
+    rootPost('upgrade-do', {action: 'maintenance', on: false}).then(done, zoops);
+    return;
+  }
+  zmodal('Take this server out of service', function (body) {
+    body.appendChild(el('p', 'note', 'The house goes on as ever - sensors, rules, sockets, schedules, the broker and these pages. '
+      + 'What the machine says of itself and of devices going quiet or offline is held, kept in the events, while it is in '
+      + 'maintenance and for 10 min after; its /healthz says 503.'));
+    var lb = el('label', 'small muted', 'Why - for the events');
+    var why = el('input');
+    why.type = 'text'; why.id = 'maint-why'; why.maxLength = 200; why.placeholder = 'why - for the events';
+    why.style.width = '100%';
+    body.appendChild(lb); body.appendChild(why);
+  }, [{words: 'No, leave it', close: true},
+      {words: 'Take it out', cls: 'primary', icon: 'power', close: true, go: function () {
+        rootPost('upgrade-do', {action: 'maintenance', on: true, why: ($('maint-why') || {}).value || ''}).then(done, zoops);
+      }}], 'narrow');
+}
 function drawUpgrade(d) {
   UP.last = d;
   var host = $('up-nodes');
   host.innerHTML = '';
-  host.appendChild(zTable(['Machine', 'Version', 'Running since', 'State'], d.nodes || [], function (n) {
+  // otp's table of the nodes, with the one there is: this machine
+  host.appendChild(zTable(['Node', 'Version', 'Heard from', 'State', ''], d.nodes || [], function (n) {
     var tr = el('tr');
     var nm = el('td'); nm.appendChild(el('b', '', n.name));
-    nm.appendChild(document.createTextNode(' ')); nm.appendChild(el('span', 'tag info', 'this page'));
+    if (n.me) { nm.appendChild(document.createTextNode(' ')); nm.appendChild(el('span', 'tag info', 'this page')); }
     tr.appendChild(nm);
     tr.appendChild(el('td', 'mono', n.version || '?'));
-    tr.appendChild(el('td', 'muted', n.since ? ago(n.since).replace(' ago', '') : '–'));
+    tr.appendChild(el('td', 'muted', n.at ? ago(n.at) : '–'));
     var st = el('td');
-    st.appendChild(el('span', 'tag ' + (d.running ? 'warn' : 'ok'), d.running ? 'being upgraded' : 'running'));
+    var m = n.maintenance || d.maintenance || {};
+    if (m.on) st.appendChild(el('span', 'tag warn', 'in maintenance'));
+    else st.appendChild(el('span', 'tag ok', 'in service'));
+    if (m.on && m.why) st.appendChild(el('span', 'sub', m.why + (m.by ? ' · ' + m.by : '') + (m.at ? ' · ' + ago(m.at) : '')));
+    else if (!m.on && m.held && m.until) st.appendChild(el('span', 'sub', 'the alerts about the machine held until ' + sysStamp(m.until)));
     tr.appendChild(st);
+    var tools = el('td', 'rowtools');
+    if (isAdmin()) {
+      var b = cmdButton(m.on ? 'Back in service' : 'Maintenance', m.on ? 'play' : 'power', 'small');
+      // put there by an upgrade, an update or a restart: back by itself when it is over
+      if (m.on && m.auto) { b.disabled = true; explain(b, 'Back in service by itself when ' + (m.why || 'it') + ' is over.'); }
+      b.onclick = function (ev) { ev.stopPropagation(); maintenanceAsk(!m.on, drawUpgrade); };
+      tools.appendChild(b);
+    }
+    tr.appendChild(tools);
     return tr;
   }, 'plain'));
   drawUpWeb(d);
@@ -28066,14 +28149,15 @@ function upgradeWire() {
   $('up-start').onclick = function () {
     var d = UP.last || {}, p = d.package || {};
     zconfirm('Upgrade this server to ' + p.version,
-      'First a backup of the whole installation and a copy of the program as it is. Then it is put in and zigmon restarts - '
+      'It goes into maintenance while it is upgraded, and back in service when it is done. '
+      + 'First a backup of the whole installation and a copy of the program as it is. Then it is put in and zigmon restarts - '
       + 'the house stops following its sensors for a minute or so, and these pages stop answering for a moment. '
       + 'If the new version does not answer, the old one is put back by itself.', 'Upgrade', function () {
         rootPost('upgrade-do', {action: 'start'}).then(function (r) { toast(r.message, true); drawUpgrade(r); }, zoops);
       }, false);
   };
   $('up-forget').onclick = function () {
-    zconfirm('Throw the package away', 'The uploaded package is deleted; send it again to upgrade.', 'Throw it away', function () {
+    zconfirm('Forget the package', 'The package sent or fetched is deleted; send it again to upgrade.', 'Forget it', function () {
       rootPost('upgrade-do', {action: 'forget'}).then(function (r) { toast(r.message, true); drawUpgrade(r); }, zoops);
     });
   };
@@ -28632,6 +28716,38 @@ function renderChanges(st) {
     box.appendChild(row);
   });
   tickChanges();
+}
+/* -- this server in maintenance: the band on every page (otp 1.0.37) ----------- */
+function renderMaintBand(st) {
+  var box = $('maint-band');
+  if (!box) return;
+  var m = (st && st.maintenance) || {};
+  box.innerHTML = '';
+  box.hidden = !m.on;
+  if (!m.on) return;
+  var words = el('div', 'change-words');
+  words.appendChild(el('b', '', 'This server is in maintenance'));
+  words.appendChild(document.createTextNode(' since ' + (m.at ? sysStamp(m.at) + ' (' + ago(m.at) + ')' : '?')
+    + (m.why ? ' - ' + m.why : '') + (m.by && !m.auto ? ' · ' + m.by : '')));
+  words.appendChild(el('div', 'small muted', 'The house goes on as ever. The alerts about the machine and about devices going quiet are held'
+    + ' while it is, and for 10 min after' + (m.auto ? '; it comes back into service by itself when that is over.' : '.')));
+  box.appendChild(words);
+  var tools = el('div', 'change-tools');
+  if (isAdmin() && !m.auto) {
+    var back = cmdButton('Back in service', 'play', 'small primary');
+    back.onclick = function () {
+      zbusy(back, true);
+      rootPost('upgrade-do', {action: 'maintenance', on: false}).then(function (r) {
+        toast(r.message, true); tick(true);
+        if (CONTROL_SEC === 'sys-upgrade' && $('up-nodes')) drawUpgrade(r);
+      }, zoops).then(function () { zbusy(back, false); });
+    };
+    tools.appendChild(back);
+  }
+  var go = cmdButton('Upgrades and maintenance', 'upload', 'small');
+  go.onclick = function () { location.hash = '#control/sys-upgrade'; showTab('control'); showControlSection('sys-upgrade'); };
+  tools.appendChild(go);
+  box.appendChild(tools);
 }
 function tickChanges() {
   Array.prototype.forEach.call(document.querySelectorAll('.change-left'), function (n) {
@@ -29825,7 +29941,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-power') loadPower();
   if (sec === 'sys-about') loadAbout();
 }
-[['fw-save', 'save'], ['fw-access-save', 'save'], ['up-start', 'upload'],
+[['fw-save', 'save'], ['fw-access-save', 'save'], ['up-start', 'play'],
  ['up-forget', 'trash'], ['full-make', 'save']].forEach(function (x) { if ($(x[0])) setButtonIcon($(x[0]), x[1]); });
 var CONTROL_SECTIONS = {
   'dev-devices': ['Devices', 'Pair new Zigbee devices, and choose which plugs and sensors this dashboard watches.'],
@@ -29853,7 +29969,8 @@ var CONTROL_SECTIONS = {
   'sys-backup': ['Backup', 'The whole installation, and sent to other machines; settings files, imports on trial, nightly backups and going back a step.'],
   'sys-certs': ['Certificates', 'The certificate of the dashboard and the broker, and how TLS is spoken.'],
   'sys-acme': ['Automatic certificates', 'The certificate of this machine ordered from Let’s Encrypt or another ACME CA and renewed by itself well before it runs out. The CA checks the name by asking it on port 80 (HTTP-01), or by a record in DNS (DNS-01) for a server it cannot see from the internet.'],
-  'sys-upgrade': ['Upgrades', 'A new version of zigmon, signed, put in from here - and taken back by itself when it does not answer.'],
+  // otp's pane (1.0.197): the side menu says Upgrades, the pane its whole name
+  'sys-upgrade': ['Upgrades and maintenance', 'A new version put in from here: send the package, or take it from the web, and this server is upgraded - in maintenance while it is, a backup of the whole installation made first, and the old version put back by itself when the new one does not answer. The command line (install.sh --upgrade) works as it always has.'],
   'sys-osup': ['System updates', 'The operating system\u2019s packages, updated by dnf: what is waiting, how many of them security updates, and whether the update will need a restart - then every update or only the security ones, with what dnf says as it goes. A restart it needs is offered when it is done, or made by itself.'],
   'sys-data': ['Data & database', 'What is written down and for how long, the database itself, and erasing it.'],
   'sys-diag': ['Diagnostics', 'Where the time goes, how devices reach the mesh, and the daemon itself.'],
@@ -30100,7 +30217,9 @@ function firstSentence(text) {
   return head.replace(/[ ,;:]+\S*$/, '') + '\u2026';
 }
 // notes that the page writes into as it goes: left as they are
-var LIVE_NOTES = {'notify-note': 1, 'wifi-api-note': 1, 'wifi-seen-note': 1};
+// - and the three of Upgrades and maintenance, said whole as otp says them
+var LIVE_NOTES = {'notify-note': 1, 'wifi-api-note': 1, 'wifi-seen-note': 1,
+                  'up-nodes-note': 1, 'up-web-note': 1, 'up-new-note': 1};
 function decorateControlCards(root) {
   Array.prototype.forEach.call((root || document).querySelectorAll('section.panel .card, #lock-card'), function (card) {
     var h = card.querySelector(':scope > h2');

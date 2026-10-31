@@ -10186,6 +10186,8 @@ class Daemon(object):
             name = (row.get('alias') or row['name']) if row else device_id
         offline_ish = 'lost contact' in detail or 'offline' in detail or 'went quiet' in detail \
             or 'unreachable' in detail or 'back online' in detail or 'reporting again' in detail
+        if offline_ish and self.maint_holding():
+            return                       # the machine being worked on: kept in the events (maintenance)
         switch_ish = kind in ('plug', 'switch') and ('switched' in detail or detail.startswith('set ') or detail.startswith('pulse'))
         rule_ish = kind == 'rule' and 'window' not in detail
         override = settings['devices'].get(device_id or '')
@@ -14368,6 +14370,15 @@ class Daemon(object):
             self.store.add_event('notify', 'held back while the house is hushed: %s'
                                  % str(message)[:110], 'info')
             return
+        # The machine being worked on (maintenance, an upgrade, an update of
+        # the system, a restart) and 10 min after: what it says of itself and
+        # of devices going quiet is held, as otp holds its cluster's alerts -
+        # in the events, not on the phone. The house's own alerts go out.
+        if about in self.MAINT_HELD:
+            held = self.maint_holding()
+            if held:
+                self.store.add_event('notify', 'held back %s: %s' % (held, str(message)[:110]), 'info')
+                return
         own = self.alert_setting(about)
         if own.get('off'):
             if not own.get('by_default'):       # a kind nobody has switched on says nothing about it
@@ -16568,9 +16579,11 @@ class Daemon(object):
                 'asked': self.upgrade_asked(), 'web': self.online_view(),
                 'back': self.downgrade_view(pkg, running),
                 'log': lines, 'node': socket.gethostname().split('.')[0],
+                'maintenance': self.maint_view(),
+                # one machine, as otp's table of the nodes has it
                 'nodes': [{'name': socket.gethostname().split('.')[0] or 'this machine', 'me': True,
                            'alive': True, 'version': __version__, 'at': int(time.time()),
-                           'since': int(self.started)}]}
+                           'since': int(self.started), 'maintenance': self.maint_view()}]}
 
     def upgrade_asked(self):
         """An upgrade asked for and not taken yet. One nothing took in half an
@@ -16620,10 +16633,134 @@ class Daemon(object):
                                                          'from': __version__, 'at': int(time.time())}))
         self.say_event('control', 'an upgrade to zigmon %s started from the dashboard%s'
                        % (pkg['version'], (' by ' + who) if who else ''), 'warn', about='upgrade')
+        self.maint_follow()                     # in maintenance while it is put in
         run = os.environ.get('ZIGMON_UPGRADE_RUN')
         if run:
             subprocess.run(run.split(), capture_output=True, timeout=900)
         return ident
+
+    # ---- maintenance (otp 1.0.37 and 1.0.194, for one machine) ---------------------
+    # otp takes a node in maintenance out of service: it answers no RADIUS and
+    # its /healthz says 503, so the VPN and the load balancer leave it alone,
+    # and the alerts about the cluster are held while it is worked on and for
+    # 10 min after. zigmon looks after a house: nothing of the house ever
+    # stops for it - the rules, the sensors, the sockets, the schedules, the
+    # broker and these pages go on as they always do. Maintenance here says
+    # the machine is being worked on: it is shown, /api/healthz says 503, and
+    # what is said of the machine itself and of devices going quiet or
+    # offline - which a restart, an upgrade or an update of the system brings
+    # by the dozen - is held while it lasts and for 10 min after, kept in the
+    # events. What the house's own sensors and rules say goes out as ever.
+    # Put on by hand (the button, zigmon --maintenance on, the console), and
+    # by itself while zigmon is upgraded, the system updated or the machine
+    # restarted - and taken off by itself when that is over. Kept in meta,
+    # so a restart of the daemon in the middle of it finds it on.
+    MAINT_SETTLE_S = float(os.environ.get('ZIGMON_MAINT_SETTLE_S') or 600)
+    # what is held: the machine itself, and devices going quiet or offline
+    MAINT_HELD = ('host', 'started', 'updates', 'quiet', 'mesh', 'bindings', 'bridge', 'broker')
+
+    def maint_row(self):
+        row = self.__dict__.get('_maint')
+        if row is None:
+            row = self._mj('maint') or {'on': False}
+            self._maint = row
+        return row
+
+    def maint_holding(self, now=None):
+        """Why the alerts about the machine are held now, or '': in
+        maintenance, or within 10 min of its end. Asked by notify from every
+        thread: the row in memory, nothing read."""
+        row = self.maint_row()
+        if row.get('on'):
+            return 'in maintenance'
+        now = time.time() if now is None else now
+        if now - float(row.get('ended') or 0) < self.MAINT_SETTLE_S:
+            return 'within 10 min of maintenance'
+        return ''
+
+    def maint_work(self):
+        """What puts this machine in maintenance by itself now: (kind, words)
+        or ('', '')."""
+        st = self.upgrade_status()
+        if (st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800) \
+                or self.upgrade_asked():
+            v = st.get('version') or (self._mj('upgrade_asked') or {}).get('version') or '?'
+            return 'upgrade', ('going back to zigmon %s' if st.get('downgrade') else
+                               'the upgrade to zigmon %s') % v
+        if osup_updating(self):
+            return 'osup', 'the update of the system'
+        if self.power_busy():
+            return 'restart', 'a %s of the server' % (
+                'power-off' if self.power_plan().get('how') == 'poweroff' else 'restart')
+        return '', ''
+
+    def maint_set(self, on, why='', by='', auto=''):
+        was = self.maint_row()
+        now = time.time()
+        if on:
+            row = {'on': True, 'why': str(why or 'by hand')[:200], 'by': str(by or '')[:100], 'at': now,
+                   'auto': auto, 'ended': float(was.get('ended') or 0)}
+        else:
+            row = {'on': False, 'why': '', 'by': str(by or '')[:100], 'at': now, 'auto': '',
+                   'ended': now if was.get('on') else float(was.get('ended') or 0),
+                   'was': was.get('why') or '', 'since': float(was.get('at') or 0)}
+        self._maint = row
+        self._mj_put('maint', row, bump=True)
+        if on:
+            words = 'in maintenance - %s%s' % (row['why'], (' (%s)' % by) if by and not auto else '')
+        else:
+            words = 'back in service%s%s' % ((' - %s is over' % was.get('why')) if auto and was.get('why') else '',
+                                             (' (%s)' % by) if by and not auto else '')
+        # written down, and told by no road: what maintenance quiets is the
+        # telling, and its own coming and going is in the events
+        self._own_telling.on = True
+        try:
+            self.store.add_event('control', 'this server: ' + words, 'warn' if on else 'info')
+        finally:
+            self._own_telling.on = False
+        log('this server: %s' % words, 'warn' if on else 'info')
+        return row
+
+    def maint_follow(self):
+        """From the system loop (and right after an upgrade, an update or a
+        restart is asked for): in maintenance by itself while one of them goes
+        on, back in service by itself when it is over - unless it was put
+        there by hand, which only a hand takes off."""
+        kind, why = self.maint_work()
+        row = self.maint_row()
+        if kind and not row.get('on'):
+            self.maint_set(True, why, 'zigmon', auto=kind)
+        elif kind and row.get('auto') and (row.get('auto'), row.get('why')) != (kind, why):
+            row = dict(row, auto=kind, why=why)
+            self._maint = row
+            self._mj_put('maint', row, bump=True)
+        elif not kind and row.get('on') and row.get('auto'):
+            self.maint_set(False, by='zigmon', auto=row.get('auto'))
+
+    def maint_ask(self, on, why='', by=''):
+        """Maintenance by hand: the button, zigmon --maintenance, the console."""
+        row = self.maint_row()
+        if on:
+            if row.get('on') and not row.get('auto'):
+                raise ValueError('this server is in maintenance already')
+            return self.maint_set(True, str(why or '').strip()[:200] or 'by hand', by)
+        if not row.get('on'):
+            raise ValueError('this server is in service already')
+        kind, work = self.maint_work()
+        if kind:
+            raise ValueError('not while %s - it comes back into service by itself when that is over'
+                             % work)
+        return self.maint_set(False, by=by)
+
+    def maint_view(self, now=None):
+        row = self.maint_row()
+        now = time.time() if now is None else now
+        out = {k: row.get(k) for k in ('why', 'by', 'at', 'auto')}
+        out['on'] = bool(row.get('on'))
+        out['held'] = self.maint_holding(now)
+        if not out['on'] and out['held']:
+            out['until'] = float(row.get('ended') or 0) + self.MAINT_SETTLE_S
+        return out
 
     # ---- going back to an older version (5.22) -----------------------------------
     # Root decides whether it is safe (zigmon_upgrade.py, DB_EPOCHS): the older
@@ -16770,6 +16907,7 @@ class Daemon(object):
                                                          'downgrade': True}))
         self.say_event('control', 'going back to zigmon %s started%s - the database stays as it is'
                        % (pkg['version'], (' by ' + who) if who else ''), 'warn', about='upgrade')
+        self.maint_follow()
         run = os.environ.get('ZIGMON_UPGRADE_RUN')
         if run:
             subprocess.run(run.split(), capture_output=True, timeout=900)
@@ -17636,6 +17774,7 @@ class Daemon(object):
         self.say_event('control', '%s asked for a %s of the server%s' % (
             by, what, (' at %s' % time.strftime('%Y-%m-%d %H:%M', time.localtime(at))) if at else ''),
             'warn', about='restart')
+        self.maint_follow()                     # in maintenance until it is back (one now)
         self._net_kick.set()
         return plan
 
@@ -18102,6 +18241,10 @@ class Daemon(object):
         """Every few seconds, on a thread of its own so that the clock thread
         that makes a lamp come on is never behind it: the network, a restart,
         the firewall on trial, the clock."""
+        try:
+            self.maint_row()                    # read once here, never by the broker's thread
+        except Exception:                       # noqa: BLE001
+            pass
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)
         if self._stop.wait(5):
@@ -18111,7 +18254,10 @@ class Daemon(object):
                               ('firewall on trial', self.fw_trial_tick), ('time', self.ntp_tick),
                               # what root's job of dnf says, and the schedule
                               # of the updates (5.34): files read, threads started
-                              ('updates of the system', lambda: osup_tick(self))):
+                              ('updates of the system', lambda: osup_tick(self)),
+                              # in maintenance by itself while one of those
+                              # goes on, and back in service after it
+                              ('maintenance', self.maint_follow)):
                 try:
                     job()
                 except Exception as e:                  # noqa: BLE001 - the next one still runs
@@ -37994,6 +38140,8 @@ class Daemon(object):
             # firewall - the banner on every page counts it down, by the
             # server's clock (server_now), not the browser's
             'changes': self.changes_view(),
+            # this server in maintenance (otp 1.0.37): the banner on every page
+            'maintenance': self.maint_view(),
             'server_now': time.time(),
             'holds': [dict(v, target=k, label=self.target_label(k))
                       for k, v in sorted(self.manual_holds().items())],
@@ -38135,6 +38283,8 @@ class Daemon(object):
             'db': dict(self.store.stats(), **self.store.latency()),
             'last_aggregate': self.store.get_meta('last_aggregate_ts'),
             'config_notes': CONFIG_NOTES,
+            # in maintenance or in service (otp 1.0.37); /api/healthz says it in its code
+            'maintenance': self.maint_view(),
         }
         # how long the daemon itself needed to answer this (a status build is similar work)
         out['api_ms'] = round((time.perf_counter() - t0) * 1000, 2)
@@ -39250,6 +39400,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 d.root_apply()
                 return {'message': 'asked root again'}
         if path == '/api/upgrade':
+            # maintenance (otp 1.0.37): this server in or out of it, by hand
+            if act == 'maintenance':
+                if not isinstance(body.get('on'), bool):
+                    raise ValueError('on is true or false')
+                me = d.session_get(body.get('session')) or {}
+                d.maint_ask(body['on'], str(body.get('why') or ''),
+                            me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                               else who))
+                return dict(d.upgrade_state(), message='this server: %s' % (
+                    'in maintenance' if body['on'] else 'back in service'))
             if act == 'start':
                 d.upgrade_start(who)
                 return dict(d.upgrade_state(), message='root is putting it in')
@@ -39576,7 +39736,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                                             + why)
             if not CONFIG.get('public_view', True) and not REQUEST_CALLER.cli:
                 token = self.headers.get('X-Zigmon-Session') or ''
-                if path != '/api/health' and not d.session_valid(token):
+                if path not in ('/api/health', '/api/healthz') and not d.session_valid(token):
                     return self._error(403, 'view locked - sign in to see the house')
             if path == '/api/objects':
                 return self._send(200, {'ok': True, 'types': d.object_types(), 'objects': d.objects(),
@@ -39600,7 +39760,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                     return self._error(404, 'there is nothing here called that')
                 return self._send(200, {'ok': True, 'object': one, 'revealed': bool(reveal)})
             if path == '/api/health':
+                # always 200 while the daemon answers: it is what the upgrade
+                # asks of the new version, and an upgrade is maintenance -
+                # 503 here would put every upgrade back. Maintenance is said
+                # in it, and by /api/healthz below.
                 return self._send(200, d.health())
+            if path == '/api/healthz':
+                # otp's /healthz (1.0.37): 200 in service, 503 in maintenance -
+                # for whatever watches this machine from outside
+                m = d.maint_view()
+                return self._send(503 if m['on'] else 200, {
+                    'ok': not m['on'], 'state': 'in maintenance' if m['on'] else 'in service',
+                    'host': socket.gethostname().split('.')[0], 'version': __version__,
+                    'why': (m.get('why') or '') if m['on'] else ''})
             if path == '/api/sessions':
                 me = (d.session_get(self.headers.get('X-Zigmon-Session') or '') or {}).get('hash', '')[:16]
                 return self._send(200, {'ok': True, 'sessions': [dict(x, me=bool(me) and x['id'] == me)
@@ -46488,6 +46660,7 @@ def osup_start(d, by, reboot='ask', security=False):
         by, ' (the security updates only)' if security else '',
         ', restarted by itself when it needs it' if reboot == 'auto' else ''), 'warn', about='updates')
     _osup_go(d, 'osup:run', 'upgrade', job, security)
+    d.maint_follow()                            # in maintenance while dnf runs
     return run
 
 
@@ -49038,6 +49211,8 @@ HELP_LINES = [
      '--reboot auto restarts it where needed'),
     ('sudo zigmon --console', 'menus for everything here, on a full screen; q leaves'),
     ('sudo zigmon --console-at-login off', 'whether root signing in lands in it: on, off, status'),
+    ('sudo zigmon --maintenance on --why "the disk"', 'this server in maintenance: the house goes on, '
+     'the alerts about the machine are held; off: back in service; status'),
     ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
     ('sudo zigmon --upgrade-online --yes',
      'fetch the newest (or a VERSION), check its signature, put it in and follow it'),
@@ -49288,6 +49463,11 @@ def build_parser():
     a.add_argument('--root-status', action='store_true',
                    help='what root last did for the dashboard: the certificate, the firewall, the '
                         'page lists, the whole backups, the last upgrade')
+    a.add_argument('--maintenance', choices=('on', 'off', 'status'),
+                   help='(root) this server in maintenance or back in service (Control - Upgrades): '
+                        'the house goes on as ever, the alerts about the machine and devices going '
+                        'quiet are held, /api/healthz says 503; status says which')
+    a.add_argument('--why', metavar='TEXT', help='with --maintenance on: why, for the events')
     a.add_argument('--upgrade-check', action='store_true',
                    help='(root) look at upgrade_url now for a newer zigmon (as Control, Upgrades, Look now)')
     a.add_argument('--upgrade-online', nargs='?', const='newest', metavar='VERSION',
@@ -49543,6 +49723,38 @@ def _upgrade_ask(pal, body=None, timeout=60.0):
     else:
         print(pal.crit('refused: %s' % (why or code)))
     return None
+
+
+def cmd_maintenance(args, pal):
+    """`zigmon --maintenance on|off|status [--why TEXT]` - as the Maintenance
+    button of Control - Upgrades (otp's --maintenance, for one machine)."""
+    word = args.maintenance
+    body = None
+    if word in ('on', 'off'):
+        body = {'action': 'maintenance', 'on': word == 'on', 'why': args.why or 'from the command line'}
+    out = _upgrade_ask(pal, body, timeout=30.0)
+    if out is None:
+        return 2
+    m = out.get('maintenance') or {}
+    if args.json:
+        print(json.dumps(m, indent=2, default=str))
+        return 0
+    if body:
+        print(pal.ok(out.get('message') or 'done'))
+    if m.get('on'):
+        print(pal.warn('this server is IN MAINTENANCE since %s: %s%s' % (
+            time.strftime('%Y-%m-%d %H:%M', time.localtime(float(m.get('at') or 0))), m.get('why') or '',
+            (' (%s)' % m['by']) if m.get('by') else '')))
+        print('  the house goes on as ever; the alerts about the machine and about devices going '
+              'quiet are held')
+        if m.get('auto'):
+            print('  put there by itself - back in service by itself when it is over')
+    else:
+        print(pal.ok('this server is in service'))
+        if m.get('held') and m.get('until'):
+            print('  the alerts about the machine are held until %s (10 min after maintenance)'
+                  % time.strftime('%H:%M', time.localtime(float(m['until']))))
+    return 0
 
 
 def cmd_upgrade_check(args, pal):
@@ -53732,7 +53944,26 @@ def _console_downgrade(c):
         c.act('--downgrade', version, '--yes')
 
 
+def _console_maintenance(c):
+    """Maintenance of this server (otp's console, for one machine): in it, or
+    back in service."""
+    m = c.out('--maintenance', 'status') or {}
+    r = c.choose('Maintenance of this server', [
+        ('on', 'Into maintenance - the alerts about the machine are held'),
+        ('off', 'Back in service')], 'It is %s now. The house goes on as ever either way.' % (
+            'IN MAINTENANCE' if m.get('on') else 'in service'), cur=1 if m.get('on') else 0)
+    if r == 'on':
+        why = c.ask_one('Into maintenance', 'why', 'from the console', help_=(
+            'Shown in the events and on the pages. Sensors, rules and sockets go on as ever; what the '
+            'machine says of itself and of devices going quiet is held, and for 10 min after.'))
+        if why is not None:
+            c.act('--maintenance', 'on', '--why', why)
+    elif r == 'off':
+        c.act('--maintenance', 'off')
+
+
 CONSOLE_MORE['upgrades'].extend([
+    ('Maintenance: into it, or back in service', _console_maintenance),
     ('Look for a new version on the web now', lambda c: c.act('--upgrade-check')),
     ('Upgrade from the web', _console_upgrade_online),
     ('Going back to an older version (the database stays as it is)', _console_downgrade),
@@ -53915,6 +54146,8 @@ def _dispatch(args, pal):
         return cmd_sessions(args, pal)
     if getattr(args, 'backup', None) is not None:
         return cmd_backup(args, pal)
+    if getattr(args, 'maintenance', None):
+        return cmd_maintenance(args, pal)
     if getattr(args, 'upgrade_check', False):
         return cmd_upgrade_check(args, pal)
     if getattr(args, 'upgrade_online', None):
