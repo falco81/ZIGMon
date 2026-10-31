@@ -4950,6 +4950,10 @@ class Storage(object):
         self._wq_wake = threading.Event()
         self._wq_idle = threading.Event()
         self._wq_idle.set()
+        # writes queued and not yet done - the one the writer is in the middle
+        # of included (5.32): an empty queue is not a landed write
+        self._wq_cv = threading.Condition(threading.Lock())
+        self._wq_pending = 0
         self._wq_thread = threading.Thread(target=self._writer_loop, name='db-writer', daemon=True)
         self._wq_thread.start()
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -6737,7 +6741,11 @@ class Storage(object):
         in-memory state re-syncs from the next poll and report."""
         import sqlite3
         self.flush(5.0)
-        self._wq.clear()                     # anything still queued belongs to the replaced contents
+        with self._wq_cv:                    # anything still queued belongs to the replaced contents
+            self._wq_pending -= len(self._wq)
+            self._wq.clear()
+        if self._wq_pending <= 0:
+            self._writer_done_all()
         # The copies in memory stay in force while the pages are copied, and
         # are swapped for the restored ones after (below). Cleared here, every
         # reader - the broker thread recording a report, the rule workers
@@ -6929,29 +6937,46 @@ class Storage(object):
 
     def _defer(self, fn, *args):
         """Run a write later, in order, on the writer thread."""
-        # a pathological backlog: keep the newest. 20,000 was half a minute of
-        # a busy house's readings - less than the nightly VACUUM holds the
-        # database for, and the readings of that half minute were dropped
-        if len(self._wq) > 200000:
-            try:
-                self._wq.popleft()
-            except IndexError:
-                pass
-        self._wq_idle.clear()
-        self._wq.append((fn, args))
+        with self._wq_cv:
+            # a pathological backlog: keep the newest. 20,000 was half a
+            # minute of a busy house's readings - less than the nightly VACUUM
+            # holds the database for, and the readings of that half minute
+            # were dropped
+            if len(self._wq) > 200000:
+                try:
+                    self._wq.popleft()
+                    self._wq_pending -= 1
+                except IndexError:
+                    pass
+            self._wq_pending += 1
+            self._wq_idle.clear()
+            self._wq.append((fn, args))
         self._wq_wake.set()
+
+    def _writer_done(self):
+        with self._wq_cv:
+            self._wq_pending -= 1
+            if self._wq_pending <= 0:
+                self._wq_pending = 0
+                self._wq_idle.set()
+                self._wq_cv.notify_all()
+
+    def _writer_done_all(self):
+        with self._wq_cv:
+            if self._wq_pending <= 0:
+                self._wq_pending = 0
+                self._wq_idle.set()
+                self._wq_cv.notify_all()
 
     def _writer_loop(self):
         while True:
             self._wq_wake.wait(0.5)
             self._wq_wake.clear()
-            drained = False
             while True:
                 try:
                     fn, args = self._wq.popleft()
                 except IndexError:
                     break
-                drained = True
                 try:
                     fn(*args)
                 except Exception as e:
@@ -6959,17 +6984,20 @@ class Storage(object):
                         log('deferred write failed: %s' % e, 'error')
                     except Exception:
                         pass
-            if drained or not self._wq:
-                self._wq_idle.set()
+                finally:
+                    self._writer_done()
 
     def flush(self, timeout=30.0):
         """Wait for the queued writes to land - before a backup or a VACUUM,
-        so what they capture is everything that has happened."""
+        so what they capture is everything that has happened. Landed: the
+        last one taken off the queue finished too (5.32) - the queue is empty
+        the moment the writer takes it, before it is written, and a flush
+        that went by that alone let a backup, a restore or a reading of the
+        log in ahead of it."""
         self._wq_wake.set()
-        deadline = time.time() + timeout
-        while self._wq and time.time() < deadline:
-            self._wq_idle.wait(0.05)
-        return not self._wq
+        with self._wq_cv:
+            self._wq_cv.wait_for(lambda: self._wq_pending <= 0, timeout)
+            return self._wq_pending <= 0
 
     def set_meta(self, key, value, deferred=False):
         """The in-memory copy is updated at once and every reader sees it; the
@@ -11962,12 +11990,19 @@ class Daemon(object):
         finally:
             self._sms_busy = False
 
+    SMS_STATUS_AGAIN_S = 5
+
     def _sms_status_thread(self):
+        self._sms_status_again = False
         try:
             self.sms_status_poll()
         except Exception as e:
             log('SMS gateway status: %s' % e, 'warn')
         finally:
+            if getattr(self, '_sms_status_again', False):
+                # not asked: the next beat in a few seconds, not a whole round on
+                every = float(CONFIG.get('sms_status_s') or 0)
+                self._sms_status_at = time.time() - max(0.0, every - self.SMS_STATUS_AGAIN_S)
             self._sms_status_busy = False
 
     def _ubus_call(self, obj, method, params=None):
@@ -12417,6 +12452,11 @@ class Daemon(object):
         # Taken without waiting: a status that cannot have the box right now
         # simply does not happen this time round, and the message goes.
         if not self._sms_send_lock.acquire(blocking=False):
+            # the box is someone else's this moment - most often the AT+CMMS
+            # check, which keeps the same five minutes and starts on the same
+            # beat: skipped like that, the status lost every round to it and
+            # the modem's card went silent. Asked again in a few seconds (5.32).
+            self._sms_status_again = True
             return None
         try:
             return self._sms_status_now()

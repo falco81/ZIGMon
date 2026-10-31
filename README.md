@@ -2106,7 +2106,19 @@ Current version: **5.32.0**
   daemon on the Python it runs on.
 * **PHP 8.3** (8.3.36 or newer, with the php2shell fix) as since 5.30, at
   every upgrade.
-* The test suite passes on Python 3.14.
+* The test suite passes on Python 3.14 - and running it there brought out two
+  faults that were there on every Python:
+  * **A flush waits for the write in hand.** The database's writes go out on
+    a thread of their own; a flush - before a backup, a restore, a VACUUM -
+    came back as soon as the queue was empty, which it is the moment the
+    writer takes the last write off it, before that write is done. A backup
+    could miss the last thing that happened.
+  * **The modem's status is not lost to the AT+CMMS check.** Both keep five
+    minutes and start on the same beat: the status, finding the box taken by
+    the check, was skipped for the whole round - every round - and the modem's
+    card and charts went silent. It is asked again five seconds later.
+
+`test/review532.py` holds both; it fails on 5.31.0.
 
 `test/python.py` holds the build, its newest release, the build again for a
 newer one, python.org away, a failed build and the repositories' own 3.14;
