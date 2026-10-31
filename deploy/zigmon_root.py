@@ -351,6 +351,13 @@ def tls_checked(t):
     if not isinstance(t, dict):
         raise Refused('the TLS is not an object')
     out = {'pem': pem_set(t.get('cert'), t.get('key'), t.get('chain'), t.get('root'))}
+    # Automatic certificates (5.30): the certificate in place kept in root's
+    # own folder when the first one from the ACME CA replaces it - its key
+    # with it, never handed to the daemon - and put back from there when asked
+    out['keep_before'] = bool(t.get('keep_before')) and bool(out['pem'])
+    out['put_back'] = bool(t.get('put_back'))
+    if out['put_back']:
+        out['pem'] = None
     prot = t.get('protocols') or list(PROTOCOLS)
     if not isinstance(prot, list) or not prot or any(p not in PROTOCOLS for p in prot):
         raise Refused('the protocols are TLSv1.2 and/or TLSv1.3')
@@ -391,7 +398,18 @@ def checked(r):
     else:
         out['fw'] = None
     out['access'] = access_checked(r.get('access'))
+    out['acme'] = acme_checked(r.get('acme'))
     return out
+
+
+def acme_checked(a):
+    """Automatic certificates (5.30): whether port 80 answers the ACME CA's
+    HTTP-01 question - {'http': true|false}, or nothing to do."""
+    if a is None:
+        return None
+    if not isinstance(a, dict):
+        raise Refused('the ACME part is not an object')
+    return {'http': bool(a.get('http'))}
 
 
 # ---- nginx: the dashboard's HTTPS server ------------------------------------
@@ -528,6 +546,19 @@ def tls_into(block, t, files, had_dh):
     said = []
     wrote_cert = False
     progress('writing the certificate and the TLS settings', 3)
+    if t.get('raw'):
+        raw = t['raw']
+        write_root(files['cert'], raw['cert'], 0o644)
+        write_root(files['key'], raw['key'], 0o600)
+        wrote_cert = True
+        block = set_directive(block, 'ssl_certificate', files['cert'])
+        block = set_directive(block, 'ssl_certificate_key', files['key'])
+        if raw.get('trust'):
+            write_root(files['root'], raw['trust'], 0o644)
+            block = set_directive(block, 'ssl_trusted_certificate', files['root'])
+        else:
+            block = set_directive(block, 'ssl_trusted_certificate', None)
+        said.append('the certificate from before ACME put back')
     if t['pem']:
         write_root(files['cert'], t['pem']['cert'] + t['pem']['chain'], 0o644)
         write_root(files['key'], t['pem']['key'], 0o600)
@@ -766,7 +797,7 @@ def nginx_part(r, last):
     """The dashboard's server: its TLS, and who may reach which page."""
     said = []
     conf = nginx_conf()
-    if not r['tls'] and not r['access']:
+    if not r['tls'] and not r['access'] and not r.get('acme'):
         return said, False
     try:
         with open(conf) as f:
@@ -779,7 +810,12 @@ def nginx_part(r, last):
     files = tls_files(main[where[0]:where[1]])
     snap = snapshot([conf] + list(files.values()))
     changed, hup = False, False
+    kept_before = None
     try:
+        if r['tls'] and r['tls'].get('put_back'):
+            r['tls']['raw'] = acme_before_read()
+        if r['tls'] and r['tls'].get('keep_before'):
+            kept_before = acme_before_now(main[where[0]:where[1]], files)
         if r['tls']:
             # DH parameters first: making them can take minutes, and nginx's
             # file is read after it, so nothing changed in it meanwhile is
@@ -804,6 +840,14 @@ def nginx_part(r, last):
                 main, changed = new_main, True
                 said.append('nginx: who may reach the dashboard, the one-tap links and the SMS '
                             'road set')
+        if r.get('acme') is not None:
+            with open(conf) as f:
+                main = f.read()
+            new_main, words = acme_http_into(main, r['acme']['http'])
+            if new_main != main:
+                write_root(conf, new_main, 0o644)
+                main, changed = new_main, True
+            said += words
         if changed:
             progress('asking nginx, and reloading it', 4)
             t = subprocess.run(NGINX_TEST, capture_output=True, text=True)
@@ -815,9 +859,180 @@ def nginx_part(r, last):
     except BaseException:
         put_back(snap)
         raise
+    if kept_before:
+        own_write(ACME_BEFORE, kept_before)
+        said.append('the certificate it had is kept, to be put back (Automatic certificates)')
+    if r['tls'] and r['tls'].get('put_back'):
+        try:
+            os.unlink(os.path.join(own_fd(), ACME_BEFORE))
+        except OSError:
+            pass
     if hup:
         said.append(mosquitto_hup())
     return said, changed
+
+
+# ---- Automatic certificates (5.30) ------------------------------------------------
+# The ACME CA's HTTP-01 question comes to port 80 of the name: the plain-HTTP
+# server, which otherwise only sends everybody to HTTPS, gets a location of
+# its own for /.well-known/acme-challenge/, handed to index.php (and so to the
+# daemon, which answers only the tokens of an order it has going). Between
+# marks; the server's own `return 301 ...` line is set aside while they stand
+# (a return at the server's level is done before any location is looked at),
+# moved into a `location /` of the block, and comes back as it was when ACME
+# is switched off or goes to DNS-01.
+ACME_BEGIN = '#zigmon# ACME-BEGIN'
+ACME_END = '#zigmon# ACME-END'
+ACME_ASIDE = '#zigmon# '
+ACME_BEFORE = 'acme-before.json'
+ACME_LOC = '/.well-known/acme-challenge/'
+
+
+def acme_marked(block):
+    """zigmon's marks for the CA in a block, as a line of their own."""
+    return bool(re.search(r'(?m)^[ \t]*%s' % re.escape(ACME_BEGIN), block))
+
+
+def http_block(text):
+    """(start, end) of the plain-HTTP server { }: not the HTTPS one, and the
+    one that sends to HTTPS (or already carries zigmon's ACME marks)."""
+    https = server_block(text)
+    i = 0
+    while True:
+        m = re.search(r'(?m)^[ \t]*server[ \t]*\{', text[i:])
+        if not m:
+            return None
+        start = i + m.start()
+        end = block_end(text, i + m.end() - 1)
+        if end is None:
+            return None
+        block = text[start:end]
+        if (not https or start != https[0]) and not re.search(r'(?m)^\s*listen\s+[^;]*ssl', block) \
+                and (acme_marked(block) or re.search(r'return\s+30[1278]\s+https://', block)):
+            return start, end
+        i = end
+
+
+def acme_http_now(text=None):
+    """Whether port 80 answers the CA now: (marked, a port-80 server is there)."""
+    if text is None:
+        try:
+            with open(nginx_conf()) as f:
+                text = f.read()
+        except OSError:
+            return False, False
+    where = http_block(text)
+    if not where:
+        return False, False
+    return acme_marked(text[where[0]:where[1]]), True
+
+
+def acme_http_lines(text, aside):
+    """zigmon's lines for the CA - PHP reached the way the HTTPS server
+    reaches it."""
+    where = server_block(text)
+    block = text[where[0]:where[1]] if where else ''
+    fpm = re.search(r'(?m)^\s*fastcgi_pass\s+([^;\s]+)\s*;', block)
+    fpm = fpm.group(1) if fpm else 'unix:/run/php-fpm/www.sock'
+    if not re.match(r'^(unix:/[A-Za-z0-9_./-]+|[A-Za-z0-9.\[\]:-]+:\d+)$', fpm) or '..' in fpm:
+        raise Refused('nginx reaches PHP by something that is not a plain socket: %s' % fpm[:80])
+    docroot = directive(block, 'root') or '/var/www/zigmon'
+    if not docroot.startswith('/') or '..' in docroot.split('/') or \
+            not re.match(r'^[A-Za-z0-9_./-]+$', docroot):
+        raise Refused('the dashboard\'s root is not a plain path: %s' % docroot[:80])
+    inc = re.search(r'(?m)^\s*include\s+(\S*fastcgi_params)\s*;', block)
+    inc = inc.group(1) if inc else 'fastcgi_params'
+    pad = '    '
+    lines = [pad + ACME_BEGIN + ' (Automatic certificates, set on the dashboard)',
+             pad + 'location ^~ %s {' % ACME_LOC,
+             pad + '    # the ACME CA\'s HTTP-01 question: answered by the daemon, through',
+             pad + '    # index.php, for the tokens of an order it has going - nothing else']
+    if re.search(r'limit_req_zone\s[^;]*zone=zigmon_tap:', text):
+        lines.append(pad + '    limit_req zone=zigmon_tap burst=20 nodelay;')
+    lines += [pad + '    client_max_body_size 1k;',
+              pad + '    include        %s;' % inc,
+              pad + '    fastcgi_pass   %s;' % fpm,
+              pad + '    fastcgi_param  SCRIPT_FILENAME %s/index.php;' % docroot.rstrip('/'),
+              pad + '    fastcgi_param  QUERY_STRING    api=acme-challenge;',
+              pad + '    fastcgi_read_timeout 15s;',
+              pad + '}']
+    if aside:
+        lines += [pad + 'location / {'] + [pad + '    ' + a.strip() for a in aside] + [pad + '}']
+    lines.append(pad + ACME_END)
+    return '\n'.join(lines)
+
+
+def acme_http_into(text, on):
+    """The nginx file with port 80 answering the CA, or not: (text, words).
+    The same file twice gives the same file: the marks are taken out and put
+    in again, never added to."""
+    where = http_block(text)
+    if not where:
+        return text, (['no plain-HTTP server on port 80 in %s: the CA\'s HTTP-01 question cannot '
+                       'be answered here (DNS-01 needs none)' % nginx_conf()] if on else [])
+    block = text[where[0]:where[1]]
+    if acme_marked(block):
+        block = re.sub(r'\n*^[ \t]*%s[^\n]*\n.*?\n[ \t]*%s[^\n]*' % (re.escape(ACME_BEGIN),
+                                                                      re.escape(ACME_END)),
+                       '', block, count=1, flags=re.S | re.M)
+        block = re.sub(r'(?m)^([ \t]*)%s(return\s[^\n]*)$' % re.escape(ACME_ASIDE), r'\1\2', block)
+    if on:
+        lines = block.split('\n')
+        depth, aside = 0, []
+        for n, line in enumerate(lines):
+            if depth == 1 and re.match(r'^\s*return\s', line):
+                aside.append(line)
+                lines[n] = re.sub(r'^(\s*)', lambda m: m.group(1) + ACME_ASIDE, line, count=1)
+            depth += line.count('{') - line.count('}')
+        block = '\n'.join(lines)
+        close = block.rfind('}')
+        block = block[:close].rstrip('\n') + '\n\n' + acme_http_lines(text, aside) + '\n' + block[close:]
+    new = text[:where[0]] + block + text[where[1]:]
+    if new == text:
+        return text, []
+    if on:
+        return new, ['nginx: port 80 answers the ACME CA at %s' % ACME_LOC]
+    return new, ['nginx: port 80 no longer answers the ACME CA; it only sends to HTTPS again']
+
+
+def acme_before_now(block, files):
+    """The certificate in place now, its key and what it is checked against,
+    as the files have them - kept by root alone (root's own folder, 0600)."""
+    try:
+        with open(files['cert']) as f:
+            cert = f.read(300000)
+        with open(files['key']) as f:
+            key = f.read(100000)
+    except OSError:
+        return None
+    trust = ''
+    if directive(block, 'ssl_trusted_certificate') and os.path.isfile(files['root']):
+        with open(files['root']) as f:
+            trust = f.read(300000)
+    return {'cert': cert, 'key': key, 'trust': trust, 'at': time.time(),
+            'info': cert_info(files['cert'])}
+
+
+def acme_before_read():
+    got = own_read(ACME_BEFORE)
+    if not isinstance(got, dict) or not got.get('cert') or not got.get('key'):
+        raise Refused('there is no certificate from before ACME here to put back')
+    first = re.search(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', got['cert'], re.S)
+    if not first:
+        raise Refused('the certificate from before ACME does not read')
+    pem_set(first.group(0), got['key'])          # its own key, and not run out
+    return {'cert': got['cert'], 'key': got['key'], 'trust': got.get('trust') or ''}
+
+
+def acme_look():
+    """For the dashboard: whether port 80 answers the CA, and the certificate
+    kept from before ACME (what it is - never its key)."""
+    marked, port80 = acme_http_now()
+    got = own_read(ACME_BEFORE)
+    before = None
+    if isinstance(got, dict) and got.get('cert'):
+        before = dict(got.get('info') or {}, at=got.get('at'))
+    return {'http': marked, 'port80': port80, 'before': before}
 
 
 def cert_info(path):
@@ -2716,6 +2931,7 @@ def status_read():
 
 def look(write=True):
     out = {'at': time.time(), 'tls': tls_now(), 'access': access_now(), 'fw': fw_look(),
+           'acme': acme_look(),
            'full': full_list(), 'full_dir': FULL_DIR, 'host': hostname(),
            'version': installed_version()}
     if write:
