@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.31.0"
+VERSION="5.32.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -37,6 +37,7 @@ KEEP_PHP=""                 # --keep-php: leave PHP as it is (no move to 8.3)
 PHP_BRANCH="8.3"            # the branch the dashboard runs on, and the first
 PHP_PATCH="36"              # release of it with the php2shell fix (8.3.36)
 KEEP_PYTHON=""              # --keep-python: leave the daemon on the Python it runs on
+NO_PYTHON_BUILD=""          # --no-python-build: only the repositories' Pythons, none built here
 ZIGMON_PY="/usr/bin/python3"   # the Python the daemon and the command run on (ensure_python)
 
 MQTT_HOST="127.0.0.1"
@@ -156,7 +157,8 @@ Usage: sudo ./install.sh [options]
   --uninstall             remove the service and dashboard, keep the history
   --keep-php              leave PHP as it is (by default it is brought to 8.3.36 or newer)
   --keep-python           leave the daemon on the Python it runs on (by default it moves
-                          to the newest python3.X the system's repositories offer)
+                          to Python 3.14: the repositories' own, else built from python.org)
+  --no-python-build       never build Python here: the newest the repositories offer
   -h, --help              this text
 EOF
 }
@@ -190,6 +192,7 @@ while [[ $# -gt 0 ]]; do
         --uninstall)      DO_UNINSTALL="yes"; shift ;;
         --keep-php)       KEEP_PHP="yes"; shift ;;
         --keep-python)    KEEP_PYTHON="yes"; shift ;;
+        --no-python-build) NO_PYTHON_BUILD="yes"; shift ;;
         -h|--help)        usage; exit 0 ;;
         *)                fail "unknown option $1 (see --help)" ;;
     esac
@@ -820,20 +823,30 @@ tune_php_fpm() {
     fi
 }
 
-# The Python the daemon runs on (5.31). AlmaLinux 9's own python3 is 3.9 and
-# stays so - dnf and the system's tools run on it, so it is never touched. The
-# repositories carry newer ones beside it (python3.11, python3.12, and what a
-# later minor release adds): the newest of them, brought to its latest patch,
-# is what the daemon and the zigmon command run on. It is a separate
-# interpreter, so paho-mqtt (and Duo's package, if there) is given to it: its
-# own RPM where there is one, else the very package the system Python has,
-# copied into $LIB_DIR/pythonX.Y, else from PyPI. Nothing is switched until the
-# new one imports everything the daemon needs and runs it; anything less and
-# the daemon stays where it was. The root helper and the upgrader stay on the
-# system's python3: they are what puts a failed upgrade back.
+# The Python the daemon runs on (5.31, 3.14 since 5.32). AlmaLinux 9's own
+# python3 is 3.9 and stays so - dnf and the system's tools run on it, so it is
+# never touched. The daemon and the zigmon command run on Python 3.14: the
+# repositories' own python3.14 where AppStream or EPEL carries it, else built
+# here from python.org's source of the newest 3.14 release (into /usr/local
+# with make altinstall, against the system's OpenSSL, SQLite, zlib and the
+# rest, so dnf keeps those patched; at the lowest CPU and disk priority, so
+# the house is not slowed), and built again when a newer 3.14 release is out.
+# Neither to be had, the newest python3.X the repositories carry. It is a
+# separate interpreter, so paho-mqtt (and Duo's package, if there) is given to
+# it: its own RPM where there is one, else the very package the system Python
+# has, copied into $LIB_DIR/pythonX.Y, else from PyPI. Nothing is switched
+# until the new one imports everything the daemon needs and runs it; anything
+# less and the daemon stays where it was. The root helper and the upgrader
+# stay on the system's python3: they are what puts a failed upgrade back.
 PY_NEWEST=14             # the highest python3.X looked for
 PY_OLDEST=11             # and the lowest worth moving to
 PY_BIN_DIR=/usr/bin      # where the repositories put them
+PY_WANT=14               # the one wanted: built from python.org when no repository has it
+PY_OWN_DIR=/usr/local/bin   # where a Python built here goes (make altinstall)
+PY_SOURCE=https://www.python.org/ftp/python
+PY_BUILD_MAX=15m         # a build longer than this is given up (the upgrade has 25 min)
+PY_BUILD_TMP=/var/tmp
+PY_BUILD_LOG=/var/log/zigmon-python-build.log
 
 python_of_unit() {       # the interpreter the installed unit starts, or nothing
     [[ -f "$UNIT_FILE" ]] || return 0
@@ -893,6 +906,81 @@ python_point_at() {      # the unit and the zigmon command start this Python
     fi
 }
 
+python_from_repos() {    # $1 the minor: installed or brought to its latest patch from dnf; prints its path
+    local n="$1" py="$PY_BIN_DIR/python3.$1"
+    [[ -x "$py" ]] || dnf -q list --available "python3.$n" >/dev/null 2>&1 || return 1
+    if rpm -q "python3.$n" >/dev/null 2>&1; then
+        dnf -y -q upgrade "python3.$n" "python3.$n-libs" >/dev/null 2>&1 || true
+    else
+        dnf -y -q install "python3.$n" >/dev/null 2>&1 || true
+    fi
+    [[ -x "$py" ]] || return 1
+    say "python3.$n from the repositories: $("$py" -V 2>&1)" >&2
+    printf '%s' "$py"
+}
+
+python_latest() {        # $1 the minor: the newest 3.$1.N release python.org has the source of
+    local n="$1" list v
+    list="$(curl -fsS --max-time 30 "$PY_SOURCE/" 2>/dev/null | grep -o "href=\"3\.$n\.[0-9]*/\"" | grep -o "3\.$n\.[0-9]*" | sort -t. -k3,3nr -u)" || return 1
+    for v in $list; do
+        # a folder for a release still in testing holds only its rc tarballs
+        if curl -fsSI --max-time 30 "$PY_SOURCE/$v/Python-$v.tar.xz" >/dev/null 2>&1; then
+            printf '%s' "$v"; return 0
+        fi
+    done
+    return 1
+}
+
+python_build() {         # $1 the minor: python3.$1 built from source into /usr/local; prints its path
+    local n="$1" py="$PY_OWN_DIR/python3.$1" have="" v
+    [[ -x "$py" ]] && have="$("$py" -c 'import platform; print(platform.python_version())' 2>/dev/null)"
+    v="$(python_latest "$n")" || v=""
+    if [[ -z "$v" ]]; then
+        if [[ -n "$have" ]]; then
+            say "python.org not reachable; python3.$n stays at $have" >&2
+            printf '%s' "$py"; return 0
+        fi
+        warn "python.org not reachable: python3.$n cannot be built" >&2
+        return 1
+    fi
+    if [[ "$have" == "$v" ]]; then
+        say "python3.$n is $v, the newest" >&2
+        printf '%s' "$py"; return 0
+    fi
+    say "building Python $v from python.org (${have:+it is $have now; }a few minutes, at the lowest priority)" >&2
+    local deps=(gcc make tar xz openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel
+                sqlite-devel ncurses-devel readline-devel libuuid-devel gdbm-devel)
+    local missing=() d
+    for d in "${deps[@]}"; do rpm -q "$d" >/dev/null 2>&1 || missing+=("$d"); done
+    if [[ ${#missing[@]} -gt 0 ]] && ! dnf -y -q install "${missing[@]}" >/dev/null 2>&1; then
+        warn "the tools to build Python could not be installed (${missing[*]})" >&2
+        [[ -n "$have" ]] && { printf '%s' "$py"; return 0; }
+        return 1
+    fi
+    local work; work="$(mktemp -d "$PY_BUILD_TMP/zigmon-python.XXXXXX")" || return 1
+    chmod 700 "$work"
+    local ok=""
+    if curl -fsS --max-time 600 -o "$work/src.tar.xz" "$PY_SOURCE/$v/Python-$v.tar.xz" \
+        && tar -xJf "$work/src.tar.xz" -C "$work" \
+        && ( cd "$work/Python-$v" \
+             && nice -n 19 ./configure --prefix=/usr/local --with-ensurepip=install >"$work/build.log" 2>&1 \
+             && timeout "$PY_BUILD_MAX" nice -n 19 ionice -c 3 make -j"$(nproc)" >>"$work/build.log" 2>&1 \
+             && nice -n 19 make altinstall >>"$work/build.log" 2>&1 ); then
+        ok=yes
+    fi
+    if [[ -n "$ok" ]] && [[ -x "$py" ]] && "$py" -c 'import ssl, sqlite3, curses, ctypes, lzma, bz2, zlib' >/dev/null 2>&1; then
+        command -v restorecon >/dev/null 2>&1 && restorecon -R "$py" "/usr/local/lib/python3.$n" >/dev/null 2>&1
+        rm -rf "${work:?}"
+        say "Python $v built: $py" >&2
+        printf '%s' "$py"; return 0
+    fi
+    cp -f "$work/build.log" "$PY_BUILD_LOG" 2>/dev/null || true
+    rm -rf "${work:?}"
+    warn "Python $v could not be built (the log: $PY_BUILD_LOG)" >&2
+    [[ -n "$have" ]] && "$py" -c 'import ssl' >/dev/null 2>&1 && { printf '%s' "$py"; return 0; }
+    return 1
+}
+
 ensure_python() {
     step "Python"
     local was; was="$(python_of_unit)"; was="${was:-$PY_BIN_DIR/python3}"
@@ -903,34 +991,31 @@ ensure_python() {
         return 0
     fi
     if [[ -n "$DRY_RUN" ]]; then
-        note "[would move the daemon to the newest python3.$PY_OLDEST..python3.$PY_NEWEST the repositories offer, with paho-mqtt for it]"
+        note "[would move the daemon to python3.$PY_WANT - the repositories' own, else built from python.org - with paho-mqtt for it]"
         return 0
     fi
     command -v dnf >/dev/null 2>&1 || { ZIGMON_PY="$was"; warn "no dnf here: the daemon stays on $was"; return 0; }
-    local n py best=""
-    for (( n = PY_NEWEST; n >= PY_OLDEST; n-- )); do
-        py="$PY_BIN_DIR/python3.$n"
-        if [[ -x "$py" ]] || dnf -q list --available "python3.$n" >/dev/null 2>&1; then
-            best="$n"
-            break
-        fi
+    local n py="" best=""
+    # 1. the repositories (AppStream, EPEL) carry python3.$PY_WANT or newer
+    for (( n = PY_NEWEST; n >= PY_WANT; n-- )); do
+        py="$(python_from_repos "$n")" && { best="$n"; break; }
+        py=""
     done
-    if [[ -z "$best" ]]; then
-        ZIGMON_PY="$was"
-        good "no newer Python in the repositories; the daemon stays on $was ($("$was" -V 2>&1))"
-        return 0
+    # 2. they do not: built from python.org's source, against the system's
+    #    own OpenSSL, SQLite and the rest, so dnf keeps those patched
+    if [[ -z "$py" && -z "$NO_PYTHON_BUILD" ]]; then
+        py="$(python_build "$PY_WANT")" && best="$PY_WANT" || py=""
     fi
-    py="$PY_BIN_DIR/python3.$best"
-    say "the newest Python the repositories offer: python3.$best"
-    # installed or brought to its latest patch
-    if rpm -q "python3.$best" >/dev/null 2>&1; then
-        dnf -y -q upgrade "python3.$best" "python3.$best-libs" >/dev/null 2>&1 || true
-    else
-        dnf -y -q install "python3.$best" >/dev/null 2>&1 || true
+    # 3. neither: the newest the repositories do carry
+    if [[ -z "$py" ]]; then
+        for (( n = PY_WANT - 1; n >= PY_OLDEST; n-- )); do
+            py="$(python_from_repos "$n")" && { best="$n"; break; }
+            py=""
+        done
     fi
-    if [[ ! -x "$py" ]]; then
+    if [[ -z "$py" ]]; then
         ZIGMON_PY="$was"
-        warn "python3.$best could not be installed; the daemon stays on $was"
+        good "no newer Python to be had; the daemon stays on $was ($("$was" -V 2>&1))"
         return 0
     fi
     python_give_package "$py" paho.mqtt.client paho-mqtt 'paho-mqtt<3' \

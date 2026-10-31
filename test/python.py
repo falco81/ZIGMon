@@ -29,7 +29,7 @@ def check(ok, what):
 
 
 src = (HERE / 'install.sh').read_text()
-start = src.find('# The Python the daemon runs on (5.31)')
+start = src.find('# The Python the daemon runs on (5.31')
 end = src.find('check_certificate() {')
 if start < 0 or end < 0 or start > end:
     print('  FAILED: install.sh has no step that moves the daemon to a newer Python')
@@ -57,7 +57,11 @@ if me == 'dnf':
         for p in pkgs:
             m = __import__('re').match(r'^python3\.(\d+)(-(.*))?$', p)
             if not m:
-                code = 1; continue
+                if st.get('deps_ok', True):
+                    st.setdefault('installed', []).append(p)
+                else:
+                    code = 1
+                continue
             n, extra = int(m.group(1)), m.group(3)
             if extra is None:
                 if n not in st['repo']:
@@ -77,9 +81,42 @@ if me == 'dnf':
     save()
 elif me == 'rpm':
     code = 0 if a[-1] in st.get('installed', []) else 1
+elif me == 'curl':
+    url = [x for x in a if x.startswith('http')][0]
+    org = st.get('org')
+    if org is None:
+        code = 7
+    elif url.endswith('/python/'):
+        out = ''.join('<a href="%s/">%s/</a>\n' % (v, v) for v in org['dirs'])
+    elif '-o' in a:
+        v = url.split('/')[-2]
+        import tarfile, io
+        dest = a[a.index('-o') + 1]
+        with tarfile.open(dest, 'w:xz') as t:
+            data = b'#!/bin/sh\nexit 0\n'
+            i = tarfile.TarInfo('Python-%s/configure' % v); i.size = len(data); i.mode = 0o755
+            t.addfile(i, io.BytesIO(data))
+        st['fetched'] = v
+    else:
+        v = url.split('/')[-2]
+        code = 0 if v in org['final'] else 22
+    save()
+elif me == 'make':
+    if 'altinstall' in a:
+        v = os.path.basename(os.getcwd())[len('Python-'):]
+        n = v.split('.')[1]
+        own = os.environ['FAKE_OWN']
+        if not os.path.exists(os.path.join(own, 'python3.' + n)):
+            os.symlink(os.path.join(bindir, 'fake'), os.path.join(own, 'python3.' + n))
+        st['pys']['own' + n] = {'mods': [], 'runs': True, 'patch': int(v.split('.')[2])}
+        st['built'] = v
+    else:
+        code = 0 if st.get('builds', True) else 2
+    save()
 elif me.startswith('python3'):
     n = me[len('python3.'):] if me != 'python3' else '9'
-    py = st['pys'][n]
+    own = os.path.dirname(os.path.abspath(sys.argv[0])) == os.environ.get('FAKE_OWN')
+    py = st['pys'][('own' + n) if own else n]
     joined = ' '.join(a)
     site = None
     m = __import__('re').search(r"sys\.path\.append\('([^']*)'\)", joined)
@@ -90,6 +127,8 @@ elif me.startswith('python3'):
         return bool(site and os.path.isdir(os.path.join(site, top)) and py.get('copy_ok', True))
     if a == ['-V']:
         out = 'Python 3.%s.%d\n' % (n, py.get('patch', 4))
+    elif '-c' in a and 'python_version()' in joined:
+        out = '3.%s.%d\n' % (n, py.get('patch', 4))
     elif '-c' in a and 'version_info[1]' in joined:
         out = n + '\n'
     elif '-c' in a and 'version_info[:2]' in joined:
@@ -108,7 +147,7 @@ elif me.startswith('python3'):
             if line.startswith('import '):
                 mods += [x.strip() for x in line[7:].split(',')]
         code = 0 if all(x in ('sys', 'os') or x in ('ssl', 'sqlite3', 'curses', 'json', 'hashlib', 'ctypes',
-                             'http.server', 'email', 'ftplib', 'pty') and py.get('std', True) or has(x) for x in mods) else 1
+                             'http.server', 'email', 'ftplib', 'pty', 'lzma', 'bz2', 'zlib') and py.get('std', True) or has(x) for x in mods) else 1
     elif '-m' in a and 'pip' in a:
         if st.get('pypi') and 'pip' in py['mods']:
             t = a[a.index('--target') + 1]
@@ -124,7 +163,7 @@ sys.exit(code)
 '''
 
 
-def run(state, keep='', unit_py='/usr/bin/python3'):
+def run(state, keep='', unit_py='/usr/bin/python3', nobuild=''):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         bindir = tmp / 'bin'; bindir.mkdir()
@@ -135,12 +174,17 @@ def run(state, keep='', unit_py='/usr/bin/python3'):
         (syssite / 'paho' / '__pycache__').mkdir()
         fake = bindir / 'fake'
         fake.write_text(FAKE.replace('#!/usr/bin/env python3', '#!' + sys.executable)); fake.chmod(0o755)
-        for name in ('dnf', 'rpm', 'python3'):
+        for name in ('dnf', 'rpm', 'python3', 'curl', 'make'):
             (bindir / name).symlink_to(fake)
+        own = tmp / 'local-bin'; own.mkdir()
+        for n in list(state.get('pys', {})):
+            if n.startswith('own'):
+                (own / ('python3.' + n[3:])).symlink_to(fake)
+        btmp = tmp / 'build'; btmp.mkdir()
         state.setdefault('pys', {})
         state['pys'].setdefault('9', {'mods': ['paho.mqtt.client'], 'runs': True})
         for n in list(state['pys']):
-            if n != '9':
+            if n != '9' and not n.startswith('own'):
                 (bindir / ('python3.' + n)).symlink_to(fake)
         state['sys_site'] = str(syssite)
         st_file = tmp / 'state.json'
@@ -153,22 +197,23 @@ def run(state, keep='', unit_py='/usr/bin/python3'):
 say() { printf 'SAY %%s\\n' "$*"; }; good() { printf 'GOOD %%s\\n' "$*"; }
 warn() { printf 'WARN %%s\\n' "$*"; }; note() { printf 'NOTE %%s\\n' "$*"; }
 step() { printf 'STEP %%s\\n' "$*"; }
-LIB_DIR=%s UNIT_FILE=%s KEEP_PYTHON="%s" DRY_RUN="" ZIGMON_PY=/usr/bin/python3
+LIB_DIR=%s UNIT_FILE=%s KEEP_PYTHON="%s" NO_PYTHON_BUILD="%s" DRY_RUN="" ZIGMON_PY=/usr/bin/python3
 %s
-PY_BIN_DIR=%s
+PY_BIN_DIR=%s PY_OWN_DIR=%s PY_BUILD_TMP=%s PY_BUILD_LOG=%s/build.log PY_SOURCE=https://python.example/ftp/python
 ensure_python
 python_point_at "$ZIGMON_PY"
 echo "CHOSE $ZIGMON_PY"
-''' % (lib, unit, keep, funcs, bindir)
-        env = dict(os.environ, PATH='%s:%s' % (bindir, os.environ['PATH']), FAKE_STATE=str(st_file))
+''' % (lib, unit, keep, nobuild, funcs, bindir, own, btmp, tmp)
+        env = dict(os.environ, PATH='%s:%s' % (bindir, os.environ['PATH']), FAKE_STATE=str(st_file), FAKE_OWN=str(own))
         got = subprocess.run(['bash', '-c', script], capture_output=True, text=True, env=env,
                              stdin=subprocess.DEVNULL, timeout=60)
         st = json.loads(st_file.read_text())
         chose = ''.join(l[6:] for l in got.stdout.splitlines() if l.startswith('CHOSE '))
-        chose = chose.replace(str(bindir), '/usr/bin')
+        chose = chose.replace(str(own), '/usr/local/bin').replace(str(bindir), '/usr/bin')
         return {'out': got.stdout + got.stderr, 'st': st, 'chose': chose,
-                'unit': unit.read_text().replace(str(bindir), '/usr/bin'),
-                'shebang': (lib / 'zigmon.py').read_text().splitlines()[0].replace(str(bindir), '/usr/bin'),
+                'unit': unit.read_text().replace(str(own), '/usr/local/bin').replace(str(bindir), '/usr/bin'),
+                'shebang': (lib / 'zigmon.py').read_text().splitlines()[0].replace(str(own), '/usr/local/bin').replace(str(bindir), '/usr/bin'),
+                'left': sorted(os.listdir(btmp)),
                 'site': sorted(str(p.relative_to(lib)) for p in lib.rglob('*'))}
 
 
@@ -219,6 +264,51 @@ check([l for l in r['st']['log'] if l.startswith('dnf') and ' upgrade ' in ' %s 
 # 8. the copy fails and there is no PyPI: it stays
 r = run({'repo': [12], 'pys': {'9': {'mods': [], 'runs': True}}})
 check(r['chose'] == '/usr/bin/python3', 'moved with no paho for it: %r' % r['chose'])
+
+ORG = {'dirs': ['3.13.9', '3.14.4', '3.14.6', '3.14.7', '3.15.0'], 'final': ['3.13.9', '3.14.4', '3.14.6', '3.15.0']}
+
+# 11. no repository has 3.14: the newest 3.14 release built from python.org
+r = run({'repo': [11, 12], 'org': ORG})
+check(r['chose'] == '/usr/local/bin/python3.14', '3.14 not built where no repository has it: %r\n%s' % (r['chose'], r['out']))
+check(r['st'].get('built') == '3.14.6', 'not the newest final 3.14 release built (3.14.7 has only rc tarballs): %r' % r['st'].get('built'))
+check('ExecStart=/usr/local/bin/python3.14 ' in r['unit'], 'the unit does not start the built 3.14: ' + r['unit'])
+check(r['shebang'] == '#!/usr/local/bin/python3.14', 'the command does not run on the built 3.14: ' + r['shebang'])
+check('python3.14/paho/mqtt/client.py' in r['site'], 'paho not given to the built 3.14: %r' % r['site'])
+check(not r['left'], 'the build folder was left behind: %r' % r['left'])
+check([l for l in r['st']['log'] if l.startswith('make') and '-j' in l] and
+      [l for l in r['st']['log'] if 'openssl-devel' in l], 'not built with make against the system openssl')
+
+# 12. built already at the newest: not built again
+r = run({'repo': [12], 'org': ORG, 'pys': {'own14': {'mods': ['paho.mqtt.client'], 'runs': True, 'patch': 6}}},
+        unit_py='/usr/local/bin/python3.14')
+check(r['chose'] == '/usr/local/bin/python3.14', 'left the built 3.14: %r' % r['chose'])
+check('built' not in r['st'], 'built again though it is the newest')
+
+# 13. a newer 3.14 release: built again
+r = run({'repo': [12], 'org': ORG, 'pys': {'own14': {'mods': ['paho.mqtt.client'], 'runs': True, 'patch': 4}}},
+        unit_py='/usr/local/bin/python3.14')
+check(r['st'].get('built') == '3.14.6', '3.14.4 not brought to 3.14.6: %r' % r['st'].get('built'))
+
+# 14. python.org not reachable, built one there: kept; none: the repositories' newest
+r = run({'repo': [12], 'pys': {'own14': {'mods': ['paho.mqtt.client'], 'runs': True, 'patch': 4}}},
+        unit_py='/usr/local/bin/python3.14')
+check(r['chose'] == '/usr/local/bin/python3.14', 'the built 3.14 dropped with python.org away: %r' % r['chose'])
+r = run({'repo': [11, 12]})
+check(r['chose'] == '/usr/bin/python3.12', 'not the repositories\' newest with python.org away: %r' % r['chose'])
+
+# 15. the build fails: the repositories' newest, the log kept, nothing left
+r = run({'repo': [12], 'org': ORG, 'builds': False})
+check(r['chose'] == '/usr/bin/python3.12', 'a failed build not fallen back from: %r' % r['chose'])
+check(not r['left'], 'a failed build left its folder: %r' % r['left'])
+
+# 16. the repositories carry 3.14 (EPEL): theirs, nothing built
+r = run({'repo': [12, 14], 'org': ORG})
+check(r['chose'] == '/usr/bin/python3.14', 'the repositories\' 3.14 not taken: %r' % r['chose'])
+check('built' not in r['st'] and 'fetched' not in r['st'], 'built though the repositories carry it')
+
+# 17. --no-python-build: never built
+r = run({'repo': [12], 'org': ORG}, nobuild='yes')
+check(r['chose'] == '/usr/bin/python3.12' and 'fetched' not in r['st'], '--no-python-build built it: %r' % r['chose'])
 
 # 9. the daemon looks in its own folder of packages for that Python
 with tempfile.TemporaryDirectory() as tmp:
