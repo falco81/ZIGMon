@@ -2083,7 +2083,35 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.34.2**
+Current version: **5.35.0**
+
+5.35.0 — Upgrades and maintenance, as OTP has it.
+
+* **Settings → Upgrades** is OTP 1.0.197's *Upgrades and maintenance* for a
+  single machine:
+  * **The nodes**: this machine in a table - version, heard from, state
+    (*IN SERVICE* / *IN MAINTENANCE*, and why, who and since when) - with
+    *Maintenance* / *Back in service*;
+  * **From the web**: what was found and when, the address, *Look now*, and
+    the three settings side by side with their words under them - look for a
+    new version every day, where, offer going back to an older version;
+  * **A new version**: the drop zone, the package's card, *What changed*,
+    *Upgrade this server*, *Forget the package*.
+* **Maintenance** never stops anything in the house - rules, sensors,
+  sockets, schedules, MQTT and the pages go on. It holds, while it lasts and
+  for ten minutes after, the alerts about the machine itself and about
+  devices gone quiet or offline (each written into the events as held back);
+  your own alerts and rules' messages, leaks, smoke, tamper and the like
+  still go out. It is put on by hand (a reason may be given) and by itself
+  for an upgrade, going back, a system update and a restart or power off,
+  and taken off when they end; one put on by hand stays until *Back in
+  service*. A band on every page says so. `zigmon --maintenance
+  on|off|status [--why TEXT]`, and in the console under Upgrades.
+* `/api/healthz` answers 503 in maintenance (200 in service) for a monitor in
+  front; `/api/health` stays 200 - the upgrade's own check reads it.
+
+`test/maintenance.py` (the daemon, the command line and the real page in
+Chromium); it fails on 5.34.2.
 
 5.34.2 — In your DNS: laid out once, the same after a reload.
 
