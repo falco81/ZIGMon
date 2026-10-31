@@ -2083,7 +2083,34 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.29.7**
+Current version: **5.30.0**
+
+5.30.0 — the certificate downloaded as it is needed, and PHP 8.3.36.
+
+* **Download** on Certificates asks for the format, each a card:
+  without the private key - the certificate and its chain (`.pem`), the
+  certificate alone (`.crt`), the CA chain (`.ca.pem`), DER (`.cer`); with
+  it - **PFX / PKCS#12** with a password (`.pfx`, for Windows, IIS,
+  Exchange, Azure), **PFX (legacy)** in 3DES/SHA1 for Windows Server 2016 and
+  older, old Java and appliances, **PEM with the private key** (the key
+  locked with AES-256 when a password is given) and **the key alone**. A
+  password is asked twice, with a measure of its strength; the root
+  certificate may be put in as well.
+* The key is root's and never passes through the daemon: root reads the files
+  nginx names, checks that the key is the certificate's, makes the file with
+  the password given to openssl in its environment, and hands it over for one
+  download - gone once fetched. Asking for it and downloading it are written
+  into the events.
+* **PHP 8.3.36** at every install and upgrade - the 8.3 release with the
+  php2shell fix: the stream the machine has, updated; where that does not
+  reach it, the system's own `php:8.3` stream, else Remi's `php:remi-8.3`
+  (with EPEL). php-fpm's configuration is kept; if php-fpm does not start on
+  the new one, or the dashboard does not read, the old stream is put back.
+  A newer branch with the fix is left alone; `install.sh --keep-php` leaves
+  PHP as it is.
+
+`test/review530.py` (root's export, every format) and `test/php.py` (the move
+to 8.3.36 and its way back); both fail on 5.29.7.
 
 5.29.7 — the command line and the console know AT+CMMS.
 
