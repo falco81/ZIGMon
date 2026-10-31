@@ -23,7 +23,9 @@ root. Four kinds of thing can be asked for, and nothing else:
                    the kept backups), written for the dashboard;
   * osup.ask     - a look for the system's updates, or the update itself
                    (dnf), started as a job of its own that outlives this
-                   service and writes how it goes into osup.json and osup.log.
+                   service and writes how it goes into osup.json and osup.log;
+                   the proxy of Control - Proxy, when one is handed over, kept
+                   for dnf in a file only root reads, never on a command line.
 
 Nothing in a request is trusted: every value is checked against the one shape
 it may have before it goes into a file, certificates and keys are read by
@@ -3353,6 +3355,13 @@ OSUP_LOCK = os.environ.get('ZIGMON_OSUP_LOCK', '/run/zigmon-osup.lock')
 # where the job looks for dnf and needs-restarting (tests: a folder of fakes first)
 OSUP_PATH = os.environ.get('ZIGMON_OSUP_PATH', '/usr/sbin:/usr/bin:/sbin:/bin')
 OSUP_JOB_RE = re.compile(r'^[0-9a-f]{12,32}\Z')
+# The proxy dnf goes through (5.35, otp 1.0.166 - Control - Proxy): handed over
+# in osup.ask, kept here for the job in a file only root reads (0600), and given
+# to dnf in its environment - never on a command line, never in osup.json or
+# osup.log (the job says only host:port). No proxy in the ask: the file goes.
+OSUP_PROXY = os.environ.get('ZIGMON_OSUP_PROXY', '/run/zigmon-osup-proxy.json')
+OSUP_PROXY_RE = re.compile(r'^http://(?:[^\s:@/]+(?::[^\s@/]*)?@)?'
+                           r'(?:[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?/?\Z')
 OSUP_KINDS = ('check', 'upgrade')
 # The packages a restart is needed for once they are updated, as dnf
 # needs-restarting -r names them (otp 1.0.159): told before the update is made.
@@ -3409,6 +3418,50 @@ def osup_launch(job, kind, security=False):
     return how
 
 
+def osup_proxy_keep(r):
+    """The proxy of the ask, kept for the job - or the file taken away."""
+    url = r.get('proxy') or ''
+    if not isinstance(url, str) or (url and not OSUP_PROXY_RE.match(url)):
+        raise Refused('the proxy is not an http:// address')
+    no = r.get('proxy_no') or ''
+    if not isinstance(no, str):
+        raise Refused('the names reached straight are not words')
+    no = ','.join(w for w in re.split(r'[\s,;]+', re.sub(r'[^A-Za-z0-9.*:/\[\],;\s_-]', '', no))
+                  if w)[:2000]
+    if not url:
+        try:
+            os.unlink(OSUP_PROXY)
+        except FileNotFoundError:
+            pass
+        return
+    fd = os.open(OSUP_PROXY + '.new', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(json.dumps({'url': url, 'no': no}))
+    os.replace(OSUP_PROXY + '.new', OSUP_PROXY)
+
+
+def osup_proxy_env(env):
+    """dnf's environment with the proxy kept for it (libcurl reads these);
+    what may be said of it - host:port - or ''."""
+    try:
+        st = os.stat(OSUP_PROXY, follow_symlinks=False)
+        if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077:
+            return ''                                   # not root's alone: not believed
+        with open(OSUP_PROXY) as f:
+            got = json.loads(f.read(8192) or '{}')
+    except (OSError, ValueError):
+        return ''
+    url = got.get('url') if isinstance(got, dict) else ''
+    if not isinstance(url, str) or not OSUP_PROXY_RE.match(url):
+        return ''
+    for k in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+        env[k] = url
+    if got.get('no'):
+        env['no_proxy'] = env['NO_PROXY'] = str(got['no'])
+    return url.split('://', 1)[1].rsplit('@', 1)[-1].rstrip('/')
+
+
 def osup_one(r):
     kind = r.get('kind')
     if r.get('do') != 'run' or kind not in OSUP_KINDS:
@@ -3419,6 +3472,9 @@ def osup_one(r):
     if 'security' in r and not isinstance(r['security'], bool):
         raise Refused('security is yes or no')
     security = r.get('security') is True and kind == 'upgrade'
+    if osup_running():
+        raise Refused('an update or a look for updates is going on already')
+    osup_proxy_keep(r)
     how = osup_launch(job, kind, security)
     return {'started': kind, 'job': job, 'security': security, 'how': how}
 
@@ -3490,6 +3546,7 @@ def osup_job(job, kind, security=False):
         put()
 
     env = {'PATH': OSUP_PATH, 'LANG': 'C', 'LC_ALL': 'C', 'HOME': '/root'}
+    through = osup_proxy_env(env)
 
     def stream(cmd, on_line=None, ok=(0,)):
         say('$ ' + ' '.join([os.path.basename(cmd[0])] + cmd[1:]))
@@ -3506,6 +3563,8 @@ def osup_job(job, kind, security=False):
 
     dnf = osup_tool('dnf')
     try:
+        if through:
+            say('through the proxy %s (Control - Proxy)' % through)
         put(True)
         if not dnf:
             raise Refused('dnf is not on this machine')
