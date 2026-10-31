@@ -2083,7 +2083,21 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.34.0**
+Current version: **5.34.1**
+
+5.34.1 — the pages of the certificates, steadied.
+
+* **In your DNS** (Automatic certificates) is no longer made anew at every
+  refresh of the pane: its copy buttons blinked every few seconds. It is kept
+  while what it says is the same; only "checked … ago" moves.
+* Its **copy buttons** stand in a column of their own right after the text,
+  one under the other, instead of wherever a line of text ended; the table
+  takes the room it needs and leaves the rest to the last column.
+* **The two certificates side by side** - this machine's and the server in
+  front's - have their names and the bars under them on one line: each
+  card's head is as tall as the tallest, again when the window changes size.
+
+`test/review5342.py` (the real page in Chromium); it fails on 5.34.0.
 
 5.34.0 — System updates, as OTP has them.
 

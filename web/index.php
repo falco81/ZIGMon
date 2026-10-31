@@ -3863,6 +3863,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .acme-dns .dns-val > span:first-child{overflow-wrap:anywhere;min-width:0;flex:0 1 auto}
   .acme-dns .dns-val > button{flex:none}
   .acme-dns .dns-val > div{flex-basis:100%}
+  /* the copy buttons in a column of their own, right after the text (5.34.1):
+     one under the other, not wherever a line of text happened to end */
+  .acme-dns td.dns-cell{padding-right:4px;white-space:nowrap}
+  .acme-dns table th,.acme-dns table td{white-space:nowrap}
+  .acme-dns table th:last-child,.acme-dns table td:last-child{width:100%;white-space:normal}
+  .acme-dns td.dns-copy{width:1%;white-space:nowrap;padding-left:0;padding-right:18px}
   .acme-steps-done{margin:10px 0 0}.acme-steps-done summary{cursor:pointer}
   .acme-steps-done .si-row{display:flex;gap:8px;padding:2px 0}
   .acme-steps-done .si-row > .mono{flex:none;min-width:52px;text-align:right}
@@ -26578,7 +26584,29 @@ function drawWeb(d) {
   grid.appendChild(certCard(d));
   if (d.proxy) grid.appendChild(certCard(proxyView(d)));
   host.appendChild(grid);
+  certLevel(grid);
 }
+/* The cards side by side read across (5.34.1): each card's head as tall as
+   the tallest, so the names and the bars under them are on one line - the
+   words under a name wrap to two lines on one card and three on the other. */
+function certLevel(grid) {
+  var heads = Array.prototype.slice.call(grid.querySelectorAll('.cert-card > .cert-h'));
+  heads.forEach(function (h) { h.style.minHeight = ''; });
+  if (heads.length < 2) return;
+  var rows = {};
+  heads.forEach(function (h) {
+    var top = Math.round(h.getBoundingClientRect().top);
+    (rows[top] = rows[top] || []).push(h);
+  });
+  Object.keys(rows).forEach(function (k) {
+    var tall = Math.max.apply(null, rows[k].map(function (h) { return h.getBoundingClientRect().height; }));
+    rows[k].forEach(function (h) { h.style.minHeight = Math.ceil(tall) + 'px'; });
+  });
+}
+window.addEventListener('resize', function () {
+  var g = document.querySelector('#web-certs .cert-grid');
+  if (g) certLevel(g);
+});
 function certCard(d) {
   var prof = d.conf || {}, now = d.now || {}, info = now.info || null;
   var px = d.target === 'proxy' ? d.proxy : null, T = px ? 'proxy' : '';
@@ -27286,7 +27314,15 @@ function drawAcme() {
     grid.appendChild(c);
   });
   host.appendChild(grid);
-  if (d.on && d.dns_guide) host.appendChild(acmeDnsGuide(d));
+  if (d.on && d.dns_guide) {
+    /* drawn again only when what it says changed (5.34.1): every refresh
+       made it anew, and its copy buttons blinked each time */
+    var dsig = JSON.stringify([d.dns_guide, AC_DNS.at, AC_DNS.rows, AC_DNS.own,
+                               Date.now() / 1000 - AC_DNS.at < 600]);
+    if (!AC.dnsCard || AC.dnsSig !== dsig) { AC.dnsCard = acmeDnsGuide(d); AC.dnsSig = dsig; }
+    else if (AC.dnsCard._ago) AC.dnsCard._ago.textContent = 'checked ' + ago(AC_DNS.at);
+    host.appendChild(AC.dnsCard);
+  }
   if (d.account && d.account.kid) {
     var a = el('p', 'muted small ac-account', 'The account at the CA: ');
     a.appendChild(el('span', 'mono', d.account.kid));
@@ -27351,16 +27387,20 @@ var ACME_DNS_STEPS = {
   manual: ['At every order - renewals too - the TXT record is shown here: put it in your DNS, then say It is in DNS.',
            'Better: a CNAME once in your DNS to a zone zigmon can write to (deSEC is free) - then nothing is by hand any more.']
 };
-function acmeDnsCell(text, copyIt) {
+function acmeDnsCell(text) {
   var td = el('td', 'mono small dns-cell');
   var box = el('div', 'dns-val');
   box.appendChild(el('span', '', text));
-  if (copyIt) {
+  td.appendChild(box);
+  return td;
+}
+function acmeDnsCopy(text) {
+  var td = el('td', 'dns-copy');
+  if (text) {
     var cp = iconButton('copy', 'Copy');
     cp.onclick = function () { copyText(text); };
-    box.appendChild(cp);
+    td.appendChild(cp);
   }
-  td.appendChild(box);
   return td;
 }
 function acmeDnsGuide(d) {
@@ -27380,20 +27420,23 @@ function acmeDnsGuide(d) {
     var c = checked && checked[i] && checked[i].record === r.record ? checked[i] : {};
     return Object.assign({}, r, {ok: c.ok, said: c.said});
   });
-  card.appendChild(zTable(['Certificate', 'Record', 'Type', 'Points at / value', 'In DNS now'], rows, function (r) {
+  card.appendChild(zTable(['Certificate', 'Record', '', 'Type', 'Points at / value', '', 'In DNS now'], rows, function (r) {
     var tr = el('tr');
     tr.appendChild(el('td', '', r.type === 'NS' ? 'its zone at deSEC' : 'this machine'));
-    if (r.record) tr.appendChild(acmeDnsCell(r.record, true));
+    if (r.record) tr.appendChild(acmeDnsCell(r.record));
     else { var e0 = el('td', 'small'); e0.appendChild(el('span', 'muted', r.why || '')); tr.appendChild(e0); }
+    tr.appendChild(acmeDnsCopy(r.record));
     tr.appendChild(el('td', 'mono small', r.type || ''));
     if (r.type === 'CNAME' || r.type === 'NS' || (r.type === 'A' && r.value)) {
-      var vc = acmeDnsCell(r.value, true);
+      var vc = acmeDnsCell(r.value);
       if (r.type === 'A') vc.firstChild.appendChild(el('div', 'muted', 'or the public address in front of it'));
       tr.appendChild(vc);
+      tr.appendChild(acmeDnsCopy(r.value));
     } else {
       var v0 = el('td', 'small');
       v0.appendChild(el('span', 'muted', r.type === 'TXT' ? (r.value || r.why) : ''));
       tr.appendChild(v0);
+      tr.appendChild(acmeDnsCopy(''));
     }
     var st = el('td', 'small');
     if (r.check) {
@@ -27421,7 +27464,7 @@ function acmeDnsGuide(d) {
   if (checked && AC_DNS.own === false) {
     card.appendChild(el('p', 'note warn small', 'Checked with this machine’s DNS servers - inside your network they may see what the internet does not. Set DNS servers for ACME (below) to public ones, 1.1.1.1, 9.9.9.9, to see what the CA sees.'));
   }
-  if (checked) row.appendChild(el('span', 'muted small', 'checked ' + ago(AC_DNS.at)));
+  if (checked) { card._ago = el('span', 'muted small', 'checked ' + ago(AC_DNS.at)); row.appendChild(card._ago); }
   card.appendChild(row);
   return card;
 }
