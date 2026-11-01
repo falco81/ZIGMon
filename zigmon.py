@@ -4961,6 +4961,11 @@ class Storage(object):
         # or an online backup - which hold the database for as long as they
         # take - can never stall a button press or the MQTT client thread.
         self._snap_cache = {}     # device -> (payload, availability), the merge source of truth
+        # ...and whether it holds EVERY row of the table (5.38): then a device
+        # not in it has no row, and its first report is merged into nothing
+        # without asking the database. Asked, it waited for whatever held the
+        # file - and it is asked on the broker's own thread.
+        self._snap_whole = False
         # the blocked addresses, kept in hand: this is read on every request
         self._block_cache = {}
         self._block_nets = []
@@ -5420,7 +5425,7 @@ class Storage(object):
         shows this immediately - then write the row on the writer thread."""
         cached = self._snap_cache.get(device_id)
         if cached is None:
-            cached = self._read_snapshot(device_id)
+            cached = self._snapshot_of(device_id)
         merged = dict(cached[0])
         merged.update(payload or {})
         if availability is None:
@@ -5432,12 +5437,25 @@ class Storage(object):
     def replace_snapshot(self, device_id, payload, availability=None):
         """The whole payload, not merged into what was there - for taking a
         reading away rather than adding one."""
-        cached = self._snap_cache.get(device_id) or self._read_snapshot(device_id)
+        cached = self._snap_cache.get(device_id) or self._snapshot_of(device_id)
         if availability is None:
             availability = cached[1]
         self._snap_cache[device_id] = (dict(payload or {}), availability)
         self._defer(self._write_snapshot, device_id, int(time.time()), dict(payload or {}), availability)
         return dict(payload or {})
+
+    def _snapshot_of(self, device_id):
+        """A device the copy in memory does not have: when that copy is the
+        whole table, it has no row, and nothing is read. Every device's first
+        report after Erase history, Erase events or Drop stale data read its
+        row here - on the broker's thread, behind the VACUUM those start - and
+        no report and no press was heard for as long as the VACUUM took
+        (1.9 s of a 2 s one, measured; a quarter-gigabyte file takes far
+        longer)."""
+        if self._snap_whole:
+            self._snap_cache[device_id] = ({}, None)
+            return self._snap_cache[device_id]
+        return self._read_snapshot(device_id)
 
     def _read_snapshot(self, device_id):
         with self.lock:
@@ -5471,6 +5489,7 @@ class Storage(object):
             out[r['device']] = {'ts': r['ts'], 'payload': payload,
                                 'availability': r['availability']}
             self._snap_cache[r['device']] = (payload, r['availability'])
+        self._snap_whole = True                  # every row is in memory now
         return out
 
     def keys_for(self, device_id):
@@ -6654,13 +6673,17 @@ class Storage(object):
                 self.db.execute('DELETE FROM devices WHERE id=? AND removed=1', (entry['device'],))
             self.db.commit()
         self._forget_device()
-        self._snap_cache.clear()
+        # Only the snapshots of the devices erased went, so only theirs are
+        # forgotten - and nothing of the settings, which this does not touch.
+        # Both were emptied whole, and every device's next report then read
+        # its row back on the broker's thread, behind the VACUUM below (and
+        # every setting read on the way to a light with it).
+        for entry in wanted:
+            self._snap_cache.pop(entry['device'], None)
         self._actions_cache.clear()
         self._last_action.clear()
         self.last_sample.clear()
         self.last_written.clear()
-        self._meta_raw.clear()
-        self._meta_complete = False
         self.devices(include_removed=True)
         self._warm_meta()
         self._warm_actions()
@@ -6814,10 +6837,11 @@ class Storage(object):
                 except sqlite3.Error:
                     meta, meta_ok = {}, False
                 snaps = {}
+                snaps_ok = True
                 try:
                     snap_rows = self.db.execute('SELECT device, payload, availability FROM snapshots').fetchall()
                 except sqlite3.Error:
-                    snap_rows = []
+                    snap_rows, snaps_ok = [], False
                 for r in snap_rows:
                     try:
                         snaps[r['device']] = (json.loads(r['payload'] or '{}'), r['availability'])
@@ -6825,6 +6849,7 @@ class Storage(object):
                         snaps[r['device']] = ({}, r['availability'])
                 self._meta_raw, self._meta_cache, self._meta_complete = meta, {}, meta_ok
                 self._snap_cache = snaps
+                self._snap_whole = snaps_ok
                 self._actions_cache, self._last_action = {}, {}
                 self._dev_cache, self._dev_list = {}, None
                 self._warm_devices()
@@ -7222,13 +7247,27 @@ class Storage(object):
             for cache in (self._snap_cache, self._actions_cache, self._last_action):
                 cache.pop(device_id, None)   # only this one went away
         else:
-            self._snap_cache.clear()
+            # The snapshots only where their table was emptied (5.38). Erasing
+            # the history or the events left every row there and emptied the
+            # copy in memory anyway, so every device's next report read its
+            # row back on the broker's thread - behind the VACUUM below, which
+            # held every report and every press for as long as it took.
+            if scope == 'all':
+                self._snap_cache.clear()
+                self._snap_whole = True      # there are no rows left to read
             self._actions_cache.clear()
             self._last_action.clear()
-        if scope in ('all', 'history'):
-            self._meta_cache.clear()         # only those scopes touch meta rows
+        if scope == 'all':
+            self._meta_cache.clear()         # only this scope empties the meta table
             self._meta_raw.clear()
             self._meta_complete = False      # the table was emptied under us; see _warm_meta
+        elif scope == 'history':
+            # ...and this one takes one row of it, which is all it forgets: the
+            # whole of it forgotten sent every setting read on the way to a
+            # light (the rules, the bindings, who has taken what over) to the
+            # database until the warm below had read them back
+            self._meta_raw.pop('aggregated_to', None)
+            self._meta_cache.pop('aggregated_to', None)
         # Everything the dashboard reads must be back in memory BEFORE the
         # VACUUM starts: behind it, a first read waits for the whole thing.
         self.devices(include_removed=True)   # also fills the list the warm below needs
@@ -7755,6 +7794,54 @@ def _webproxy_home_ip(ip):
         or ip.is_unspecified or ip.is_reserved
 
 
+def _webproxy_resolve(host):
+    try:
+        return {g[4][0] for g in socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)}
+    except (OSError, UnicodeError):
+        return set()
+
+
+# What DNS said of a name, for the alerts (5.38): host -> (addresses, when).
+# An alert sent with the proxy on for alerts asked DNS about ntfy's name -
+# and Telegram's - every time, before anything was sent, on the one thread
+# every alert of the house goes out on. Behind a proxy the name is often one
+# only the proxy knows, and a resolver that does not answer took its whole
+# timeout per name, per alert: a burglar's alert seconds late, and every
+# alert queued behind it later still. What it said is kept for a while; a
+# name not looked up yet is waited for a moment and no longer, the look
+# finishing behind for the next alert. Not answered in time is what not
+# answered at all always was: through the proxy.
+WEBPROXY_LOOKS = {}
+WEBPROXY_LOOK_KEEP_S = 600
+WEBPROXY_LOOK_WAIT_S = 1.0
+_WEBPROXY_LOOK_GUARD = threading.Lock()
+
+
+def _webproxy_look(host):
+    now = time.time()
+    with _WEBPROXY_LOOK_GUARD:
+        hit = WEBPROXY_LOOKS.get(host)
+        if hit is not None and hit[0] is not None and now - hit[1] < WEBPROXY_LOOK_KEEP_S:
+            return hit[0]
+        busy = hit[2] if hit is not None else None
+        if busy is None:
+            busy = threading.Event()
+            WEBPROXY_LOOKS[host] = (hit[0] if hit else None, hit[1] if hit else 0.0, busy)
+
+            def look_now(event=busy):
+                got = _webproxy_resolve(host)
+                with _WEBPROXY_LOOK_GUARD:
+                    WEBPROXY_LOOKS[host] = (got, time.time(), None)
+                event.set()
+            threading.Thread(target=look_now, name='proxy-look', daemon=True).start()
+    if hit is not None and hit[0] is not None:
+        return hit[0]                    # out of date: the last answer, while the new one comes
+    busy.wait(WEBPROXY_LOOK_WAIT_S)
+    with _WEBPROXY_LOOK_GUARD:
+        hit = WEBPROXY_LOOKS.get(host)
+    return hit[0] if hit is not None and hit[0] is not None else set()
+
+
 def webproxy_straight(host, look=True):
     """Why this host is reached straight rather than through the proxy - ''
     when it goes through it. In the list (a name, every name under .domain,
@@ -7791,10 +7878,7 @@ def webproxy_straight(host, look=True):
     if '.' not in host or host.endswith(WEBPROXY_HOME_SUFFIXES):
         return '%s is a name of this network' % host
     if look:
-        try:
-            got = {g[4][0] for g in socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)}
-        except (OSError, UnicodeError):
-            got = set()
+        got = _webproxy_look(host) if look == 'kept' else _webproxy_resolve(host)
         addrs = []
         for a in got:
             try:
@@ -7836,7 +7920,9 @@ def web_opener(url, *handlers, purpose=''):
     if not webproxy_on(purpose or '-'):
         return urllib.request.build_opener(*handlers)
     host = urlsplit(str(url)).hostname or ''
-    if webproxy_straight(host):
+    # the alerts on what DNS said a moment ago (see _webproxy_look); what
+    # nobody is waiting on - an update, a certificate - asks afresh
+    if webproxy_straight(host, look='kept' if purpose == 'alerts' else True):
         return urllib.request.build_opener(urllib.request.ProxyHandler({}), *handlers)
     return urllib.request.build_opener(_webproxy_handler(webproxy_full(purpose)), *handlers)
 
@@ -9434,7 +9520,11 @@ class Daemon(object):
             self.store.last_written.clear()
         self.store._forget_device(old_id)
         self.store._forget_device(new_id)
-        self.store._snap_cache.pop(old_id, None)
+        # its snapshot row went with it (above), and so does the copy in
+        # memory: a device the copy has not got is taken to have no row
+        moved = self.store._snap_cache.pop(old_id, None)
+        if moved is not None and new_id not in self.store._snap_cache:
+            self.store._snap_cache[new_id] = moved
         if old_id in self.live:
             merged = self.live.pop(old_id)
             self.live.setdefault(new_id, merged)
@@ -20415,6 +20505,7 @@ class Daemon(object):
         # a command is out, and what it asks for.
         p.inflight = getattr(p, 'inflight', 0) + 1
         p.wanted = bool(on)
+        p.cmd_asked = asked = getattr(p, 'cmd_asked', 0) + 1
         try:
             # One at a time to ONE socket, in the order given. A strip's four
             # sockets still go together (they are four locks), but two
@@ -20422,6 +20513,19 @@ class Daemon(object):
             # at once, and a packet delayed on the Wi-Fi let the earlier one
             # arrive last: "on, then off" left it on, five times out of five.
             with p.cmd_lock:
+                # ...and one given while it waited here is the one that counts
+                # (5.38): "on" or "off" said twice is said once, and only what
+                # was asked last is what the socket is to be. A socket that
+                # does not answer takes up to five seconds a command, and a
+                # rule or a button asking it again every few seconds queued
+                # every one of them: 49 after twelve seconds of a sensor
+                # chattering at it, each sent in turn when the box came back,
+                # the light flapping through all of them - and past
+                # BUSY_CEILING waiting, every scene in the house was refused.
+                if getattr(p, 'cmd_asked', asked) != asked:
+                    self.debug('%s: %s not sent - a newer command for it came while it waited'
+                               % (p.name, 'on' if on else 'off'))
+                    return True, '%s: a newer command for it has taken its place' % p.name
                 p.cmd_seq = getattr(p, 'cmd_seq', 0) + 1
                 if not self.mqtt_command(p, 'Switch.Set', {'id': int(p.cfg.get('switch_id') or 0), 'on': bool(on)},
                                          fallback=lambda: p.rpc().set_output(on)):
@@ -21285,7 +21389,27 @@ class Daemon(object):
 
     def trial_would(self, bid, text, target=None, facts=None, origin=''):
         """An item on trial would have acted: written down instead, and an
-        alert message let through marked TEST when its import asks for it."""
+        alert message let through marked TEST when its import asks for it.
+
+        Asked by the rule worker, the presses and the clock, in the middle of
+        whatever else they have to do (5.38). The list is held by whoever is
+        saving it - Commit, Roll back, Test alerts - and they write it down
+        under the database lock, so with a backup or a VACUUM holding that a
+        rule on trial held the rule worker for as long, and every rule of the
+        house behind it: 1.35 s of a 1.5 s backup, measured. Written down here
+        when the list is free, which is nearly always; on a thread of its own
+        when it is not. The TEST alert is worded on a thread either way, as a
+        real alert is - its facts walk the whole house."""
+        if not self._trial_lock.acquire(blocking=False):
+            threading.Thread(target=self._trial_would_now, args=(bid, text, target, facts, origin),
+                             name='trial', daemon=True).start()
+            return
+        try:
+            self._trial_would_now(bid, text, target, facts, origin)
+        finally:
+            self._trial_lock.release()
+
+    def _trial_would_now(self, bid, text, target=None, facts=None, origin=''):
         with self._trial_lock:
             batches = self.trial_imports()
             b = next((x for x in batches if x['id'] == bid), None)
@@ -21298,14 +21422,18 @@ class Daemon(object):
         if b.get('alerts') and isinstance(target, tuple) and target and target[0] == 'notify':
             message = self.message_by_id(target[1]) if len(target) > 1 and target[1] else None
             if message:
-                facts_now = self.message_facts(origin, facts)
-                words = self.fill_message(message['text'], facts_now) or message['name']
-                self.notify('[TEST] ' + words, message.get('level') or 'info', sms=False,
-                            ntfy=message.get('ntfy', True) is not False,
-                            telegram=message.get('telegram', True) is not False,
-                            title='[TEST] ' + (self.fill_message(message.get('title') or '', facts_now)
-                                               or message['name']),
-                            dedup=None, about='message')
+                threading.Thread(target=self._trial_alert, args=(message, origin, facts),
+                                 name='trial-alert', daemon=True).start()
+
+    def _trial_alert(self, message, origin, facts):
+        facts_now = self.message_facts(origin, facts)
+        words = self.fill_message(message['text'], facts_now) or message['name']
+        self.notify('[TEST] ' + words, message.get('level') or 'info', sms=False,
+                    ntfy=message.get('ntfy', True) is not False,
+                    telegram=message.get('telegram', True) is not False,
+                    title='[TEST] ' + (self.fill_message(message.get('title') or '', facts_now)
+                                       or message['name']),
+                    dedup=None, about='message')
 
     def _trial_act(self, section, item, target, do, origin, facts=None, label=None):
         """True when the item is on trial - and then what it would have done is
