@@ -719,6 +719,16 @@ php_good_enough() {      # 0 when the version is 8.3.36 or newer
     [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] || return 1
     major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
     local wmaj="${PHP_BRANCH%%.*}" wmin="${PHP_BRANCH##*.}"
+    # A newer branch has the fix only from its own release of it on (as the
+    # daemon's PHP_FIXED has them): any 8.4 or 8.5 was taken for fixed, and
+    # an 8.4.10 was left in front of the php2shell holes, said to be fine.
+    local later="8.4.27 8.5.12" f
+    for f in $later; do
+        if [[ "$major.$minor" == "${f%.*}" ]]; then
+            (( patch >= ${f##*.} )) && return 0
+            return 1
+        fi
+    done
     (( major > wmaj )) && return 0
     (( major == wmaj && minor > wmin )) && return 0
     (( major == wmaj && minor == wmin && patch >= PHP_PATCH )) && return 0

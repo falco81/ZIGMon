@@ -115,6 +115,13 @@ st, out, rc = run({'version': '8.3.40', 'stream': '8.3', 'streams': {'8.3': '8.3
 check(rc == 0 and not [l for l in st['log'] if l.startswith('dnf')], '8.3.40 was touched: %r' % st['log'])
 st, out, rc = run({'version': '8.4.30', 'stream': '8.4', 'streams': {'8.4': '8.4.30'}})
 check(st['version'] == '8.4.30', 'a newer branch that has the fix was taken back to 8.3')
+# 5.38: a newer branch before its own fixed release is not left alone - any
+# 8.4 was taken for fixed, and 8.4.10 kept the php2shell holes, said fine
+st, out, rc = run({'version': '8.4.10', 'stream': '8.4', 'streams': {'8.4': '8.4.30'}, 'upgrade_to': '8.4.30'})
+check(st['version'] == '8.4.30' and 'already' not in out,
+      'PHP 8.4.10 (no fix) was left as it is: %r' % {k: st.get(k) for k in ('version', 'stream')})
+st, out, rc = run({'version': '8.5.12', 'stream': '8.5', 'streams': {'8.5': '8.5.12'}})
+check(not [l for l in st['log'] if l.startswith('dnf')], '8.5.12 (fixed) was touched: %r' % st['log'])
 st, out, rc = run({'version': '8.3.20', 'stream': '8.3', 'streams': {'8.3': '8.3.36'}, 'upgrade_to': '8.3.36'})
 check(st['version'] == '8.3.36' and st['stream'] == '8.3', 'an update within the stream did not bring 8.3.36: %r' % st)
 st, out, rc = run({'version': '8.2.10', 'stream': '8.2', 'streams': {'8.2': '8.2.10', '8.3': '8.3.38'}})

@@ -45526,10 +45526,17 @@ class Acme(object):
         self.nonce = None
         self.kid = None
         self.key_pem = ''
-        self.dir = self._get(self.dir_url)[0]
-        if not isinstance(self.dir, dict) or not self.dir.get('newOrder'):
-            raise AcmeError('%s is not an ACME directory' % self.dir_url)
-        self._account()
+        try:
+            self.dir = self._get(self.dir_url)[0]
+            if not isinstance(self.dir, dict) or not self.dir.get('newOrder'):
+                raise AcmeError('%s is not an ACME directory' % self.dir_url)
+            self._account()
+        except BaseException:
+            # the caller never gets this object to close: a CA that does not
+            # answer, or refuses the account, left the folder behind at every
+            # try - with the new account's private key in it once signed with
+            self.close()
+            raise
 
     def close(self):
         shutil.rmtree(self.work, ignore_errors=True)
@@ -46007,15 +46014,29 @@ def acme_order(d, name, by, say=None):
         while d.root_busy() and time.time() < end:
             time.sleep(1)
         said('root puts it in')
+        was_how = d.tls_conf().get('how')
         ident = d.tls_put(dict(pem, keep_before=keep), 'from the ACME CA for %s, until %s' % (
             name, time.strftime('%Y-%m-%d', time.localtime(info['not_after']))
             if info.get('not_after') else '?'), how='ACME')
         pem = None
         done = acme_wait_root(d, ident)
-        if done.get('state') == 'failed':
+        if done.get('state') != 'done':
+            # failed - or not answered in ten minutes, which is no more put in
+            # than a refusal: taken for done, the state said "ordered, good
+            # for 90 days" and nothing was ordered again while the old one ran
+            # out. And the certificate in place is still the one it was:
+            # tls_put said ACME already, and the next order then took it for
+            # one of the CA's and kept nothing to go back to.
             if keep:
                 d.store.forget_meta('acme_before')
-            raise AcmeError('root did not put it in: %s' % '; '.join(done.get('said') or ['?']))
+            conf = d.tls_conf()
+            if was_how:
+                conf['how'] = was_how
+            else:
+                conf.pop('how', None)
+            d.tls_save(conf)
+            raise AcmeError('root did not put it in: %s' % '; '.join(
+                done.get('said') or ['it did not answer in 10 minutes']))
         st.update(ok=True, not_after=info.get('not_after'), not_before=info.get('not_before'),
                   issuer=info.get('issuer'), ordered_at=time.time())
         st['steps'] = steps[-25:]
