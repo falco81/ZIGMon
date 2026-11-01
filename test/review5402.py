@@ -8,10 +8,15 @@ forget waits for Save settings at the end of the card, with Keep it; the
 code's popup and the key's popup as ai has them. The real page (php -S) in
 Chromium, the card's answer handed to it. Fails on 5.40.1.
 
+5.40.3: the dates as ai writes them (dd-mm-yyyy, the day dimmer), the code's
+time as en-US says a clock (8:37:35 PM), and the address for acme the one
+the page was opened on. Those checks fail on 5.40.2.
+
     python3 test/review5402.py
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -236,13 +241,14 @@ check(w['sw'] and w['sw'][0]['says'] == 'Off: hello says only that it is off, an
 check(w['order'] == ['H2', 'push-note', 'set-host-sys-certs', 'facts', 'btnrow',
                      'h4:Paired with', 'scroll', 'h4:What acme sees here', 'scroll', 'push-last', 'btnrow'],
       'the parts of the card are not in ai\'s order: %r' % w['order'])
-check(w['tiles'] == ['The address for acme=https://house.example.org/ (wide) (copies)',
+# 5.40.3: the address is the one the page was opened on, as ai shows it
+check(w['tiles'] == ['The address for acme=http://127.0.0.1:%d/ (wide) (copies)' % PORT,
                      'This server’s id=app-3f9c2a71d0b84e15 (copies)',
                      'Its sealing key (X25519)=q8V2mXr4bLz7Tn1Kc5Wd9Hf3Jg6Ys0Pa2Ue8Ri4Oo1M= (wide) (copies)'],
       'the three tiles: %r' % w['tiles'])
 check(out['copied'] == ['app-3f9c2a71d0b84e15'], 'a click on a tile does not copy it: %r' % out['copied'])
 check(len(w['btns']) == 4 and w['btns'][0] == 'Pair with an acme' and w['btns'][1] == 'Take it back'
-      and w['btns'][2].startswith('A code waits until ') and w['btns'][2].endswith(' (1 wrong so far).')
+      and re.fullmatch(r'A code waits until \d{1,2}:\d\d:\d\d [AP]M \(1 wrong so far\)\.', w['btns'][2])
       and w['btns'][3] == 'Or paste acme’s key…', 'the pairing row: %r' % w['btns'])
 check(w['pairBg'] == 'rgb(31, 111, 235)' and round(w['pairH']) == 38, 'Pair with an acme is not ai\'s blue button of 38 px: %r %r'
       % (w['pairBg'], w['pairH']))
@@ -250,7 +256,7 @@ check(w['th1'] == ['acme', 'Key', 'Since', 'How', ''] and w['th2'] == ['Slot', '
       'the tables\' columns: %r %r' % (w['th1'], w['th2']))
 check(w['row2'][0] == 'node:house' and w['row2'][2] == 'R11 + rsa-2048' and w['row2'][4] == 'Automatic certificates',
       'what acme sees here: %r' % w['row2'])
-check(w['row1'][0] == 'acme 1.0.5 on acme1' and w['row1'][4] == 'Forget it' and len(w['day']) == 11,
+check(w['row1'][0] == 'acme 1.0.5 on acme1' and w['row1'][4] == 'Forget it' and re.fullmatch(r'\d\d-\d\d-\d{4} ', w['day']),
       'Paired with: %r (day %r)' % (w['row1'], w['day']))
 check(w['lastGood'] and (w['last'] or '').startswith('The last push: acme 1.0.5 on acme1 · 5 min ago · '),
       'the last push in one line: %r' % w['last'])

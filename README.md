@@ -2083,7 +2083,15 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.40.2**
+Current version: **5.40.3**
+
+5.40.3 — Certificates from acme: dates and the address as in ai.
+
+* The tables' dates as ai writes them, `29-10-2026 20:25:35` (the day
+  dimmer); the pairing code's time as ai says it, `8:37:35 PM`.
+* *The address for acme* is the address this page was opened on, as in ai.
+
+`test/review5402.py` (the real page in Chromium); these checks fail on 5.40.2.
 
 5.40.2 — Certificates from acme looks as it does in ai.
 

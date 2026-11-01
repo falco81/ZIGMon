@@ -27216,16 +27216,26 @@ function pushDo(body, button) {
     return x;
   }, function (e) { zbusy(button, false); zoops(e); throw e; });
 }
-function pushWhen(ts) { return ts ? stamp(ts) : '–'; }
+// Times as ai writes them on this card (5.40.3): a table cell dd-mm-yyyy and
+// a 24-hour clock with the day dimmer; the code's time as the browser says a
+// clock in en-US (8:37:35 PM), as ai's toLocaleTimeString does.
+function pushPad(n) { return (n < 10 ? '0' : '') + n; }
+function pushDay(d) { return pushPad(d.getDate()) + '-' + pushPad(d.getMonth() + 1) + '-' + d.getFullYear(); }
+function pushHms(d) { return pushPad(d.getHours()) + ':' + pushPad(d.getMinutes()) + ':' + pushPad(d.getSeconds()); }
+function pushWhen(ts) { if (!ts) return '–'; var d = new Date(ts * 1000); return pushDay(d) + ' ' + pushHms(d); }
 // the clock alone, for a code that lives fifteen minutes
-function pushClock(ts) { return ts ? stamp(ts).slice(11) : '–'; }
+function pushClock(ts) { return ts ? new Date(ts * 1000).toLocaleTimeString('en-US') : '–'; }
+// The address acme is to use: the one this page was opened on, as ai shows
+// it (5.40.3) - acme reaches the server the same way the browser did.
+function pushAddress() { return location.origin + '/'; }
 // a moment in a table: the day dimmer than the time, as ai's stampCell
 function pushStampCell(ts) {
   var td = el('td', 'push-when');
   if (!ts) { td.textContent = '–'; return td; }
-  var s = stamp(ts);
-  td.appendChild(el('span', 'day', s.slice(0, 10) + ' '));
-  td.appendChild(el('span', '', s.slice(11)));
+  var d = new Date(ts * 1000);
+  td.dataset.ts = String(Math.round(ts));
+  td.appendChild(el('span', 'day', pushDay(d) + ' '));
+  td.appendChild(el('span', '', pushHms(d)));
   return td;
 }
 // the line of tiles: a word over a value; a long value gets two columns
@@ -27270,8 +27280,8 @@ function pushCode(x) {
     var c = el('div', 'push-code mono', x.code || '');
     c.id = 'push-code';
     body.appendChild(pushCopy(c, x.code));
-    body.appendChild(pushTiles(pushFacts([['The address for acme', x.url || '', 'mono'],
-                                          ['Valid until', pushClock((x.pairing || {}).until)]]), [x.url]));
+    body.appendChild(pushTiles(pushFacts([['The address for acme', pushAddress(), 'mono'],
+                                          ['Valid until', pushClock((x.pairing || {}).until)]]), [pushAddress()]));
     body.appendChild(el('p', 'btnhelp', 'A click on the code or the address copies it.'));
   }, [{words: 'Close', close: true}], 'narrow push-dlg-box');
 }
@@ -27369,9 +27379,9 @@ function drawPush(d) {
     return;
   }
   box.appendChild(pushTiles(pushFacts([
-    ['The address for acme', d.url || '', 'mono'],
+    ['The address for acme', pushAddress(), 'mono'],
     ['This server’s id', d.app_id || '', 'mono'],
-    ['Its sealing key (X25519)', d.enc_key || '', 'mono small']]), [d.url, d.app_id, d.enc_key]));
+    ['Its sealing key (X25519)', d.enc_key || '', 'mono small']]), [pushAddress(), d.app_id, d.enc_key]));
   var row = el('div', 'btnrow');
   var pair = cmdButton('Pair with an acme', 'key', 'primary');
   pair.id = 'push-pair';
