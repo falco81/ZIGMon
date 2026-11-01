@@ -160,9 +160,12 @@ try:
     print('the alerts held, the house\'s own sent')
     for about, words in (('host', 'the disk is nearly full'), ('started', 'zigmon started'),
                          ('quiet', 'PIR-Chodba has gone quiet'), ('mesh', 'the mesh is unsettled'),
-                         ('bridge', 'Zigbee2MQTT stopped'), ('broker', 'the broker is away'),
-                         ('updates', '2 security updates waiting')):
+                         ('bridge', 'Zigbee2MQTT stopped'), ('broker', 'the broker is away')):
         check(not told(words, about), 'held back in maintenance, yet sent: %s' % about)
+    # an update's own end is said while the maintenance it put on lasts: sent
+    # (5.37.1 - held, nobody ever heard that an update failed)
+    check(told('the update of the system failed', 'updates'),
+          'the end of an update of the system was held by the maintenance it put on')
     check(any('held back in maintenance' in e for e in events()), 'what was held is not in the events')
     for about, words in (('alert', 'The front door opened'), ('leak', 'Water under the sink'),
                          ('house', 'from a script'), ('power', 'the house draws a lot')):

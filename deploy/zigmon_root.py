@@ -2031,6 +2031,8 @@ umask 077
 d=$(mktemp -d /tmp/zigmon-tls.XXXXXX) || exit 20
 trap 'rm -rf "$d"' EXIT
 tar -xf - -C "$d" || exit 21
+# a copy left by a run that was cut short is not what was there before this one
+while read -r src mode dst; do rm -f "$dst.zigmon-before"; done < "$d/list"
 back() {
   while read -r src mode dst; do
     if [ -e "$dst.zigmon-before" ]; then cat "$dst.zigmon-before" > "$dst"; rm -f "$dst.zigmon-before"
@@ -2267,8 +2269,12 @@ def tls_proxy(raw):
                     block = set_directive(block, 'ssl_certificate', paths['cert'])
                     block = set_directive(block, 'ssl_certificate_key', paths['key'])
                 trust = pem['root'] + pem['chain']
-                if trust and (directive(block, 'ssl_stapling') or '') == 'on' or \
-                        directive(block, 'ssl_trusted_certificate'):
+                # only where there is a chain to trust, and the block staples
+                # or names one already (5.37.1: a self-signed one, with no
+                # chain, rewrote a block's own trusted file to a path that
+                # may not be there)
+                if trust and ((directive(block, 'ssl_stapling') or '') == 'on' or
+                              directive(block, 'ssl_trusted_certificate')):
                     block = set_directive(block, 'ssl_trusted_certificate', paths['root'])
             if pol:
                 block = set_directive(block, 'ssl_protocols', ' '.join(pol['protocols']))
@@ -2297,6 +2303,17 @@ def tls_proxy(raw):
         subj = openssl(['x509', '-noout', '-subject', '-enddate'], 'the certificate',
                        pem['cert']).strip().replace('\n', ', ')
         said.insert(0, 'certificate: %s' % subj)
+    # one file once (5.37.1): the same path twice - a trusted certificate that
+    # is the certificate file itself - wrote its copy from before over with
+    # the new content, and a rollback put back the new one
+    # - the first is kept: the certificate with its chain serves as the
+    # chain to trust as well
+    seen, once = set(), []
+    for item in put:
+        if item[2] not in seen:
+            seen.add(item[2])
+            once.append(item)
+    put = once
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w') as tar:
         listing = []
@@ -3694,6 +3711,8 @@ def handle(raw):
         pw = str(raw.get('passphrase') or '')
         out_fd = child_fd(root_fd(), 'out', make=True)
         for n in os.listdir(out_fd):                    # one hand-over at a time
+            if EXPORT_FILE.match(n):
+                continue            # a certificate waiting to be downloaded is not a backup's (5.37.1)
             try:
                 os.unlink(n, dir_fd=out_fd)
             except OSError:

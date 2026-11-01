@@ -239,6 +239,44 @@ lay_proxy()
 got, err = ask(op='export', format='pem_key', password='', with_root=False)
 check(err is None, 'the certificate there was not handed over for a download: %s' % err)
 
+# ---- 5.37.1: a certificate with no chain, one file named twice, a stale copy --------
+DEF = "    ssl_protocols             TLSv1.2 TLSv1.3;\n    return 444;"
+lay_proxy()
+tap = (CONFD / 'tap-front.conf').read_text()
+# the default block (read first) names a trusted file of its own; a self-signed
+# certificate has no chain - the dashboard's block keeps the one it names
+(CONFD / 'tap-front.conf').write_text(tap.replace(
+    DEF, "    ssl_protocols             TLSv1.2 TLSv1.3;\n    ssl_trusted_certificate   %s/own.ca;\n    return 444;" % CERTS, 1))
+sh(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(CA / 'self.key'), '-out',
+    str(CA / 'self.pem'), '-days', '10', '-subj', '/CN=%s' % NAME])
+got, err = ask(source='given', cert=(CA / 'self.pem').read_text(), key=(CA / 'self.key').read_text())
+check(err is None, 'a self-signed certificate was refused there: %s' % err)
+check('ssl_trusted_certificate   %s/server.ca;' % CERTS in (CONFD / 'tap-front.conf').read_text(),
+      'a block\'s own trusted file was rewritten for a certificate with no chain')
+# the trusted file is the certificate file itself, in both blocks: written once, the certificate
+lay_proxy()
+tap = (CONFD / 'tap-front.conf').read_text().replace('%s/server.ca;' % CERTS, '%s/server.pem;' % CERTS)
+(CONFD / 'tap-front.conf').write_text(tap.replace(
+    DEF, "    ssl_protocols             TLSv1.2 TLSv1.3;\n    ssl_trusted_certificate   %s/server.pem;\n    return 444;" % CERTS, 1))
+got, err = ask(source='given', cert=NEW_CERT, key=NEW_KEY, chain=INT, root=ROOT)
+pem_now = (CERTS / 'server.pem').read_text()
+check(err is None and '-----BEGIN CERTIFICATE-----' in pem_now and fp(pem_now) == fp(NEW_CERT),
+      'the certificate file named twice did not end as the certificate: %s' % err)
+# refused by nginx: a file that was not there before is gone again - a stale
+# copy left by a run cut short is not what was there
+lay_proxy()
+for f in CERTS.glob('zigmon-dh.pem*'):
+    f.unlink()
+(CERTS / 'zigmon-dh.pem.zigmon-before').write_text('a copy left by a run that was cut short\n')
+(W / 'nginx-says-no').write_text('')
+got, err = ask(source='given', cert=NEW_CERT, key=NEW_KEY, chain=INT, tls=TLS)
+(W / 'nginx-says-no').unlink()
+check(err and not (CERTS / 'zigmon-dh.pem').exists(),
+      'refused, a stale copy from before was put in place of a file that was not there')
+for f in CERTS.glob('zigmon-dh.pem*'):
+    f.unlink()
+lay_proxy()
+
 # ---- the daemon ----------------------------------------------------------------
 sys.argv = ['zigmon']
 sys.path.insert(0, str(HERE))

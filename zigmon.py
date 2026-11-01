@@ -17054,7 +17054,10 @@ class Daemon(object):
     # so a restart of the daemon in the middle of it finds it on.
     MAINT_SETTLE_S = float(os.environ.get('ZIGMON_MAINT_SETTLE_S') or 600)
     # what is held: the machine itself, and devices going quiet or offline
-    MAINT_HELD = ('host', 'started', 'updates', 'quiet', 'mesh', 'bindings', 'bridge', 'broker')
+    # not 'updates' (5.37.1): an update's own end - failed, or needing a
+    # restart - is said while the maintenance it put on still lasts, and held
+    # it never reached anybody
+    MAINT_HELD = ('host', 'started', 'quiet', 'mesh', 'bindings', 'bridge', 'broker')
 
     def maint_row(self):
         row = self.__dict__.get('_maint')
