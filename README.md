@@ -2083,7 +2083,39 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.39.0**
+Current version: **5.40.0**
+
+5.40.0 — certificates from acme (acme push, protocol 1), as one more way in.
+
+* **Settings → Certificates → Certificates from acme** (off until switched
+  on): your acme - the certificate manager - gives and renews this
+  machine's certificates. *Pair with an acme* shows a code once (16
+  characters, 15 minutes, five wrong tries); given to acme's target, its
+  Try pairs them - or acme's key is pasted here. The paired acmes are
+  listed with *Forget it*; *Take certificates of other names* (off); what
+  acme sees here; the last push.
+* acme asks `https://NAME/?api=acme-push-hello|pair|inventory|install`; the
+  page hands it to the daemon as it came, and the daemon decides: each
+  request signed with acme's Ed25519 key over its operation, this machine's
+  id, the time (±300 s) and a nonce never seen in 900 s (kept in the
+  database); the certificate's key travels sealed to this machine's X25519
+  key (HKDF-SHA256, AES-256-GCM) - with the `cryptography` package or, on a
+  Python without it, in plain Python, both checked against every test
+  vector of the protocol and the RFCs.
+* **Where they go**: `node:<this machine>` - the dashboard, both certificates
+  for *Both* (RSA for the broker, ECDSA beside it); `broker` follows it;
+  `front`, when a server in front is set - following this machine, or its
+  own over SSH.
+* **Additive only**: a pushed certificate goes in exactly as one uploaded by
+  hand - the same code, the same files, nginx -t and the reload - and counts
+  as one: Automatic certificates leave it alone, and an upload, a request,
+  a self-signed one or *Look after it* replace it as ever. Nothing that
+  existed changes; switched off, nothing is taken, and what is in place
+  stays. Each install, pairing, wrong code and forgetting is an event.
+* `zigmon --acme-push`, and in the console.
+
+`test/acmepush.py` - the protocol end to end through the page and root, every
+refusal, and every way a certificate came before, with push off and on.
 
 5.39.0 — a kept password shows its last two characters to an administrator.
 
