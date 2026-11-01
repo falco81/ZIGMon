@@ -3314,6 +3314,22 @@ MUST_CHANGE_ROADS = ('/api/auth/password', '/api/auth/logout', '/api/auth/whoami
 ACCOUNT_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$')
 
 
+def secret_hint(value):
+    """A kept secret as an administrator sees it: eight dots and its last two
+    characters ("••••••••13"), so the one who set it can tell which it is
+    without it being shown - as plexmon and otp do. A short one (a PIN, a
+    word under six letters) is dots alone: two of four digits is half of it.
+    Empty when there is none. Only ever asked for an administrator's answer:
+    the status is read before the view lock and by everyone, and it says only
+    whether one is set."""
+    if value is None or isinstance(value, bool):
+        return ''
+    text = str(value)
+    if not text:
+        return ''
+    return '\u2022' * 8 + (text[-2:] if len(text) >= 6 else '')
+
+
 def password_hash(password, salt=None, rounds=310000):
     """PBKDF2-SHA256, as otp keeps its own: nothing outside the standard library."""
     salt = salt or secrets.token_bytes(16)
@@ -10619,6 +10635,38 @@ class Daemon(object):
             if kind == 'choice':
                 out[key]['choices'] = self.TUNABLE_CHOICES[key]
         return out
+
+    def secret_hints(self):
+        """GET /api/secret_hints: the last two characters of every kept secret
+        the page says is set, for an administrator (ALWAYS_LOCKED).
+
+        The status says only whether each is set, and it has to: it is read
+        before the view lock and by every role. So the hints come by a road
+        of their own that only an administrator - or root's command line -
+        is answered on, and the page asks for it once it is one. Nothing here
+        is logged or put in an event, and nothing that exports or backs the
+        settings up asks for it."""
+        conf = {}
+        for key, row in self.runtime_config().items():
+            if row.get('kind') != 'secret':
+                continue
+            now, filed = secret_hint(CONFIG.get(key)), secret_hint(self.file_config.get(key))
+            if now or filed:
+                conf[key] = {'value': now, 'file': filed}
+        wifi = self.wifi_config()
+        managed = {}
+        for kind in ('plugs', 'sensors'):
+            managed[kind] = {}
+            for e in self.all_entries(kind):
+                one = {k: secret_hint(e.get(k)) for k in ('password', 'mqtt_password')}
+                if any(one.values()):
+                    managed[kind][str(e['name'])] = one
+        return {'config': conf,
+                'wifi': {k: secret_hint(wifi.get(k)) for k in ('api_key', 'password', 'ssh_password')},
+                'managed': managed,
+                'gateways': {str(g['name']): secret_hint(g.get('password'))
+                             for g in self.gateway_configs() if g.get('password')},
+                'plug_mqtt': secret_hint(self.plug_mqtt_secret())}
 
     # -- notifications: ntfy and/or Telegram ------------------------------------
     # what a per-device preset switches on (None = follow the global choices)
@@ -33019,6 +33067,10 @@ class Daemon(object):
                 row = conf[key]
                 secret = row.get('kind') == 'secret'
                 value = ('set' if row.get('value') else 'not set') if secret else row.get('value')
+                if secret and reveal and row.get('value'):
+                    # an administrator's view (reveal is theirs alone): which
+                    # one is set, by its last two characters, as the page shows
+                    value = secret_hint(CONFIG.get(key)) or value
                 prop(key, value, vtype='secret' if secret else None,
                      doc='%s, from %s' % (row.get('kind'), row.get('source')),
                      locked=bool(secret or self.SETTINGS_LOCKED.search(key)), settable=True)
@@ -39781,7 +39833,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the updates of the system (5.34): what is waiting, and the update
                      '/api/osup',
                      # the way out to the web through a proxy (5.35)
-                     '/api/webproxy')
+                     '/api/webproxy',
+                     # the last two characters of each kept secret (5.38.2)
+                     '/api/secret_hints')
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -40271,6 +40325,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 token = self.headers.get('X-Zigmon-Session') or ''
                 if path not in ('/api/health', '/api/healthz') and not d.session_valid(token):
                     return self._error(403, 'view locked - sign in to see the house')
+            if path == '/api/secret_hints':
+                # ALWAYS_LOCKED let only an administrator this far; asked
+                # again here, so a road moved out of that list one day does
+                # not start handing these to whoever reaches the page
+                if not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin'):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send(200, {'ok': True, 'hints': d.secret_hints()})
             if path == '/api/objects':
                 return self._send(200, {'ok': True, 'types': d.object_types(), 'objects': d.objects(),
                                         'lazy': d.object_lazy_members()})
@@ -43609,12 +43670,21 @@ def cmd_settings(args, pal):
         print(json.dumps({k: v.get('value') for k, v in rows}, indent=2, ensure_ascii=False, default=str))
         return 0
     print(pal.title('%d setting(s)%s' % (len(rows), (' matching %r' % wanted) if wanted else '')))
+    # Root is an administrator here: which secret is set, by its last two
+    # characters, as the page shows it to one. Asked of its own road, since
+    # the status is everyone's and says only whether one is set.
+    hints = {}
+    if any(info.get('kind') == 'secret' and info.get('value') for _k, info in rows):
+        code, got = api_call('/api/secret_hints')
+        if code == 200 and isinstance(got, dict):
+            hints = (got.get('hints') or {}).get('config') or {}
     for key, info in rows:
         value = info.get('value')
         if info.get('kind') == 'secret':
             # the daemon never sends the secret itself, only whether there is
             # one - so printing its "value" printed the word True
-            value = pal.ok('set') if value else pal.dim('not set')
+            hint = (hints.get(key) or {}).get('value') or ''
+            value = (pal.ok(hint) if hint else pal.ok('set')) if value else pal.dim('not set')
         mark = pal.warn(' changed here') if info.get('overridden') else ''
         print('  %-26s %s%s' % (key, value, mark))
     print(pal.dim('\n  zigmon --settings block_minutes=180   to change one (asks for --pin)'))
@@ -50766,6 +50836,13 @@ def rb_view(t):
     out = {k: v for k, v in t.items() if k not in RB_SECRETS}
     for k in RB_SECRETS:
         out['has_' + k] = bool(t.get(k))
+    # The last two characters of the words typed in, for the administrator
+    # this is only ever answered to (GET /api/rbackup is ALWAYS_LOCKED, the
+    # POST an administrator's). Not of the keys: a PEM ends in dashes, which
+    # tells nobody which key it is - the fingerprint does that.
+    for k in ('password', 'key_pass'):
+        if t.get(k):
+            out[k + '_hint'] = secret_hint(t.get(k))
     out['kind_words'] = RB_KIND_WORDS.get(t.get('kind'), t.get('kind'))
     if t.get('hostkey'):
         out['hostkey_fp'] = rb_hostkey_fps(t['hostkey'])
@@ -54431,12 +54508,29 @@ class Console(object):
         got = self.out('--settings')
         if not isinstance(got, dict):
             return []
-        return [{'key': k, 'value': v} for k, v in sorted(got.items())]
+        # A secret comes as whether it is set, which was drawn as "on". Root
+        # is an administrator: which one is set, by its last two characters,
+        # as the dashboard shows it to one.
+        def secret(k, v):
+            # a secret's rule is words, never a switch's (0, 1)
+            return (isinstance(v, bool) and Daemon.TUNABLE.get(k) == 'str'
+                    and (secret_key(k) or k in Daemon.TUNABLE_SECRETS))
+        hints = {}
+        if any(secret(k, v) and v for k, v in got.items()):
+            code, answer = api_call('/api/secret_hints')
+            if code == 200 and isinstance(answer, dict):
+                hints = (answer.get('hints') or {}).get('config') or {}
+        rows = []
+        for k, v in sorted(got.items()):
+            if secret(k, v):
+                v = ((hints.get(k) or {}).get('value') or 'set') if v else 'not set'
+            rows.append({'key': k, 'value': v})
+        return rows
 
     def setting_do(self, row):
         """The window to change one setting, saved by `zigmon --settings KEY=VALUE`."""
         key = row['key']
-        if secret_key(key):
+        if secret_key(key) or key in Daemon.TUNABLE_SECRETS:
             # A value typed here would stand on a command line, where every
             # process on the machine can read it: the console puts no secret there.
             self.note(key, '%s is a secret. It is changed on the dashboard (Settings), where it '

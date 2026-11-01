@@ -562,6 +562,13 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/webproxy');
         exit;
     }
+    if ($what === 'secret-hints' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // the last two characters of each kept secret, which the page puts
+        // in the box of each one - an administrator's, behind the sign-in in
+        // the daemon (the status says only whether each is set)
+        zigmon_relay('/api/secret_hints');
+        exit;
+    }
     if ($what === 'rbackup-download') {
         // one backup at a destination, fetched by the daemon and handed on;
         // locked as it went there, and the session proves the right to it
@@ -5781,7 +5788,7 @@ function api(what, options) {
       // repaint of the page waited for it.
       // The panes root looks after (firewall, certificates, upgrades, the whole
       // backup) ask every few seconds too, and say "locked" in place.
-      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|webproxy)(&|$)/.test(String(what));
+      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|webproxy|secret-hints)(&|$)/.test(String(what));
       if (r.status === 403 && data && /view locked/.test(data.error || '')
           && !VIEWLOCK.asking && !VIEWLOCK.declined && !quiet) {
         VIEWLOCK.asking = true;
@@ -8136,16 +8143,16 @@ function renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig) {
         else refreshPlugFigures(st);
       }
       if (showing('#bindings-card')) if (!BINDINGS.dirty && !editorBusy('bindings-list') && sigChanged('bindings', [st.bindings, names, targets, st.binding_actions, unlocked, (st.editor_groups || {}).bindings])) renderBindings(st);
-      if (showing('#managed-card')) if (!MANAGED.dirty && !editorBusy('managed-list') && sigChanged('managed', [st.managed, unlocked, (st.editor_groups || {}).managed])) renderManaged(st);
+      if (showing('#managed-card')) if (!MANAGED.dirty && !editorBusy('managed-list') && sigChanged('managed', [st.managed, unlocked, (st.editor_groups || {}).managed, HINTS.gen])) renderManaged(st);
       if (showing('#gateways-card')) if (!GATEWAYS.dirty && !editorBusy('gateways-list')
-          && sigChanged('gateways', [st.gateways, names, GATEWAYS.dirty])) renderGateways(st);
+          && sigChanged('gateways', [st.gateways, names, GATEWAYS.dirty, HINTS.gen])) renderGateways(st);
       if (showing('#rooms-card')) if (!ROOMS.dirty && sigChanged('rooms', [st.rooms, st.room_of, names, unlocked])) renderRooms(st);
       // ...not TICK.lastMs: that is how long the LAST paint took, so a card
       // that is part of the paint kept changing its own signature and the
       // forty rows of it were rebuilt on every tick for ever
       if (showing('#latency-card')) if (sigChanged('latency', [st.latency])) renderLatency(st);
       if (showing('#acl-card')) if (sigChanged('acl', [st.managed, st.mqtt_for_plugs, Math.floor(Date.now() / 60000)])) renderAcl();
-      if (showing('#sms-card')) if (sigChanged('sms', [st.sms, st.runtime_config, unlocked])) renderSms(st);
+      if (showing('#sms-card')) if (sigChanged('sms', [st.sms, st.runtime_config, unlocked, HINTS.gen])) renderSms(st);
       if (showing('#outbox-card')) if (sigChanged('outbox', [st.sms_outbox, unlocked])) renderOutbox(st);
       if (showing('#battery-card')) if (sigChanged('battery', [Math.floor(Date.now() / 300000), unlocked])) renderBattery();
       if (showing('#whatif-card')) if (sigChanged('whatif', [names, unlocked])) renderWhatIf(st);
@@ -8197,7 +8204,7 @@ function renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig) {
       if (showing('#scenes-card')) if (!editorBusy('scenes-list') && sigChanged('scenes', [st.scenes, st.scene_stamp, targets, SCENES.rows === null, unlocked, (st.editor_groups || {}).scenes])) renderScenes(st);
       if (showing('#sequences-card')) if (!editorBusy('sequences-list') && sigChanged('sequences', [st.sequences, st.sequence_stamp, st.scenes, SEQUENCES.rows === null, unlocked, (st.editor_groups || {}).sequences])) renderSequences(st);
       if (showing('#schedules-card')) if (!editorBusy('schedules-list') && sigChanged('schedules', [st.schedule_count, st.schedule_stamp, targets, SCHEDULES.rows === null, unlocked, (st.editor_groups || {}).schedules])) renderSchedules(st);
-      if (showing('#wifi-card')) if (sigChanged('wifi', [st.wifi_config, (st.presence || {}).wifi])) renderWifiConfig(st);
+      if (showing('#wifi-card')) if (sigChanged('wifi', [st.wifi_config, (st.presence || {}).wifi, HINTS.gen])) renderWifiConfig(st);
       if (showing('#people-card')) if (!PEOPLE.dirty && sigChanged('people', [st.people, (st.presence || {}).people])) { PEOPLE.rows = null; renderPeople(st); renderWifiClients(); }
       if (showing('#ptrig-card')) if (!PTRIG.dirty && sigChanged('ptrig', [st.presence_triggers, st.people, st.plugs && st.plugs.length, unlocked, (st.editor_groups || {}).ptrig])) { PTRIG.rows = null; renderPtrig(st); }
       if (showing('#all-values')) if (sigChanged('all-values', [st.devices, st.plugs, minute])) renderAll(st);
@@ -8205,7 +8212,7 @@ function renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig) {
       // ...where it is shown: it posts, and it was posting every five seconds
       // from every section of Settings to redraw a card nobody was looking at
       if (showing('#sessions-card')) renderSessions();
-      if (showing('settings')) if (sigChanged('settings', [st.runtime_config])) renderSettings(st);
+      if (showing('settings')) if (sigChanged('settings', [st.runtime_config, HINTS.gen])) renderSettings(st);
       if (showing('#energy-reset-card')) if (sigChanged('energyreset', [(st.plugs || []).map(function (p) { return p.name; })])) renderEnergyReset(st);
       if (showing('#notify-card')) if (sigChanged('notify', [st.notify, names])) renderNotify(st);
       if (showing('#messages-card')) if (!MESSAGES.dirty && sigChanged('messages', [st.messages, unlocked, (st.editor_groups || {}).messages])) { MESSAGES.rows = null; renderMessages(st); }
@@ -14256,7 +14263,7 @@ function renderWifiConfig(st) {
     $('ssh-auth').value = w.ssh_auth || 'key';
     wifiRemember();
   }
-  $('ssh-pass').placeholder = w.has_ssh_password ? '(kept)' : '';
+  $('ssh-pass').placeholder = keptHint(w.has_ssh_password, secretHint('wifi', 'ssh_password'));
   sshAuthChanged();
   var pub = $('ssh-public');
   pub.hidden = !w.ssh_public;
@@ -14267,8 +14274,8 @@ function renderWifiConfig(st) {
     $('ssh-generate').disabled = $('ssh-test').disabled = true;
     $('ssh-generate').title = $('ssh-test').title = 'the ssh client is not installed on this machine (dnf install openssh-clients)';
   }
-  $('wifi-key').placeholder = w.has_api_key ? '(kept)' : '';
-  $('wifi-pass').placeholder = w.has_password ? '(kept)' : '';
+  $('wifi-key').placeholder = keptHint(w.has_api_key, secretHint('wifi', 'api_key'));
+  $('wifi-pass').placeholder = keptHint(w.has_password, secretHint('wifi', 'password'));
   wifiMethodChanged();
   var p = (st.presence || {}).wifi || {};
   if (Date.now() - (wifiSay.at || 0) < 6000) return;   // leave the button's own answer up
@@ -15013,6 +15020,53 @@ function isAdmin() { return signedIn() && LOCK.who.role === 'admin'; }
 // Kept under its old name because a hundred places ask it: whether what the
 // PIN used to open - the settings, the security, the editors - is open now.
 function isUnlocked() { return isAdmin(); }
+// Which kept secret is set, for an administrator: eight dots and its last two
+// characters ("••••••••13"), as plexmon and otp show them. The status says
+// only whether each is set - it is read before the sign-in, by every role -
+// so the hints are asked of a road of their own that the daemon answers
+// only to an administrator, and only once this page is one. They go into
+// the box's placeholder, never its value: the box stays empty, typing
+// replaces the hint, and an empty box still means "keep the one there is".
+var HINTS = {d: null, at: 0, asking: false, gen: 0, sig: ''};
+function secretHintsAsk(st) {
+  if (!isAdmin()) {
+    if (HINTS.d) { HINTS.d = null; HINTS.gen++; }
+    HINTS.at = 0; HINTS.sig = '';
+    return;
+  }
+  // asked again at once when what the status says is set has changed (a
+  // secret saved, cleared, a box added), and otherwise now and then
+  var sig = '';
+  try {
+    var rc = (st && st.runtime_config) || {};
+    sig = JSON.stringify([Object.keys(rc).filter(function (k) { return rc[k].kind === 'secret'; })
+                          .map(function (k) { return [k, rc[k].value, rc[k].file]; }),
+                          st && st.wifi_config, st && st.managed, st && st.gateways,
+                          ((st && st.mqtt_for_plugs) || {}).has_password]);
+  } catch (e) { sig = ''; }
+  if (HINTS.asking || (sig === HINTS.sig && Date.now() - HINTS.at < 60000)) return;
+  HINTS.asking = true; HINTS.sig = sig;
+  api('secret-hints').then(function (x) {
+    HINTS.asking = false; HINTS.at = Date.now();
+    var d = (x && x.ok && x.hints) || null;
+    if (JSON.stringify(d) === JSON.stringify(HINTS.d)) return;
+    HINTS.d = d; HINTS.gen++;
+    if (STATE.status && !userHolding()) {
+      TAB_STALE[STATE.tab] = true;
+      renderTab(STATE.tab, STATE.status);
+    }
+  }).catch(function () { HINTS.asking = false; HINTS.at = Date.now(); });
+}
+// one hint by where it is: secretHint('config', 'sms_password', 'value')
+function secretHint() {
+  if (!isAdmin() || !HINTS.d) return '';
+  var v = HINTS.d;
+  for (var i = 0; i < arguments.length && v; i++) v = v[arguments[i]];
+  return typeof v === 'string' ? v : '';
+}
+// what the box of a kept secret says while it is empty: the hint, or
+// "(kept)" where there is none to give; `none` when nothing is set
+function keptHint(isSet, hint, none) { return isSet ? (hint || '(kept)') : (none || ''); }
 function pinNeeded() { return true; }        // changing anything always needs a sign-in
 var PIN = { resolve: null, mode: 'confirm', length: 4, prefer: '' };
 // PIN accounts (5.19.1): somebody signs in with a PIN alone - drawn as the PIN
@@ -16542,6 +16596,16 @@ function managedRows(st) {
   });
   return out;
 }
+// the hint of a box's password (or its broker password): the box is one
+// device, its channels are rows by name, and they all carry the same one
+function managedHint(dv, field) {
+  var found = '';
+  (dv.channels || []).some(function (e) {
+    found = secretHint('managed', e.kind === 'sensor' ? 'sensors' : 'plugs', e.name, field);
+    return !!found;
+  });
+  return found;
+}
 function markManaged() { MANAGED.dirty = true; $('managed-note').textContent = 'Unsaved changes'; }
 // group channel entries into devices: same kind + address (a fresh, address-less row stays alone)
 function managedDevices(rows) {
@@ -16811,7 +16875,9 @@ function renderManaged(st) {
     var addr = el('input'); addr.value = dv.host || ''; addr.placeholder = '172.16.16.14'; addr.disabled = fromConfig;
     addr.oninput = function () { dv.host = addr.value; dv.channels.forEach(function (e) { e.host = addr.value; }); markManaged(); };
     var pw = el('input'); pw.type = 'password'; pw.autocomplete = 'new-password'; pw.disabled = fromConfig;
-    pw.placeholder = fromConfig ? (dv.password_set ? 'set in config.json' : 'none') : (dv.password_set ? '(kept)' : 'none');
+    var pwHint = managedHint(dv, 'password');
+    pw.placeholder = fromConfig ? (dv.password_set ? (pwHint ? pwHint + ' (config.json)' : 'set in config.json') : 'none')
+      : keptHint(dv.password_set, pwHint, 'none');
     pw.oninput = function () { dv.password = pw.value; dv.channels.forEach(function (e) { e.password = pw.value; }); markManaged(); };
     var what = el('div', 'mdev-what');
     what.innerHTML = dv.model ? esc(dv.model) + (dv.mac ? ' <span class="mono dim">' + esc(dv.mac) + '</span>' : '')
@@ -16921,7 +16987,9 @@ function renderManaged(st) {
     var mine = !!first.mqtt_has_password;
     var pass = el('input'); pass.type = 'password'; pass.autocomplete = 'off';
     pass.name = 'zigmon-broker-pass-' + (first.name || dv.host || '');   // a browser's password manager must not fill this
-    pass.placeholder = mine ? '(kept)' : (mfp.has_password ? '(from the configuration)' : 'password');
+    var mqttHint = secretHint('plug_mqtt');
+    pass.placeholder = mine ? keptHint(true, managedHint(dv, 'mqtt_password'))
+      : (mfp.has_password ? '(from the configuration' + (mqttHint ? ': ' + mqttHint : '') + ')' : 'password');
     pass.title = mine ? 'This box\'s own broker password is kept here. Leave it blank to keep it, or type another to replace it.'
       : (mfp.has_password ? 'This box has none of its own; the one in the configuration is used. Type one here to give this box its own.'
                           : 'The broker password this box logs in with. It is kept with this box, not shared.');
@@ -19251,7 +19319,7 @@ function showSettingHelp(over, key, info, words) {
   var from = {dashboard: 'saved on this dashboard \u2014 wins over config.json',
               file: 'from config.json', 'default': 'the built-in default (not in config.json)'}[src];
   helpAt(over, '<div>' + richText(words || '') + '</div>'
-    + '<span class="k"><b>' + esc(key) + '</b> \u00b7 running: ' + esc(settingShown(info, info.value))
+    + '<span class="k"><b>' + esc(key) + '</b> \u00b7 running: ' + esc(settingShown(info, info.value, secretHint('config', key, 'value')))
     + '<br><span class="' + (src === 'dashboard' ? 'diff' : 'same') + '">' + from + '</span>'
     + '<br>\u24d8 for the whole story</span>');
 }
@@ -19273,8 +19341,8 @@ function settingInfoButton(key, info, label, words) {
   b.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') open(e); };
   return b;
 }
-function settingShown(info, v) {
-  if (info.kind === 'secret') return v ? 'set (hidden)' : 'not set';
+function settingShown(info, v, hint) {
+  if (info.kind === 'secret') return v ? (hint || 'set (hidden)') : 'not set';
   if (v === null || v === undefined || v === '') return '\u2014 empty';
   if (info.kind === 'switch') return (+v) ? 'on' : 'off';
   if (info.kind === 'choice') {
@@ -19300,20 +19368,21 @@ function showSettingInfo(key, info, label, words) {
   }
   var now = el('div', 'sinfo-now');
   now.appendChild(el('span', 'sinfo-k', 'Running now'));
-  now.appendChild(el('b', 'sinfo-v', settingShown(info, info.value)));
+  now.appendChild(el('b', 'sinfo-v', settingShown(info, info.value, secretHint('config', key, 'value'))));
   var from = {dashboard: 'saved on this dashboard', file: 'from config.json', 'default': 'the built-in default'}[src];
   now.appendChild(el('span', 'sinfo-src s-' + src, from));
   host.appendChild(now);
   // the three places a value can come from, in the order they are weighed
   var flow = el('div', 'sinfo-flow');
-  [['default', 'Built-in default', info['default'], true],
-   ['file', 'config.json', info.in_file ? info.file : null, !!info.in_file],
-   ['dashboard', 'This dashboard', info.overridden ? info.value : null, !!info.overridden]
+  [['default', 'Built-in default', info['default'], true, ''],
+   ['file', 'config.json', info.in_file ? info.file : null, !!info.in_file, secretHint('config', key, 'file')],
+   ['dashboard', 'This dashboard', info.overridden ? info.value : null, !!info.overridden,
+    secretHint('config', key, 'value')]
   ].forEach(function (step, i) {
     if (i) flow.appendChild(el('span', 'sinfo-arrow', '\u2192'));
     var box = el('div', 'sinfo-step' + (step[0] === src ? ' win' : '') + (step[3] ? '' : ' unset'));
     box.appendChild(el('span', 'sinfo-sk', step[1]));
-    box.appendChild(el('span', 'sinfo-sv', step[3] ? settingShown(info, step[2]) : 'not set'));
+    box.appendChild(el('span', 'sinfo-sv', step[3] ? settingShown(info, step[2], step[4]) : 'not set'));
     if (step[0] === src) box.appendChild(el('span', 'sinfo-badge', 'in force'));
     flow.appendChild(box);
   });
@@ -20220,7 +20289,8 @@ function renderSettings(st) {
         // the SMS card has always done it.
         if (info.kind === 'secret') {
           box.value = '';
-          box.placeholder = info.value ? '(kept)' : '';
+          // an administrator sees which one by its last two characters
+          box.placeholder = keptHint(info.value, secretHint('config', key, 'value'));
           box.dataset.secret = '1';
         } else {
           box.value = info.value === null || info.value === undefined ? '' : info.value;
@@ -21502,7 +21572,8 @@ function paintGateways(st) {
     host2.oninput = function () { g.host = host2.value; markGateways(); };
     var user = el('input'); user.value = g.username || ''; user.placeholder = '(none)'; user.disabled = fromConfig;
     user.oninput = function () { g.username = user.value; markGateways(); };
-    var pw = el('input'); pw.type = 'password'; pw.placeholder = g.password_set ? '(kept)' : '(none)'; pw.disabled = fromConfig;
+    var pw = el('input'); pw.type = 'password'; pw.disabled = fromConfig;
+    pw.placeholder = keptHint(g.password_set, secretHint('gateways', g.name), '(none)');
     pw.oninput = function () { g.password = pw.value; markGateways(); };
     var target = el('select'); target.disabled = fromConfig;
     var opts = targetOptions.slice();
@@ -22564,7 +22635,10 @@ function renderSms(st) {
       } else {
         input = el('input'); input.id = id; input.autocomplete = 'off';
         input.type = kind === 'password' ? 'password' : (kind === 'number' ? 'number' : 'text');
-        if (kind === 'password') { input.placeholder = meta.value ? '(kept)' : 'password'; input.value = ''; }
+        if (kind === 'password') {
+          input.placeholder = keptHint(meta.value, secretHint('config', name_, 'value'), 'password');
+          input.value = '';
+        }
         else {
           input.value = meta.value === undefined || meta.value === null ? '' : meta.value;
           if (kind === 'text' && typeof extra === 'string') input.placeholder = extra;
@@ -26063,6 +26137,7 @@ function applyStatus(st) {
   if (sigChanged('maintband', [st.maintenance, isAdmin()])) renderMaintBand(st);
   applyRuntimeFlags(st);                     // before any card is built this tick
   STATE.status = st;
+  secretHintsAsk(st);                        // an administrator's: which secret is set
   var pill = $('pill');
   setIf(pill, 'className', 'pill ' + st.level);
   setIf($('pill-text'), 'textContent', levelWord(st.level) + (st.connected ? '' : ' — broker unreachable'));
@@ -29968,7 +30043,7 @@ function drawRbTargets() {
     c.appendChild(el('div', 'rb-where mono', rbWhere(t)));
     var chips = el('div', 'rb-chips');
     var chip = function (w, cls, tip) { var x = el('span', 'tag ' + (cls || 'dim'), w); if (tip) x.title = tip; chips.appendChild(x); };
-    if (t.has_password) chip('password', 'dim');
+    if (t.has_password) chip('password' + (isAdmin() && t.password_hint ? ' ' + t.password_hint : ''), 'dim');
     if (t.has_key) chip('ssh key', 'violet');
     if (t.ssh_cert) chip('ssh certificate', 'violet');
     if (t.kind === 'sftp' || t.kind === 'scp') chip(t.hostkey ? 'host key trusted' : 'host key not trusted yet', t.hostkey ? 'ok' : 'warn', (t.hostkey_fp || []).join('\n'));
@@ -30156,7 +30231,7 @@ function rbEdit(t) {
     var g2 = rbSec(body, 'Signing in', t.kind === 'sftp' || t.kind === 'scp' ? 'A key (below) or a password - or both.' : '');
     f.user = zText(t.user || '', t.kind === 'smb' ? 'backup' : 'zigmon-backup', 'mono');
     g2.grid.appendChild(zField('Account', f.user));
-    f.password = zSecret(t.has_password ? '' : '(none)');
+    f.password = zSecret(keptHint(t.has_password, isAdmin() ? t.password_hint : '', '(none)'));
     g2.grid.appendChild(zField('Password', f.password, t.has_password ? 'Kept, sealed. Type a new one to change it.' : ''));
     if (t.kind === 'smb') {
       f.domain = zText(t.domain || '', 'CORP', 'mono');
