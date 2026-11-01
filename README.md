@@ -2083,7 +2083,49 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.37.0**
+Current version: **5.38.0**
+
+5.38.0 — a sensor and a plug, instant under every load; bugs of 5.30-5.37 mended.
+
+Measured on the real daemon in the test (`test/review538.py`): a report to the
+plug's command - quiet 2.8 ms p50 / 5.2 ms p99; with 500 reports a second, a
+backup and a VACUUM, four pages open and every chore of 5.30-5.37 running at
+once 6.1 ms / 13.1 ms, at most 14 ms. No thread of the house's path takes the
+database's lock. Four rarer ways it was held back, each by 1.3 - 2 s, are gone:
+
+* **Erasing the history, the events or stale data** emptied the readings kept
+  in memory; every device's next report then read its row on the broker
+  thread, behind the VACUUM - 2 s a light, longer in a big house. Only what
+  was erased is forgotten now: 6 - 10 ms.
+* **A rule on an import on trial** waited for the trial's lock while it was
+  being kept or rolled back behind a backup - and every rule behind it. Its
+  bookkeeping goes on a thread of its own when the lock is busy: 3 ms.
+* **A socket that does not answer**: every command given while it was being
+  tried waited its turn - 80 in 20 s, each sent when it came back, the light
+  flapping through all of them, and past 200 every scene of the house was
+  refused. Only the last command asked of a socket is sent; one overtaken
+  while it waited is dropped.
+* **Alerts through the proxy** waited for a DNS lookup each: the answer is kept
+  for ten minutes, and a first one waits at most a second.
+
+Mended (each with a check that fails on 5.37.0):
+* Automatic certificates took an order as done when root never answered -
+  the state said 90 days while the certificate in place ran out, and one put
+  in by hand was counted as ACME's; *Back to the one before* took ACME's
+  care away before root had put it back; a failed start left a folder with
+  the new account's key behind.
+* install.sh took any PHP 8.4 or 8.5 for one with the php2shell fix.
+* The end of a system update - failed, or needing a restart - was held by the
+  maintenance the update had put on: it reached nobody.
+* The server in front: a certificate with no chain rewrote a block's own
+  trusted file; one file named twice took the chain in place of the
+  certificate; a copy left by a run cut short could be put back for a file
+  that was not there.
+* Handing over a backup of the whole installation cleared a certificate
+  waiting to be downloaded.
+
+`test/review538.py`, `test/review538b.py`, `test/review5371.py`, `test/php.py`,
+`test/proxycert.py`, `test/maintenance.py`.
 
 5.37.0 — the backups to other machines, as plexmon has them.
 
