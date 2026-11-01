@@ -5362,11 +5362,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <h2>Certificates from acme</h2>
       <p class="note">acme, the certificate manager, can put the dashboard&rsquo;s certificate in here and renew it: paired once with a code shown here (or its key pasted), every request it sends is signed, and the certificate&rsquo;s key comes sealed to this machine. What it pushes goes exactly where an upload above goes, and Automatic certificates leaves it alone from then on, as after an upload &ndash; an upload, a request or <i>Look after it</i> take it back at any time. Off until switched on; switched off again, nothing more is taken and the certificate stays.</p>
       <div class="set-host" id="set-host-sys-certs" data-for="sys-certs"></div>
+      <div id="acme-push"></div>
+      <!-- the switches above are saved here, at the end of the card, as on
+           every other card - not when they are clicked (5.40.1) -->
       <div class="btnrow set-bar">
         <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
         <span class="muted small set-note-alt"></span>
       </div>
-      <div id="acme-push"></div>
     </div>
     <div class="full ot pw-wrap" data-sec="sys-acme" id="acme-card">
       <div id="ac-host"></div>

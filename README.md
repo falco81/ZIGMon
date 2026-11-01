@@ -2083,7 +2083,16 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.40.0**
+Current version: **5.40.1**
+
+5.40.1 — Certificates from acme saved at the end of its card.
+
+* The card's switches - *Take certificates from acme*, *Take certificates of
+  other names* - change nothing when clicked: *Unsaved changes*, and *Save
+  settings* now at the end of the card, after the pairing, the acmes paired
+  and the slots, as on every other card (it stood in the middle).
+
+`test/review5401.py` (the real page in Chromium); it fails on 5.40.0.
 
 5.40.0 — certificates from acme (acme push, protocol 1), as one more way in.
 
