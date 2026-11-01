@@ -98,6 +98,51 @@ if ($zigmon_road === '/tap') {
     exit;
 }
 
+// ---- acme push (5.40): certificates from acme --------------------------------
+// The certificate manager acme puts the dashboard's certificate in here:
+// ?api=acme-push-hello (GET), -pair, -inventory, -install (POST, JSON). Before
+// any sign-in and before the cross-site check below: acme has no session and
+// no browser can send a valid signature. This page decides nothing - the raw
+// body goes to the daemon in BASE64 byte for byte (the signature covers it),
+// with the five X-Acme-Push-* headers, and the daemon's answer comes back as
+// it is. Nothing of it is kept or logged here.
+if (preg_match('/^acme-push-(hello|pair|inventory|install)$/', (string) ($_GET['api'] ?? ''), $zigmon_m)) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $zigmon_op = $zigmon_m[1];
+    $zigmon_how = $zigmon_op === 'hello' ? 'GET' : 'POST';
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== $zigmon_how) {
+        http_response_code(405);
+        echo json_encode(['ok' => false, 'code' => 'bad_request', 'error' => $zigmon_op . ' is a ' . $zigmon_how]);
+        exit;
+    }
+    if ($zigmon_op === 'hello') {
+        [$zigmon_st, $zigmon_body] = zigmon_call('/api/acme-push/hello', 'GET', null, 15.0);
+    } else {
+        $zigmon_raw = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > 1048576 ? false
+            : file_get_contents('php://input', false, null, 0, 1048577);
+        if ($zigmon_raw === false || strlen($zigmon_raw) > 1048576) {
+            http_response_code(413);
+            echo json_encode(['ok' => false, 'code' => 'too_big', 'error' => 'the body is over 1 MiB']);
+            exit;
+        }
+        $zigmon_hdr = [];
+        foreach (['Version', 'Key', 'Time', 'Nonce', 'Signature'] as $zigmon_n) {
+            $zigmon_hdr[$zigmon_n] = substr((string) ($_SERVER['HTTP_X_ACME_PUSH_' . strtoupper($zigmon_n)] ?? ''), 0, 300);
+        }
+        [$zigmon_st, $zigmon_body] = zigmon_call('/api/acme-push/' . $zigmon_op, 'POST',
+            ['body' => base64_encode($zigmon_raw), 'headers' => $zigmon_hdr], 150.0);
+    }
+    if ($zigmon_st === 0) {
+        http_response_code(503);
+        echo json_encode(['ok' => false, 'code' => 'down', 'error' => 'the page cannot reach the zigmon daemon']);
+        exit;
+    }
+    http_response_code($zigmon_st);
+    echo $zigmon_body;
+    exit;
+}
+
 // ---- cross-site requests -----------------------------------------------------
 // Nothing in a POST to this page said it came from this page. A site anybody
 // in the house happens to open could send fetch(...,{method:'POST',
@@ -550,6 +595,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/acme');
         exit;
     }
+    if ($what === 'acmepush' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // Certificates from acme (5.40): its card - an administrator's,
+        // behind the sign-in in the daemon
+        zigmon_relay('/api/acmepush');
+        exit;
+    }
     if ($what === 'osup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // the updates of the system (5.34): what dnf has waiting and the
         // update going on - an administrator's, behind the sign-in in the daemon
@@ -889,7 +940,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -940,13 +991,14 @@ if (isset($_GET['api'])) {
                   'fullbackup-upload' => '/api/fullbackup/upload',
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
                   'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about',
-                  'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy'];
+                  'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy',
+                  'acmepush-do' => '/api/acmepush'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
         $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do',
                                                                     'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do', 'osup-do',
-                                                                    'webproxy-do'], true);
+                                                                    'webproxy-do', 'acmepush-do'], true);
         zigmon_relay($paths[$what], 'POST', $body, $slow ? 180.0 : 30.0);
         exit;
     }
@@ -5302,6 +5354,19 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <h2>The certificate</h2>
       <p class="note">One certificate for the dashboard and for the broker&rsquo;s TLS port: root writes the files nginx names, keeps their owner and mode, checks <code>nginx -t</code> before reloading (and puts the old ones back when it fails), and tells mosquitto to read them again. The private key never leaves this machine; a request (CSR) made here keeps its key here until the certificate comes back. You are told 21, 7 and 1 day before it runs out.</p>
       <div id="web-certs"></div>
+    </div>
+    <!-- Certificates from acme (5.40, acme push): the certificate manager acme
+         puts the dashboard's certificate in - paired here, signed, its key
+         sealed to this machine - exactly where an upload puts it. -->
+    <div class="card full ot set-card" data-sec="sys-certs" id="push-card">
+      <h2>Certificates from acme</h2>
+      <p class="note">acme, the certificate manager, can put the dashboard&rsquo;s certificate in here and renew it: paired once with a code shown here (or its key pasted), every request it sends is signed, and the certificate&rsquo;s key comes sealed to this machine. What it pushes goes exactly where an upload above goes, and Automatic certificates leaves it alone from then on, as after an upload &ndash; an upload, a request or <i>Look after it</i> take it back at any time. Off until switched on; switched off again, nothing more is taken and the certificate stays.</p>
+      <div class="set-host" id="set-host-sys-certs" data-for="sys-certs"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+      <div id="acme-push"></div>
     </div>
     <div class="full ot pw-wrap" data-sec="sys-acme" id="acme-card">
       <div id="ac-host"></div>
@@ -18842,6 +18907,16 @@ var SETTINGS_LAYOUT = [
      + 'the console do it. Off, none of them does; root on the command line can still go back with a package '
      + 'file (sudo zigmon --downgrade FILE). Going back leaves the database as it is, and only where that is safe'],
   ]],
+  // Certificates from acme (5.40, acme push): drawn on its card on Certificates
+  ['Certificates from acme', [
+    ['cert_push', 'Take certificates from acme',
+     'acme (the certificate manager) may pair with this dashboard and put its certificate in - each request signed '
+     + 'with its paired key. Off: acme is told only that this is zigmon, and every request is refused; the pairings '
+     + 'and the certificate in place stay'],
+    ['cert_push_other_names', 'Take certificates of other names',
+     'A certificate acme sends with <i>check_names</i> off is taken though it does not hold the dashboard\u2019s name. '
+     + 'Off: only a certificate holding the name of the place it goes'],
+  ]],
   // the updates of the system on a schedule (5.34): otp's own words, for one machine
   ['On a schedule', [
     ['|', 'a look for updates every day'],
@@ -19446,6 +19521,7 @@ var SETTINGS_WHERE = {
   'Changes kept on trial': 'sys-network', 'Restarting by itself': 'sys-power',
   'Going out through a proxy': 'sys-proxy',
   'Looking for new versions': 'sys-upgrade', 'Settings': 'sys-acme', 'On a schedule': 'sys-osup',
+  'Certificates from acme': 'sys-certs',
   'When, how many, and the password': 'sys-backup-rb'
 };
 function settingsHosts() {
@@ -27001,6 +27077,157 @@ function fwRuleEdit(d, r) {
           closeZModal(); fwDirty();
         }, zoops).then(function () { zbusy(b, false); });
       }}], 'medium');
+}
+
+/* ==== Certificates from acme (5.40, acme push) ================================
+   The card under the certificate: whether acme may put it in, the pairing
+   code (shown once), acme's key pasted, the acmes paired, what acme sees
+   here (the slots of its inventory) and the last push. Its own timer: it
+   looks every few seconds while Certificates is open. */
+var PUSH = {last: null, open: false, at: 0};
+function loadPush(quiet) {
+  var host = $('acme-push');
+  if (!host) return;
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see: who may put the dashboard’s certificate in.', loadPush);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('acmepush').then(drawPush).catch(function (e) { if (!quiet) zoops(e); });
+}
+setInterval(function () {
+  var here = STATE.tab === 'control' && CONTROL_SEC === 'sys-certs' && !document.hidden;
+  if (here && (!PUSH.open || Date.now() - PUSH.at > 6000)) {
+    if ($('zmodal') && !$('zmodal').hidden) return;
+    PUSH.at = Date.now();
+    loadPush(PUSH.open);
+  }
+  PUSH.open = here;
+}, 1000);
+function pushDo(body, button) {
+  zbusy(button, true);
+  return rootPost('acmepush-do', body).then(function (x) {
+    zbusy(button, false);
+    if (x.message) toast(x.message, true);
+    drawPush(x);
+    return x;
+  }, function (e) { zbusy(button, false); zoops(e); throw e; });
+}
+function pushWhen(ts) { return ts ? stamp(ts) : '–'; }
+function pushCode(x) {
+  zmodal('Pair with an acme', function (body) {
+    body.appendChild(el('p', 'note', 'In acme: Targets → An application of ours (acme push), the address '
+      + (x.url || '') + ' and this code in Pairing code, then Try. It is shown only now; it is good once, for 15 minutes, '
+      + 'and five wrong tries take it away.'));
+    var c = el('code', 'push-code', x.code || '');
+    c.id = 'push-code';
+    c.style.fontSize = '22px'; c.style.letterSpacing = '2px'; c.style.display = 'block'; c.style.margin = '12px 0';
+    body.appendChild(c);
+    body.appendChild(el('p', 'note', 'Good until ' + pushWhen((x.pairing || {}).until) + '.'));
+  }, [{words: 'Close', close: true}], 'narrow');
+}
+function pushPaste() {
+  var key = el('textarea', 'mono'); key.rows = 3; key.id = 'push-key'; key.spellcheck = false;
+  key.placeholder = 'acme-push-ed25519 AAAA… acme@acme1';
+  var name = zText('', 'acme 1');
+  name.id = 'push-key-name';
+  zmodal('Or paste acme’s key', function (body) {
+    body.appendChild(el('p', 'note', 'acme’s own key, from its card Certificates from acme (This acme’s own key) or what its Try says. '
+      + 'acme then takes this dashboard’s keys at its next Try - with Check the application’s certificate on, as safe as the certificate.'));
+    body.appendChild(zField('acme’s key', key));
+    body.appendChild(zField('Its name here', name, 'Empty: the comment at the end of the key.'));
+  }, [{words: 'Cancel', close: true},
+      {words: 'Take this key', cls: 'primary', icon: 'check', go: function (b) {
+        pushDo({action: 'paste', key: key.value.trim(), name: name.value.trim()}, b).then(function () { closeZModal(); }, function () {});
+      }}], 'medium');
+}
+function pushSlotNow(c) {
+  if (!c) return 'none';
+  var s = (c.key_type || '?') + ', until ' + (c.not_after ? stamp(c.not_after).slice(0, 10) : '?')
+    + ' – ' + String(c.fingerprint || '').slice(0, 16);
+  if (c.alt) s += ' + ' + (c.alt.key_type || '?') + ' ' + String(c.alt.fingerprint || '').slice(0, 16);
+  return s;
+}
+function drawPush(d) {
+  var host = $('acme-push');
+  if (!host || !d) return;
+  if (typingIn(host)) return;
+  PUSH.last = d;
+  var box = el('div', 'push-box');
+  box.id = 'push-box';
+  var st = el('p', 'note ' + (d.on ? 'good' : ''), d.on
+    ? 'On: a paired acme may put the dashboard’s certificate in. acme reaches it at ' + (d.url || '') + ' (this machine: ' + d.node + ').'
+    : 'Off: acme’s requests are refused - its hello is told only that this is zigmon. Switch Take certificates from acme on above and Save settings.'
+      + (d.keys && d.keys.length ? ' The acmes paired stay paired.' : ''));
+  st.id = 'push-state';
+  box.appendChild(st);
+  var row = el('div', 'btnrow');
+  var pair = cmdButton('Pair with an acme', 'link', 'primary');
+  pair.id = 'push-pair'; pair.disabled = !d.on;
+  pair.onclick = function () { pushDo({action: 'code'}, pair).then(pushCode, function () {}); };
+  row.appendChild(pair);
+  if (d.pairing) {
+    var drop = cmdButton('Take it back', 'close', '');
+    drop.id = 'push-drop';
+    drop.onclick = function () { pushDo({action: 'code_drop'}, drop).catch(function () {}); };
+    row.appendChild(drop);
+  }
+  var paste = cmdButton('Or paste acme’s key', 'key', '');
+  paste.id = 'push-paste'; paste.disabled = !d.on;
+  paste.onclick = pushPaste;
+  row.appendChild(paste);
+  box.appendChild(row);
+  if (d.pairing) {
+    var w = el('p', 'note warn', 'A pairing code waits until ' + pushWhen(d.pairing.until) + ' (' + d.pairing.tries_left
+      + ' wrong tries left). It is not shown again: Take it back, or Pair with an acme for a new one.');
+    w.id = 'push-waiting';
+    box.appendChild(w);
+  }
+  box.appendChild(el('h3', '', 'The acmes paired'));
+  box.appendChild(zTable(['acme', 'Key', 'How', 'Since', 'Last push', ''], d.keys || [], function (k) {
+    var tr = el('tr');
+    tr.appendChild(el('td', '', k.name || 'acme'));
+    tr.appendChild(el('td', 'mono', k.key_id));
+    tr.appendChild(el('td', '', k.how || ''));
+    tr.appendChild(el('td', '', pushWhen(k.at)));
+    tr.appendChild(el('td', '', k.last ? pushWhen(k.last) : 'never'));
+    var td = el('td');
+    var f = cmdButton('Forget it', 'close', 'small danger');
+    f.classList.add('push-forget'); f.dataset.key = k.key_id;
+    f.onclick = function () {
+      zconfirm('Forget ' + (k.name || 'acme') + '?', 'Nothing more is taken from this acme (its key ' + k.key_id
+        + '). The certificate it put in stays.', 'Forget it', function () {
+          pushDo({action: 'forget', key_id: k.key_id}, f).catch(function () {});
+        });
+    };
+    td.appendChild(f); tr.appendChild(td);
+    return tr;
+  }, 'plain|No acme is paired yet'));
+  box.appendChild(el('h3', '', 'What acme sees here'));
+  box.appendChild(zTable(['Slot', 'Names', 'Now', 'Kept by', 'Takes a push'], d.slots || [], function (s) {
+    var tr = el('tr');
+    tr.dataset.slot = s.id;
+    var t = el('td'); t.appendChild(el('b', 'mono', s.id)); t.appendChild(el('div', 'muted small', s.title || ''));
+    tr.appendChild(t);
+    tr.appendChild(el('td', '', (s.names || []).join(', ') || '–'));
+    tr.appendChild(el('td', 'mono small', pushSlotNow(s.current)));
+    tr.appendChild(el('td', '', s.managed_by));
+    tr.appendChild(el('td', '', s.installable ? 'yes' + (s.dual ? ' (two: ECDSA and RSA)' : '') : 'no - ' + (s.why_not || '')));
+    return tr;
+  }, 'plain|' + (d.slots_error || 'Nothing')));
+  box.appendChild(el('h3', '', 'The last push'));
+  var last = d.last;
+  var lp = el('p', 'note', last && last.at
+    ? pushWhen(last.at) + ' from ' + (last.acme || 'acme') + ' (key ' + (last.key_id || '?') + '): ' + (last.said || '')
+    : 'Nothing has been pushed here yet.');
+  lp.id = 'push-last';
+  box.appendChild(lp);
+  if (d.on && d.app_id) {
+    box.appendChild(el('p', 'muted small', 'This dashboard to acme: app_id ' + d.app_id + ', enc_key ' + d.enc_key
+      + ' (' + (d.crypto || '') + ').'));
+  }
+  host.innerHTML = '';
+  host.appendChild(box);
 }
 
 /* ==== Certificates and TLS ===================================================== */
