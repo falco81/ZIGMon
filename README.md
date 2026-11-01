@@ -2083,7 +2083,22 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.40.1**
+Current version: **5.40.2**
+
+5.40.2 — Certificates from acme looks as it does in ai.
+
+* The card laid out as ai's: the state as a tag by the title (*on - paired*,
+  *on - not paired yet*, *off*), the switches with their words under them,
+  three tiles - *The address for acme*, *This server's id*, *Its sealing key
+  (X25519)* - copied on a click, then *Pair with an acme*, *Take it back*,
+  the code's time and wrong tries, and *Or paste acme's key…*; the tables
+  *Paired with* and *What acme sees here*, and the last push as one line.
+  Switched off, only the switches show.
+* *Forget it* marks the acme to be forgotten (*Keep it* takes that back);
+  it is forgotten with *Save settings*, still at the end of the card.
+* The pairing code and the paste-key dialogs as ai's.
+
+`test/review5402.py` (the real page in Chromium); it fails on 5.40.1.
 
 5.40.1 — Certificates from acme saved at the end of its card.
 
