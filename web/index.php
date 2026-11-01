@@ -4278,6 +4278,91 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #up-web-card .set-says.clamp:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;
     -webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
   #up-web-card .set-says.clamp.cut:not(.open):hover{color:var(--tx-dim)}
+  /* Certificates from acme (5.40.2), as ai 1.0.60 draws the card: its sizes,
+     the two switches side by side - the name in bold over the switch, its
+     words under it - the tiles, the buttons of 38 px, the tables as ai's, and
+     its own save bar at the end with ai's blue button */
+  #tab-control #push-card{padding:20px 22px;border-radius:14px;font-size:14.5px;line-height:1.5}
+  #tab-control #push-card > h2{font-size:16px;line-height:1.5;margin:0 0 12px}
+  :is(#push-card, .push-dlg) .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  #push-card > p.note{font-size:13.5px;line-height:1.55;color:var(--tx-dim);margin:0 0 14px;max-width:980px}
+  #push-card > p.note.fold:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+  #push-card > p.note.fold.cut{cursor:pointer}
+  #push-card > p.note.fold.cut:not(.open):hover{color:var(--tx)}
+  #tab-control #push-card .set-host .set-grid{grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:22px 22px;margin:0}
+  #tab-control #push-card .set-host .set-grid > .set-item{max-width:540px;gap:7px 6px;margin:0;align-content:start}
+  #tab-control #push-card .set-item > label{grid-row:1;grid-column:1/-1;display:flex;align-items:center;gap:6px;
+    font-size:13.5px;font-weight:650;line-height:1.3;color:var(--tx);letter-spacing:0;text-transform:none;
+    justify-self:stretch;align-self:end;margin:0}
+  #tab-control #push-card .set-item > label :is(.iinfo, .obj-mark, .net-mark){display:none}
+  #tab-control #push-card .set-item.set-bool{grid-template-columns:minmax(0,1fr)}
+  #tab-control #push-card .set-item.set-bool > .sw{grid-row:2;grid-column:1;justify-self:start;align-self:center;margin:0}
+  #tab-control #push-card .set-item > .set-says{grid-row:3;font-size:12.5px;line-height:1.5;color:var(--tx-mut)}
+  #push-card .set-says.clamp:not(.open){display:-webkit-box;-webkit-line-clamp:3;line-clamp:3;
+    -webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+  #push-card .set-says.clamp.cut:not(.open):hover{color:var(--tx-dim)}
+  :is(#push-card, .push-dlg) .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0}
+  :is(#push-card, .push-dlg) .facts .fact{display:flex;flex-direction:column;padding:10px 14px;border-radius:10px;min-width:0}
+  :is(#push-card, .push-dlg) .facts .fact.wide{grid-column:span 2}
+  :is(#push-card, .push-dlg) .facts .fact .k{font-size:11px;letter-spacing:.6px;line-height:1.35}
+  :is(#push-card, .push-dlg) .facts .fact .v{font-size:14.5px;margin-top:4px;white-space:pre-wrap;overflow-wrap:break-word}
+  :is(#push-card, .push-dlg) .copyable{cursor:pointer;user-select:none;-webkit-user-select:none;
+    transition:border-color .15s,background .15s,box-shadow .15s}
+  :is(#push-card, .push-dlg) .copyable:hover{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
+  :is(#push-card, .push-dlg) .copyable.copied{border-color:var(--ok)!important;box-shadow:0 0 0 1px var(--ok) inset!important;
+    background:var(--ok-bg)}
+  #push-box > .btnrow{margin:0;gap:10px}
+  #push-card .btn.cmd, #zmodal .push-dlg + .foot .btn.cmd{height:38px;padding:0 16px;font-size:13.5px;border-radius:10px;
+    gap:8px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;line-height:1}
+  #push-card .btn.cmd.small{height:32px;padding:0 12px;font-size:12.5px;border-radius:8px;gap:7px}
+  #push-card .btn.primary, #zmodal .push-dlg + .foot .btn.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  #push-card .btn.primary:hover:not(:disabled),
+  #zmodal .push-dlg + .foot .btn.primary:hover:not(:disabled){background:#388bfd;border-color:#388bfd;color:#fff}
+  #push-card .btn.primary svg, #zmodal .push-dlg + .foot .btn.primary svg{opacity:1}
+  #push-card .btn.danger{color:var(--crit);border-color:rgba(248,81,73,.45);background:rgba(248,81,73,.13)}
+  #push-card .btn.danger:hover:not(:disabled){background:rgba(248,81,73,.22);color:#ff7b72;border-color:var(--crit)}
+  #push-box .muted{color:var(--tx-dim)}
+  #push-box .small{font-size:12.5px}
+  #push-box h4{margin:16px 0 8px;font-size:14.5px;font-weight:700}
+  #push-box table.plain{width:100%;border-collapse:collapse;font-size:13.5px}
+  #push-box table.plain th{text-align:left;font-size:11.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut);
+    font-weight:700;padding:6px 10px 6px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+  #push-box table.plain td{font-size:14px;line-height:1.5;padding:7px 10px 7px 0;border-bottom:1px solid rgba(38,44,55,.55);
+    vertical-align:top}
+  #push-box table.plain td.small{font-size:14px}
+  #push-box table.plain td.mono{white-space:nowrap}
+  #push-box table.plain :is(th, td):first-child{padding-left:11px}
+  #push-box table.plain tr:last-child td{border-bottom:0}
+  #push-box table.plain td.rowtools{width:1%;white-space:nowrap;text-align:right;vertical-align:middle}
+  #push-box table.plain td.rowtools > *{vertical-align:middle;margin-left:6px}
+  #push-box table.plain td.rowtools > :first-child{margin-left:0}
+  #push-box table.plain tbody tr:has(td.rowtools) > td{vertical-align:middle}
+  #push-box td .day{color:var(--tx-mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+  #push-box td.push-when{white-space:nowrap}
+  #push-box tr.push-gone > td:not(.rowtools){opacity:.45;text-decoration:line-through}
+  #push-box p.note.good{max-width:940px;margin:0 0 14px;background:var(--ok-bg);border-radius:10px;padding:10px 12px}
+  #tab-control #push-card .set-bar{margin:16px 0 4px;padding:12px 0;gap:10px}
+  /* at a phone's width a long label wraps, as ai's buttons do */
+  @media (max-width:520px){
+    #push-card .btn, #zmodal .push-dlg + .foot .btn{white-space:normal;min-height:34px;text-align:left;max-width:100%;min-width:0}
+    #push-card .btn > span, #zmodal .push-dlg + .foot .btn > span{white-space:normal;min-width:0}
+  }
+  @media (max-width:640px){#push-card .tag{white-space:normal;max-width:100%}}
+  /* its popups: the code large, in a dashed box; the names of the boxes as ai writes them */
+  .push-dlg .push-code{font-size:30px;letter-spacing:.12em;text-align:center;padding:18px 10px;margin:12px 0;
+    border:1px dashed var(--line);border-radius:10px;background:var(--panel2);user-select:all;overflow-wrap:anywhere;color:var(--tx)}
+  .push-dlg .btnhelp{color:var(--tx-mut);font-size:12.5px;margin:6px 0 4px}
+  #zmodal .box.push-dlg-box{font-size:14.5px;line-height:1.5;border-color:var(--line);background:var(--panel)}
+  .push-dlg > p.note{margin:0 0 14px}
+  #zmodal .push-dlg .facts{margin:0 0 16px}
+  .push-dlg .set-item{display:flex;flex-direction:column;gap:6px;margin:0}
+  .push-dlg .set-item + .set-item{margin-top:14px}
+  .push-dlg .set-item > label{display:flex;gap:6px;font-size:13.5px;font-weight:650;line-height:1.3;letter-spacing:0;
+    text-transform:none;color:var(--tx)}
+  .push-dlg textarea.mono{padding:7px 10px;line-height:1.5;height:auto;min-height:0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13.5px}
+  .push-dlg textarea.mono:focus{box-shadow:0 0 0 3px rgba(88,166,255,.15)}
+  .push-dlg input[type=text]{height:38px;padding:0 12px;font-size:14px;line-height:1.2;border-radius:10px}
   /* otp's save bar: below the last card until something is changed, then
      stuck to the bottom of the page with the page fading out above it */
   .up-save-bar{position:static;margin:0 0 4px;padding:12px 0;border:1px solid transparent;border-radius:14px}
@@ -5358,9 +5443,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <!-- Certificates from acme (5.40, acme push): the certificate manager acme
          puts the dashboard's certificate in - paired here, signed, its key
          sealed to this machine - exactly where an upload puts it. -->
+    <!-- Drawn as ai 1.0.60 draws the same card (5.40.2): its state as a tag in
+         the title, the words whole, the two switches with their words under
+         them, then - while it is on - the three tiles acme is given, the
+         pairing, Paired with, What acme sees here and the last push. -->
     <div class="card full ot set-card" data-sec="sys-certs" id="push-card">
-      <h2>Certificates from acme</h2>
-      <p class="note">acme, the certificate manager, can put the dashboard&rsquo;s certificate in here and renew it: paired once with a code shown here (or its key pasted), every request it sends is signed, and the certificate&rsquo;s key comes sealed to this machine. What it pushes goes exactly where an upload above goes, and Automatic certificates leaves it alone from then on, as after an upload &ndash; an upload, a request or <i>Look after it</i> take it back at any time. Off until switched on; switched off again, nothing more is taken and the certificate stays.</p>
+      <h2>Certificates from acme <span class="right" id="push-tag"></span></h2>
+      <p class="note" id="push-note">acme, the certificate manager, can give this server its certificate and renew it by itself (acme push). Paired once with a code shown here, acme signs every request with its key and sends the certificate&rsquo;s private key sealed for this server alone; the certificate is kept exactly where an upload above keeps it, and the Automatic certificates leave it alone from then on. Off until switched on; switched off again, nothing more is taken and the certificate stays.</p>
       <div class="set-host" id="set-host-sys-certs" data-for="sys-certs"></div>
       <div id="acme-push"></div>
       <!-- the switches above are saved here, at the end of the card, as on
@@ -20188,7 +20277,12 @@ var SETTING_SAYS_UNDER = {
     + 'only when it is signed by a release key installed with zigmon.',
   downgrade_show: 'Off: nothing on these pages offers going back to an older version. On: this page shows '
     + '<i>Going back to an older version</i> - only the versions it is safe to go back to, each with what changed '
-    + 'in it. On the server, root can always: <code>sudo zigmon --downgrade FILE</code>.'
+    + 'in it. On the server, root can always: <code>sudo zigmon --downgrade FILE</code>.',
+  // Certificates from acme (5.40.2), in ai 1.0.60's words; the name is put in
+  // by the card (drawPush) from what acme sees here
+  cert_push: 'Off: hello says only that it is off, and nothing is taken.',
+  cert_push_other_names: 'Off: a certificate must hold the name of this server (<span class="push-name">its name</span>). '
+    + 'On: acme may say not to check it.'
 };
 // what a setting does, under it - otp's way for the three of Upgrades, and
 // plexmon's for the backups: in three lines (1.0.156), a click opens the rest
@@ -20897,6 +20991,8 @@ var SETTINGS_WHEN = {
   acme_desec_domain: 'acme=1&acme_challenge=dns-01&acme_dns=desec',
   acme_desec_token: 'acme=1&acme_challenge=dns-01&acme_dns=desec',
   acme_dns_alias: 'acme=1&acme_challenge=dns-01&acme_dns!=acmedns',
+  // Certificates from acme (5.40.2): the second switch only while it is on, as ai has it
+  cert_push_other_names: 'cert_push=1',
   // the updates of the system on a schedule (5.34), as otp shows them
   osup_check_at: 'osup_check=1', osup_auto_what: 'osup_auto=1', osup_auto_every: 'osup_auto=1',
   osup_auto_day: 'osup_auto=1&osup_auto_every=weekly', osup_auto_at: 'osup_auto=1',
@@ -27085,8 +27181,13 @@ function fwRuleEdit(d, r) {
    The card under the certificate: whether acme may put it in, the pairing
    code (shown once), acme's key pasted, the acmes paired, what acme sees
    here (the slots of its inventory) and the last push. Its own timer: it
-   looks every few seconds while Certificates is open. */
-var PUSH = {last: null, open: false, at: 0};
+   looks every few seconds while Certificates is open.
+   Drawn as ai 1.0.60 draws it (5.40.2): the state a tag in the title; while
+   it is on, the three tiles acme's Target is given (a click copies one), the
+   pairing in one row, Paired with, What acme sees here and the last push in a
+   line. An acme to forget waits for Save settings at the end of the card, as
+   the switches do, with Keep it to change one's mind. */
+var PUSH = {last: null, open: false, at: 0, forget: {}};
 function loadPush(quiet) {
   var host = $('acme-push');
   if (!host) return;
@@ -27116,120 +27217,231 @@ function pushDo(body, button) {
   }, function (e) { zbusy(button, false); zoops(e); throw e; });
 }
 function pushWhen(ts) { return ts ? stamp(ts) : '–'; }
+// the clock alone, for a code that lives fifteen minutes
+function pushClock(ts) { return ts ? stamp(ts).slice(11) : '–'; }
+// a moment in a table: the day dimmer than the time, as ai's stampCell
+function pushStampCell(ts) {
+  var td = el('td', 'push-when');
+  if (!ts) { td.textContent = '–'; return td; }
+  var s = stamp(ts);
+  td.appendChild(el('span', 'day', s.slice(0, 10) + ' '));
+  td.appendChild(el('span', '', s.slice(11)));
+  return td;
+}
+// the line of tiles: a word over a value; a long value gets two columns
+function pushFacts(pairs) {
+  var box = el('div', 'facts');
+  pairs.forEach(function (one) {
+    var cell = el('div', 'fact' + (String(one[1] || '').length > 22 ? ' wide' : ''));
+    cell.appendChild(el('span', 'k', one[0]));
+    var v = el('span', 'v');
+    v.appendChild(el('span', one[2] || '', one[1] || '–'));
+    cell.appendChild(v);
+    box.appendChild(cell);
+  });
+  return box;
+}
+// a tile, or the code, that copies what it holds when clicked
+function pushCopy(node, text) {
+  if (!text) return node;
+  node.classList.add('copyable');
+  node.title = 'Click to copy';
+  node.setAttribute('role', 'button');
+  node.tabIndex = 0;
+  node.onclick = function (ev) {
+    ev.stopPropagation();
+    copyText(text);
+    node.classList.add('copied');
+    setTimeout(function () { node.classList.remove('copied'); }, 900);
+  };
+  node.onkeydown = function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); node.onclick(ev); } };
+  return node;
+}
+function pushTiles(box, values) {
+  Array.prototype.forEach.call(box.querySelectorAll('.fact'), function (cell, i) { pushCopy(cell, values[i]); });
+  return box;
+}
 function pushCode(x) {
   zmodal('Pair with an acme', function (body) {
-    body.appendChild(el('p', 'note', 'In acme: Targets → An application of ours (acme push), the address '
-      + (x.url || '') + ' and this code in Pairing code, then Try. It is shown only now; it is good once, for 15 minutes, '
-      + 'and five wrong tries take it away.'));
-    var c = el('code', 'push-code', x.code || '');
+    body.classList.add('push-dlg');
+    body.appendChild(el('p', 'note', 'In acme: Targets → add An application of ours (acme push), its address below, '
+      + 'and this code in Pairing code - then Try. The code is shown this once, works once, for 15 minutes; five wrong '
+      + 'tries end it.'));
+    var c = el('div', 'push-code mono', x.code || '');
     c.id = 'push-code';
-    c.style.fontSize = '22px'; c.style.letterSpacing = '2px'; c.style.display = 'block'; c.style.margin = '12px 0';
-    body.appendChild(c);
-    body.appendChild(el('p', 'note', 'Good until ' + pushWhen((x.pairing || {}).until) + '.'));
-  }, [{words: 'Close', close: true}], 'narrow');
+    body.appendChild(pushCopy(c, x.code));
+    body.appendChild(pushTiles(pushFacts([['The address for acme', x.url || '', 'mono'],
+                                          ['Valid until', pushClock((x.pairing || {}).until)]]), [x.url]));
+    body.appendChild(el('p', 'btnhelp', 'A click on the code or the address copies it.'));
+  }, [{words: 'Close', close: true}], 'narrow push-dlg-box');
 }
 function pushPaste() {
   var key = el('textarea', 'mono'); key.rows = 3; key.id = 'push-key'; key.spellcheck = false;
-  key.placeholder = 'acme-push-ed25519 AAAA… acme@acme1';
-  var name = zText('', 'acme 1');
+  key.placeholder = 'acme-push-ed25519 …';
+  var name = zText('', 'acme1');
   name.id = 'push-key-name';
-  zmodal('Or paste acme’s key', function (body) {
-    body.appendChild(el('p', 'note', 'acme’s own key, from its card Certificates from acme (This acme’s own key) or what its Try says. '
-      + 'acme then takes this dashboard’s keys at its next Try - with Check the application’s certificate on, as safe as the certificate.'));
+  zmodal('Paste acme’s key', function (body) {
+    body.classList.add('push-dlg');
+    body.appendChild(el('p', 'note', 'acme’s own Certificates from acme card shows This acme’s own key: '
+      + 'acme-push-ed25519 AAAA… acme then pins this server when it first sees it - keep Check the application’s '
+      + 'certificate on there.'));
     body.appendChild(zField('acme’s key', key));
-    body.appendChild(zField('Its name here', name, 'Empty: the comment at the end of the key.'));
-  }, [{words: 'Cancel', close: true},
-      {words: 'Take this key', cls: 'primary', icon: 'check', go: function (b) {
+    body.appendChild(zField('A name for it', name));
+  }, [{words: 'Close', close: true},
+      {words: 'Take this key', cls: 'primary', icon: 'key', go: function (b) {
         pushDo({action: 'paste', key: key.value.trim(), name: name.value.trim()}, b).then(function () { closeZModal(); }, function () {});
-      }}], 'medium');
+      }}], 'narrow push-dlg-box');
 }
-function pushSlotNow(c) {
-  if (!c) return 'none';
-  var s = (c.key_type || '?') + ', until ' + (c.not_after ? stamp(c.not_after).slice(0, 10) : '?')
-    + ' – ' + String(c.fingerprint || '').slice(0, 16);
-  if (c.alt) s += ' + ' + (c.alt.key_type || '?') + ' ' + String(c.alt.fingerprint || '').slice(0, 16);
-  return s;
+// the issuer by its own name (R11), not the whole distinguished name
+function pushIssuer(s) {
+  s = String(s || '');
+  var m = /(?:^|[,\/]\s*)CN\s*=\s*([^,\/]+)/.exec(s) || /(?:^|[,\/]\s*)O\s*=\s*([^,\/]+)/.exec(s);
+  return m ? m[1].trim() : s;
+}
+// The card's words in three lines, as ai folds a card's note: a click opens
+// the rest in place, and the whole is under the pointer while it is cut.
+function pushNoteFold() {
+  var p = $('push-note');
+  if (!p || p._folded) return;
+  p._folded = true;
+  p.classList.add('fold');
+  var mark = function () {
+    if (!p.isConnected || !p.clientHeight || p.classList.contains('open')) return;
+    var cut = p.scrollHeight > p.clientHeight + 2;
+    p.classList.toggle('cut', cut);
+    if (cut && !p.dataset.explains) explain(p, p.textContent);
+  };
+  p.addEventListener('click', function () { p.classList.toggle('open'); });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(mark).observe(p);
+  else { setTimeout(mark, 60); setTimeout(mark, 800); }
+}
+pushNoteFold();
+var PUSH_KEPT_BY = {none: 'nobody (none)', manual: 'by hand', 'own-acme': 'Automatic certificates', 'acme-push': 'acme push'};
+// the acmes to forget, marked on the card: the note of its save bar says so
+function pushWanted() {
+  var n = Object.keys(PUSH.forget).length, note = document.querySelector('#push-card .set-note-alt');
+  if (note && n) note.textContent = 'Unsaved changes';
+  // the last one kept again: the note goes back to what the switches say
+  else if (note && PUSH.marked) note.textContent = SETTINGS.dirty ? 'Unsaved changes' : '';
+  PUSH.marked = n > 0;
+}
+// Save settings at the end of the card: the acmes marked are forgotten first,
+// one by one, and then the switches are saved as Save settings saves them
+function pushSave() {
+  var gone = Object.keys(PUSH.forget);
+  if (!gone.length) { $('settings-save').onclick(); return; }
+  var b = this, chain = Promise.resolve();
+  gone.forEach(function (kid) {
+    chain = chain.then(function () { return pushDo({action: 'forget', key_id: kid}, b); })
+      .then(function () { delete PUSH.forget[kid]; });
+  });
+  chain.then(function () {
+    pushWanted();
+    if (SETTINGS.dirty) $('settings-save').onclick();
+  }, function () { pushWanted(); });
 }
 function drawPush(d) {
   var host = $('acme-push');
   if (!host || !d) return;
   if (typingIn(host)) return;
   PUSH.last = d;
+  var keys = d.keys || [];
+  Object.keys(PUSH.forget).forEach(function (kid) {
+    if (!keys.some(function (k) { return k.key_id === kid; })) delete PUSH.forget[kid];
+  });
+  var save = document.querySelector('#push-card .set-save-alt');
+  if (save) save.onclick = pushSave;
+  var tagHost = $('push-tag');
+  if (tagHost) {
+    tagHost.innerHTML = '';
+    var tag = el('span', 'tag ' + (d.on ? (keys.length ? 'ok' : 'warn') : 'dim'),
+                 d.on ? (keys.length ? 'on - paired' : 'on - not paired yet') : 'off');
+    tag.id = 'push-state';
+    tagHost.appendChild(tag);
+  }
+  var name = (((d.slots || [])[0] || {}).names || []).join(', ') || '?';
+  Array.prototype.forEach.call(document.querySelectorAll('#push-card .push-name'), function (n) { n.textContent = name; });
   var box = el('div', 'push-box');
   box.id = 'push-box';
-  var st = el('p', 'note ' + (d.on ? 'good' : ''), d.on
-    ? 'On: a paired acme may put the dashboard’s certificate in. acme reaches it at ' + (d.url || '') + ' (this machine: ' + d.node + ').'
-    : 'Off: acme’s requests are refused - its hello is told only that this is zigmon. Switch Take certificates from acme on above and Save settings.'
-      + (d.keys && d.keys.length ? ' The acmes paired stay paired.' : ''));
-  st.id = 'push-state';
-  box.appendChild(st);
+  if (!d.on) {
+    host.innerHTML = '';
+    host.appendChild(box);
+    return;
+  }
+  box.appendChild(pushTiles(pushFacts([
+    ['The address for acme', d.url || '', 'mono'],
+    ['This server’s id', d.app_id || '', 'mono'],
+    ['Its sealing key (X25519)', d.enc_key || '', 'mono small']]), [d.url, d.app_id, d.enc_key]));
   var row = el('div', 'btnrow');
-  var pair = cmdButton('Pair with an acme', 'link', 'primary');
-  pair.id = 'push-pair'; pair.disabled = !d.on;
+  var pair = cmdButton('Pair with an acme', 'key', 'primary');
+  pair.id = 'push-pair';
   pair.onclick = function () { pushDo({action: 'code'}, pair).then(pushCode, function () {}); };
   row.appendChild(pair);
   if (d.pairing) {
-    var drop = cmdButton('Take it back', 'close', '');
+    var drop = cmdButton('Take it back', 'undo', '');
     drop.id = 'push-drop';
     drop.onclick = function () { pushDo({action: 'code_drop'}, drop).catch(function () {}); };
     row.appendChild(drop);
+    var tries = d.pairing.tries !== undefined ? d.pairing.tries : 5 - (d.pairing.tries_left || 0);
+    var w = el('span', 'small muted', 'A code waits until ' + pushClock(d.pairing.until) + ' (' + tries + ' wrong so far).');
+    w.id = 'push-waiting';
+    row.appendChild(w);
   }
-  var paste = cmdButton('Or paste acme’s key', 'key', '');
-  paste.id = 'push-paste'; paste.disabled = !d.on;
+  var paste = cmdButton('Or paste acme’s key…', 'edit', '');
+  paste.id = 'push-paste';
   paste.onclick = pushPaste;
   row.appendChild(paste);
   box.appendChild(row);
-  if (d.pairing) {
-    var w = el('p', 'note warn', 'A pairing code waits until ' + pushWhen(d.pairing.until) + ' (' + d.pairing.tries_left
-      + ' wrong tries left). It is not shown again: Take it back, or Pair with an acme for a new one.');
-    w.id = 'push-waiting';
-    box.appendChild(w);
+  if (keys.length) {
+    box.appendChild(el('h4', '', 'Paired with'));
+    box.appendChild(zTable(['acme', 'Key', 'Since', 'How', ''], keys, function (k) {
+      var tr = el('tr');
+      tr.appendChild(el('td', '', k.name || 'acme'));
+      tr.appendChild(el('td', 'mono small', k.key_id));
+      tr.appendChild(pushStampCell(k.at));
+      tr.appendChild(el('td', 'muted', k.how || ''));
+      var act = el('td', 'rowtools');
+      if (PUSH.forget[k.key_id]) {
+        tr.classList.add('push-gone');
+        act.appendChild(el('span', 'small muted', 'forgotten when saved'));
+        var keep = cmdButton('Keep it', 'undo', 'small');
+        keep.classList.add('push-keep'); keep.dataset.key = k.key_id;
+        keep.onclick = function () { delete PUSH.forget[k.key_id]; pushWanted(); drawPush(PUSH.last); };
+        act.appendChild(keep);
+      } else {
+        var f = cmdButton('Forget it', 'trash', 'small danger');
+        f.classList.add('push-forget'); f.dataset.key = k.key_id;
+        f.title = 'Nothing more is taken from it once saved; the certificate it put in stays until another one replaces it.';
+        f.onclick = function () { PUSH.forget[k.key_id] = true; pushWanted(); drawPush(PUSH.last); };
+        act.appendChild(f);
+      }
+      tr.appendChild(act);
+      return tr;
+    }));
   }
-  box.appendChild(el('h3', '', 'The acmes paired'));
-  box.appendChild(zTable(['acme', 'Key', 'How', 'Since', 'Last push', ''], d.keys || [], function (k) {
-    var tr = el('tr');
-    tr.appendChild(el('td', '', k.name || 'acme'));
-    tr.appendChild(el('td', 'mono', k.key_id));
-    tr.appendChild(el('td', '', k.how || ''));
-    tr.appendChild(el('td', '', pushWhen(k.at)));
-    tr.appendChild(el('td', '', k.last ? pushWhen(k.last) : 'never'));
-    var td = el('td');
-    var f = cmdButton('Forget it', 'close', 'small danger');
-    f.classList.add('push-forget'); f.dataset.key = k.key_id;
-    f.onclick = function () {
-      zconfirm('Forget ' + (k.name || 'acme') + '?', 'Nothing more is taken from this acme (its key ' + k.key_id
-        + '). The certificate it put in stays.', 'Forget it', function () {
-          pushDo({action: 'forget', key_id: k.key_id}, f).catch(function () {});
-        });
-    };
-    td.appendChild(f); tr.appendChild(td);
-    return tr;
-  }, 'plain|No acme is paired yet'));
-  box.appendChild(el('h3', '', 'What acme sees here'));
-  box.appendChild(zTable(['Slot', 'Names', 'Now', 'Kept by', 'Takes a push'], d.slots || [], function (s) {
+  box.appendChild(el('h4', '', 'What acme sees here'));
+  box.appendChild(zTable(['Slot', 'Names', 'Now', 'Until', 'Looked after by'], d.slots || [], function (s) {
     var tr = el('tr');
     tr.dataset.slot = s.id;
-    var t = el('td'); t.appendChild(el('b', 'mono', s.id)); t.appendChild(el('div', 'muted small', s.title || ''));
-    tr.appendChild(t);
-    tr.appendChild(el('td', '', (s.names || []).join(', ') || '–'));
-    tr.appendChild(el('td', 'mono small', pushSlotNow(s.current)));
-    tr.appendChild(el('td', '', s.managed_by));
-    tr.appendChild(el('td', '', s.installable ? 'yes' + (s.dual ? ' (two: ECDSA and RSA)' : '') : 'no - ' + (s.why_not || '')));
+    var c = s.current || {};
+    var slot = el('td', 'mono small', s.id);
+    // what ZIGMon knows besides: what the slot is, and whether it takes a push
+    slot.title = (s.title || '') + (s.installable ? '' : ' - takes no push: ' + (s.why_not || ''));
+    tr.appendChild(slot);
+    tr.appendChild(el('td', 'mono small', (s.names || []).join(', ')));
+    tr.appendChild(el('td', 'small', c.fingerprint ? pushIssuer(c.issuer) + (c.alt ? ' + ' + (c.alt.key_type || '') : '') : 'none'));
+    tr.appendChild(c.not_after ? pushStampCell(c.not_after) : el('td', 'muted', '–'));
+    tr.appendChild(el('td', '', PUSH_KEPT_BY[s.managed_by] || s.managed_by));
     return tr;
-  }, 'plain|' + (d.slots_error || 'Nothing')));
-  box.appendChild(el('h3', '', 'The last push'));
-  var last = d.last;
-  var lp = el('p', 'note', last && last.at
-    ? pushWhen(last.at) + ' from ' + (last.acme || 'acme') + ' (key ' + (last.key_id || '?') + '): ' + (last.said || '')
-    : 'Nothing has been pushed here yet.');
-  lp.id = 'push-last';
-  box.appendChild(lp);
-  if (d.on && d.app_id) {
-    box.appendChild(el('p', 'muted small', 'This dashboard to acme: app_id ' + d.app_id + ', enc_key ' + d.enc_key
-      + ' (' + (d.crypto || '') + ').'));
+  }, 'plain|' + (d.slots_error || 'Nothing here')));
+  if (d.last && d.last.at) {
+    var lp = el('p', 'note good', 'The last push: ' + (d.last.acme || '') + ' · ' + ago(d.last.at) + ' · ' + (d.last.said || ''));
+    lp.id = 'push-last';
+    box.appendChild(lp);
   }
   host.innerHTML = '';
   host.appendChild(box);
+  pushWanted();
 }
 
 /* ==== Certificates and TLS ===================================================== */
@@ -31326,7 +31538,9 @@ function firstSentence(text) {
 // - and the three of Upgrades and maintenance, said whole as otp says them
 var LIVE_NOTES = {'notify-note': 1, 'wifi-api-note': 1, 'wifi-seen-note': 1,
                   'up-nodes-note': 1, 'up-web-note': 1, 'up-new-note': 1, 'up-back-note': 1,
-                  'up-log-note': 1, 'up-cli-note': 1};
+                  'up-log-note': 1, 'up-cli-note': 1,
+                  // Certificates from acme, said whole as ai says it (5.40.2)
+                  'push-note': 1};
 function decorateControlCards(root) {
   Array.prototype.forEach.call((root || document).querySelectorAll('section.panel .card, #lock-card'), function (card) {
     var h = card.querySelector(':scope > h2');

@@ -630,8 +630,11 @@ try:
     for n in range(1, 6):
         code, out, _n = A.pair(pc, bad_proof=True)
         check(code == 403 and out.get('code') == 'bad_code', 'a wrong proof (%d): %s %r' % (n, code, out))
-        left = (card()[1].get('pairing') or {}).get('tries_left')
+        pg = card()[1].get('pairing') or {}
+        left = pg.get('tries_left')
         check(left == (5 - n if n < 5 else None), 'tries left after %d wrong: %r' % (n, left))
+        # the wrong tries so far, which the card says as ai's does (5.40.2)
+        check(n == 5 or pg.get('tries') == n, 'the wrong tries so far after %d wrong: %r' % (n, pg.get('tries')))
     code, out, _n = A.pair(pc)
     check(code == 403 and out.get('code') == 'pairing_closed', 'the code lived on after five wrong: %s %r' % (code, out))
     code, out = card({'action': 'code'})
@@ -990,6 +993,8 @@ const { chromium } = require('playwright');
   r.slots = await p.evaluate(() => Array.from(document.querySelectorAll('#push-box tr[data-slot]')).map(t => t.dataset.slot));
   r.keys = await p.evaluate(() => Array.from(document.querySelectorAll('#push-box .push-forget')).map(t => t.dataset.key));
   r.last = await p.textContent('#push-last');
+  r.tiles = await p.evaluate(() => Array.from(document.querySelectorAll('#push-box .fact .k')).map(t => t.textContent));
+  r.heads = await p.evaluate(() => Array.from(document.querySelectorAll('#push-box h4')).map(t => t.textContent));
   await p.click('#push-pair');
   await p.waitForSelector('#push-code', {timeout: 10000});
   r.code = await p.textContent('#push-code');
@@ -1031,7 +1036,10 @@ const { chromium } = require('playwright');
         check(zigmon.push_other_names(), 'Take certificates of other names, switched on the card, was not saved')
         check('Take certificates from acme' in (r.get('sw') or '') and 'Take certificates of other names' in (r.get('sw') or ''),
               'the switches are not on the card: %r' % (r.get('sw') or '')[:200])
-        check((r.get('state') or '').startswith('On:'), 'the card does not say on: %r' % r.get('state'))
+        check((r.get('state') or '') == 'on - paired', 'the card\'s tag does not say on - paired: %r' % r.get('state'))
+        check(r.get('tiles') == ['The address for acme', 'This server\u2019s id', 'Its sealing key (X25519)'],
+              'the card\'s tiles (as ai 1.0.60): %r' % r.get('tiles'))
+        check(r.get('heads') == ['Paired with', 'What acme sees here'], 'the card\'s parts (as ai 1.0.60): %r' % r.get('heads'))
         check(r.get('slots') == ['node:' + HOST, 'broker'], 'the card\'s slots: %r' % r.get('slots'))
         check(r.get('keys') == [A.kid], 'the card\'s paired acmes: %r' % r.get('keys'))
         check('acme 1.0.5 on acme1' in (r.get('last') or ''), 'the last push: %r' % r.get('last'))

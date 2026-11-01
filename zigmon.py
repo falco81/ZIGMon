@@ -48268,7 +48268,9 @@ def push_view(d):
             'crypto': PUSH_LIB or 'plain Python',
             'keys': [{k: x.get(k) for k in ('key_id', 'name', 'how', 'by', 'at', 'last')} for x in push_keys(d)],
             'keys_most': PUSH_KEYS_MOST,
-            'pairing': {'until': int(code['until']), 'tries_left': PUSH_CODE_TRIES - int(code.get('tries') or 0)}
+            # the wrong tries so far as well (5.40.2): the card says them as ai's does
+            'pairing': {'until': int(code['until']), 'tries_left': PUSH_CODE_TRIES - int(code.get('tries') or 0),
+                        'tries': int(code.get('tries') or 0)}
             if code else None,
             'slots': slots, 'slots_error': err, 'last': _push_meta(d, 'acme_push:last', {}) or None,
             'url': 'https://%s/' % (acme_name_of(d) or push_node())}
