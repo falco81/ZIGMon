@@ -480,8 +480,13 @@ try:
     check(came and early, 'looked before its time')
     settle('osup:check')
     asked = (d._mj('osup:check') or {}).get('job')
+    before9 = dict(d._mj('osup:check') or {})
     zigmon.osup_sched_tick(d, now=at(1, 9, 0))
-    check(came and (d._mj('osup:check') or {}).get('job') == asked, 'looked twice on one day')
+    after9 = d._mj('osup:check') or {}
+    check(came and after9.get('job') == asked, 'looked twice on one day: %r -> %r (claimed %r, local %s)' % (
+        {k: before9.get(k) for k in ('job', 'state', 'by', 'relook')},
+        {k: after9.get(k) for k in ('job', 'state', 'by', 'relook')},
+        d.store.get_meta('osup:check:day'), time.strftime('%Y-%m-%d %H:%M %Z')))
     zigmon.CONFIG.update(osup_check=0, osup_auto=1, osup_auto_every='weekly', osup_auto_what='security',
                          osup_auto_at='04:45', osup_auto_reboot='ask')
     sunday = next(n for n in range(2, 9) if time.localtime(at(n, 12, 0)).tm_wday == 6)
