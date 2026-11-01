@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.38.0"
+VERSION="5.38.1"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -579,6 +579,37 @@ install_service() {
 # leaves as it is. The switch is kept in /etc itself, where only root writes -
 # not in /etc/zigmon, whose group is the service's: a flag the service could
 # replace would be a link or a pipe for root's login to follow.
+# The machine's own screen (5.38.1, otp 1.0.210). systemd's rc-local
+# generator says "/etc/rc.d/rc.local is not marked executable, skipping" at
+# every daemon-reload - an install, an upgrade, every dnf update of a package
+# with units - and, as generators write to the kernel's log, the kernel
+# prints it on the console wherever its console level lets warnings through
+# (a kernel booted without quiet, or with loglevel=7): bursts of it over the
+# zigmon console at login on tty1. Only errors on the console, then - RHEL's
+# own 4 4 1 7; everything is still in journalctl -k. A kernel.printk set by
+# the administrator anywhere else is theirs and left alone.
+SYSCTL_DIR="${SYSCTL_DIR:-/etc/sysctl.d}"
+SYSCTL_CONF="${SYSCTL_CONF:-/etc/sysctl.conf}"
+CONSOLE_SYSCTL="$SYSCTL_DIR/80-zigmon-console.conf"
+
+console_quiet() {
+    step "The machine's console"
+    local own
+    own="$(grep -ls '^[[:space:]]*kernel\.printk' "$SYSCTL_DIR"/*.conf "$SYSCTL_CONF" 2>/dev/null \
+           | grep -vx "$CONSOLE_SYSCTL" || true)"
+    if [[ -n "$own" ]]; then
+        good "kernel.printk is set by hand ($(echo $own)): left as it is"
+        return 0
+    fi
+    if [[ -n "$DRY_RUN" ]]; then note "[would write] $CONSOLE_SYSCTL: kernel.printk = 4 4 1 7"; return 0; fi
+    install -d -m 755 "$SYSCTL_DIR"
+    printf '%s\n' '# Written by zigmon: only errors on the console; everything is in journalctl -k.' \
+        'kernel.printk = 4 4 1 7' > "$CONSOLE_SYSCTL"
+    chmod 0644 "$CONSOLE_SYSCTL"
+    sysctl -q -p "$CONSOLE_SYSCTL" >/dev/null 2>&1 || true     # in a container it cannot be set
+    good "only errors on the console (kernel.printk 4 4 1 7); the rest is in journalctl -k"
+}
+
 install_console() {
     step "The console at login"
     if [[ -n "$DRY_RUN" ]]; then note "[would write] /etc/profile.d/zz-zigmon-console.sh"; return 0; fi
@@ -1333,6 +1364,7 @@ do_upgrade() {
     install_helpers
     install_time_tools
     install_console
+    console_quiet
     allow_broker_reload
     install_backup_tools     # 5.21: ssh and smbclient for the backups to other machines
     [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && {
@@ -1529,7 +1561,7 @@ do_uninstall() {
     run rm -f /etc/systemd/system/zigmon-root.path /etc/systemd/system/zigmon-root.service \
         /etc/systemd/system/zigmon-upgrade.path /etc/systemd/system/zigmon-upgrade.service
     run rm -f /etc/sudoers.d/zigmon
-    run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login
+    run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login "$CONSOLE_SYSCTL"
     run rm -f "$UNIT_FILE" "$LOGROTATE_FILE" "$BIN_LINK"
     run rm -rf "$LIB_DIR" "$WEB_DIR"
     if [[ -f "$NGINX_CONF" ]]; then
@@ -1560,6 +1592,7 @@ main() {
     install_helpers
     install_time_tools
     install_console
+    console_quiet
     install_web
     check_certificate
     configure_nginx

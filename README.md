@@ -2083,7 +2083,23 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.38.0**
+Current version: **5.38.1**
+
+5.38.1 — the machine's own screen kept clear.
+
+* **The console is not flooded with kernel notices** (otp 1.0.210). systemd's
+  rc-local generator says "/etc/rc.d/rc.local is not marked executable,
+  skipping" at every daemon-reload - an install, an upgrade, each dnf update
+  of a package with units - and the kernel printed it on the console where
+  its level let warnings through: bursts over the zigmon console at login on
+  tty1. install.sh keeps the console to errors - `kernel.printk = 4 4 1 7`,
+  RHEL's own, in `/etc/sysctl.d/80-zigmon-console.conf`, put in force at
+  once; everything is still in `journalctl -k`. A kernel.printk the
+  administrator set anywhere else is left alone; the uninstall takes the
+  file away. rc.local is not made executable to hush it - that would start
+  rc-local.service at every boot.
+
+`test/review5381.py`; it fails on 5.38.0.
 
 5.38.0 — a sensor and a plug, instant under every load; bugs of 5.30-5.37 mended.
 
