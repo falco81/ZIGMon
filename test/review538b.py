@@ -170,6 +170,43 @@ zigmon.acme_order(d, 'mqtt.house.example', 'owner')
 check(zigmon.acme_state(d).get('ok') is True and d.tls_conf().get('how') == 'ACME',
       'a certificate root put in is not said to be ACME\'s')
 
+
+# ---- 3. Back to the one before: root refusing it changes nothing -------------------
+# acme_put_back said ACME no longer renews it, the certificate in place was
+# "uploaded" and forgot the one before - all before root had answered. Root
+# refusing it (nginx said no, the one before had run out meanwhile) left the
+# CA's certificate in place, renewed by nobody, and no button to try again.
+print('Back to the one before: root refusing it leaves the CA\'s certificate in ACME\'s care')
+os.environ['ZIGMON_ACME_PUT_BACK_WAIT'] = '3'
+d.store.set_meta('acme_care', json.dumps({'on': True, 'at': time.time(), 'by': 'owner'}))
+d.store.set_meta('acme_before', json.dumps({'how': 'uploaded', 'subject': 'CN=mqtt.house.example',
+                                            'issuer': 'CN=House CA', 'not_after': time.time() + 20 * 86400,
+                                            'at': time.time()}))
+LOOK = {'tls': {'info': {'subject': 'CN=mqtt.house.example', 'issuer': 'CN=Test CA',
+                         'not_after': time.time() + 80 * 86400}},
+        'acme': {'http': False, 'port80': True, 'before': {'not_after': time.time() + 20 * 86400}}}
+d.root_look = lambda fresh=False: LOOK
+conf = d.tls_conf()
+conf['how'] = 'ACME'
+d.tls_save(conf)
+ASKED = []
+d.root_apply = lambda pem=None, quiet=False: ASKED.append(pem) or 'pb%d' % len(ASKED)
+d.root_read = lambda name: {'id': 'pb%d' % len(ASKED), 'kind': 'apply', 'state': 'failed',
+                            'said': ['nginx does not take it, so it is as it was']}
+try:
+    zigmon.acme_put_back(d, 'owner')
+    check(False, 'root refusing the put-back was not said')
+except ValueError as e:
+    check('nginx' in str(e), 'root\'s words are not said: %s' % e)
+check(d.tls_conf().get('how') == 'ACME', 'the CA\'s certificate in place is said to be %r' % d.tls_conf().get('how'))
+check(zigmon.acme_care(d), 'ACME no longer renews the CA\'s certificate still in place')
+check(zigmon.acme_before(d) is not None, 'the one before is forgotten: no button to try again')
+# root putting it back: ACME leaves it alone from then on
+d.root_read = lambda name: {'id': 'pb%d' % len(ASKED), 'kind': 'apply', 'state': 'done'}
+zigmon.acme_put_back(d, 'owner')
+check(d.tls_conf().get('how') == 'uploaded' and not zigmon.acme_care(d) and not d.store.get_meta('acme_before'),
+      'a put-back root did is not taken as done')
+
 if bad:
     print('\n%d check(s) failed' % len(bad))
     os._exit(1)

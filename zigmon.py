@@ -46119,10 +46119,34 @@ def acme_put_back(d, by):
     if got.get('ran_out'):
         raise ValueError('the certificate from before ACME ran out on %s - put a new one in on '
                          'Certificates' % time.strftime('%Y-%m-%d', time.localtime(got['not_after'])))
+    was_how = d.tls_conf().get('how')
     ident = d.tls_put({'put_back': True}, 'the certificate from before ACME put back (%s)'
                       % (got.get('issuer') or got.get('how') or '?'), how=got.get('how') or 'uploaded')
+    # What root said, before anything is taken for done: refused (nginx said
+    # no, the one before does not read any more), the certificate of the CA
+    # stayed in place - and with ACME told to leave it alone, how saying
+    # "uploaded" and the one before forgotten, nobody renewed it any more and
+    # the button to try again was gone. A put-back is quick: no DH is made.
+    end = time.time() + float(os.environ.get('ZIGMON_ACME_PUT_BACK_WAIT') or 60)
+    done = {}
+    while time.time() < end:
+        st = d.root_read('status.json')
+        if st.get('id') == ident and st.get('state') in ('done', 'failed'):
+            done = st
+            break
+        time.sleep(0.5)
+    if done.get('state') == 'failed':
+        conf = d.tls_conf()
+        if was_how:
+            conf['how'] = was_how
+        else:
+            conf.pop('how', None)
+        d.tls_save(conf)
+        raise ValueError('root did not put the certificate from before ACME back: %s'
+                         % '; '.join(done.get('said') or ['?']))
     d.store.set_meta('acme_care', json.dumps({'on': False, 'at': time.time(), 'by': by}))
-    d.store.forget_meta('acme_before')
+    if done.get('state') == 'done':
+        d.store.forget_meta('acme_before')
     d.say_event('control', '%s put the certificate from before ACME back (%s, until %s); ACME no '
                 'longer renews it' % (by, got.get('issuer') or '?', time.strftime(
                     '%Y-%m-%d', time.localtime(got['not_after'])) if got.get('not_after') else '?'),
