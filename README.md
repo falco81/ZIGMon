@@ -2083,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.38.1**
+Current version: **5.39.0**
+
+5.39.0 — a kept password shows its last two characters to an administrator.
+
+* **Wherever a page says a password, token or key is kept**, an administrator
+  now sees it as `••••••••` and its last two characters - `••••••••13` - as
+  plexmon and OTP show them: the settings (the SMS gateway, Telegram, Duo,
+  Shodan, the router and the server in front, the web proxy, the backups'
+  password, ACME's DNS tokens and secrets), the Wi-Fi controller, the boxes'
+  passwords and their broker's, the gateways, the destinations of the
+  backups. The box stays empty - the hint is only its grey placeholder - and
+  a new one typed shows only dots. One shorter than six shows dots only.
+* **Nobody else sees them**: an operator, a viewer and a page not yet
+  unlocked see set or *(kept)* as before. The hints come only from an
+  administrator's own call (`/api/secret_hints`), never in the status every
+  page reads first, and never in the events, the log or an export. SSH and
+  private keys stay set/unset - their last characters are dashes.
+* `zigmon --settings` shows the same hints; the console too, which no longer
+  lets a kept Duo or Shodan key be overwritten by editing it.
+
+`test/review539.py` (57 checks, the real page in Chromium); it fails on 5.38.1.
 
 5.38.1 — the machine's own screen kept clear.
 
