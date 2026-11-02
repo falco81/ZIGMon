@@ -2091,8 +2091,9 @@ Current version: **5.41.0**
   front's card: the second HTTPS server on the proxy (ntfy's), found in
   `nginx -T` by the name set with *Its name…*, else the host of the ntfy
   address in use, else the other HTTPS server with a certificate of its own.
-  Upload, Request (CSR), Self-signed, TLS settings, Download/Export, as on the
-  front's card - without *The same certificate as this machine*: following
+  Upload, Request (CSR), Self-signed, TLS settings (protocols, ciphers, DH
+  parameters in its own `ntfy-dh.pem`, the server choosing, HSTS - written
+  into ntfy's block alone), Download/Export, as on the front's card - without *The same certificate as this machine*: following
   never touches ntfy's files, and ntfy's card never touches the front's.
 * **Automatic certificates**: follow off - three certificates (this machine
   with the MQTT broker, the front, ntfy); follow on - two (this machine with

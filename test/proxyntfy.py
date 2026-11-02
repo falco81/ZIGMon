@@ -701,6 +701,7 @@ try:
                                           'X-Zigmon-Client': '192.168.40.10'}, method='POST')
     with urllib.request.urlopen(req, timeout=30) as r:
         S = json.loads(r.read()).get('token') or ''
+    front_conf0 = (CONFD / 'nginx-tap-front.conf').read_text()
     shutil.copytree(HERE / 'web', W / 'web')
     api_php = (W / 'web' / 'zigmon-api.php').read_text()
     api_php = api_php.replace("const ZIGMON_PORT  = 9849;", "const ZIGMON_PORT  = %d;" % API_PORT)
@@ -734,6 +735,22 @@ const { chromium } = require('playwright');
   r.cards = await p.evaluate(() => Array.from(document.querySelectorAll('#web-certs .cert-grid > .cert-card')).map(c => ({
     cls: c.className, target: (c.querySelector('.cert-target') || {}).textContent, name: (c.querySelector('.cert-title b') || {}).textContent,
     follow: !!c.querySelector('.cert-follow'), tools: Array.from(c.querySelectorAll('.cert-tools button')).map(x => x.textContent.trim())})));
+  // ntfy's TLS settings through its own card's dialog (5.41.0): its ciphers,
+  // DH parameters, the server choosing and HSTS, as on every other card
+  try {
+    await p.click('#web-certs .cert-grid > .cert-card.cert-ntfy .cert-tools button:has-text("TLS settings")');
+    await p.waitForSelector('#zmodal:not([hidden]) .tls-tiles', {timeout: 10000});
+    r.polTitle = await p.textContent('#zmodal-title');
+    await p.click('#zmodal .tls-tile[data-k="custom"]');
+    await p.fill('#zmodal textarea.tls-ciphers', 'ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384');
+    await p.selectOption('#zmodal .tls-rows select', 'ffdhe3072');
+    await p.evaluate(() => { const i = document.querySelector('#zmodal .tls-rows input[type=checkbox]'); i.checked = true; i.dispatchEvent(new Event('change')); });
+    await p.click('#zmodal .tls-rows .seg button:has-text("1 year")');
+    await p.click('#zmodal-foot button:has-text("Save")');
+    await p.waitForSelector('#zmodal', {state: 'hidden', timeout: 30000});
+    await p.waitForTimeout(1500);
+    r.polDone = true;
+  } catch (e) { r.polErr = String(e); }
   try { await p.waitForSelector('#push-box tr[data-slot]', {timeout: 15000}); } catch (e) {}
   r.slots = await p.evaluate(() => Array.from(document.querySelectorAll('#push-box tr[data-slot]')).map(t => t.dataset.slot));
   await p.screenshot({path: %(shot)s, fullPage: false});
@@ -768,6 +785,17 @@ const { chromium } = require('playwright');
             check({'Upload', 'TLS settings', 'Download', 'Look again'} <= set(cards[2]['tools']),
                   'the ntfy card lacks the options of the front\'s: %r' % cards[2]['tools'])
         check('ntfy' in (r.get('slots') or []), 'What acme sees here has no ntfy slot: %r' % r.get('slots'))
+        nconf = (CONFD / 'nginx-ntfy-front.conf').read_text()
+        check(r.get('polDone') and 'ntfy' in (r.get('polTitle') or ''),
+              'ntfy\'s TLS settings could not be set from its card: %r %r' % (r.get('polTitle'), r.get('polErr')))
+        check(re.search(r'ssl_ciphers\s+ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;', nconf)
+              and re.search(r'ssl_prefer_server_ciphers\s+on;', nconf)
+              and re.search(r'ssl_dhparam\s+%s/ntfy-dh\.pem;' % re.escape(str(CERTS)), nconf)
+              and (CERTS / 'ntfy-dh.pem').is_file() and 'BEGIN DH PARAMETERS' in (CERTS / 'ntfy-dh.pem').read_text()
+              and re.search(r'Strict-Transport-Security\s+"max-age=31536000"', nconf),
+              'ntfy\'s ciphers, DH parameters, server choosing and HSTS set on its card are not in its block:\n' + nconf)
+        check((CONFD / 'nginx-tap-front.conf').read_text() == front_conf0,
+              'ntfy\'s TLS settings changed the front\'s block')
         check(r.get('acme') == ['this server', 'the server in front', 'ntfy on the server in front'],
               'Automatic certificates does not show the three certificates: %r' % r.get('acme'))
         check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
