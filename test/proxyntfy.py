@@ -280,6 +280,16 @@ check('proxy_pass http://127.0.0.1:2586;' in nconf and 'return 301 https://$host
       'what else ntfy\'s file holds was not kept')
 check(not (CERTS / 'ntfy.ca').exists(), 'a chain file was written for ntfy, which neither staples nor names one')
 check('systemctl reload nginx' in LOG.read_text(), 'nginx there was not reloaded')
+# ntfy's nginx is the proxy's: read and written over the SSH session, with
+# its key, nginx -t there before the reload (5.41.0)
+plog = LOG.read_text().splitlines()
+sshes = [x for x in plog if x.startswith('ssh ')]
+check(sshes and all('root@proxy.house.example' in x and '-i KEY' in x and '-p 22' in x for x in sshes)
+      and any('nginx -T' in x for x in sshes) and len(sshes) >= 2,
+      'ntfy\'s certificate was not read and put in over the SSH session to the proxy: %r' % sshes)
+check('nginx -t' in plog and 'systemctl reload nginx' in plog
+      and plog.index('nginx -t') < plog.index('systemctl reload nginx'),
+      'nginx -t was not run on the proxy before its reload: %r' % plog)
 
 print('root: the front\'s without touching ntfy\'s')
 lay_proxy()
@@ -702,6 +712,7 @@ try:
     with urllib.request.urlopen(req, timeout=30) as r:
         S = json.loads(r.read()).get('token') or ''
     front_conf0 = (CONFD / 'nginx-tap-front.conf').read_text()
+    LOG.write_text('')
     shutil.copytree(HERE / 'web', W / 'web')
     api_php = (W / 'web' / 'zigmon-api.php').read_text()
     api_php = api_php.replace("const ZIGMON_PORT  = 9849;", "const ZIGMON_PORT  = %d;" % API_PORT)
@@ -794,6 +805,10 @@ const { chromium } = require('playwright');
               and (CERTS / 'ntfy-dh.pem').is_file() and 'BEGIN DH PARAMETERS' in (CERTS / 'ntfy-dh.pem').read_text()
               and re.search(r'Strict-Transport-Security\s+"max-age=31536000"', nconf),
               'ntfy\'s ciphers, DH parameters, server choosing and HSTS set on its card are not in its block:\n' + nconf)
+        plog = LOG.read_text().splitlines()
+        check(any(x.startswith('ssh ') and 'root@proxy.house.example' in x for x in plog)
+              and 'nginx -t' in plog and 'systemctl reload nginx' in plog,
+              'ntfy\'s TLS settings from its card did not go over the SSH session to the proxy: %r' % plog[-6:])
         check((CONFD / 'nginx-tap-front.conf').read_text() == front_conf0,
               'ntfy\'s TLS settings changed the front\'s block')
         check(r.get('acme') == ['this server', 'the server in front', 'ntfy on the server in front'],
