@@ -27476,7 +27476,9 @@ function proxyView(d, w) {
           may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: p.acme || {},
           now: {info: lk.info || null, protocols: lk.protocols || [], hsts: lk.hsts || 0, broker: [],
                 files: f.cert ? {cert: f.cert, key: f.key || '\u2013'} : null,
-                root_info: f.root ? {cn: f.root} : null, readable: lk.ok !== false}};
+                // (5.41.1) the root's own name, read there, and whether the chain leads to it
+                root_info: lk.root_info || (f.root ? {cn: f.root} : null), verify: lk.verify || '',
+                readable: lk.ok !== false}};
 }
 function loadWeb(quiet) {
   var host = $('web-certs');

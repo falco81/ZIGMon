@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.41.0'
+__version__ = '5.41.1'
 
 import argparse
 import base64
@@ -45419,6 +45419,40 @@ def _proxy_https_of(blocks, name):
     return None
 
 
+def _proxy_root_facts(d, path, pem):
+    """The root a server { } there trusts (5.41.1): read over SSH from its
+    ssl_trusted_certificate, the card saying the CA's name - the one that
+    signs itself, else the last - and whether the chain leads to it, as the
+    card of this machine does; (None, '') with no such file."""
+    if not path or not re.match(r'^/[A-Za-z0-9_./-]{2,200}$', path) or '..' in path.split('/'):
+        return None, ''
+    try:
+        text = d.proxy_run('cat %s 2>/dev/null; true' % shlex.quote(path))
+    except (ValueError, OSError):
+        return None, ''
+    blocks = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', text or '', re.S)
+    if not blocks:
+        return None, ''
+    infos = [cert_info_pem(d, b) for b in blocks]
+    infos = [i for i in infos if i]
+    if not infos:
+        return None, ''
+    root = next((i for i in infos if i.get('subject') and i.get('subject') == i.get('issuer')), infos[-1])
+    verify = ''
+    if pem:
+        with tempfile.TemporaryDirectory(prefix='zigmon-proxy-root-') as t:
+            ca, leaf = os.path.join(t, 'ca.pem'), os.path.join(t, 'cert.pem')
+            with open(ca, 'w') as f:
+                f.write('\n'.join(blocks) + '\n')
+            with open(leaf, 'w') as f:
+                f.write(pem + '\n')
+            got = subprocess.run(['openssl', 'verify', '-CAfile', ca, '-untrusted', leaf, leaf],
+                                 capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            verify = 'ok' if got.returncode == 0 else (
+                (got.stdout + got.stderr).strip().splitlines() or ['does not verify'])[-1][:200]
+    return {'cn': root.get('cn') or root.get('subject') or 'given'}, verify
+
+
 def _proxy_tls_facts(d, blocks, mine, name):
     """What the card shows of one server { } there and its certificate."""
     cert = _ngx_directive(mine, 'ssl_certificate')
@@ -45431,8 +45465,10 @@ def _proxy_tls_facts(d, blocks, mine, name):
     hsts = _ngx_directive(mine, 'add_header Strict-Transport-Security') or ''
     m = re.search(r'max-age=(\d+)', hsts)
     base = os.path.dirname(cert)
+    root_info, verify = _proxy_root_facts(d, _ngx_directive(mine, 'ssl_trusted_certificate') or '', pem)
     return {'at': int(time.time()), 'ok': True, 'name': name, 'host': str(CONFIG.get('proxy_host') or ''),
             'blocks': len(same), 'info': info, 'pem': (pem + '\n') if pem else '',
+            'root_info': root_info, 'verify': verify,
             'files': {'cert': cert, 'key': _ngx_directive(mine, 'ssl_certificate_key') or '',
                       'root': _ngx_directive(mine, 'ssl_trusted_certificate') or '',
                       'dh': _ngx_directive(mine, 'ssl_dhparam') or ''},

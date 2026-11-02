@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.41.0**
+Current version: **5.41.1**
+
+5.41.1 — the root given with a certificate on the server in front is kept.
+
+* A root uploaded with ntfy's certificate was dropped, since ntfy's server
+  there neither staples nor names a file of trust: the card said *Root: not
+  given*. It is now written there (`ntfy.ca` beside `ntfy.pem`) and named in
+  ntfy's block (`ssl_trusted_certificate`); a chain without a root still
+  writes no such file.
+* Both cards of the server in front say the root by its name, read there over
+  SSH, and *Checked: the chain leads to the root* - as the card of this
+  machine does - rather than the path of its file.
+
+`test/proxyntfy.py`; these checks fail on 5.41.0.
 
 5.41.0 — the ntfy certificate on the server in front, managed too.
 

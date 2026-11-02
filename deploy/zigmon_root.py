@@ -2297,8 +2297,11 @@ def tls_proxy(raw, which='front'):
             put.append((alt['cert'] + alt['chain'], '644', alt_paths_there[0]))
             put.append((alt['key'], '600', alt_paths_there[1]))
         trust = pem['root'] + pem['chain']
-        # ntfy's (5.41): only where one of its blocks staples or names one
-        if trust and (which != 'ntfy' or any(
+        # ntfy's (5.41): where one of its blocks staples or names one - or
+        # (5.41.1) a root was given with it: then it is kept there and named,
+        # as on the front, not dropped (the card said "Root: not given" for a
+        # root uploaded with ntfy's certificate)
+        if trust and (which != 'ntfy' or pem['root'] or any(
                 (directive(files[p][s:e], 'ssl_stapling') or '') == 'on' or
                 directive(files[p][s:e], 'ssl_trusted_certificate') for p, s, e in where)):
             put.append((trust, '644', paths['root']))
@@ -2324,7 +2327,7 @@ def tls_proxy(raw, which='front'):
                 # or names one already (5.37.1: a self-signed one, with no
                 # chain, rewrote a block's own trusted file to a path that
                 # may not be there)
-                if trust and ((directive(block, 'ssl_stapling') or '') == 'on' or
+                if trust and (pem['root'] or (directive(block, 'ssl_stapling') or '') == 'on' or
                               directive(block, 'ssl_trusted_certificate')):
                     block = set_directive(block, 'ssl_trusted_certificate', paths['root'])
             if pol:

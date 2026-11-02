@@ -278,7 +278,11 @@ check('ssl_protocols             TLSv1.3;' in nconf and 'ssl_dhparam' in nconf a
 check(not (CERTS / 'zigmon-dh.pem').exists(), 'ntfy\'s DH parameters went into the front\'s file')
 check('proxy_pass http://127.0.0.1:2586;' in nconf and 'return 301 https://$host$request_uri;' in nconf,
       'what else ntfy\'s file holds was not kept')
-check(not (CERTS / 'ntfy.ca').exists(), 'a chain file was written for ntfy, which neither staples nor names one')
+# a root given with it is kept there and named (5.41.1) - its block neither
+# staples nor named one, and the root uploaded was dropped ("Root: not given")
+check((CERTS / 'ntfy.ca').is_file() and ROOT.strip() in (CERTS / 'ntfy.ca').read_text()
+      and re.search(r'ssl_trusted_certificate\s+%s/ntfy\.ca;' % re.escape(str(CERTS)), nconf),
+      'the root uploaded with ntfy\'s certificate was not kept there and named in its block:\n' + nconf)
 check('systemctl reload nginx' in LOG.read_text(), 'nginx there was not reloaded')
 # ntfy's nginx is the proxy's: read and written over the SSH session, with
 # its key, nginx -t there before the reload (5.41.0)
@@ -290,6 +294,14 @@ check(sshes and all('root@proxy.house.example' in x and '-i KEY' in x and '-p 22
 check('nginx -t' in plog and 'systemctl reload nginx' in plog
       and plog.index('nginx -t') < plog.index('systemctl reload nginx'),
       'nginx -t was not run on the proxy before its reload: %r' % plog)
+
+print('root: no root given - no file of trust written for ntfy (5.37.1 rule kept)')
+lay_proxy()
+got, err = ask(source='given', cert=NTFY_NEW, key=NTFY_NEW_KEY, chain=INT, root='', tls=TLS)
+check(err is None and not (CERTS / 'ntfy.ca').exists()
+      and 'ssl_trusted_certificate' not in (CONFD / 'nginx-ntfy-front.conf').read_text(),
+      'a chain without a root wrote a file of trust for ntfy, whose block neither staples nor names one: %s' % err)
+lay_proxy()
 
 print('root: the front\'s without touching ntfy\'s')
 lay_proxy()
@@ -448,6 +460,19 @@ pn = st.get('proxy_ntfy') or {}
 check(pn.get('which') == 'ntfy' and pn.get('name') == NTFY and (pn.get('look') or {}).get('info'),
       'the page is not given the ntfy card: %r' % (sorted(pn) if pn else None,))
 check('pem' not in (pn.get('look') or {}), 'the card\'s look carries the certificate file to the page')
+# the root ntfy's block trusts, by its name, and the chain checked (5.41.1)
+lay_proxy()
+R.handle({'kind': 'tls_proxy_ntfy', 'ssh': dict(SSH), 'op': 'apply', 'name': NTFY, 'front_name': NAME,
+          'source': 'given', 'cert': NTFY_NEW, 'key': NTFY_NEW_KEY, 'chain': INT, 'root': ROOT})
+try:
+    rl = zigmon.proxy_tls_read(d, 'ntfy')
+except Exception as e:                                       # noqa: BLE001
+    rl = {'error': repr(e)}
+check((rl.get('root_info') or {}).get('cn') == 'Test Root' and rl.get('verify') == 'ok',
+      'the ntfy card does not say the root it was given and that the chain leads to it: %r %r'
+      % (rl.get('root_info'), rl.get('verify') or rl.get('error')))
+lay_proxy()
+relook()
 # no second HTTPS server: said, nothing offered; one serving the front's files: said
 lay_proxy(ntfy=False)
 try:
