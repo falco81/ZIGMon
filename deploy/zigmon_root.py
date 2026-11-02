@@ -2181,13 +2181,55 @@ def proxy_dh(choice, had):
     return openssl(['dhparam', choice[3:]], 'making DH parameters of %s bits' % choice[3:])
 
 
-def tls_proxy(raw):
-    """The certificate and how TLS is spoken, on the server in front (5.33)."""
+def proxy_ntfy_paths(files, where, cert_path, paths, front_name):
+    """ntfy's server block(s) on the server in front (5.41): its files, never
+    one of the front's. A certificate or key file the front's blocks name as
+    well is refused (one file for both is looked after on the front's card);
+    a trusted chain or DH file of its blocks that is none, or the front's
+    (its defaults server.ca and zigmon-dh.pem are the front's), is one of
+    ntfy's own beside its certificate. Its blocks only: never one that
+    answers for the front's name as well."""
+    front = set()
+    front_cert = None
+    try:
+        front_cert, fwhere = proxy_find(files, front_name)
+    except Refused:
+        fwhere = []
+    for path, start, end in fwhere:
+        fp = proxy_files_of(files[path][start:end], front_cert)
+        front |= set(fp.values()) | set(alt_paths(fp['cert'], fp['key']))
+    if front_cert == cert_path or paths['cert'] in front or paths['key'] in front:
+        raise Refused('ntfy is served the same certificate files as the front there (%s): it is '
+                      'looked after with the card of the server in front' % cert_path[:120])
+    stem = os.path.splitext(paths['cert'])[0]
+    blocks = [files[p][s:e] for p, s, e in where]
+    if paths['root'] in front or not any(directive(b, 'ssl_trusted_certificate') for b in blocks):
+        paths['root'] = stem + '.ca'
+    if paths['dh'] in front or not any(directive(b, 'ssl_dhparam') for b in blocks):
+        paths['dh'] = stem + '-dh.pem'
+    for v in (paths['root'], paths['dh']):
+        if v in front or not PROXY_PATH_RE.match(v) or '..' in v.split('/'):
+            raise Refused('a file for ntfy there would be one of the front\'s: %s' % v[:120])
+    return [w for w in where if front_name not in
+            (directive(files[w[0]][w[1]:w[2]], 'server_name') or '').split()]
+
+
+def tls_proxy(raw, which='front'):
+    """The certificate and how TLS is spoken, on the server in front (5.33).
+    which='ntfy' (5.41): the second certificate there, ntfy's - in its own
+    server block(s) and its own files only; the front's are never touched,
+    and the certificate of this machine never goes there."""
     ssh = proxy_ssh_checked(raw)
     name = str(raw.get('name') or '').strip().lower()
     if not re.match(r'^[A-Za-z0-9*]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$', name):
         raise Refused('the name of the server is a host name')
+    front_name = str(raw.get('front_name') or '').strip().lower() or (name if which == 'front' else '')
+    if not re.match(r'^[A-Za-z0-9*]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$', front_name) or \
+            which == 'ntfy' and front_name == name:
+        raise Refused('ntfy\'s server there is told apart from the front\'s by both names')
     op = str(raw.get('op') or 'apply')
+    if which == 'ntfy' and str(raw.get('source') or '') == 'here':
+        raise Refused('ntfy there never takes the certificate of this machine: it has its own')
     PROGRESS.update(step=0, total=4)
     progress('reading nginx on %s' % ssh['host'], 1)
     code, out, err = proxy_ssh(ssh, 'nginx -T 2>/dev/null')
@@ -2195,9 +2237,15 @@ def tls_proxy(raw):
     if code != 0 or not files:
         why = (err or out).strip().splitlines()
         raise Refused('%s: nginx -T did not answer (%s)' % (ssh['host'], why[-1][:160] if why else code))
+    if op == 'acme_http':
+        return proxy_acme_http(raw, ssh, files, name, front_name, which)
     cert_path, where = proxy_find(files, name)
     first = files[where[0][0]][where[0][1]:where[0][2]]
     paths = proxy_files_of(first, cert_path)
+    if which == 'ntfy':
+        where = proxy_ntfy_paths(files, where, cert_path, paths, front_name)
+        if not where:
+            raise Refused('nginx on the server in front has no HTTPS server of its own for %s' % name)
     if op == 'export':
         return proxy_export(raw, ssh, paths)
     t = raw.get('tls')
@@ -2249,7 +2297,10 @@ def tls_proxy(raw):
             put.append((alt['cert'] + alt['chain'], '644', alt_paths_there[0]))
             put.append((alt['key'], '600', alt_paths_there[1]))
         trust = pem['root'] + pem['chain']
-        if trust:
+        # ntfy's (5.41): only where one of its blocks staples or names one
+        if trust and (which != 'ntfy' or any(
+                (directive(files[p][s:e], 'ssl_stapling') or '') == 'on' or
+                directive(files[p][s:e], 'ssl_trusted_certificate') for p, s, e in where)):
             put.append((trust, '644', paths['root']))
     dh_had = str(raw.get('dh_had') or '')
     dh_pem = proxy_dh(pol['dh'], dh_had) if pol else None
@@ -2314,6 +2365,27 @@ def tls_proxy(raw):
             seen.add(item[2])
             once.append(item)
     put = once
+    progress('putting it on %s' % ssh['host'], 3)
+    out = proxy_put(ssh, put, paths['cert'] if pem else None)
+    there = re.search(r'Fingerprint=([0-9A-Fa-f:]+)', out)
+    there = there.group(1).replace(':', '').lower() if there else ''
+    if fp and there and there != fp:
+        raise Refused('%s serves a different certificate from the file it was given' % ssh['host'])
+    fields = {'proxy': {'host': ssh['host'], 'at': int(time.time()), 'source': source or None,
+                        'fingerprint': fp or None, 'files': len(put)}}
+    if which == 'ntfy':
+        fields['proxy']['which'] = 'ntfy'
+    if pol:
+        fields['proxy']['dh'] = pol['dh']
+    return fields, ['on the server in front (%s), %s%d server block(s): %s; nginx reloaded'
+                    % (ssh['host'], 'ntfy\'s ' if which == 'ntfy' else '', len(where),
+                       '; '.join(said) or 'as it was')]
+
+
+def proxy_put(ssh, put, fp_of=None):
+    """[(data, mode, path)] written on the server in front, a copy of each
+    file beside it, nginx -t, a reload - or every file put back as it was.
+    What it said."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w') as tar:
         listing = []
@@ -2328,8 +2400,7 @@ def tls_proxy(raw):
         info.size, info.mode = len(lst), 0o600
         tar.addfile(info, io.BytesIO(lst))
     script = PROXY_PUT_SCRIPT % {'fp': ('command -v openssl >/dev/null 2>&1 && openssl x509 -noout '
-                                        '-fingerprint -sha256 -in %s' % shlex.quote(paths['cert'])) if pem else ''}
-    progress('putting it on %s' % ssh['host'], 3)
+                                        '-fingerprint -sha256 -in %s' % shlex.quote(fp_of)) if fp_of else ''}
     code, out, err = proxy_ssh(ssh, 'sh -c %s' % shlex.quote(script), buf.getvalue())
     if 'ZIGMON-REFUSED' in out:
         last = out.split('ZIGMON-REFUSED')[0].strip().splitlines()[-1:] or ['']
@@ -2338,16 +2409,93 @@ def tls_proxy(raw):
     if 'ZIGMON-DONE' not in out:
         why = (err or out).strip().splitlines()
         raise Refused('%s: %s' % (ssh['host'], why[-1][:200] if why else 'ssh ended with %d' % code))
-    there = re.search(r'Fingerprint=([0-9A-Fa-f:]+)', out)
-    there = there.group(1).replace(':', '').lower() if there else ''
-    if fp and there and there != fp:
-        raise Refused('%s serves a different certificate from the file it was given' % ssh['host'])
-    fields = {'proxy': {'host': ssh['host'], 'at': int(time.time()), 'source': source or None,
-                        'fingerprint': fp or None, 'files': len(put)}}
-    if pol:
-        fields['proxy']['dh'] = pol['dh']
-    return fields, ['on the server in front (%s), %d server block(s): %s; nginx reloaded'
-                    % (ssh['host'], len(where), '; '.join(said) or 'as it was')]
+    return out
+
+
+# Automatic certificates of a name on the server in front (5.41): the CA's
+# HTTP-01 question comes to port 80 THERE. The plain-HTTP server { } of the
+# name gets, between zigmon's marks, a location for /.well-known/acme-
+# challenge/ handed on to this machine (where the front's block sends the
+# rest - its proxy_pass), whose port 80 gives the daemon's answer; the
+# server's own `return` set aside into a `location /` as here. For one order
+# only: taken out again once it is done, the block as it was.
+PROXY_ACME_UP_RE = re.compile(r'(?m)^\s*proxy_pass\s+https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::\d+)?[/;\s]')
+
+
+def proxy_acme_block(block, house, host_name, name, on):
+    if acme_marked(block):
+        block = re.sub(r'\n*^[ \t]*%s[^\n]*\n.*?\n[ \t]*%s[^\n]*' % (re.escape(ACME_BEGIN),
+                                                                      re.escape(ACME_END)),
+                       '', block, count=1, flags=re.S | re.M)
+        block = re.sub(r'(?m)^([ \t]*)%s(return\s[^\n]*)$' % re.escape(ACME_ASIDE), r'\1\2', block)
+    if not on:
+        return block
+    lines = block.split('\n')
+    depth, aside = 0, []
+    for n, line in enumerate(lines):
+        if depth == 1 and re.match(r'^\s*return\s', line):
+            aside.append(line)
+            lines[n] = re.sub(r'^(\s*)', lambda m: m.group(1) + ACME_ASIDE, line, count=1)
+        depth += line.count('{') - line.count('}')
+    block = '\n'.join(lines)
+    pad = '    '
+    add = [pad + ACME_BEGIN + ' (Automatic certificates of %s, set on the dashboard)' % name,
+           pad + 'location ^~ %s {' % ACME_LOC,
+           pad + '    # the ACME CA\'s HTTP-01 question, answered by zigmon at home',
+           pad + '    client_max_body_size 1k;',
+           pad + '    proxy_pass http://%s;' % house,
+           pad + '    proxy_set_header Host %s;' % host_name,
+           pad + '    proxy_read_timeout 15s;',
+           pad + '}']
+    if aside:
+        add += [pad + 'location / {'] + [pad + '    ' + a.strip() for a in aside] + [pad + '}']
+    add.append(pad + ACME_END)
+    close = block.rfind('}')
+    return block[:close].rstrip('\n') + '\n\n' + '\n'.join(add) + '\n' + block[close:]
+
+
+def proxy_acme_http(raw, ssh, files, name, front_name, which):
+    """Port 80 of the server in front answering the CA for `name`, or not."""
+    on = raw.get('on') is True
+    house = None
+    try:
+        _cert, fwhere = proxy_find(files, front_name)
+    except Refused:
+        fwhere = []
+    for path, start, end in fwhere:
+        m = PROXY_ACME_UP_RE.search(files[path][start:end])
+        if m:
+            house = m.group(1)
+            break
+    changed = {}
+    for path, text in files.items():
+        for start, end in sorted(server_blocks(text), key=lambda w: -w[0]):
+            block = text[start:end]
+            if re.search(r'(?m)^\s*listen\s+[^;]*ssl', block) or \
+                    name not in (directive(block, 'server_name') or '').split():
+                continue
+            if on and not house:
+                raise Refused('the server for %s there does not say where this machine is (a '
+                              'proxy_pass): the CA\'s HTTP-01 question cannot be handed here - '
+                              'choose DNS-01' % front_name)
+            cur = changed.get(path, text)
+            changed[path] = cur[:start] + proxy_acme_block(block, house, front_name, name, on) + cur[end:]
+    if on and not changed:
+        raise Refused('nginx on the server in front has no plain-HTTP server for %s on port 80: the '
+                      'CA\'s HTTP-01 question cannot be answered there (DNS-01 needs none)' % name)
+    put = []
+    for path, text in changed.items():
+        if text != files[path]:
+            if not PROXY_PATH_RE.match(path) or '..' in path.split('/'):
+                raise Refused('nginx on the server in front reads a file that is not a plain path')
+            put.append((text if text.endswith('\n') else text + '\n', '644', path))
+    if put:
+        progress('port 80 on %s' % ssh['host'], 3)
+        proxy_put(ssh, put)
+    return {'proxy': {'host': ssh['host'], 'at': int(time.time()), 'acme_http': on, 'which': which}}, \
+        [('the server in front (%s): port 80 %s the ACME CA for %s' % (
+            ssh['host'], 'answers' if on else 'no longer answers', name)) if put else
+         'the server in front (%s): port 80 for %s as it was' % (ssh['host'], name)]
 
 
 def proxy_pem_here():
@@ -3736,6 +3884,8 @@ def handle(raw):
         return tls_export(raw)
     if kind == 'tls_proxy':
         return tls_proxy(raw)
+    if kind == 'tls_proxy_ntfy':
+        return tls_proxy(raw, which='ntfy')
     if kind == 'full_put':
         name = os.path.basename(str(raw.get('file') or ''))
         if not re.match(r'^upload-[A-Za-z0-9]{1,32}\.bin$', name):

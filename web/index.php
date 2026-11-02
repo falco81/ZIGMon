@@ -27459,17 +27459,21 @@ var WEB = {last: null};
 /* Which card a button belongs to (5.33): this machine, or the server in
    front - every request of the certificate's dialogs says so. */
 var CERT_TARGET = '';
+/* (5.41) the third card, ntfy's certificate on the server in front: target
+   'proxy-ntfy' - a server block and files of its own there */
+function certIsProxy(t) { t = t === undefined ? CERT_TARGET : t; return t === 'proxy' || t === 'proxy-ntfy'; }
 function tlsDo(body) {
-  return rootPost('tls-do', CERT_TARGET === 'proxy' ? Object.assign({target: 'proxy'}, body) : body);
+  return rootPost('tls-do', certIsProxy() ? Object.assign({target: CERT_TARGET}, body) : body);
 }
 function certOn(t, go) { return function () { CERT_TARGET = t || ''; go.apply(this, arguments); }; }
-function certWhose() { return CERT_TARGET === 'proxy' ? 'the server in front' : 'the dashboard'; }
+function certWhose() { return CERT_TARGET === 'proxy-ntfy' ? 'ntfy on the server in front' : (CERT_TARGET === 'proxy' ? 'the server in front' : 'the dashboard'); }
 /* The server in front as the first card reads a machine: its certificate, its
-   files, how it speaks TLS - from what was read there over SSH. */
-function proxyView(d) {
-  var p = d.proxy || {}, lk = p.look || {}, f = lk.files || {};
-  return {target: 'proxy', proxy: p, conf: p.conf || {}, node: p.node || {}, helper: d.helper,
-          may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: {},
+   files, how it speaks TLS - from what was read there over SSH. The front's
+   (target: 'proxy'), or ntfy's there (w 'ntfy', 5.41). */
+function proxyView(d, w) {
+  var p = (w === 'ntfy' ? d.proxy_ntfy : d.proxy) || {}, lk = p.look || {}, f = lk.files || {};
+  return {target: w === 'ntfy' ? 'proxy-ntfy' : 'proxy', proxy: p, conf: p.conf || {}, node: p.node || {}, helper: d.helper,
+          may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: p.acme || {},
           now: {info: lk.info || null, protocols: lk.protocols || [], hsts: lk.hsts || 0, broker: [],
                 files: f.cert ? {cert: f.cert, key: f.key || '\u2013'} : null,
                 root_info: f.root ? {cn: f.root} : null, readable: lk.ok !== false}};
@@ -27496,6 +27500,7 @@ function drawWeb(d) {
   var grid = el('div', 'cert-grid');
   grid.appendChild(certCard(d));
   if (d.proxy) grid.appendChild(certCard(proxyView(d)));
+  if (d.proxy_ntfy) grid.appendChild(certCard(proxyView(d, 'ntfy')));
   host.appendChild(grid);
   certLevel(grid);
 }
@@ -27522,19 +27527,39 @@ window.addEventListener('resize', function () {
 });
 function certCard(d) {
   var prof = d.conf || {}, now = d.now || {}, info = now.info || null;
-  var px = d.target === 'proxy' ? d.proxy : null, T = px ? 'proxy' : '';
+  var px = certIsProxy(d.target) ? d.proxy : null, T = px ? d.target : '';
+  var nt = T === 'proxy-ntfy';
   var lk = px ? (px.look || {}) : {};
-  var card = el('section', 'cert-card' + (px ? ' cert-proxy' : ''));
+  var card = el('section', 'cert-card' + (px ? ' cert-proxy' : '') + (nt ? ' cert-ntfy' : ''));
   var head = el('header', 'cert-h');
   var title = el('div', 'cert-title');
-  title.appendChild(el('span', 'cert-target', px ? 'The server in front' : 'The dashboard and the broker'));
+  title.appendChild(el('span', 'cert-target', nt ? 'ntfy on the server in front' : (px ? 'The server in front' : 'The dashboard and the broker')));
   title.appendChild(el('b', '', d.server_name || (info && info.cn) || '–'));
   title.appendChild(el('span', 'cert-for', px
     ? 'what nginx on ' + (px.host || 'the server in front') + ' answers with for ' + (d.server_name || 'the dashboard\u2019s name')
       + (lk.blocks ? ' - ' + lk.blocks + ' server block' + (lk.blocks === 1 ? '' : 's') + ' serve it' : '')
+      + (nt ? ' - a certificate of its own, never this machine’s' : '')
     : 'the certificate nginx answers with on ' + (d.server_name || 'its name')
     + ((now.broker || []).length ? ', and mosquitto on 8883 - the same files' : '')));
   head.appendChild(title);
+  /* ntfy's (5.41): no second HTTPS server there, or one served the front's
+     own files - said, and nothing offered */
+  if (nt && (px.none || px.shared)) {
+    card.classList.add('cert-none');
+    card.appendChild(head);
+    card.appendChild(el('p', 'note', px.none
+      ? 'nginx on ' + (px.host || 'the server in front') + ' has no second HTTPS server - no certificate of ntfy there to look after.'
+        + (lk.own ? ' None answers for ' + lk.own + '.' : '')
+      : 'ntfy is served the same certificate files as the front there: it is looked after with the card of the server in front.'));
+    if (d.may && px.key_way && lk.own) {
+      var nb = cmdButton('Its name…', 'edit', 'small');
+      nb.onclick = certOn(T, function () { certProxyName(d); });
+      var nbt = el('div', 'cert-tools');
+      nbt.appendChild(nb);
+      card.appendChild(nbt);
+    }
+    return card;
+  }
   var days = info ? daysLeft(info.not_after) : null;
   head.appendChild(el('span', 'tag ' + certTone(days), days === null ? 'no certificate' :
     (days < 0 ? 'ran out' : (days < 21 ? days + ' days left' : 'valid'))));
@@ -27587,10 +27612,14 @@ function certCard(d) {
   if (px) {
     if (lk.stapling) chips.appendChild(el('span', 'cchip', 'OCSP stapling'));
     if (prof.follow) chips.appendChild(el('span', 'cchip', 'the same as this machine'));
+    else if (nt) { if (info) chips.appendChild(el('span', 'cchip', 'a certificate of its own')); }
     else if (info) chips.appendChild(el('span', 'cchip' + (px.same ? '' : ' dim'), px.same ? 'the same certificate as here' : 'a certificate of its own'));
+    /* its own Automatic certificates (5.41): none while it follows this machine */
+    if (!prof.follow) acmeCertChips(chips, d);
   } else acmeCertChips(chips, d);
   card.appendChild(chips);
-  if (px) {
+  /* ntfy's has no such switch (5.41): it never follows this machine */
+  if (px && !nt) {
     /* the same certificate there as here: renewed here only, put there by itself */
     var fw = el('div', 'cert-follow');
     var sw = zSwitch(!!prof.follow);
@@ -27787,11 +27816,13 @@ function certDownload(d) {
   redraw();
 }
 function certProxyName(d) {
-  var box = zText((d.conf || {}).name || '', d.server_name || 'mqtt.example.cz', 'mono');
+  var ntn = CERT_TARGET === 'proxy-ntfy';
+  var box = zText((d.conf || {}).name || '', d.server_name || (ntn ? 'ntfy.example.cz' : 'mqtt.example.cz'), 'mono');
   zmodal('Which server there', function (body) {
     body.appendChild(el('p', 'note', 'nginx on the server in front may serve several names. The server { } for this name is the one '
       + 'whose certificate is shown and looked after here - and every other one that serves the same certificate with it. '
-      + 'Empty: the name this machine answers to.'));
+      + (ntn ? 'Empty: the HTTPS server there of another name than the front’s with a certificate of its own - the one of the ntfy server notifications go to, else the one named for ntfy.'
+        : 'Empty: the name this machine answers to.')));
     body.appendChild(zField('Its name', box));
   }, [{words: 'Cancel', close: true},
       {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
@@ -27841,13 +27872,13 @@ var CERT_PASTE_HINT = '-----BEGIN CERTIFICATE-----\n1. the certificate of this n
   + '-----BEGIN PRIVATE KEY-----\n4. its private key (not needed when the request was made here)\n-----END PRIVATE KEY-----\n\n'
   + 'Any order is taken: they are sorted by themselves.';
 function certUpload(prof, asked) {
-  if (!asked && CERT_TARGET !== 'proxy') { acmeByHand(function () { certUpload(prof, true); }); return; }
+  if (!asked && !certIsProxy()) { acmeByHand(function () { certUpload(prof, true); }); return; }
   var got = [];
   var ids = {};
   zmodal('A certificate for ' + certWhose(), function (body) {
     body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. '
       + (prof && prof.pending ? 'A request waits here: the certificate the authority sent back is enough, its key is here.' : 'The key has to come with it.')
-      + (CERT_TARGET === 'proxy' ? ' Root puts it on the server in front over SSH; nginx there is checked and reloaded, or left as it was.'
+      + (certIsProxy() ? ' Root puts it on the server in front over SSH; nginx there is checked and reloaded, or left as it was.'
         : ' The broker reads the same files and is told to read them again; its devices stay connected.')));
     var list = el('div', 'cert-files');
     var drop = dropZone('Drop the files here, or press to choose them', '.pem,.crt,.cer,.key,.pfx,.p12,.chain,.ca,.txt', function (files) {
@@ -27915,7 +27946,7 @@ function certRequest(prof) {
   zmodal('A certificate request', function (body) {
     body.appendChild(el('p', 'note', 'A new key is made here and stays here; the request (CSR) goes to your certificate authority. '
       + 'Upload what it sends back - the certificate alone is enough.'));
-    certSubjectFields(body, CERT_TARGET === 'proxy' ? proxyView(WEB.last || {}) : (WEB.last || {}), false, f);
+    certSubjectFields(body, certIsProxy() ? proxyView(WEB.last || {}, CERT_TARGET === 'proxy-ntfy' ? 'ntfy' : '') : (WEB.last || {}), false, f);
   }, [{words: 'Cancel', close: true},
       {words: 'Make the request', cls: 'primary', icon: 'list', go: function (b) {
         zbusy(b, true);
@@ -27942,7 +27973,7 @@ function showCsr(csr) {
       {words: 'Close', close: true}], 'medium');
 }
 function certSelf(d, asked) {
-  if (!asked && CERT_TARGET !== 'proxy') { acmeByHand(function () { certSelf(d, true); }); return; }
+  if (!asked && !certIsProxy()) { acmeByHand(function () { certSelf(d, true); }); return; }
   var f = {};
   zmodal('A self-signed certificate', function (body) {
     body.appendChild(el('p', 'note warn', 'Browsers warn about a self-signed certificate until it is trusted by hand, and a device '
@@ -28048,7 +28079,10 @@ function certPolicy(prof, d) {
    tried as the CA will try it; what goes into your DNS, and whether it is
    there. Laid out and worded as otp's Settings → Automatic certificates. */
 var AC = {d: null, probe: {}, poll: null};
-function acmeWho(t) { return t && t.target === 'web' ? 'this machine' : (t ? t.target : ''); }
+/* (5.41) the certificates of the server in front, each its own card: the
+   front's (with "the same certificate as this machine" off) and ntfy's */
+var ACME_WHO = {web: 'this machine', proxy: 'the server in front', 'proxy-ntfy': 'ntfy on the server in front'};
+function acmeWho(t) { return t ? (ACME_WHO[t.target] || t.target) : ''; }
 function loadAcme(quiet) {
   var host = $('ac-host');
   if (!host) return;
@@ -28135,8 +28169,9 @@ function drawAcme() {
     var head = el('div', 'pw-head');
     var dot = !acme ? 'dim' : (st.ok === false ? 'warn' : (left !== null && left < 14 ? 'warn' : 'ok'));
     head.appendChild(el('span', 'dot ' + (dot === 'dim' ? '' : dot)));
-    head.appendChild(el('b', '', d.node || 'This server'));
-    head.appendChild(el('span', 'tag info', 'this server'));
+    var here = t.target === 'web';
+    head.appendChild(el('b', '', here ? (d.node || 'This server') : (t.host || 'The server in front')));
+    head.appendChild(el('span', 'tag info ac-who', here ? 'this server' : acmeWho(t)));
     head.appendChild(el('span', 'tag ' + (acme ? (st.ok === false ? 'warn' : 'ok') : 'dim'),
       acme ? (st.ok === false ? 'the last try failed' : 'from the CA') : (t.how ? 'not from the CA' : 'no certificate')));
     /* Who looks after it (otp 1.0.170): ACME, or the certificate put in on
@@ -28159,7 +28194,8 @@ function drawAcme() {
       ['Good until', t.not_after ? localDay(new Date(t.not_after * 1000)) : ''],
       ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
       ['Came', t.how || ''],
-      ['Ordered by', 'this machine']
+      ['Ordered by', 'this machine'],
+      ['Also takes it', (t.with || []).join(', ') || (here ? 'nothing else' : 'nothing else - its own')]
     ]));
     if (st.ok === false && st.said) c.appendChild(acSaid(false, st.said, st.failed_at, 'The last order'));
     /* What the last order did, step by step (otp 1.0.175). */
@@ -28179,7 +28215,7 @@ function drawAcme() {
     if (pr) c.appendChild(acSaid(pr.ok, pr.ok ? '' : pr.said, pr.at, 'Port 80 answers as the CA will ask it'));
     var row = el('div', 'btnrow');
     var probe = cmdButton('Try port 80', 'play', 'small');
-    probe.hidden = d.challenge === 'dns-01';
+    probe.hidden = d.challenge === 'dns-01' || !here;
     explain(probe, t.name ? 'http://' + t.name + '/.well-known/acme-challenge/ asked from this machine, as the CA will ask it - whether it reaches zigmon. A firewall in front of the server may still stop the CA from outside.'
       : 'The name of this certificate is not known yet: give it (Its name…).');
     probe.disabled = !t.name;
@@ -28192,7 +28228,8 @@ function drawAcme() {
     var order = cmdButton('Order it now', 'download', 'small primary');
     order.disabled = !d.on || !t.name || !!(d.work && d.work.busy);
     explain(order, !d.on ? 'Switch it on below first.' : (!t.name ? 'Give its name first (Its name…).'
-      : 'Ordered from the CA now; root puts it in for nginx (and the broker, when it reads the same files). ACME renews it from then on.'));
+      : (here ? 'Ordered from the CA now; root puts it in for nginx (and the broker, when it reads the same files). ACME renews it from then on.'
+        : 'Ordered from the CA now; root puts it on ' + acmeWho(t) + ' over SSH - by HTTP-01, port 80 there hands the CA\u2019s question here for the order. ACME renews it from then on.')));
     order.onclick = function () {
       var go = function () {
         zbusy(order, true);

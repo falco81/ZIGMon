@@ -16527,19 +16527,20 @@ class Daemon(object):
 
     @staticmethod
     def _tls_pending_path(target='here'):
+        # ntfy's on the server in front (5.41): a waiting key of its own
         return Path(CONFIG.get('state_dir') or STATE_DIR) / 'tls' / (
-            'proxy-pending.key' if target == 'proxy' else 'pending.key')
+            '%s-pending.key' % target if target in PROXY_TARGETS else 'pending.key')
 
     def tls_pending_key(self, target='here'):
         with open(str(self._tls_pending_path(target)), 'rb') as f:
             return f.read()
 
     def _tls_conf_of(self, target='here'):
-        return proxy_tls_conf(self) if target == 'proxy' else self.tls_conf()
+        return proxy_tls_conf(self, PROXY_TARGETS[target]) if target in PROXY_TARGETS else self.tls_conf()
 
     def _tls_save_of(self, target, conf):
-        if target == 'proxy':
-            proxy_tls_save(self, conf)
+        if target in PROXY_TARGETS:
+            proxy_tls_save(self, conf, PROXY_TARGETS[target])
         else:
             self.tls_save(conf)
 
@@ -16600,7 +16601,8 @@ class Daemon(object):
         conf['pending'] = {'csr': csr, 'cn': cn, 'at': int(time.time())}
         self._tls_save_of(target, conf)
         self.say_event('control', 'a certificate request made for %s%s - its key waits here' % (
-            cn, ' (the server in front)' if target == 'proxy' else ''), 'info', about='root')
+            cn, ' (%s)' % PROXY_W[PROXY_TARGETS[target]]['words'] if target in PROXY_TARGETS else ''),
+            'info', about='root')
         return csr
 
     def tls_csr_drop(self, target='here', only_if_key=None):
@@ -16721,8 +16723,9 @@ class Daemon(object):
         # the certificate handed over with its key (5.30): how root's last
         # hand-over went, and the file while it waits to be fetched
         export, ready = None, None
-        if status.get('kind') == 'tls_export' or (status.get('kind') == 'tls_proxy' and status.get('id')
-                                                  and status.get('id') == self.__dict__.get('_proxy_tls_export_id')):
+        if status.get('kind') == 'tls_export' or any(
+                status.get('kind') == W['kind'] and status.get('id') and
+                status.get('id') == self.__dict__.get(W['export']) for W in PROXY_W.values()):
             export = {k: status.get(k) for k in ('id', 'state', 'said', 'out', 'at')}
             name = status.get('out')
             if name and self.TLS_EXPORT_FILE.match(str(name)) and self.root_dir('out', name).is_file():
@@ -16736,7 +16739,8 @@ class Daemon(object):
         return {'ok': True, 'conf': conf, 'now': now, 'node': node, 'presets': presets,
                 'dh': self.TLS_DH, 'helper': st['helper'], 'may': True,
                 'server_name': now.get('server_name') or '', 'export': export, 'ready': ready,
-                'acme': acme, 'proxy': proxy_tls_state(self, fresh=fresh)}
+                'acme': acme, 'proxy': proxy_tls_state(self, fresh=fresh),
+                'proxy_ntfy': proxy_tls_state(self, fresh=fresh, w='ntfy')}
 
     TLS_EXPORT_FILE = re.compile(r'^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$')
     TLS_EXPORT_KEYED = ('pem_key', 'key', 'pfx', 'pfx_legacy')
@@ -39954,8 +39958,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 d.root_look(fresh=True)
                 return d.firewall_state(who)
         if path == '/api/tls':
-            if str(body.get('target') or '') == 'proxy':
-                return proxy_tls_post(d, act, body, who)
+            if str(body.get('target') or '') in PROXY_TARGETS:
+                return proxy_tls_post(d, act, body, who, w=PROXY_TARGETS[str(body['target'])])
             if act == 'tls_upload':
                 pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
                                  str(body.get('password') or ''))
@@ -45347,12 +45351,38 @@ def proxy_tls_on():
     return bool(str(CONFIG.get('proxy_host') or '').strip())
 
 
-def proxy_tls_name(d):
+# The two certificates of the server in front (5.41): the front's - the one
+# of the dashboard's name there (5.33) - and ntfy's, in a server block and
+# files of its own. Each card's settings, its last look and what root was
+# asked for it, apart: nothing of one is done to the other, and ntfy never
+# follows this machine.
+PROXY_W = {
+    'front': {'meta': 'tls_proxy', 'look': '_proxy_tls_look', 'looking': '_proxy_tls_looking',
+              'asked': '_proxy_tls_asked', 'settled': '_proxy_tls_settled',
+              'export': '_proxy_tls_export_id', 'kind': 'tls_proxy', 'target': 'proxy',
+              'words': 'the server in front', 'suffix': '-proxy'},
+    'ntfy': {'meta': 'tls_proxy_ntfy', 'look': '_proxy_ntfy_look', 'looking': '_proxy_ntfy_looking',
+             'asked': '_proxy_ntfy_asked', 'settled': '_proxy_ntfy_settled',
+             'export': '_proxy_ntfy_export_id', 'kind': 'tls_proxy_ntfy', 'target': 'proxy-ntfy',
+             'words': 'ntfy on the server in front', 'suffix': '-ntfy'}}
+PROXY_TARGETS = {'proxy': 'front', 'proxy-ntfy': 'ntfy'}
+
+
+def _pw(w):
+    """proxy_tls_ask's words for ntfy's; none for the front's, which is asked
+    as it always was."""
+    return {'w': w} if w != 'front' else {}
+
+
+def proxy_tls_name(d, w='front'):
     """The name whose server { } on the server in front is the one looked
-    after: the setting, else the name nginx answers to here."""
-    own = str(proxy_tls_conf(d).get('name') or '').strip().lower()
+    after: the setting, else the name nginx answers to here - for ntfy's,
+    the setting, else the one its last look found there."""
+    own = str(proxy_tls_conf(d, w).get('name') or '').strip().lower()
     if own:
         return own
+    if w == 'ntfy':
+        return str((d.__dict__.get('_proxy_ntfy_look') or {}).get('name') or '').strip().lower()
     return str(((d.root_look().get('tls') or {}).get('server_name')) or '').strip().lower()
 
 
@@ -45371,25 +45401,26 @@ def proxy_tls_ssh(d):
             'user': cfg['ssh_user'], 'key': cfg['ssh_key'], 'known_hosts': known}
 
 
-def proxy_tls_read(d):
-    """A look at the server in front, over SSH: its nginx -T and the
-    certificate of the dashboard's name there - what the card shows."""
-    name = proxy_tls_name(d)
-    if not name:
-        raise ValueError('the name of the dashboard is not known yet')
+def _proxy_nginx_blocks(d):
+    """Every server { } of nginx -T on the server in front."""
     marker = 'ZIGMON-CERT-%s' % secrets.token_hex(4)
     text = d.proxy_run('nginx -T 2>/dev/null; echo %s' % marker)
     conf, _, _ = text.partition(marker)
     blocks = []
     for part in re.split(r'(?m)^# configuration file \S+:\s*$', conf):
         blocks += _ngx_server_blocks(part)
-    mine = None
+    return blocks
+
+
+def _proxy_https_of(blocks, name):
     for b in blocks:
         if name in (_ngx_directive(b, 'server_name') or '').split() and _ngx_directive(b, 'ssl_certificate'):
-            mine = b
-            break
-    if not mine:
-        raise ValueError('nginx on the server in front has no HTTPS server for %s' % name)
+            return b
+    return None
+
+
+def _proxy_tls_facts(d, blocks, mine, name):
+    """What the card shows of one server { } there and its certificate."""
     cert = _ngx_directive(mine, 'ssl_certificate')
     same = [b for b in blocks if _ngx_directive(b, 'ssl_certificate') == cert]
     if not re.match(r'^/[A-Za-z0-9_./-]{2,200}$', cert) or '..' in cert.split('/'):
@@ -45413,31 +45444,113 @@ def proxy_tls_read(d):
             'dh_file': bool(_ngx_directive(mine, 'ssl_dhparam')), 'base': base}
 
 
-def proxy_tls_look(d, fresh=False):
+def proxy_tls_read(d, w='front'):
+    """A look at the server in front, over SSH: its nginx -T and the
+    certificate of the dashboard's name there - what the card shows."""
+    if w == 'ntfy':
+        return proxy_ntfy_read(d)
+    name = proxy_tls_name(d)
+    if not name:
+        raise ValueError('the name of the dashboard is not known yet')
+    blocks = _proxy_nginx_blocks(d)
+    mine = _proxy_https_of(blocks, name)
+    if not mine:
+        raise ValueError('nginx on the server in front has no HTTPS server for %s' % name)
+    return _proxy_tls_facts(d, blocks, mine, name)
+
+
+def _ntfy_host_set():
+    """The name of the ntfy server the notifications go to, when one is set."""
+    for k in ('notify_ntfy', 'presence_ntfy'):
+        try:
+            host = urlsplit(str(CONFIG.get(k) or '').strip()).hostname or ''
+        except ValueError:
+            host = ''
+        if host:
+            return host.lower()
+    return ''
+
+
+def proxy_ntfy_pick(d, blocks, front_name):
+    """ntfy's HTTPS server { } there, told apart from the front's the way the
+    front's is found - by its server_name and its ssl_certificate: Its
+    name… when given; else the one for the ntfy server notifications go
+    to; else the HTTPS server of another name with a certificate of its own
+    (the one named for ntfy first). (block, name, shares the front's file)
+    or None."""
+    front = _proxy_https_of(blocks, front_name) if front_name else None
+    front_cert = _ngx_directive(front, 'ssl_certificate') if front else None
+    own = str(proxy_tls_conf(d, 'ntfy').get('name') or '').strip().lower()
+    cands = []
+    for b in blocks:
+        c = _ngx_directive(b, 'ssl_certificate')
+        names = [n.lower() for n in (_ngx_directive(b, 'server_name') or '').split()
+                 if n not in ('_', '""', "''") and not n.startswith('~')]
+        if not c or not names or front_name in names:
+            continue
+        if own:
+            if own in names:
+                return b, own, c == front_cert
+            continue
+        cands.append((b, names, c))
+    if own or not cands:
+        return None
+    want = _ntfy_host_set()
+    for b, names, c in cands:
+        if want and want in names:
+            return b, want, c == front_cert
+    pool = [x for x in cands if x[2] != front_cert] or cands
+    pick = next((x for x in pool if any('ntfy' in n for n in x[1])), pool[0])
+    return pick[0], pick[1][0], pick[2] == front_cert
+
+
+def proxy_ntfy_read(d):
+    """A look at ntfy's server block on the server in front (5.41)."""
+    front_name = proxy_tls_name(d)
+    if not front_name:
+        raise ValueError('the name of the dashboard is not known yet')
+    blocks = _proxy_nginx_blocks(d)
+    got = proxy_ntfy_pick(d, blocks, front_name)
+    base = {'at': int(time.time()), 'ok': True, 'host': str(CONFIG.get('proxy_host') or ''),
+            'front_name': front_name}
+    if not got:
+        own = str(proxy_tls_conf(d, 'ntfy').get('name') or '')
+        return dict(base, none=True, name='', own=own, info=None, pem='')
+    mine, name, shared = got
+    facts = _proxy_tls_facts(d, blocks, mine, name)
+    cert = facts['files']['cert']
+    # its own blocks only: one that answers for the front's name is not ntfy's
+    facts['blocks'] = len([b for b in blocks if _ngx_directive(b, 'ssl_certificate') == cert and
+                           front_name not in (_ngx_directive(b, 'server_name') or '').split()])
+    return dict(facts, front_name=front_name, shared=bool(shared), none=False)
+
+
+def proxy_tls_look(d, fresh=False, w='front'):
     """The last look, and a new one on a thread of its own when it is old:
     the page is never held up by the network."""
-    look = d.__dict__.get('_proxy_tls_look') or {}
+    W = PROXY_W[w]
+    look = d.__dict__.get(W['look']) or {}
     if not proxy_tls_on():
         return {}
     age = time.time() - float(look.get('at') or look.get('tried') or 0)
-    if (fresh and age > 5 or age > PROXY_TLS_LOOK_S) and not d.__dict__.get('_proxy_tls_looking'):
-        d._proxy_tls_looking = True
+    if (fresh and age > 5 or age > PROXY_TLS_LOOK_S) and not d.__dict__.get(W['looking']):
+        setattr(d, W['looking'], True)
 
         def go():
             try:
-                d._proxy_tls_look = proxy_tls_read(d)
+                setattr(d, W['look'], proxy_tls_read(d, w))
             except Exception as e:                       # noqa: BLE001 - said on the card
-                d._proxy_tls_look = dict((d.__dict__.get('_proxy_tls_look') or {}), ok=False,
-                                         error=str(e)[:300], tried=int(time.time()))
+                setattr(d, W['look'], dict((d.__dict__.get(W['look']) or {}), ok=False,
+                                           error=str(e)[:300], tried=int(time.time())))
             finally:
-                d._proxy_tls_looking = False
-        threading.Thread(target=go, name='proxy-tls', daemon=True).start()
-    return dict(look, looking=bool(d.__dict__.get('_proxy_tls_looking')))
+                setattr(d, W['looking'], False)
+        threading.Thread(target=go, name='proxy-tls-' + w, daemon=True).start()
+    return dict(look, looking=bool(d.__dict__.get(W['looking'])))
 
 
-def proxy_tls_conf(d):
+def proxy_tls_conf(d, w='front'):
     try:
-        got = json.loads(d.store.get_meta('tls_proxy') or '{}')
+        got = json.loads(d.store.get_meta(PROXY_W[w]['meta']) or '{}')
     except ValueError:
         got = {}
     got = got if isinstance(got, dict) else {}
@@ -45446,9 +45559,14 @@ def proxy_tls_conf(d):
                          if p in ('TLSv1.2', 'TLSv1.3')] or ['TLSv1.2', 'TLSv1.3'],
            'ciphers': str(got.get('ciphers') or ''), 'dh': str(got.get('dh') or 'none'),
            'prefer': bool(got.get('prefer')), 'hsts': int(got.get('hsts') or 0),
-           'follow': bool(got.get('follow')), 'dh_done': str(got.get('dh_done') or ''),
+           'follow': bool(got.get('follow')) and w == 'front', 'dh_done': str(got.get('dh_done') or ''),
            'pushed': str(got.get('pushed') or ''), 'failed_at': int(got.get('failed_at') or 0),
-           'name': str(got.get('name') or '')[:253]}
+           'name': str(got.get('name') or '')[:253],
+           # its own Automatic certificates (5.41): the name ordered for, and
+           # whether ACME renews it
+           'acme_name': str(got.get('acme_name') or '')[:253]}
+    if 'acme_care' in got:
+        out['acme_care'] = bool(got['acme_care'])
     if out['dh'] not in d.TLS_DH:
         out['dh'] = 'none'
     if isinstance(got.get('pending'), dict):
@@ -45458,17 +45576,25 @@ def proxy_tls_conf(d):
     return out
 
 
-def proxy_tls_save(d, conf):
-    d.store.set_meta('tls_proxy', json.dumps(conf))
+def proxy_tls_save(d, conf, w='front'):
+    d.store.set_meta(PROXY_W[w]['meta'], json.dumps(conf))
 
 
-def proxy_tls_ask(d, source=None, pem=None, policy=None, why=''):
+def proxy_tls_ask(d, source=None, pem=None, policy=None, why='', w='front'):
     """Root is asked to put it on the server in front."""
     if not proxy_tls_on():
         raise ValueError('there is no server in front (Front server & router)')
-    conf = proxy_tls_conf(d)
-    body = {'ssh': proxy_tls_ssh(d), 'name': proxy_tls_name(d), 'op': 'apply',
+    W = PROXY_W[w]
+    if w == 'ntfy' and source == 'here':
+        raise ValueError('ntfy on the server in front has a certificate of its own: it never takes '
+                         'the one of this machine')
+    conf = proxy_tls_conf(d, w)
+    body = {'ssh': proxy_tls_ssh(d), 'name': proxy_tls_name(d, w), 'op': 'apply',
             'dh_had': conf['dh_done']}
+    if w == 'ntfy':
+        if not body['name']:
+            raise ValueError('ntfy\'s server there is not known yet - Look again')
+        body['front_name'] = proxy_tls_name(d)
     if policy if policy is not None else conf['managed']:
         body['tls'] = {k: conf[k] for k in ('protocols', 'ciphers', 'prefer', 'dh', 'hsts')}
     if source == 'here':
@@ -45476,25 +45602,38 @@ def proxy_tls_ask(d, source=None, pem=None, policy=None, why=''):
     elif pem:
         body.update(source='given', cert=pem['cert'], key=pem['key'], chain=pem.get('chain') or '',
                     root=pem.get('root') or '')
-    ident = d.root_ask('tls_proxy', body)
-    d._proxy_tls_asked = ident
-    d.say_event('control', 'the server in front: %s - root is putting it there' % (why or 'TLS'),
+    ident = d.root_ask(W['kind'], body)
+    setattr(d, W['asked'], ident)
+    d.say_event('control', '%s: %s - root is putting it there' % (W['words'], why or 'TLS'),
                 'info', about='root')
     return ident
 
 
-def proxy_tls_settle(d):
+def proxy_acme_http_ask(d, w, name, on):
+    """Root is asked to make port 80 of the server in front hand the ACME
+    CA's question for `name` here - or to take that out again (5.41)."""
+    W = PROXY_W[w]
+    ident = d.root_ask(W['kind'], {'ssh': proxy_tls_ssh(d), 'name': name, 'front_name': proxy_tls_name(d),
+                                   'op': 'acme_http', 'on': bool(on)})
+    d.__dict__.setdefault('_proxy_quiet_ids', set()).add(ident)
+    return ident
+
+
+def proxy_tls_settle(d, w='front'):
     """What root said of the last putting-in there, written into the card's
     settings once: the DH parameters made, the certificate it now has."""
+    W = PROXY_W[w]
     st = d.root_read('status.json')
-    if st.get('kind') != 'tls_proxy' or st.get('id') in (None, d.__dict__.get('_proxy_tls_settled')):
+    if st.get('kind') != W['kind'] or st.get('id') in (None, d.__dict__.get(W['settled'])):
         return
     if st.get('state') not in ('done', 'failed'):
         return
-    d._proxy_tls_settled = st.get('id')
-    if st.get('id') == d.__dict__.get('_proxy_tls_export_id'):
+    setattr(d, W['settled'], st.get('id'))
+    if st.get('id') == d.__dict__.get(W['export']):
         return                                           # a download, not a putting-in
-    conf = proxy_tls_conf(d)
+    if st.get('id') in d.__dict__.get('_proxy_quiet_ids', set()):
+        return                                           # port 80 for an order of ACME
+    conf = proxy_tls_conf(d, w)
     got = st.get('proxy') or {}
     if st.get('state') == 'done':
         if got.get('dh'):
@@ -45502,18 +45641,20 @@ def proxy_tls_settle(d):
         if got.get('fingerprint'):
             conf['pushed'] = got['fingerprint']
         conf['failed_at'] = 0
-        d._proxy_tls_look = {}                           # look again: it changed
+        setattr(d, W['look'], {})                        # look again: it changed
     else:
         conf['failed_at'] = int(time.time())
-    proxy_tls_save(d, conf)
+    proxy_tls_save(d, conf, w)
 
 
 def proxy_tls_tick(d):
     """Every half minute: with "the same certificate there", the one here put
-    there when it is not - after an upload, a renewal by ACME, anything."""
+    there when it is not - after an upload, a renewal by ACME, anything.
+    ntfy's is never put there by itself: it has its own (5.41)."""
     if not proxy_tls_on():
         return
     proxy_tls_settle(d)
+    proxy_tls_settle(d, 'ntfy')
     conf = proxy_tls_conf(d)
     if not conf['follow'] or d.root_busy():
         return
@@ -45540,39 +45681,57 @@ def proxy_tls_tick(d):
         log('the server in front: %s' % e, 'debug')
 
 
-def proxy_tls_state(d, fresh=False):
+def proxy_tls_state(d, fresh=False, w='front'):
     if not proxy_tls_on():
         return None
-    conf = proxy_tls_conf(d)
-    look = proxy_tls_look(d, fresh)
-    st = d.root_state('tls_proxy')
+    W = PROXY_W[w]
+    conf = proxy_tls_conf(d, w)
+    look = proxy_tls_look(d, fresh, w)
+    st = d.root_state(W['kind'])
     status = st['status']
-    mine = status.get('kind') == 'tls_proxy'
+    mine = status.get('kind') == W['kind']
+    prog = st['progress'] if mine else None
+    if prog and d.__dict__.get('_root_kinds', {}).get(prog.get('id')) not in (None, W['kind']):
+        prog = None                                      # the other card's
     node = {'state': status.get('state') if mine else None, 'said': status.get('said') if mine else [],
             'current': not (mine and status.get('state') == 'failed') and not
             (mine and status.get('state') not in ('done', 'failed')),
-            'progress': st['progress'] if mine else None, 'waiting': bool(st['busy']) and mine}
-    export, ready = None, None
-    if status.get('kind') == 'tls_proxy_export':
-        pass
+            'progress': prog, 'waiting': bool(st['busy']) and mine}
     here_fp = None
-    try:
-        here_fp = (cert_info_pem(d, d.tls_pem_now()) or {}).get('fingerprint')
-    except (ValueError, OSError):
-        pass
+    if w == 'front':
+        try:
+            here_fp = (cert_info_pem(d, d.tls_pem_now()) or {}).get('fingerprint')
+        except (ValueError, OSError):
+            pass
     there_fp = (look.get('info') or {}).get('fingerprint')
-    return {'conf': conf, 'look': {k: v for k, v in look.items() if k != 'pem'}, 'node': node,
-            'host': str(CONFIG.get('proxy_host') or ''), 'name': proxy_tls_name(d),
-            'same': bool(here_fp and there_fp and here_fp == there_fp),
-            'key_way': d.proxy_cfg()['ssh_auth'] == 'key' and bool(d.proxy_cfg()['ssh_key']),
-            'export': export, 'ready': ready}
+    target = W['target']
+    ast = acme_state(d, target)
+    out = {'conf': conf, 'look': {k: v for k, v in look.items() if k != 'pem'}, 'node': node,
+           'host': str(CONFIG.get('proxy_host') or ''), 'name': proxy_tls_name(d, w), 'which': w,
+           'same': bool(here_fp and there_fp and here_fp == there_fp),
+           'key_way': d.proxy_cfg()['ssh_auth'] == 'key' and bool(d.proxy_cfg()['ssh_key']),
+           'export': None, 'ready': None,
+           # its own Automatic certificates (5.41), for the card's chips
+           'acme': {'on': bool(int(CONFIG.get('acme') or 0)) and acme_proxy_wanted(d, w),
+                    'care': acme_proxy_care(d, w), 'how': conf.get('how') or '',
+                    'failed': bool(ast.get('ok') is False and ast.get('said')),
+                    'said': ast.get('said') if ast.get('ok') is False else ''}}
+    if w == 'ntfy':
+        out.update(none=bool(look.get('none')), shared=bool(look.get('shared')),
+                   front_name=look.get('front_name') or proxy_tls_name(d))
+    return out
 
 
-def proxy_tls_post(d, act, body, who):
-    """The card's buttons, for the server in front."""
+def proxy_tls_post(d, act, body, who, w='front'):
+    """The card's buttons, for the server in front - its front's
+    certificate, or ntfy's there (w='ntfy', 5.41)."""
     if not proxy_tls_on():
         raise ValueError('there is no server in front (Front server & router)')
-    conf = proxy_tls_conf(d)
+    W = PROXY_W[w]
+    conf = proxy_tls_conf(d, w)
+    if w == 'ntfy' and act in ('proxy_follow', 'proxy_push'):
+        raise ValueError('ntfy on the server in front has a certificate of its own: it never takes '
+                         'the one of this machine')
     if act == 'proxy_follow':
         on = body.get('on') is True
         conf['follow'] = on
@@ -45595,69 +45754,79 @@ def proxy_tls_post(d, act, body, who):
     if act == 'proxy_name':
         name = str(body.get('name') or '').strip().lower().rstrip('.')
         if name and not re.match(r'^(?=.{1,253}$)[A-Za-z0-9*]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$', name):
-            raise ValueError('the name is a host name: mqtt.example.cz')
+            raise ValueError('the name is a host name: %s.example.cz' % ('ntfy' if w == 'ntfy' else 'mqtt'))
+        if w == 'ntfy' and name and name == proxy_tls_name(d):
+            raise ValueError('%s is the front\'s name there: ntfy\'s is another one' % name)
         conf['name'] = name
-        proxy_tls_save(d, conf)
-        d._proxy_tls_look = {}
-        proxy_tls_look(d, fresh=True)
-        return {'message': 'the server for %s there is the one looked after' % (name or proxy_tls_name(d))}
+        proxy_tls_save(d, conf, w)
+        setattr(d, W['look'], {})
+        proxy_tls_look(d, fresh=True, w=w)
+        return {'message': 'the server for %s there is the one looked after' % (
+            name or proxy_tls_name(d, w) or 'ntfy')}
     if act == 'proxy_look':
-        proxy_tls_look(d, fresh=True)
+        proxy_tls_look(d, fresh=True, w=w)
         return {'message': 'looking at the server in front'}
     if act == 'proxy_push':
         proxy_tls_ask(d, source='here', why='the certificate of this machine put there')
         return {'message': 'root is putting the certificate of this machine there'}
     if act == 'tls_upload':
         pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
-                         str(body.get('password') or ''), target='proxy')
+                         str(body.get('password') or ''), target=W['target'])
         conf['how'] = 'uploaded'
-        proxy_tls_save(d, conf)
-        proxy_tls_ask(d, pem=pem, why='a certificate uploaded for it')
-        d.tls_csr_drop(target='proxy', only_if_key=pem['key'])
+        # one put in by hand: its own Automatic certificates leave it alone
+        if conf.get('acme_care'):
+            conf['acme_care'] = False
+        proxy_tls_save(d, conf, w)
+        proxy_tls_ask(d, pem=pem, why='a certificate uploaded for it', **_pw(w))
+        d.tls_csr_drop(target=W['target'], only_if_key=pem['key'])
         return {'message': 'checked - root is putting it there'}
     if act == 'tls_csr':
-        return {'message': 'the request is made', 'csr': d.tls_csr(body, target='proxy')}
+        return {'message': 'the request is made', 'csr': d.tls_csr(body, target=W['target'])}
     if act == 'tls_csr_drop':
-        d.tls_csr_drop(target='proxy')
+        d.tls_csr_drop(target=W['target'])
         return {'message': 'the request and its waiting key are gone'}
     if act == 'tls_selfsigned':
         pem, cn, days = d.tls_selfsigned_pem(body)
         conf['how'] = 'self-signed, made here'
-        proxy_tls_save(d, conf)
-        proxy_tls_ask(d, pem=pem, why='a self-signed certificate for %s, %d days' % (cn, days))
+        if conf.get('acme_care'):
+            conf['acme_care'] = False
+        proxy_tls_save(d, conf, w)
+        proxy_tls_ask(d, pem=pem, why='a self-signed certificate for %s, %d days' % (cn, days), **_pw(w))
         return {'message': 'made - root is putting it there'}
     if act == 'tls_policy':
         new = d.tls_policy_checked(body)
         conf.update(new, managed=True)
-        proxy_tls_save(d, conf)
+        proxy_tls_save(d, conf, w)
         proxy_tls_ask(d, policy=True, why='TLS: %s, %s, DH %s' % (new['preset'], ' '.join(new['protocols']),
-                                                                   new['dh']))
+                                                                   new['dh']), **_pw(w))
         return {'message': 'saved - root is putting it there'}
     if act == 'tls_get':
-        look = d.__dict__.get('_proxy_tls_look') or {}
+        look = d.__dict__.get(W['look']) or {}
         if not look.get('pem'):
             raise ValueError('the certificate there is not known yet - look again')
         return dict(d.tls_export_plain(str(body.get('format') or 'pem_chain'), pem=look['pem']),
-                    name=re.sub(r'[^A-Za-z0-9._-]+', '-', look.get('name') or 'proxy') + '-proxy')
+                    name=re.sub(r'[^A-Za-z0-9._-]+', '-', look.get('name') or 'proxy') + W['suffix'])
     if act == 'tls_export':
         fmt = d.tls_export_checked(body)
-        ident = d.root_ask('tls_proxy', {'ssh': proxy_tls_ssh(d), 'name': proxy_tls_name(d),
-                                         'op': 'export', 'format': fmt, 'password': str(body.get('password') or ''),
-                                         'with_root': bool(body.get('with_root'))})
-        d._proxy_tls_export_id = ident
-        d.say_event('control', 'the private key of the server in front asked for, to download (%s) by %s'
-                    % (fmt, who or 'the dashboard'), 'warn', about='secrets_out')
+        ask = {'ssh': proxy_tls_ssh(d), 'name': proxy_tls_name(d, w), 'op': 'export', 'format': fmt,
+               'password': str(body.get('password') or ''), 'with_root': bool(body.get('with_root'))}
+        if w == 'ntfy':
+            ask['front_name'] = proxy_tls_name(d)
+        ident = d.root_ask(W['kind'], ask)
+        setattr(d, W['export'], ident)
+        d.say_event('control', 'the private key of %s asked for, to download (%s) by %s'
+                    % (W['words'], fmt, who or 'the dashboard'), 'warn', about='secrets_out')
         return {'message': 'root is making it', 'asked': ident}
     if act == 'tls_forget':
         conf['managed'] = False
         conf['follow'] = False
-        proxy_tls_save(d, conf)
-        return {'message': 'zigmon no longer changes the TLS of the server in front; nginx there keeps what it has'}
+        proxy_tls_save(d, conf, w)
+        return {'message': 'zigmon no longer changes the TLS of %s; nginx there keeps what it has' % W['words']}
     if act == 'retry':
         proxy_tls_ask(d, source='here' if conf['follow'] else None, policy=conf['managed'] or None,
-                      why='asked again')
+                      why='asked again', **_pw(w))
         return {'message': 'asked root again'}
-    raise ValueError('nothing is done for %r on the server in front' % act[:40])
+    raise ValueError('nothing is done for %r on %s' % (act[:40], W['words']))
 
 
 # ---- Automatic certificates: ACME, Let's Encrypt and the like (5.31) ------------
@@ -46184,26 +46353,88 @@ def acme_care_set(d, on, by, why=''):
             'info' if on else 'warn', about='acme')
 
 
-def acme_state(d):
-    return _acme_meta(d, 'acme_state')
+def acme_state(d, target=ACME_TARGET):
+    return _acme_meta(d, 'acme_state' if target == ACME_TARGET else 'acme_state:' + target)
+
+
+# The certificates of the server in front as ACME's own (5.41): with "the
+# same certificate as this machine" off, three - this machine's (the broker
+# reads its files), the front's, ntfy's - each with its name, its order and
+# its renewal; with it on, two - this machine's, which the front takes by
+# itself, and ntfy's. ntfy's is never part of the one of this machine.
+ACME_PROXY = {'proxy': 'front', 'proxy-ntfy': 'ntfy'}
+
+
+def acme_proxy_wanted(d, w):
+    """Whether the certificate there is one of its own ACME can order."""
+    if not proxy_tls_on():
+        return False
+    if w == 'front':
+        return not proxy_tls_conf(d)['follow']
+    lk = proxy_tls_look(d, w='ntfy')
+    return bool(lk.get('ok') and lk.get('name') and not lk.get('none') and not lk.get('shared'))
+
+
+def acme_proxy_name(d, w):
+    conf = proxy_tls_conf(d, w)
+    n = str(conf.get('acme_name') or proxy_tls_name(d, w) or '').strip().lower().rstrip('.')
+    return n if ACME_NAME_RE.match(n) else ''
+
+
+def acme_proxy_care(d, w):
+    """Whether ACME renews it: said on either page; unsaid, only one from the CA."""
+    conf = proxy_tls_conf(d, w)
+    if 'acme_care' in conf:
+        return bool(conf['acme_care'])
+    return conf.get('how') == 'ACME'
+
+
+def acme_proxy_care_set(d, w, on, by, why=''):
+    conf = proxy_tls_conf(d, w)
+    was = acme_proxy_care(d, w)
+    conf['acme_care'] = bool(on)
+    proxy_tls_save(d, conf, w)
+    if was != bool(on) and CONFIG.get('acme'):
+        d.say_event('control', '%s: ACME %s the certificate of %s%s' % (
+            by, 'looks after' if on else 'no longer renews', PROXY_W[w]['words'],
+            (' - ' + why) if why else ''), 'info' if on else 'warn', about='acme')
+
+
+def acme_how_of(d, target=ACME_TARGET):
+    if target == ACME_TARGET:
+        return acme_how(d)
+    w = ACME_PROXY[target]
+    how = proxy_tls_conf(d, w).get('how') or ''
+    if how:
+        return how
+    info = (d.__dict__.get(PROXY_W[w]['look']) or {}).get('info') or {}
+    if info.get('self_signed'):
+        return 'self-signed'
+    return 'as the nginx file has it' if info else ''
 
 
 def acme_targets(d):
-    """[(target, name)] ACME orders here: the one certificate, when it is on,
+    """[(target, name)] ACME orders here: each certificate, when it is on,
     looked after and has a name."""
     if not int(CONFIG.get('acme') or 0):
         return []
     name = acme_name_of(d)
-    return [(ACME_TARGET, name)] if name and acme_care(d) else []
+    out = [(ACME_TARGET, name)] if name and acme_care(d) else []
+    for t, w in ACME_PROXY.items():
+        if acme_proxy_wanted(d, w) and acme_proxy_care(d, w):
+            n = acme_proxy_name(d, w)
+            if n:
+                out.append((t, n))
+    return out
 
 
-def acme_due(d, name):
+def acme_due(d, name, target=ACME_TARGET):
     """Why the certificate is to be ordered now, or ''."""
-    st = acme_state(d)
+    st = acme_state(d, target)
     if st.get('failed_at') and time.time() - float(st['failed_at']) < acme_retry() and \
             st.get('name') == name:
         return ''
-    if acme_how(d) != 'ACME' or st.get('name') != name or not st.get('not_after'):
+    if acme_how_of(d, target) != 'ACME' or st.get('name') != name or not st.get('not_after'):
         return 'not ordered yet for %s' % name
     left = (float(st.get('not_after') or 0) - time.time()) / 86400
     days = float(CONFIG.get('acme_days') or 30)
@@ -46230,9 +46461,106 @@ def acme_wait_root(d, ident, secs=600):
     return {}
 
 
-def acme_order(d, name, by, say=None):
+def acme_root_free(d, secs=120):
+    end = time.time() + secs
+    while d.root_busy() and time.time() < end:
+        time.sleep(1)
+
+
+def acme_order_proxy(d, target, name, by, say=None):
+    """A certificate of the server in front - the front's or ntfy's (5.41) -
+    ordered and put there by root over SSH, as an upload for its card is:
+    the key made here for the moment of the order and handed to root, never
+    kept. By HTTP-01, port 80 there hands the CA's question here for the
+    order and is put back as it was after it."""
+    w = ACME_PROXY[target]
+    W = PROXY_W[w]
+    tell = say or (lambda t: None)
+    steps = []
+
+    def acme_said(t):
+        steps.append([round(time.time(), 1), str(t)[:300]])
+        tell(t)
+    st = {'name': name, 'at': time.time(), 'by': by, 'ca': acme_directory_url(), 'steps': steps}
+    a, http_on = None, False
+    try:
+        if not ACME_NAME_RE.match(str(name or '').lower()):
+            raise AcmeError('%s is not a name a CA gives a certificate for (a full DNS name)' % name)
+        if not acme_proxy_wanted(d, w):
+            raise AcmeError('%s takes the certificate of this machine, or is not there: nothing of its '
+                            'own to order' % W['words'])
+        if (CONFIG.get('acme_challenge') or 'http-01') != 'dns-01':
+            acme_said('port 80 of the server in front hands the CA\'s question here')
+            acme_root_free(d)
+            http_on = True
+            done = acme_wait_root(d, proxy_acme_http_ask(d, w, name, True), 180)
+            if done.get('state') != 'done':
+                raise AcmeError('port 80 of the server in front: %s' % '; '.join(
+                    done.get('said') or ['root did not answer']))
+        a = Acme(d)
+        kinds = ACME_CERT_KEYS.get(str(CONFIG.get('acme_key') or 'dual'), ACME_CERT_KEYS['dual'])
+        # one pair there: root puts a single certificate on the server in front
+        key, chain = a.order([name], acme_said, kinds[0])
+        pem = d.tls_sort(chain + '\n' + key, target=W['target'])
+        key = None
+        info = acme_cert_dates(pem['cert'])
+        acme_root_free(d)
+        acme_said('root puts it on the server in front')
+        conf = proxy_tls_conf(d, w)
+        was_how = conf.get('how')
+        conf['how'] = 'ACME'
+        conf['acme_care'] = True
+        proxy_tls_save(d, conf, w)
+        ident = proxy_tls_ask(d, pem={'cert': pem['cert'], 'key': pem['key'], 'chain': pem['chain'],
+                                      'root': pem.get('root') or ''},
+                              why='from the ACME CA for %s' % name, **_pw(w))
+        pem = None
+        done = acme_wait_root(d, ident)
+        if done.get('state') != 'done':
+            conf = proxy_tls_conf(d, w)
+            if was_how:
+                conf['how'] = was_how
+            else:
+                conf.pop('how', None)
+            proxy_tls_save(d, conf, w)
+            raise AcmeError('root did not put it there: %s' % '; '.join(
+                done.get('said') or ['it did not answer in 10 minutes']))
+        st.update(ok=True, not_after=info.get('not_after'), not_before=info.get('not_before'),
+                  issuer=info.get('issuer'), ordered_at=time.time())
+        st['steps'] = steps[-25:]
+        d.store.set_meta('acme_state:' + target, json.dumps(st))
+        d.say_event('control', 'a certificate for %s (%s) came from the ACME CA (%s), good until %s' % (
+            name, W['words'], info.get('issuer') or '?', time.strftime('%Y-%m-%d', time.localtime(
+                info['not_after'])) if info.get('not_after') else '?'), 'info', about='acme',
+            title='Certificate ordered')
+        return st
+    except (AcmeError, ValueError, OSError) as e:
+        st.update(ok=False, failed_at=time.time(), said=str(e)[:600])
+        old = acme_state(d, target)
+        for k in ('not_after', 'not_before', 'issuer', 'ordered_at'):
+            if old.get(k):
+                st[k] = old[k]
+        st['steps'] = steps[-25:]
+        d.store.set_meta('acme_state:' + target, json.dumps(st))
+        d.say_event('control', 'no certificate for %s (%s) came from the ACME CA: %s' % (name, W['words'], e),
+                    'warn', about='acme', title='A certificate was not ordered')
+        raise AcmeError(str(e))
+    finally:
+        if a:
+            a.close()
+        if http_on:
+            try:
+                acme_root_free(d)
+                acme_wait_root(d, proxy_acme_http_ask(d, w, name, False), 120)
+            except (ValueError, OSError) as e:
+                log('ACME: port 80 of the server in front was not put back: %s' % e, 'warn')
+
+
+def acme_order(d, name, by, say=None, target=ACME_TARGET):
     """One certificate ordered and put in; the state kept, an event written -
     and what was done on the way, for the card (otp 1.0.175)."""
+    if target in ACME_PROXY:
+        return acme_order_proxy(d, target, name, by, say)
     tell = say or (lambda t: None)
     steps = []
 
@@ -46422,7 +46750,7 @@ def acme_tick(d):
             time.time() - ACME_WORK['at'] < acme_every():
         return False
     ACME_WORK['at'] = time.time()
-    due = [(t, n) for t, n in acme_targets(d) if acme_due(d, n)]
+    due = [(t, n) for t, n in acme_targets(d) if acme_due(d, n, t)]
     if not due:
         return False
     acme_start(d, due, 'zigmon (renewal)')
@@ -46441,7 +46769,7 @@ def acme_start(d, which, by):
             for t, n in which:
                 ACME_WORK['target'] = t
                 try:
-                    acme_order(d, n, by, lambda s: ACME_WORK.update(says=s))
+                    acme_order(d, n, by, lambda s: ACME_WORK.update(says=s), target=t)
                 except AcmeError as e:
                     log('ACME: %s' % e, 'warn')
                 except Exception as e:                  # noqa: BLE001 - said, never lost
@@ -46474,6 +46802,23 @@ def acme_root_body(d):
     return {'http': False} if d.store.get_meta('acme_http_ever') else None
 
 
+def acme_proxy_view(d, target):
+    """One certificate of the server in front, as the Automatic certificates
+    pane draws a card (5.41)."""
+    w = ACME_PROXY[target]
+    conf = proxy_tls_conf(d, w)
+    info = (proxy_tls_look(d, w=w).get('info')) or {}
+    kinds = ACME_CERT_KEYS.get(str(CONFIG.get('acme_key') or 'dual'), ACME_CERT_KEYS['dual'])
+    return {'target': target, 'name': acme_proxy_name(d, w), 'state': acme_state(d, target),
+            'how': acme_how_of(d, target), 'subject': info.get('subject') or info.get('cn'),
+            'issuer': info.get('issuer'),
+            'keys': re.sub(r'^EC (\d+)$', r'ECDSA P-\1', info.get('key') or ''),
+            'keys_asked': ACME_KEYS[kinds[0]][0], 'not_after': info.get('not_after'),
+            'care': acme_proxy_care(d, w), 'wanted': True, 'before': None,
+            'named': bool(conf.get('acme_name')), 'server_name': proxy_tls_name(d, w),
+            'title': PROXY_W[w]['words'], 'host': str(CONFIG.get('proxy_host') or ''), 'with': []}
+
+
 def acme_view(d):
     info = acme_info(d)
     name = acme_name_of(d)
@@ -46487,11 +46832,17 @@ def acme_view(d):
               'keys_asked': acme_key_words(str(CONFIG.get('acme_key') or 'dual')),
               'not_after': info.get('not_after'), 'care': acme_care(d), 'wanted': True,
               'before': acme_before(d), 'named': bool(str(CONFIG.get('acme_name') or '').strip()),
-              'server_name': (d.root_look().get('tls') or {}).get('server_name') or ''}
+              'server_name': (d.root_look().get('tls') or {}).get('server_name') or '',
+              # what else takes it (5.41): the broker reads its files, and the
+              # server in front when it follows this machine
+              'with': (['the MQTT broker'] if (d.root_look().get('tls') or {}).get('broker') else []) +
+              (['the server in front'] if proxy_tls_on() and proxy_tls_conf(d)['follow'] else [])}
+    targets = [target]
+    targets += [acme_proxy_view(d, t) for t, w in ACME_PROXY.items() if acme_proxy_wanted(d, w)]
     acc = _acme_meta(d, 'acme_account')
     with ACME_LOCK:
         manual = dict(ACME_MANUAL) if ACME_MANUAL.get('id') else None
-    return {'ok': True, 'on': bool(int(CONFIG.get('acme') or 0)), 'targets': [target],
+    return {'ok': True, 'on': bool(int(CONFIG.get('acme') or 0)), 'targets': targets,
             'mine': [t for t, _ in acme_targets(d)], 'directory': acme_directory_url(),
             'account': {'kid': acc.get('kid'), 'email': acc.get('email'), 'at': acc.get('at'),
                         'key': bool(acc.get('key')),
@@ -46541,9 +46892,47 @@ def acme_probe(d, target=ACME_TARGET):
     return out
 
 
+def acme_post_proxy(d, b, by, target):
+    """The Automatic certificates of a certificate of the server in front:
+    order, look after, its name (5.41)."""
+    w = ACME_PROXY[target]
+    words = PROXY_W[w]['words']
+    act = str(b.get('action') or '')
+    if not acme_proxy_wanted(d, w):
+        raise ValueError('%s has no certificate of its own here to order (%s)' % (
+            words, 'it takes the one of this machine' if w == 'front' and proxy_tls_on() else 'not there'))
+    if act == 'order':
+        if not int(CONFIG.get('acme') or 0):
+            raise ValueError('certificates by ACME are off - switch them on and save first')
+        name = acme_proxy_name(d, w)
+        if not name:
+            raise ValueError('the name of the certificate is not known - give it (Its name…)')
+        acme_proxy_care_set(d, w, True, by, 'ordered by hand')
+        acme_start(d, [(target, name)], by)
+        return dict(acme_view(d), message='the certificate of %s (%s) is being ordered' % (words, name))
+    if act == 'care':
+        acme_proxy_care_set(d, w, bool(b.get('on')), by)
+        return acme_view(d)
+    if act == 'name':
+        name = str(b.get('name') or '').strip().lower().rstrip('.')
+        if name and not ACME_NAME_RE.match(name):
+            raise ValueError('%s is not a full DNS name (like ntfy.example.cz)' % name[:80])
+        conf = proxy_tls_conf(d, w)
+        conf['acme_name'] = name
+        proxy_tls_save(d, conf, w)
+        d.say_event('control', '%s: the certificate of %s is for %s' % (
+            by, words, name or 'the name nginx there answers to'), 'info', about='acme')
+        return acme_view(d)
+    raise ValueError('not for %s: only this machine\'s port 80 is tried, and only its certificate from '
+                     'before is kept' % words)
+
+
 def acme_post(d, b, by):
     """POST /api/acme: what the page (and the command line) may do."""
     act = str(b.get('action') or '')
+    target = str(b.get('target') or ACME_TARGET)
+    if target in ACME_PROXY and act in ('order', 'care', 'name', 'probe', 'put_back'):
+        return acme_post_proxy(d, b, by, target)
     if act == 'order':
         if not int(CONFIG.get('acme') or 0):
             raise ValueError('certificates by ACME are off - switch them on and save first')
@@ -47936,6 +48325,30 @@ def push_slots(d):
             else:
                 front.update(installable=True, why_not='')
         slots.append(front)
+        # ntfy's certificate there (5.41): a slot of its own - never following
+        # the dashboard, whatever the front does
+        # once its block there is known (a look not made yet, or failed, says
+        # nothing of whether there is one)
+        nlk = proxy_tls_look(d, w='ntfy')
+        nname = proxy_tls_name(d, 'ntfy')
+        if nlk.get('name') and nname and not nlk.get('none') and not nlk.get('shared'):
+            nconf = proxy_tls_conf(d, 'ntfy')
+            nthere = _push_info(nlk.get('info')) if nlk.get('info') else None
+            ntfy = {'id': 'ntfy', 'kind': 'front', 'node': None,
+                    'title': 'ntfy on the server in front (%s)' % host, 'names': [nname] if nname else [],
+                    'key_types': ['ec', 'rsa'], 'dual': False, 'current': nthere,
+                    'how': nconf.get('how') or '', 'managed_by': push_managed_by(nconf.get('how'), nthere)}
+            if cfg['ssh_auth'] != 'key' or not cfg['ssh_key']:
+                ntfy.update(installable=False, why_not='it is reached with a password: its certificate is '
+                            'put there with the key way (Front server & router, a key)')
+            elif why:
+                ntfy.update(installable=False, why_not=why)
+            elif not nlk.get('ok'):
+                ntfy.update(installable=False, why_not='ntfy\'s server there could not be read' + (
+                    ': ' + str(nlk.get('error'))[:200] if nlk.get('error') else ''))
+            else:
+                ntfy.update(installable=True, why_not='')
+            slots.append(ntfy)
     return slots
 
 
@@ -48179,19 +48592,24 @@ def push_install(d, raw, headers):
                     str(s.get('how') or '').startswith('acme push'):
                 row['state'] = 'already'
             else:
-                pem = d.tls_sort(main['cert'] + main['chain'] + '\n' + main['key'], target='proxy')
+                # the front's, or ntfy's there (5.41): each to its own card
+                w = 'ntfy' if s['id'] == 'ntfy' else 'front'
+                pem = d.tls_sort(main['cert'] + main['chain'] + '\n' + main['key'], target=PROXY_W[w]['target'])
                 push_wait_root(d)
-                conf = proxy_tls_conf(d)
+                conf = proxy_tls_conf(d, w)
                 conf['how'] = how
                 try:
                     proxy_tls_ask(d, pem={'cert': pem['cert'], 'key': pem['key'], 'chain': pem['chain'],
                                           'root': pem.get('root') or ''},
-                                  why='a certificate pushed by %s, until %s' % (acme, day))
+                                  why='a certificate pushed by %s, until %s' % (acme, day), **_pw(w))
                 except ValueError as e:
                     raise PushRefused(503, 'busy', str(e)[:300])
                 finally:
                     pem = None
-                proxy_tls_save(d, conf)
+                # as after an upload: its own Automatic certificates leave it alone
+                if conf.get('acme_care'):
+                    conf['acme_care'] = False
+                proxy_tls_save(d, conf, w)
         d.say_event('control', 'acme push: %s %s - %s, %s, until %s, from %s (key %s)' % (
             s['id'], 'already had it' if row['state'] == 'already' else 'took a certificate',
             ', '.join(held[:4]), main['fingerprint'][:16], day, acme, key['key_id']),
