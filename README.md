@@ -2083,7 +2083,28 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.40.3**
+Current version: **5.41.0**
+
+5.41.0 — the ntfy certificate on the server in front, managed too.
+
+* **Settings → Certificates → ntfy on the server in front**, right after the
+  front's card: the second HTTPS server on the proxy (ntfy's), found in
+  `nginx -T` by the name set with *Its name…*, else the host of the ntfy
+  address in use, else the other HTTPS server with a certificate of its own.
+  Upload, Request (CSR), Self-signed, TLS settings, Download/Export, as on the
+  front's card - without *The same certificate as this machine*: following
+  never touches ntfy's files, and ntfy's card never touches the front's.
+* **Automatic certificates**: follow off - three certificates (this machine
+  with the MQTT broker, the front, ntfy); follow on - two (this machine with
+  the broker and the front, and ntfy). ntfy is never part of the shared one;
+  the broker always has this machine's. HTTP-01 for a proxy name goes through
+  a location put in that name's port-80 server for the order and taken out
+  after.
+* **Certificates from acme**: a new slot `ntfy`, never following another;
+  protocol 1 unchanged.
+
+`test/proxyntfy.py` (root over a proxy laid out as a real one, the daemon,
+both layouts, the acme slot, the page in Chromium); it fails on 5.40.3.
 
 5.40.3 — Certificates from acme: dates and the address as in ai.
 
