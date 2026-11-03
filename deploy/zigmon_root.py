@@ -352,6 +352,21 @@ def pem_set(cert, key, chain='', root=''):
             'root': (root + '\n') if root else ''}
 
 
+def trust_of(pem, alt=None):
+    """The chain nginx trusts (OCSP stapling): the root and the chain of the
+    certificate - and (5.42) those of the EC one uploaded beside it, whose CA
+    may sign with intermediates of their own, each certificate once."""
+    trust = pem['root'] + pem['chain']
+    if alt and alt.get('own_trust'):
+        have = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', trust, re.S)
+        for c in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+                            alt['chain'] + alt['root'], re.S):
+            if c not in have:
+                have.append(c)
+                trust += c + '\n'
+    return trust
+
+
 def tls_checked(t):
     if t is None:
         return None
@@ -363,7 +378,12 @@ def tls_checked(t):
     # with it, never handed to the daemon - and put back from there when asked
     # a second certificate beside it (5.33.2): RSA and ECDSA at once
     alt = t.get('alt') if isinstance(t.get('alt'), dict) else None
-    out['alt'] = pem_set(alt.get('cert'), alt.get('key'), alt.get('chain')) if alt and out['pem'] else None
+    out['alt'] = pem_set(alt.get('cert'), alt.get('key'), alt.get('chain'), alt.get('root')) \
+        if alt and out['pem'] else None
+    if out['alt']:
+        # uploaded side by side (5.42): it comes with its chain and root, which
+        # join the chain nginx trusts; ACME's comes without
+        out['alt']['own_trust'] = 'root' in alt
     out['keep_before'] = bool(t.get('keep_before')) and bool(out['pem'])
     out['put_back'] = bool(t.get('put_back'))
     if out['put_back']:
@@ -622,7 +642,7 @@ def tls_into(block, t, files, had_dh):
         else:
             block = set_directive(block, 'ssl_certificate', files['cert'])
             block = set_directive(block, 'ssl_certificate_key', files['key'])
-        trust = t['pem']['root'] + t['pem']['chain']
+        trust = trust_of(t['pem'], t.get('alt'))
         if trust:
             write_root(files['root'], trust, 0o644)
             block = set_directive(block, 'ssl_trusted_certificate', files['root'])
@@ -1904,7 +1924,36 @@ EXPORT_FORMATS = ('pem_key', 'key', 'pfx', 'pfx_legacy')
 EXPORT_FILE = re.compile(r'^zigmon-cert-[A-Za-z0-9._-]{1,100}\.(pem|key|pfx)$')
 
 
-def tls_export(raw, given=None):
+def chain_walk(certs, pool):
+    """The certificates of `pool` above the last of `certs`, in order up to
+    its root (5.42): with two certificates side by side the chain nginx
+    trusts holds both chains, and only the chosen one's goes with it."""
+    def names(c):
+        out = run(['openssl', 'x509', '-noout', '-subject', '-issuer', '-nameopt', 'RFC2253'],
+                  'a certificate', data=c + '\n')
+        s = re.search(r'(?m)^subject=\s*(.*)$', out)
+        i = re.search(r'(?m)^issuer=\s*(.*)$', out)
+        return (s.group(1).strip() if s else ''), (i.group(1).strip() if i else '')
+    info = {}
+    for c in pool:
+        try:
+            info[c] = names(c)
+        except Refused:
+            continue
+    out = list(certs)
+    subj, at = names(out[-1])
+    for _ in range(8):
+        if subj == at:
+            break
+        nxt = next((c for c in info if info[c][0] == at and c not in out), None)
+        if not nxt:
+            break
+        out.append(nxt)
+        subj, at = info[nxt]
+    return out
+
+
+def tls_export(raw, given=None, dual=False):
     """The certificate nginx serves, with its private key, in one file for a
     download: PEM (the certificate, its chain and the key - the key locked
     with the password when one is given), the key alone, or PFX / PKCS#12
@@ -1924,6 +1973,11 @@ def tls_export(raw, given=None):
     if fmt in ('pem_key', 'key') and pw and len(pw) < 4:
         raise Refused('a password for the key is four characters or more')
     with_root = bool(raw.get('with_root'))
+    # which of two side by side (5.42): the first (RSA), or the second (EC) -
+    # each with its own key and chain only, never both keys in one file
+    pair = str(raw.get('pair') or 'main')
+    if pair not in ('main', 'alt'):
+        raise Refused('the certificate is the first (main) or the second (alt)')
     now = {}
     if given:
         cert_text, key_text, root_text = given
@@ -1932,10 +1986,13 @@ def tls_export(raw, given=None):
         if not now.get('server'):
             raise Refused('nginx has no HTTPS server block to read the certificate from')
         files = now['files']
+        dual = bool(now.get('dual'))
+        if pair == 'alt' and not dual:
+            raise Refused('nginx serves no second certificate to hand over')
         try:
-            with open(files['cert']) as f:
+            with open(files['alt_cert' if pair == 'alt' else 'cert']) as f:
                 cert_text = f.read(500000)
-            with open(files['key']) as f:
+            with open(files['alt_key' if pair == 'alt' else 'key']) as f:
                 key_text = f.read(100000)
         except OSError as e:
             raise Refused('the certificate or its key cannot be read: %s' % e)
@@ -1949,7 +2006,12 @@ def tls_export(raw, given=None):
     certs = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', cert_text, re.S)
     if not certs:
         raise Refused('there is no certificate to hand over')
-    if with_root:
+    if with_root and dual:
+        # (5.42) the chain nginx trusts holds both certificates' chains: only
+        # what lies above this one goes with it
+        certs = chain_walk(certs, re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+                                             root_text or '', re.S))
+    elif with_root:
         for c in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', root_text or '', re.S):
             if c not in certs:
                 certs.append(c)
@@ -1966,6 +2028,8 @@ def tls_export(raw, given=None):
     if m:
         cn = m.group(1).strip()
     base = re.sub(r'[^A-Za-z0-9._-]+', '-', (cn or now.get('server_name') or 'server').replace('*', 'star'))[:80].strip('-.') or 'server'
+    if pair == 'alt':
+        base = base[:73] + '-ecdsa'
     ext = {'pem_key': 'pem', 'key': 'key', 'pfx': 'pfx', 'pfx_legacy': 'pfx'}[fmt]
     name = 'zigmon-cert-%s.%s' % (base, ext)
     out_fd = child_fd(root_fd(), 'out', make=True)
@@ -2008,8 +2072,8 @@ def tls_export(raw, given=None):
     words = {'pem_key': 'PEM with its key', 'key': 'the key alone', 'pfx': 'PFX',
              'pfx_legacy': 'PFX (legacy)'}[fmt]
     return {'out': name, 'out_bytes': os.stat(name, dir_fd=out_fd).st_size}, \
-        ['the certificate%s handed over for a download: %s, %s%s' % (
-            ' and its key' if fmt != 'key' else '\'s key', name, words,
+        ['the %scertificate%s handed over for a download: %s, %s%s' % (
+            'second (EC) ' if pair == 'alt' else '', ' and its key' if fmt != 'key' else '\'s key', name, words,
             ' (locked with a password)' if pw else '')]
 
 
@@ -2247,7 +2311,7 @@ def tls_proxy(raw, which='front'):
         if not where:
             raise Refused('nginx on the server in front has no HTTPS server of its own for %s' % name)
     if op == 'export':
-        return proxy_export(raw, ssh, paths)
+        return proxy_export(raw, ssh, paths, files[where[0][0]][where[0][1]:where[0][2]])
     t = raw.get('tls')
     pol = None
     if isinstance(t, dict) and t.get('protocols'):
@@ -2285,6 +2349,12 @@ def tls_proxy(raw, which='front'):
         pem = pem_set(certs[0], key_text, '\n'.join(certs[1:]), root_text)
     elif source == 'given':
         pem = pem_set(raw.get('cert'), raw.get('key'), raw.get('chain'), raw.get('root'))
+        # an EC one beside it (5.42): uploaded with it, as both are put in here
+        a = raw.get('alt') if isinstance(raw.get('alt'), dict) else None
+        if a and pem:
+            alt = pem_set(a.get('cert'), a.get('key'), a.get('chain'), a.get('root'))
+            if alt:
+                alt['own_trust'] = True
     if not pem and not pol:
         raise Refused('nothing to put on the server in front')
     progress('making the files for %s' % ssh['host'], 2)
@@ -2296,7 +2366,7 @@ def tls_proxy(raw, which='front'):
         if alt:
             put.append((alt['cert'] + alt['chain'], '644', alt_paths_there[0]))
             put.append((alt['key'], '600', alt_paths_there[1]))
-        trust = pem['root'] + pem['chain']
+        trust = trust_of(pem, alt)
         # ntfy's (5.41): where one of its blocks staples or names one - or
         # (5.41.1) a root was given with it: then it is kept there and named,
         # as on the front, not dropped (the card said "Root: not given" for a
@@ -2322,7 +2392,7 @@ def tls_proxy(raw, which='front'):
                 elif len(directives(block, 'ssl_certificate')) > 1:
                     block = set_directive(block, 'ssl_certificate', paths['cert'])
                     block = set_directive(block, 'ssl_certificate_key', paths['key'])
-                trust = pem['root'] + pem['chain']
+                trust = trust_of(pem, alt)
                 # only where there is a chain to trust, and the block staples
                 # or names one already (5.37.1: a self-signed one, with no
                 # chain, rewrote a block's own trusted file to a path that
@@ -2517,18 +2587,30 @@ def proxy_pem_here():
     return cert_text, key_text
 
 
-def proxy_export(raw, ssh, paths):
+def proxy_export(raw, ssh, paths, block=''):
     """The certificate of the server in front with its key, for a download -
-    read there by root here, made into a file as the one of this machine."""
+    read there by root here, made into a file as the one of this machine.
+    The second of two side by side (5.42, pair 'alt'): the files its block
+    names second."""
     q = shlex.quote
+    certs, keys = directives(block, 'ssl_certificate'), directives(block, 'ssl_certificate_key')
+    dual = len(certs) > 1 and len(keys) > 1
+    cert_path, key_path = paths['cert'], paths['key']
+    if str(raw.get('pair') or 'main') == 'alt':
+        if not dual:
+            raise Refused('nginx on %s serves no second certificate to hand over' % ssh['host'])
+        cert_path, key_path = certs[1], keys[1]
+        for v in (cert_path, key_path):
+            if not PROXY_PATH_RE.match(v) or '..' in v.split('/'):
+                raise Refused('nginx on the server in front names a file that is not a plain path: %s' % v[:120])
     code, out, err = proxy_ssh(ssh, 'cat %s; echo; echo ZIGMON-KEY; cat %s; echo; echo ZIGMON-ROOT; '
-                                    'cat %s 2>/dev/null; true' % (q(paths['cert']), q(paths['key']),
+                                    'cat %s 2>/dev/null; true' % (q(cert_path), q(key_path),
                                                                   q(paths['root'])))
     if code != 0 or 'ZIGMON-KEY' not in out:
         raise Refused('the certificate or its key cannot be read on %s' % ssh['host'])
     cert_text, rest = out.split('ZIGMON-KEY', 1)
     key_text, root_text = (rest.split('ZIGMON-ROOT', 1) + [''])[:2]
-    return tls_export(raw, given=(cert_text, key_text.strip() + '\n', root_text))
+    return tls_export(raw, given=(cert_text, key_text.strip() + '\n', root_text), dual=dual)
 
 
 def encrypt(src, dst, passphrase):

@@ -16434,14 +16434,20 @@ class Daemon(object):
 
     PEM_BLOCK = re.compile(r'-----BEGIN ([A-Z0-9 ]+)-----[A-Za-z0-9+/=\s:,.-]+?-----END \1-----')
 
-    def tls_sort(self, text='', pfx_b64='', password='', target='here'):
-        """PEM blocks in any order, or one PFX: the certificate that belongs
-        to the key, the chain up from it in order, the root. A key with a
-        passphrase is opened with the password, which is not kept."""
+    def tls_sort(self, text='', pfx_b64='', password='', target='here', pfx_more=()):
+        """PEM blocks in any order, and/or a PFX (5.42: or two): the
+        certificate that belongs to each key, the chain up from it in order,
+        the root. A key with a passphrase is opened with the password, which
+        is not kept. Two pairs (5.42) - one RSA and one EC of the same names,
+        as Automatic certificates' "Both" orders them - give the RSA one, the
+        EC one beside it as 'alt' with its own chain and root: two keys of
+        one kind, or two certificates of names that differ, are refused."""
         blocks = []
-        if pfx_b64:
+        for one in [pfx_b64] + [x for x in (pfx_more or ()) if x]:
+            if not one:
+                continue
             try:
-                raw = base64.b64decode(pfx_b64)
+                raw = base64.b64decode(one)
             except (ValueError, TypeError):
                 raise ValueError('the PFX file does not read')
             if len(raw) > 200000:
@@ -16466,38 +16472,57 @@ class Daemon(object):
         if not blocks:
             raise ValueError('no certificate in what was given: PEM (-----BEGIN CERTIFICATE-----) '
                              'or a PFX file')
-        certs = [b for k, b in blocks if k in ('CERTIFICATE', 'TRUSTED CERTIFICATE')]
-        keys = [(k, b) for k, b in blocks if 'PRIVATE KEY' in k]
-        key = ''
-        if keys:
-            kind, k = keys[0]
+        certs = list(dict.fromkeys(b for k, b in blocks if k in ('CERTIFICATE', 'TRUSTED CERTIFICATE')))
+        # every key given (5.42), each once - the same one in a PFX and in PEM
+        # is one key - with its kind, RSA or EC
+        keys = []
+        for kind, k in [(k, b) for k, b in blocks if 'PRIVATE KEY' in k]:
             args = ['pkey', '-out', '-']
             env = {}
             if kind == 'ENCRYPTED PRIVATE KEY' or 'ENCRYPTED' in k[:200]:
                 args += ['-passin', 'env:ZPW']
                 env['ZPW'] = password or ''
             key = self._openssl(args, data=k.encode(), env=env, what='the key').decode()
+            pub = self._openssl(['pkey', '-pubout'], data=key.encode(), what='the key').decode().strip()
+            if any(pub == p for _k, p, _t in keys):
+                continue
+            keys.append((key, pub, self._tls_key_kind(pub)))
         pending = self._tls_conf_of(target).get('pending')
-        if not key and pending:
+        if not keys and pending:
             try:
                 key = self.tls_pending_key(target).decode()
+                keys.append((key, self._openssl(['pkey', '-pubout'], data=key.encode(),
+                                                what='the key').decode().strip(), ''))
             except OSError:
-                key = ''
-        if not key:
+                pass
+        if not keys:
             raise ValueError('the key has to come with the certificate (or the request has to have '
                              'been made here)')
-        want = self._openssl(['pkey', '-pubout'], data=key.encode(), what='the key').strip()
-        leaf = None
+        if len(keys) > 2:
+            raise ValueError('%d private keys were given: one certificate with its key, or two side by '
+                             'side - an RSA and an EC one of the same names' % len(keys))
+        if len(keys) == 2:
+            kinds = sorted(t for _k, _p, t in keys)
+            if kinds != ['ec', 'rsa']:
+                raise ValueError('two %s keys were given: two certificates are put in side by side only as '
+                                 'one RSA and one EC of the same names' % (
+                                     (kinds[0].upper() or 'such') if kinds[0] == kinds[1] else
+                                     ' and '.join(t.upper() or 'other' for t in kinds)))
+            keys.sort(key=lambda x: x[2] != 'rsa')       # the RSA one first: sent by default, the broker's
+        pubs = {}
         for c in certs:
             try:
-                if self._openssl(['x509', '-noout', '-pubkey'], data=c.encode(),
-                                 what='a certificate').strip() == want:
-                    leaf = c
-                    break
+                pubs[c] = self._openssl(['x509', '-noout', '-pubkey'], data=c.encode(),
+                                        what='a certificate').decode().strip()
             except ValueError:
                 continue
-        if not leaf:
-            raise ValueError('none of the certificates given belongs to that key')
+        leaves = []
+        for _key, pub, kind in keys:
+            leaf = next((c for c in certs if pubs.get(c) == pub), None)
+            if not leaf:
+                raise ValueError('none of the certificates given belongs to %s' % (
+                    'the %s key' % kind.upper() if len(keys) > 1 else 'that key'))
+            leaves.append(leaf)
 
         def names(c):
             out = self._openssl(['x509', '-noout', '-subject', '-issuer', '-nameopt', 'RFC2253'],
@@ -16505,25 +16530,64 @@ class Daemon(object):
             s = re.search(r'(?m)^subject=\s*(.*)$', out)
             i = re.search(r'(?m)^issuer=\s*(.*)$', out)
             return (s.group(1).strip() if s else ''), (i.group(1).strip() if i else '')
-        if subprocess.run(['openssl', 'x509', '-noout', '-checkend', '0'], input=leaf.encode(),
-                          capture_output=True).returncode != 0:
-            raise ValueError('that certificate has run out')
-        others = [c for c in certs if c != leaf]
+        for n, leaf in enumerate(leaves):
+            if subprocess.run(['openssl', 'x509', '-noout', '-checkend', '0'], input=leaf.encode(),
+                              capture_output=True).returncode != 0:
+                raise ValueError('that certificate has run out' if len(leaves) == 1 else
+                                 'the %s certificate has run out' % keys[n][2].upper())
+        if len(leaves) == 2:
+            a, b = (self._tls_cert_names(c) for c in leaves)
+            if a != b:
+                raise ValueError('the RSA and the EC certificate are not for the same names (%s / %s): two '
+                                 'are put in side by side only for the same names' % (
+                                     ', '.join(sorted(a))[:200], ', '.join(sorted(b))[:200]))
+        others = [c for c in certs if c not in leaves]
         info = {c: names(c) for c in others}
-        chain, root = [], ''
-        at = names(leaf)[1]
-        for _ in range(8):
-            nxt = next((c for c in others if info[c][0] == at and c not in chain), None)
-            if not nxt or info[nxt][0] == info[nxt][1]:
-                if nxt:
-                    root = nxt
-                break
-            chain.append(nxt)
-            at = info[nxt][1]
-        if not root:
-            root = next((c for c in others if info[c][0] == info[c][1]), '')
-        return {'cert': leaf + '\n', 'key': key, 'chain': '\n'.join(chain) + ('\n' if chain else ''),
-                'root': (root + '\n') if root else ''}
+
+        def up(leaf):
+            chain, root = [], ''
+            at = names(leaf)[1]
+            for _ in range(8):
+                nxt = next((c for c in others if info[c][0] == at and c not in chain), None)
+                if not nxt or info[nxt][0] == info[nxt][1]:
+                    if nxt:
+                        root = nxt
+                    break
+                chain.append(nxt)
+                at = info[nxt][1]
+            if not root:
+                root = next((c for c in others if info[c][0] == info[c][1]), '')
+            return {'cert': leaf + '\n', 'chain': '\n'.join(chain) + ('\n' if chain else ''),
+                    'root': (root + '\n') if root else ''}
+        out = dict(up(leaves[0]), key=keys[0][0])
+        if len(leaves) == 2:
+            # (5.42) the EC one with a chain and root of its own: its CA may
+            # sign with intermediates of their own (Let's Encrypt's E-series)
+            out['alt'] = dict(up(leaves[1]), key=keys[1][0])
+        return out
+
+    def _tls_key_kind(self, pub):
+        """'rsa', 'ec', or '' for another kind - of a public key in PEM (5.42)."""
+        try:
+            txt = self._openssl(['pkey', '-pubin', '-noout', '-text'], data=pub.encode() + b'\n',
+                                what='the key').decode('utf-8', 'replace')
+        except ValueError:
+            return ''
+        if re.search(r'(?m)^\s*Modulus:', txt) or 'RSA Public-Key' in txt:
+            return 'rsa'
+        if re.search(r'ASN1 OID:|NIST CURVE:', txt):
+            return 'ec'
+        return ''
+
+    def _tls_cert_names(self, c):
+        """The names a certificate is for (5.42): its subjectAltName, else its CN."""
+        out = self._openssl(['x509', '-noout', '-subject', '-nameopt', 'RFC2253', '-ext', 'subjectAltName'],
+                            data=c.encode(), what='a certificate').decode('utf-8', 'replace')
+        san = re.search(r'Subject Alternative Name:[^\n]*\n\s*([^\n]+)', out)
+        if san:
+            return {x.strip().lower() for x in san.group(1).split(',') if x.strip()}
+        m = re.search(r'CN=([^,\n]+)', out)
+        return {'dns:' + m.group(1).strip().lower()} if m else set()
 
     @staticmethod
     def _tls_pending_path(target='here'):
@@ -16771,11 +16835,12 @@ class Daemon(object):
         through here - and hands it over once."""
         fmt = self.tls_export_checked(body)
         pw = str(body.get('password') or '')
-        ident = self.root_ask('tls_export', {'format': fmt, 'password': pw,
+        pair = self.tls_pair_checked(body)
+        ident = self.root_ask('tls_export', {'format': fmt, 'password': pw, 'pair': pair,
                                              'with_root': bool(body.get('with_root'))})
-        self.say_event('control', 'the certificate\'s private key asked for, to download (%s%s) by %s'
-                       % (fmt, ', locked with a password' if pw else '', who or 'the dashboard'),
-                       'warn', about='secrets_out')
+        self.say_event('control', 'the %scertificate\'s private key asked for, to download (%s%s) by %s'
+                       % ('second (EC) ' if pair == 'alt' else '', fmt, ', locked with a password' if pw else '',
+                          who or 'the dashboard'), 'warn', about='secrets_out')
         return ident
 
     def tls_export_checked(self, body):
@@ -16791,6 +16856,15 @@ class Daemon(object):
             raise ValueError('the two passwords are not the same')
         return fmt
 
+    @staticmethod
+    def tls_pair_checked(body):
+        """Which of two certificates side by side (5.42): 'main' (the RSA one,
+        sent by default) or 'alt' (the EC one beside it)."""
+        pair = str(body.get('pair') or 'main')
+        if pair not in ('main', 'alt'):
+            raise ValueError('the certificate is the first (main) or the second (alt)')
+        return pair
+
     def tls_download_path(self, name):
         name = os.path.basename(str(name or ''))
         if not self.TLS_EXPORT_FILE.match(name):
@@ -16800,9 +16874,13 @@ class Daemon(object):
             raise ValueError('that file is not here (any more): ask for it again')
         return p
 
-    def tls_pem_now(self):
-        """The certificate and its chain as nginx sends them - never the key."""
-        path = ((self.root_look().get('tls') or {}).get('files') or {}).get('cert')
+    def tls_pem_now(self, pair='main'):
+        """The certificate and its chain as nginx sends them - never the key.
+        pair='alt' (5.42): the second of two side by side."""
+        look = self.root_look().get('tls') or {}
+        if pair == 'alt' and not look.get('dual'):
+            raise ValueError('nginx serves no second certificate here')
+        path = (look.get('files') or {}).get('alt_cert' if pair == 'alt' else 'cert')
         if not path:
             raise ValueError('it is not known where the certificate is')
         with open(path) as f:
@@ -39961,9 +40039,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             if str(body.get('target') or '') in PROXY_TARGETS:
                 return proxy_tls_post(d, act, body, who, w=PROXY_TARGETS[str(body['target'])])
             if act == 'tls_upload':
+                # a second PFX (5.42): an RSA and an EC one, put in side by side
                 pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
-                                 str(body.get('password') or ''))
-                d.tls_put(pem, 'one uploaded')
+                                 str(body.get('password') or ''), pfx_more=[str(body.get('pfx2') or '')])
+                d.tls_put(pem, 'two uploaded, RSA and EC side by side' if pem.get('alt') else 'one uploaded')
                 # one put in by hand is kept (otp 1.0.170): ACME does not
                 # replace it at its next renewal - Look after it gives it back
                 acme_care_set(d, False, who, 'a certificate was put in by hand')
@@ -39983,9 +40062,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'tls_pem':
                 return {'pem': d.tls_pem_now()}
             if act == 'tls_get':
-                # without the key, at once: the certificate, its chain, DER
-                return dict(d.tls_export_plain(str(body.get('format') or 'pem_chain')),
-                            name=re.sub(r'[^A-Za-z0-9._-]+', '-', d.tls_state().get('server_name') or 'zigmon'))
+                # without the key, at once: the certificate, its chain, DER -
+                # of the second one side by side when asked (5.42)
+                pair = d.tls_pair_checked(body)
+                fmt = str(body.get('format') or 'pem_chain')
+                return dict(d.tls_export_plain(fmt, pem=d.tls_pem_now('alt') if pair == 'alt' and
+                                               fmt in d.TLS_EXPORT_PLAIN else None),
+                            name=re.sub(r'[^A-Za-z0-9._-]+', '-', d.tls_state().get('server_name') or 'zigmon')
+                            + ('-ecdsa' if pair == 'alt' else ''))
             if act == 'tls_export':
                 return {'message': 'root is making it', 'asked': d.tls_export(body, who)}
             if act == 'tls_forget':
@@ -45310,6 +45394,19 @@ def _ngx_directive(block, name):
     return None
 
 
+def _ngx_directives(block, name):
+    """Every value of `name` at the server's own level, in order (5.42): two
+    certificates side by side."""
+    depth, out = 0, []
+    for line in block.split('\n'):
+        if depth == 1:
+            m = re.match(r'^\s*%s\s+([^;]+);' % re.escape(name), line)
+            if m:
+                out.append(m.group(1).strip().strip('"'))
+        depth += line.count('{') - line.count('}')
+    return out
+
+
 def cert_info_pem(d, text):
     """What a certificate in PEM says about itself - the same fields root
     gives for the one of this machine."""
@@ -45466,8 +45563,17 @@ def _proxy_tls_facts(d, blocks, mine, name):
     m = re.search(r'max-age=(\d+)', hsts)
     base = os.path.dirname(cert)
     root_info, verify = _proxy_root_facts(d, _ngx_directive(mine, 'ssl_trusted_certificate') or '', pem)
+    # two side by side there (5.42): the second one, read as the first is
+    alt_info, alt_pem = None, ''
+    certs, keys = _ngx_directives(mine, 'ssl_certificate'), _ngx_directives(mine, 'ssl_certificate_key')
+    if len(certs) > 1 and len(keys) > 1 and re.match(r'^/[A-Za-z0-9_./-]{2,200}$', certs[1]) and \
+            '..' not in certs[1].split('/'):
+        alt_pem = '\n'.join(re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+                                       d.proxy_run('cat %s' % shlex.quote(certs[1])) or '', re.S))
+        alt_info = cert_info_pem(d, alt_pem)
     return {'at': int(time.time()), 'ok': True, 'name': name, 'host': str(CONFIG.get('proxy_host') or ''),
             'blocks': len(same), 'info': info, 'pem': (pem + '\n') if pem else '',
+            'alt_info': alt_info, 'alt_pem': (alt_pem + '\n') if alt_info else '',
             'root_info': root_info, 'verify': verify,
             'files': {'cert': cert, 'key': _ngx_directive(mine, 'ssl_certificate_key') or '',
                       'root': _ngx_directive(mine, 'ssl_trusted_certificate') or '',
@@ -45638,6 +45744,9 @@ def proxy_tls_ask(d, source=None, pem=None, policy=None, why='', w='front'):
     elif pem:
         body.update(source='given', cert=pem['cert'], key=pem['key'], chain=pem.get('chain') or '',
                     root=pem.get('root') or '')
+        if pem.get('alt'):
+            # an EC one beside it (5.42), uploaded with it: through root only
+            body['alt'] = {k: pem['alt'].get(k) or '' for k in ('cert', 'key', 'chain', 'root')}
     ident = d.root_ask(W['kind'], body)
     setattr(d, W['asked'], ident)
     d.say_event('control', '%s: %s - root is putting it there' % (W['words'], why or 'TLS'),
@@ -45742,7 +45851,7 @@ def proxy_tls_state(d, fresh=False, w='front'):
     there_fp = (look.get('info') or {}).get('fingerprint')
     target = W['target']
     ast = acme_state(d, target)
-    out = {'conf': conf, 'look': {k: v for k, v in look.items() if k != 'pem'}, 'node': node,
+    out = {'conf': conf, 'look': {k: v for k, v in look.items() if k not in ('pem', 'alt_pem')}, 'node': node,
            'host': str(CONFIG.get('proxy_host') or ''), 'name': proxy_tls_name(d, w), 'which': w,
            'same': bool(here_fp and there_fp and here_fp == there_fp),
            'key_way': d.proxy_cfg()['ssh_auth'] == 'key' and bool(d.proxy_cfg()['ssh_key']),
@@ -45807,13 +45916,15 @@ def proxy_tls_post(d, act, body, who, w='front'):
         return {'message': 'root is putting the certificate of this machine there'}
     if act == 'tls_upload':
         pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
-                         str(body.get('password') or ''), target=W['target'])
+                         str(body.get('password') or ''), target=W['target'],
+                         pfx_more=[str(body.get('pfx2') or '')])
         conf['how'] = 'uploaded'
         # one put in by hand: its own Automatic certificates leave it alone
         if conf.get('acme_care'):
             conf['acme_care'] = False
         proxy_tls_save(d, conf, w)
-        proxy_tls_ask(d, pem=pem, why='a certificate uploaded for it', **_pw(w))
+        proxy_tls_ask(d, pem=pem, why='two certificates uploaded for it, RSA and EC side by side'
+                      if pem.get('alt') else 'a certificate uploaded for it', **_pw(w))
         d.tls_csr_drop(target=W['target'], only_if_key=pem['key'])
         return {'message': 'checked - root is putting it there'}
     if act == 'tls_csr':
@@ -45838,14 +45949,20 @@ def proxy_tls_post(d, act, body, who, w='front'):
         return {'message': 'saved - root is putting it there'}
     if act == 'tls_get':
         look = d.__dict__.get(W['look']) or {}
-        if not look.get('pem'):
-            raise ValueError('the certificate there is not known yet - look again')
-        return dict(d.tls_export_plain(str(body.get('format') or 'pem_chain'), pem=look['pem']),
-                    name=re.sub(r'[^A-Za-z0-9._-]+', '-', look.get('name') or 'proxy') + W['suffix'])
+        # the second one side by side there (5.42), when asked
+        pair = d.tls_pair_checked(body)
+        pem = look.get('alt_pem' if pair == 'alt' else 'pem')
+        if not pem:
+            raise ValueError('nginx there serves no second certificate' if pair == 'alt' and look.get('pem')
+                             else 'the certificate there is not known yet - look again')
+        return dict(d.tls_export_plain(str(body.get('format') or 'pem_chain'), pem=pem),
+                    name=re.sub(r'[^A-Za-z0-9._-]+', '-', look.get('name') or 'proxy') + W['suffix']
+                    + ('-ecdsa' if pair == 'alt' else ''))
     if act == 'tls_export':
         fmt = d.tls_export_checked(body)
         ask = {'ssh': proxy_tls_ssh(d), 'name': proxy_tls_name(d, w), 'op': 'export', 'format': fmt,
-               'password': str(body.get('password') or ''), 'with_root': bool(body.get('with_root'))}
+               'password': str(body.get('password') or ''), 'with_root': bool(body.get('with_root')),
+               'pair': d.tls_pair_checked(body)}
         if w == 'ntfy':
             ask['front_name'] = proxy_tls_name(d)
         ident = d.root_ask(W['kind'], ask)

@@ -27475,6 +27475,8 @@ function proxyView(d, w) {
   return {target: w === 'ntfy' ? 'proxy-ntfy' : 'proxy', proxy: p, conf: p.conf || {}, node: p.node || {}, helper: d.helper,
           may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: p.acme || {},
           now: {info: lk.info || null, protocols: lk.protocols || [], hsts: lk.hsts || 0, broker: [],
+                // (5.42) a second certificate there, side by side (RSA and EC)
+                alt_info: lk.alt_info || null,
                 files: f.cert ? {cert: f.cert, key: f.key || '\u2013'} : null,
                 // (5.41.1) the root's own name, read there, and whether the chain leads to it
                 root_info: lk.root_info || (f.root ? {cn: f.root} : null), verify: lk.verify || '',
@@ -27646,7 +27648,7 @@ function certCard(d) {
     var tools = el('div', 'cert-tools');
     if (!(px && prof.follow)) {
       var up = cmdButton('Upload', 'upload', 'small');
-      up.onclick = certOn(T, function () { certUpload(prof); });
+      up.onclick = certOn(T, function () { certUpload(prof, false, d); });
       tools.appendChild(up);
       var req = cmdButton(prof.pending ? 'The waiting request' : 'Request (CSR)', 'list', 'small');
       req.onclick = certOn(T, function () { certRequest(prof); });
@@ -27708,11 +27710,24 @@ var CERT_FORMATS = [
   {id: 'pem_key', key: true, icon: '\ud83d\udd11', t: 'PEM with private key', x: '.pem', s: 'certificate, chain and key; the key locked with a password if you give one'},
   {id: 'key', key: true, icon: '\ud83d\udd11', t: 'Private key only', x: '.key', s: 'PEM; locked with a password if you give one'}];
 function certDownload(d) {
-  var pick = {fmt: 'pem_chain'}, f = {}, cards = {};
+  var pick = {fmt: 'pem_chain', pair: 'main'}, f = {}, cards = {};
   zmodal('Download the certificate', function (body) {
-    var info = ((d.now || {}).info) || {};
-    if (info.cn || d.server_name) body.appendChild(el('p', 'note', 'For ' + (info.cn || d.server_name)
-      + (info.not_after ? ' \u00b7 valid until ' + stamp(info.not_after) : '')));
+    var info = ((d.now || {}).info) || {}, alt = (d.now || {}).alt_info || null;
+    var forNote = el('p', 'note');
+    var forWords = function () {
+      var i = pick.pair === 'alt' ? alt : info;
+      forNote.textContent = 'For ' + (i.cn || d.server_name) + (i.not_after ? ' \u00b7 valid until ' + stamp(i.not_after) : '');
+    };
+    if (info.cn || d.server_name) { forWords(); body.appendChild(forNote); }
+    /* two side by side (5.42): which one - each comes with its own key and
+       chain only, never both keys in one file */
+    if (alt) {
+      var pairSeg = zSeg([['main', info.key || 'RSA'], ['alt', alt.key || 'EC']], pick.pair, function (v) {
+        pick.pair = v; forWords();
+      });
+      pairSeg.classList.add('cert-pair');
+      body.appendChild(zRow('Which certificate', 'This one is served beside a second one: each is downloaded with its own key and chain.', pairSeg));
+    }
     [['Without the private key', false], ['With the private key', true]].forEach(function (g) {
       var group = el('div', 'fmt-group');
       group.appendChild(el('h4', '', g[0]));
@@ -27782,7 +27797,7 @@ function certDownload(d) {
         var c = CERT_FORMATS.filter(function (x) { return x.id === pick.fmt; })[0];
         if (!c.key) {
           zbusy(b, true);
-          tlsDo({action: 'tls_get', format: c.id}).then(function (x) {
+          tlsDo(Object.assign({action: 'tls_get', format: c.id}, alt2() ? {pair: 'alt'} : {})).then(function (x) {
             zbusy(b, false);
             var name = (x.name || 'zigmon') + '.' + x.ext;
             if (x.b64) {
@@ -27802,8 +27817,8 @@ function certDownload(d) {
         if (pw && pw.length < 4) { toast('a password is four characters or more', false); f.pw.focus(); return; }
         if (pw !== (f.pw2.value || '')) { toast('the two passwords are not the same', false); f.pw2.focus(); return; }
         zbusy(b, true);
-        tlsDo({action: 'tls_export', format: c.id, password: pw, password2: f.pw2.value || '',
-                            with_root: !!f.root._get()}).then(function (x) {
+        tlsDo(Object.assign({action: 'tls_export', format: c.id, password: pw, password2: f.pw2.value || '',
+                            with_root: !!f.root._get()}, alt2() ? {pair: 'alt'} : {})).then(function (x) {
           toast('root is making it\u2026', true);
           return certExportWait(x.asked);
         }).then(function (st) {
@@ -27815,6 +27830,8 @@ function certDownload(d) {
         }).catch(function (e) { zbusy(b, false); zoops(e); });
       }}], 'medium cert-dl');
   var redraw;
+  /* (5.42) the second one asked for only while the card has one */
+  var alt2 = function () { return pick.pair === 'alt' && !!(d.now || {}).alt_info; };
   redraw();
 }
 function certProxyName(d) {
@@ -27873,15 +27890,21 @@ var CERT_PASTE_HINT = '-----BEGIN CERTIFICATE-----\n1. the certificate of this n
   + '-----BEGIN CERTIFICATE-----\n3. the root certificate (optional)\n-----END CERTIFICATE-----\n'
   + '-----BEGIN PRIVATE KEY-----\n4. its private key (not needed when the request was made here)\n-----END PRIVATE KEY-----\n\n'
   + 'Any order is taken: they are sorted by themselves.';
-function certUpload(prof, asked) {
-  if (!asked && !certIsProxy()) { acmeByHand(function () { certUpload(prof, true); }); return; }
+function certUpload(prof, asked, card) {
+  if (!asked && !certIsProxy()) { acmeByHand(function () { certUpload(prof, true, card); }); return; }
+  var altNow = ((card || {}).now || {}).alt_info || null;
   var got = [];
   var ids = {};
   zmodal('A certificate for ' + certWhose(), function (body) {
-    body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. '
+    body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or a PFX / PKCS#12 file. '
       + (prof && prof.pending ? 'A request waits here: the certificate the authority sent back is enough, its key is here.' : 'The key has to come with it.')
       + (certIsProxy() ? ' Root puts it on the server in front over SSH; nginx there is checked and reloaded, or left as it was.'
-        : ' The broker reads the same files and is told to read them again; its devices stay connected.')));
+        : ' The broker reads the same files and is told to read them again; its devices stay connected.')
+      /* (5.42) two pairs side by side, as Automatic certificates' "Both" */
+      + ' An RSA and an EC certificate of the same names, each with its key (in the PEM, or two PFX files), are put in side by side: '
+      + 'RSA sent by default' + (certIsProxy() ? '' : ' and read by the broker') + ', EC to clients that take it.'));
+    if (altNow) body.appendChild(el('p', 'note warn', 'It serves a second certificate now (' + (altNow.key || 'EC')
+      + '): one certificate uploaded replaces both - upload both pairs to keep two.'));
     var list = el('div', 'cert-files');
     var drop = dropZone('Drop the files here, or press to choose them', '.pem,.crt,.cer,.key,.pfx,.p12,.chain,.ca,.txt', function (files) {
       readCertFiles(files).then(function (r) {
@@ -27908,10 +27931,12 @@ function certUpload(prof, asked) {
       {words: 'Put it in', cls: 'primary', icon: 'save', go: function (b) {
         var pem = got.filter(function (x) { return x.pem; }).map(function (x) { return x.pem; }).join('\n') + '\n' + (ids.paste.value || '');
         var pfx = got.filter(function (x) { return x.pfx; });
-        if (pfx.length > 1) { toast('one PFX / PKCS#12 file at a time', false); return; }
+        /* two (5.42): an RSA and an EC one, opened with the same password */
+        if (pfx.length > 2) { toast('two PFX / PKCS#12 files at most - an RSA and an EC one', false); return; }
         if (!pfx.length && !/-----BEGIN /.test(pem)) { toast('choose the files first, or paste the PEM', false); return; }
         zbusy(b, true);
-        tlsDo({action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', password: ids.pw.value || ''}).then(function (x) {
+        tlsDo({action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', pfx2: pfx.length > 1 ? pfx[1].pfx : '',
+               password: ids.pw.value || ''}).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
         }, function (e) { ids.said.className = 'said bad'; ids.said.textContent = e.message; }).then(function () { zbusy(b, false); });
       }}], 'medium');
