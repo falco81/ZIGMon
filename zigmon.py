@@ -16434,7 +16434,7 @@ class Daemon(object):
 
     PEM_BLOCK = re.compile(r'-----BEGIN ([A-Z0-9 ]+)-----[A-Za-z0-9+/=\s:,.-]+?-----END \1-----')
 
-    def tls_sort(self, text='', pfx_b64='', password='', target='here', pfx_more=()):
+    def tls_sort(self, text='', pfx_b64='', password='', target='here', pfx_more=(), password_more=()):
         """PEM blocks in any order, and/or a PFX (5.42: or two): the
         certificate that belongs to each key, the chain up from it in order,
         the root. A key with a passphrase is opened with the password, which
@@ -16443,9 +16443,13 @@ class Daemon(object):
         EC one beside it as 'alt' with its own chain and root: two keys of
         one kind, or two certificates of names that differ, are refused."""
         blocks = []
-        for one in [pfx_b64] + [x for x in (pfx_more or ()) if x]:
+        # each further PFX opened with its own password (5.42), else the first
+        more = list(pfx_more or ())
+        pws = list(password_more or ())
+        for n, one in enumerate([pfx_b64] + more):
             if not one:
                 continue
+            pw = password if n == 0 else ((pws[n - 1] if n - 1 < len(pws) else '') or password)
             try:
                 raw = base64.b64decode(one)
             except (ValueError, TypeError):
@@ -16460,12 +16464,13 @@ class Daemon(object):
                 for extra in ([], ['-legacy']):
                     try:
                         out = self._openssl(['pkcs12', '-in', f, '-nodes', '-passin', 'env:ZPW'] + extra,
-                                            env={'ZPW': password or ''}, what='the PFX file')
+                                            env={'ZPW': pw or ''}, what='the PFX file')
                         break
                     except ValueError as e:
                         last = e
                 if out is None:
-                    raise ValueError('the PFX file does not open with that password (%s)' % last)
+                    raise ValueError('the %sPFX file does not open with that password (%s)'
+                                     % ('second ' if n else '', last))
             text = out.decode('utf-8', 'replace') + '\n' + (text or '')
         for m in self.PEM_BLOCK.finditer(text or ''):
             blocks.append((m.group(1), m.group(0)))
@@ -40041,7 +40046,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'tls_upload':
                 # a second PFX (5.42): an RSA and an EC one, put in side by side
                 pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
-                                 str(body.get('password') or ''), pfx_more=[str(body.get('pfx2') or '')])
+                                 str(body.get('password') or ''), pfx_more=[str(body.get('pfx2') or '')],
+                                 password_more=[str(body.get('pfx2_password') or '')])
                 d.tls_put(pem, 'two uploaded, RSA and EC side by side' if pem.get('alt') else 'one uploaded')
                 # one put in by hand is kept (otp 1.0.170): ACME does not
                 # replace it at its next renewal - Look after it gives it back
@@ -45917,7 +45923,8 @@ def proxy_tls_post(d, act, body, who, w='front'):
     if act == 'tls_upload':
         pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
                          str(body.get('password') or ''), target=W['target'],
-                         pfx_more=[str(body.get('pfx2') or '')])
+                         pfx_more=[str(body.get('pfx2') or '')],
+                                 password_more=[str(body.get('pfx2_password') or '')])
         conf['how'] = 'uploaded'
         # one put in by hand: its own Automatic certificates leave it alone
         if conf.get('acme_care'):

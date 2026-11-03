@@ -2095,6 +2095,12 @@ Current version: **5.42.0**
   refused. One pair as before - over a dual certificate the dialog says the
   second one goes. This machine, the server in front and ntfy there (over
   SSH, nginx -t before the reload).
+* **A ZIP** as the authority sends it (the certificate, the bundle, a PFX)
+  is opened in the browser, in memory: the certificate files in it are
+  taken (.pem, .crt, .cer, .key, .pfx, .p12, .ca-bundle …), the rest left;
+  a ZIP locked with a password or far bigger than a certificate is refused.
+* **Two PFX files of two passwords**: with two PFX files the dialog asks for
+  the second one's password too (left empty, the first one's).
 * **Download**: with a second certificate, the dialog asks which - RSA or EC -
   and every format hands over that one with its own key and chain only.
 * The cards of the server in front also say its second certificate

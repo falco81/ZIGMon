@@ -524,6 +524,17 @@ try:
     check(code == 200 and len(certs) == 2, 'two PFX files were not put in side by side: %s' % out)
     if code == 200:
         pairs_right(certs, keys, (RSA2_C, RSA2_K), (EC2_C, EC2_K), where='two PFX files')
+    # (5.42) the second PFX with a password of its own; a wrong one said as the second's
+    tls({'action': 'tls_upload', 'cert': ONE_C + RINT + ONE_K})
+    code, out = tls({'action': 'tls_upload', 'pfx': pfx_of(RSA2_C, RSA2_K, RINT + ROOT, 'pfx-pass'),
+                     'pfx2': pfx_of(EC2_C, EC2_K, EINT + ROOT, 'other-pass'), 'password': 'pfx-pass',
+                     'pfx2_password': 'other-pass'})
+    certs, keys = nginx_pairs()
+    check(code == 200 and len(certs) == 2, 'two PFX files of two passwords were not put in side by side: %s' % out)
+    code, out = tls({'action': 'tls_upload', 'pfx': pfx_of(RSA2_C, RSA2_K, RINT + ROOT, 'pfx-pass'),
+                     'pfx2': pfx_of(EC2_C, EC2_K, EINT + ROOT, 'other-pass'), 'password': 'pfx-pass',
+                     'pfx2_password': 'wrong-pass'})
+    check(code != 200 and 'second PFX' in str(out), 'a wrong password of the second PFX is not said as its: %s' % out)
     tls({'action': 'tls_upload', 'cert': ONE_C + RINT + ONE_K})
     code, out = tls({'action': 'tls_upload', 'pfx': pfx_of(EC_C, EC_K, EINT, 'pfx-pass'),
                      'cert': RSA_C + RINT + RSA_K, 'password': 'pfx-pass'})
@@ -696,12 +707,62 @@ const { chromium } = require('playwright');
     await p.evaluate(() => { try { closeZModal(); } catch (e) {} });
     await p.waitForTimeout(300);
   }
+  // (5.42) a ZIP as a CA sends it, opened in the browser; the second PFX's password
+  async function openUpload() {
+    await p.click('#web-certs .cert-grid > .cert-card:nth-child(1) .cert-tools button:has-text("Upload")');
+    try {
+      await p.waitForSelector('#zmodal:not([hidden]) textarea.cert-paste', {timeout: 10000});
+    } catch (e) {
+      const go = await p.$('#zmodal-foot .btn.primary');
+      if (go) await go.click();
+      await p.waitForSelector('#zmodal:not([hidden]) textarea.cert-paste', {timeout: 10000});
+    }
+  }
+  try {
+    await openUpload();
+    await p.setInputFiles('#zmodal input[type=file]', %(pfxs)s);
+    await p.waitForFunction(() => document.querySelectorAll('#zmodal .cert-files .cchip').length === 2, null, {timeout: 10000});
+    r.twoPw2 = await p.evaluate(() => !document.querySelector('#zmodal input[placeholder^="the second PFX"]').closest('.set-item').hidden);
+    await p.fill('#zmodal input[placeholder^="only for a PFX"]', 'pfx-pass');
+    await p.fill('#zmodal input[placeholder^="the second PFX"]', 'other-pass');
+    await p.click('#zmodal-foot .btn.primary');
+    await p.waitForSelector('#zmodal', {state: 'hidden', timeout: 60000});
+    r.twoDone = true;
+  } catch (e) { r.twoErr = String(e); }
+  await p.evaluate(() => { try { closeZModal(); } catch (e) {} });
+  await p.waitForTimeout(4000);
+  try {
+    await openUpload();
+    await p.setInputFiles('#zmodal input[type=file]', %(zip)s);
+    await p.waitForFunction(() => document.querySelectorAll('#zmodal .cert-files .cchip').length > 0, null, {timeout: 10000});
+    r.zipChips = await p.evaluate(() => Array.from(document.querySelectorAll('#zmodal .cert-files .cchip')).map(x => x.textContent));
+    r.zipPw2 = await p.evaluate(() => !document.querySelector('#zmodal input[placeholder^="the second PFX"]').closest('.set-item').hidden);
+    await p.fill('#zmodal input[placeholder^="only for a PFX"]', 'pfx-pass');
+    await p.click('#zmodal-foot .btn.primary');
+    await p.waitForSelector('#zmodal', {state: 'hidden', timeout: 60000});
+    r.zipDone = true;
+  } catch (e) { r.zipErr = String(e); }
+  await p.waitForTimeout(4000);
   r.errors = errors;
   console.log(JSON.stringify(r));
   await b.close();
 })().catch(e => { console.log(JSON.stringify({error: String(e)})); });
 '''
-    (W / 'page.js').write_text(js % {'s': json.dumps(S), 'port': PHP_PORT, 'dl': json.dumps(str(W / 'dl.crt'))})
+    # a ZIP as a CA sends one: the RSA pair in PEM, the EC pair as a PFX, and what is not a certificate
+    import zipfile                                           # noqa: E402
+    with zipfile.ZipFile(W / 'from-the-ca.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('house/house.crt', RSA_C)
+        z.writestr('house/house.key', RSA_K)
+        z.writestr('house/house.ca-bundle', RINT + ROOT)
+        z.writestr('house/house-ec.pfx', base64.b64decode(pfx_of(EC_C, EC_K, EINT + ROOT, 'pfx-pass')))
+        z.writestr('house/README.html', '<p>thank you</p>')
+        z.writestr('__MACOSX/house/._house.crt', 'junk')
+    (W / 'rsa.pfx').write_bytes(base64.b64decode(pfx_of(RSA2_C, RSA2_K, RINT + ROOT, 'pfx-pass')))
+    (W / 'ec.pfx').write_bytes(base64.b64decode(pfx_of(EC2_C, EC2_K, EINT + ROOT, 'other-pass')))
+    zip_seen = []
+    (W / 'page.js').write_text(js % {'s': json.dumps(S), 'port': PHP_PORT, 'dl': json.dumps(str(W / 'dl.crt')),
+                                     'zip': json.dumps(str(W / 'from-the-ca.zip')),
+                                     'pfxs': json.dumps([str(W / 'rsa.pfx'), str(W / 'ec.pfx')])})
     npm_root = sh(['npm', 'root', '-g']).stdout.strip()
     got = sh(['node', str(W / 'page.js')], timeout=240, env=dict(os.environ, NODE_PATH=npm_root))
     try:
@@ -724,6 +785,19 @@ const { chromium } = require('playwright');
         check(len(ups) == 3 and 'replaces both' in ups[0] and 'replaces both' not in ups[1] and 'replaces both' in ups[2],
               'the upload dialog does not say one pair replaces both where there are two: %r' % ups)
         check(len(ands) == 3 and ands[0] and not r.get('errors'), 'the page threw: %r' % r.get('errors'))
+        chips = r.get('zipChips') or []
+        check(sorted(chips) == sorted(['from-the-ca.zip \u203a house.crt (PEM)', 'from-the-ca.zip \u203a house.key (PEM)',
+                                       'from-the-ca.zip \u203a house.ca-bundle (PEM)',
+                                       'from-the-ca.zip \u203a house-ec.pfx (PFX)']),
+              'the ZIP from the CA was not opened into its certificate files alone: %r %r' % (chips, r.get('zipErr')))
+        check(r.get('zipPw2') is False and r.get('twoPw2') is True,
+              'the second PFX\'s password is not asked for with two PFX files alone: %r %r' % (r.get('zipPw2'), r.get('twoPw2')))
+        check(r.get('zipDone') and r.get('twoDone'), 'the uploads from the page did not go in: %r %r'
+              % (r.get('zipErr'), r.get('twoErr')))
+        certs, keys = nginx_pairs()
+        check(len(certs) == 2 and fp((CERTS / 'server.pem').read_text()) == fp(RSA_C)
+              and fp((CERTS / 'server-ecdsa.pem').read_text()) == fp(EC_C),
+              'the RSA and EC pairs of the ZIP from the CA are not what nginx has: %r' % certs)
 
     # ---- one pair after two, here: the second taken out ---------------------------------------
     print('this machine: one pair after two')

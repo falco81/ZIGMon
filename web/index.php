@@ -27865,25 +27865,81 @@ function certExportWait(asked) {
     setTimeout(again, 300);
   });
 }
+/* (5.42) a ZIP as a CA sends one - the certificate, the bundle, perhaps a
+   PFX - opened here in the browser, in memory: only the files inside that
+   are certificate files are taken, nothing is written anywhere, and a ZIP
+   that is bigger, deeper or locked with a password is refused. */
+var CERT_ZIP = {most: 2000000, files: 40, each: 200000, inside: /\.(pem|crt|cer|key|pfx|p12|chain|ca|ca-bundle|txt|cert)$/i};
+function certIsZip(b) { return b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04; }
+function certInflate(raw) {
+  if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error('this browser cannot open a ZIP - unpack it and choose the files'));
+  var ds = new DecompressionStream('deflate-raw');
+  var out = new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer();
+  return out.then(function (b) { return new Uint8Array(b); });
+}
+function certUnzip(name, b) {
+  var dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  // the end of the central directory: its mark within the last 64 KiB
+  var eocd = -1;
+  for (var i = b.length - 22; i >= Math.max(0, b.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return Promise.reject(new Error(name + ' is not a ZIP that can be read'));
+  var count = dv.getUint16(eocd + 10, true), at = dv.getUint32(eocd + 16, true);
+  if (count > CERT_ZIP.files) return Promise.reject(new Error(name + ' holds ' + count + ' files - more than a certificate comes with'));
+  var jobs = [], total = 0;
+  for (var n = 0; n < count; n++) {
+    if (at + 46 > b.length || dv.getUint32(at, true) !== 0x02014b50) return Promise.reject(new Error(name + ' is not a ZIP that can be read'));
+    var flags = dv.getUint16(at + 8, true), method = dv.getUint16(at + 10, true);
+    var csize = dv.getUint32(at + 20, true), usize = dv.getUint32(at + 24, true);
+    var nlen = dv.getUint16(at + 28, true), xlen = dv.getUint16(at + 30, true), clen = dv.getUint16(at + 32, true);
+    var local = dv.getUint32(at + 42, true);
+    var fname = new TextDecoder().decode(b.subarray(at + 46, at + 46 + nlen));
+    at += 46 + nlen + xlen + clen;
+    var base = fname.split('/').pop();
+    if (!base || /^(__MACOSX|\.)/.test(fname) || /(^|\/)\./.test(fname) || !CERT_ZIP.inside.test(base)) continue;
+    if (flags & 1) return Promise.reject(new Error(name + ' is locked with a password - unpack it and choose the files'));
+    if (method !== 0 && method !== 8) return Promise.reject(new Error(name + ': ' + base + ' is packed in a way not read here'));
+    if (usize > CERT_ZIP.each || csize > CERT_ZIP.each) return Promise.reject(new Error(name + ': ' + base + ' is far bigger than any certificate file'));
+    total += usize;
+    if (total > CERT_ZIP.most) return Promise.reject(new Error(name + ' unpacks to more than a certificate comes with'));
+    if (local + 30 > b.length || dv.getUint32(local, true) !== 0x04034b50) return Promise.reject(new Error(name + ' is not a ZIP that can be read'));
+    var from = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    var raw = b.subarray(from, from + csize);
+    jobs.push((function (base, method, raw, usize) {
+      return (method === 0 ? Promise.resolve(raw) : certInflate(raw)).then(function (data) {
+        if (data.length > CERT_ZIP.each || data.length !== usize) throw new Error(name + ': ' + base + ' does not unpack as it says');
+        return certFileOf(name + ' › ' + base, data);
+      });
+    })(base, method, raw, usize));
+  }
+  return Promise.all(jobs).then(function (got) {
+    if (!got.length) throw new Error(name + ' holds no certificate files (.pem, .crt, .cer, .key, .pfx, .p12, .ca-bundle)');
+    return got;
+  });
+}
+function certFileOf(name, bytesArr) {
+  var text = new TextDecoder().decode(bytesArr);
+  if (/-----BEGIN /.test(text)) return {name: name, pem: text};
+  var bin = '';
+  for (var i = 0; i < bytesArr.length; i++) bin += String.fromCharCode(bytesArr[i]);
+  return {name: name, pfx: btoa(bin)};
+}
 function readCertFiles(files) {
   return Promise.all(Array.prototype.map.call(files, function (f) {
     return new Promise(function (ok, bad) {
-      if (f.size > 200000) { bad(new Error(f.name + ' is far bigger than any certificate file')); return; }
+      var zipName = /\.zip$/i.test(f.name);
+      if (f.size > (zipName ? CERT_ZIP.most : 200000)) { bad(new Error(f.name + ' is far bigger than any certificate file')); return; }
       var r = new FileReader();
       r.onload = function () {
         var bytesArr = new Uint8Array(r.result);
-        var text = new TextDecoder().decode(bytesArr);
-        if (/-----BEGIN /.test(text)) ok({name: f.name, pem: text});
-        else {
-          var bin = '';
-          for (var i = 0; i < bytesArr.length; i++) bin += String.fromCharCode(bytesArr[i]);
-          ok({name: f.name, pfx: btoa(bin)});
-        }
+        if (certIsZip(bytesArr)) { certUnzip(f.name, bytesArr).then(ok, bad); return; }
+        ok([certFileOf(f.name, bytesArr)]);
       };
       r.onerror = function () { bad(new Error(f.name + ' could not be read')); };
       r.readAsArrayBuffer(f);
     });
-  }));
+  })).then(function (lists) { return [].concat.apply([], lists); });
 }
 var CERT_PASTE_HINT = '-----BEGIN CERTIFICATE-----\n1. the certificate of this name (the server’s own)\n-----END CERTIFICATE-----\n'
   + '-----BEGIN CERTIFICATE-----\n2. the intermediate certificate(s), if there are any - one block each\n-----END CERTIFICATE-----\n'
@@ -27896,7 +27952,7 @@ function certUpload(prof, asked, card) {
   var got = [];
   var ids = {};
   zmodal('A certificate for ' + certWhose(), function (body) {
-    body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or a PFX / PKCS#12 file. '
+    body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or a PFX / PKCS#12 file, or the ZIP the authority sent them in. '
       + (prof && prof.pending ? 'A request waits here: the certificate the authority sent back is enough, its key is here.' : 'The key has to come with it.')
       + (certIsProxy() ? ' Root puts it on the server in front over SSH; nginx there is checked and reloaded, or left as it was.'
         : ' The broker reads the same files and is told to read them again; its devices stay connected.')
@@ -27906,12 +27962,13 @@ function certUpload(prof, asked, card) {
     if (altNow) body.appendChild(el('p', 'note warn', 'It serves a second certificate now (' + (altNow.key || 'EC')
       + '): one certificate uploaded replaces both - upload both pairs to keep two.'));
     var list = el('div', 'cert-files');
-    var drop = dropZone('Drop the files here, or press to choose them', '.pem,.crt,.cer,.key,.pfx,.p12,.chain,.ca,.txt', function (files) {
+    var drop = dropZone('Drop the files here, or press to choose them', '.pem,.crt,.cer,.key,.pfx,.p12,.chain,.ca,.ca-bundle,.txt,.zip', function (files) {
       readCertFiles(files).then(function (r) {
         got = got.concat(r);
         list.innerHTML = '';
         got.forEach(function (x) { list.appendChild(el('span', 'cchip', x.name + (x.pfx ? ' (PFX)' : ' (PEM)'))); });
         drop._says.textContent = 'Read: ' + got.length + ' file(s). More can be added.';
+        ids.pw2row.hidden = got.filter(function (x) { return x.pfx; }).length < 2;
       }, zoops);
     });
     drop.querySelector('input').multiple = true;
@@ -27924,6 +27981,12 @@ function certUpload(prof, asked, card) {
     var pw = zSecret('only for a PFX or a key with a passphrase');
     ids.pw = pw;
     body.appendChild(zField('Password', pw, 'Used here to open it, and not kept.'));
+    /* (5.42) the second PFX may have a password of its own; left empty, the one above */
+    var pw2 = zSecret('the second PFX, when its password is another');
+    ids.pw2 = pw2;
+    ids.pw2row = zField('Password of the second PFX', pw2, 'Only when it differs from the one above. Not kept either.');
+    ids.pw2row.hidden = true;
+    body.appendChild(ids.pw2row);
     var said = el('div', 'said', '');
     ids.said = said;
     body.appendChild(said);
@@ -27936,7 +27999,7 @@ function certUpload(prof, asked, card) {
         if (!pfx.length && !/-----BEGIN /.test(pem)) { toast('choose the files first, or paste the PEM', false); return; }
         zbusy(b, true);
         tlsDo({action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', pfx2: pfx.length > 1 ? pfx[1].pfx : '',
-               password: ids.pw.value || ''}).then(function (x) {
+               password: ids.pw.value || '', pfx2_password: pfx.length > 1 ? (ids.pw2.value || '') : ''}).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
         }, function (e) { ids.said.className = 'said bad'; ids.said.textContent = e.message; }).then(function () { zbusy(b, false); });
       }}], 'medium');
