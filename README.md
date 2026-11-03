@@ -2083,7 +2083,24 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.41.1**
+Current version: **5.42.0**
+
+5.42.0 — dual certificates (RSA + EC) uploaded and downloaded, on all three cards.
+
+* **Upload**: every key in what is given - the PEM in any order, one or two
+  PFX files, a PFX with PEM - each paired with its own certificate, chain and
+  root. One RSA and one EC pair of the same names go in as two, as ACME's
+  *Both* puts them (RSA first; the broker keeps reading the RSA files); names
+  that differ, two keys of one type or a key without its certificate are
+  refused. One pair as before - over a dual certificate the dialog says the
+  second one goes. This machine, the server in front and ntfy there (over
+  SSH, nginx -t before the reload).
+* **Download**: with a second certificate, the dialog asks which - RSA or EC -
+  and every format hands over that one with its own key and chain only.
+* The cards of the server in front also say its second certificate
+  (*And: EC …*).
+
+`test/dualcert.py`; it fails on 5.41.1.
 
 5.41.1 — the root given with a certificate on the server in front is kept.
 
