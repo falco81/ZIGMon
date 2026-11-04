@@ -115,6 +115,51 @@ for argv in READS:
     elif out.returncode not in (0, 1, 2):
         bad.append((name, ['exit %d' % out.returncode]))
 
+# --get and --set (5.42.1): one setting's value bare, for a script
+
+
+def run(*argv):
+    return subprocess.run([sys.executable, str(HERE / 'zigmon.py')] + list(argv) + ['--no-color'],
+                          env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+
+got = run('--get', 'block_minutes')
+if got.returncode != 0 or got.stdout.strip() != '60':
+    bad.append(('zigmon --get block_minutes', ['did not print 60 alone: %r (exit %d) %s'
+                                               % (got.stdout, got.returncode, got.stderr[-200:])]))
+got = run('--get', 'block_minutes', '--json')
+try:
+    ok = json.loads(got.stdout) == {'block_minutes': 60}
+except ValueError:
+    ok = False
+if not ok:
+    bad.append(('zigmon --get block_minutes --json', ['%r' % got.stdout[:200]]))
+got = run('--get', 'block')
+if got.returncode != 2 or got.stdout.strip() or 'no setting called block' not in got.stderr \
+        or 'block_minutes' not in got.stderr:
+    bad.append(('zigmon --get block', ['a part of a name was not refused with the names it may be: %r %r'
+                                       % (got.stdout[:100], got.stderr[-200:])]))
+got = run('--get', 'duo_skey')
+if got.returncode != 0 or got.stdout.strip() not in ('set', 'not set'):
+    bad.append(('zigmon --get duo_skey', ['a secret not said as set or not: %r' % got.stdout[:80]]))
+got = run('--set', 'block_minutes')
+if got.returncode != 2 or 'KEY=VALUE' not in got.stdout + got.stderr:
+    bad.append(('zigmon --set block_minutes', ['no = was not refused: %r' % (got.stdout + got.stderr)[-200:]]))
+got = run('--set', 'block_minutes=180', '--pin', '1234')
+after = run('--get', 'block_minutes')
+# (5.42.1) it was sent where the daemon did not look: "is now 180", and 60 still
+if got.returncode != 0 or after.stdout.strip() != '180':
+    bad.append(('zigmon --set block_minutes=180', ['not changed: %r then %r' % ((got.stdout + got.stderr)[-200:],
+                                                                                after.stdout)]))
+got = run('--settings', 'block_minutes=240', '--pin', '1234')
+after = run('--get', 'block_minutes')
+if got.returncode != 0 or after.stdout.strip() != '240':
+    bad.append(('zigmon --settings block_minutes=240', ['said %r, and it is %r' % ((got.stdout + got.stderr)[-200:],
+                                                                                    after.stdout)]))
+got = run('--settings', 'block_minutes=99999', '--pin', '1234')
+if got.returncode == 0:
+    bad.append(('zigmon --settings block_minutes=99999', ['out of its range, and said done: %r' % got.stdout[-200:]]))
+
 # ...and the help itself, which is the one that went silent
 out = subprocess.run([sys.executable, str(HERE / 'zigmon.py'), '--help'],
                      env=env, capture_output=True, text=True, timeout=30)

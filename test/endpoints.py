@@ -232,7 +232,7 @@ print('every command in the help exists, and the help is in sections')
 # command line must not print that answer as though it were the secret. It
 # printed the word True.
 _at = _daemon_src.index('def cmd_settings')
-_body = _daemon_src[_at:_at + 2000]
+_body = _daemon_src[_at:_daemon_src.index('\ndef ', _at + 10)]   # the whole function (5.42.1: it grew)
 if "kind') == 'secret'" not in _body:
     print('zigmon --settings does not treat a secret as a secret')
     raise SystemExit(1)

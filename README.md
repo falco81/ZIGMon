@@ -2083,7 +2083,23 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.42.0**
+Current version: **5.42.1**
+
+5.42.1 — `zigmon --get KEY`, `zigmon --set KEY=VALUE`; `--settings KEY=VALUE` saves again.
+
+* `zigmon --get block_minutes` prints that one setting's value alone, for a
+  script (`--json` for `{"block_minutes": 60}`); exactly that name - a part
+  of one is refused with the names it may be; a secret only as *set* or
+  *not set*.
+* `zigmon --set block_minutes=180 --pin …` is the short way of
+  `--settings block_minutes=180`.
+* **`zigmon --settings KEY=VALUE` changed nothing.** It sent the setting
+  inside `{"settings": …}`, where the daemon does not look, and said *is
+  now* all the same - so did the console's settings window. It is sent as
+  the page sends it, and says so only when the daemon changed it (or it was
+  that already); a value out of its range is refused.
+
+`test/cli.py`; these checks fail on 5.42.0.
 
 5.42.0 — dual certificates (RSA + EC) uploaded and downloaded, on all three cards.
 

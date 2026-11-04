@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.42.0'
+__version__ = '5.42.1'
 
 import argparse
 import base64
@@ -43806,12 +43806,22 @@ def cmd_settings(args, pal):
         if key not in live:
             print(pal.crit('no setting called %s' % key))
             return 2
+        # The setting at the top of the body, as the page sends it (5.42.1):
+        # sent inside {"settings": ...} the daemon found nothing it knew, saved
+        # nothing, and this said "is now" all the same
         code, out = api_call('/api/config', method='POST',
-                             payload={'settings': {key: value}, 'pin': args.pin or ''})
+                             payload={key: value, 'pin': args.pin or ''})
         if not isinstance(out, dict) or not out.get('ok'):
             print(pal.crit('refused: %s' % (out or {}).get('error', 'no answer')))
             return 1
-        print(pal.ok('%s is now %s' % (key, value)))
+        if key not in (out.get('changed') or []):
+            now = ((_need_daemon(pal, '/api/status') or {}).get('runtime_config') or {}).get(key) or {}
+            if str(now.get('value')) == value:
+                print(pal.ok('%s was %s already' % (key, value)))
+                return 0
+            print(pal.crit('%s was not changed%s' % (key, (' - ' + out['note']) if out.get('note') else '')))
+            return 1
+        print(pal.ok('%s is now %s' % (key, value)) + ((' - ' + out['note']) if out.get('note') else ''))
         return 0
     rows = sorted(live.items())
     if wanted:
@@ -43841,6 +43851,38 @@ def cmd_settings(args, pal):
         mark = pal.warn(' changed here') if info.get('overridden') else ''
         print('  %-26s %s%s' % (key, value, mark))
     print(pal.dim('\n  zigmon --settings block_minutes=180   to change one (asks for --pin)'))
+    return 0
+
+
+def cmd_get(args, pal):
+    """One setting's value alone (5.42.1): exactly that name, printed bare
+    for a script - `x=$(zigmon --get block_minutes)` - or as JSON with
+    --json. A secret is never printed: "set" or "not set", as everywhere
+    (its last two characters stay the admin's, on --settings). An unknown
+    name, or no daemon, is a non-zero exit and nothing on stdout."""
+    key = str(getattr(args, 'get', '') or '').strip()
+    data = _need_daemon(pal, '/api/status')
+    if data is None:
+        return 2
+    live = (data.get('runtime_config') or {})
+    if not key or key not in live:
+        near = sorted(k for k in live if key and key.lower() in k.lower())[:8]
+        sys.stderr.write('no setting called %s%s\n' % (key or '(nothing)', (' - perhaps: ' + ', '.join(near)) if near else ''))
+        return 2
+    info = live[key] or {}
+    value = info.get('value')
+    if info.get('kind') == 'secret':
+        value = 'set' if value else 'not set'
+    if args.json:
+        print(json.dumps({key: value}, ensure_ascii=False, default=str))
+        return 0
+    if isinstance(value, bool):
+        value = '1' if value else '0'
+    elif value is None:
+        value = ''
+    elif isinstance(value, (list, dict)):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    print(value)
     return 0
 
 
@@ -51562,6 +51604,8 @@ HELP_LINES = [
     ('zigmon --settings', 'every setting it is running with'),
     ('zigmon --settings block', 'the ones with a word in their name'),
     ('zigmon --settings block_minutes=180 --pin 1234', 'change one'),
+    ('zigmon --get block_minutes', 'one setting\'s value alone, for a script'),
+    ('zigmon --set block_minutes=180 --pin 1234', 'the same as --settings KEY=VALUE'),
     ('zigmon --alerts', 'every kind of message, where it goes, and the ones you wrote'),
     ('zigmon --bindings', 'which button action drives which plug'),
     ('zigmon --rules', 'which reading drives which plug'),
@@ -51804,6 +51848,12 @@ def build_parser():
                         'bands - or reset, to start the data counters again')
     a.add_argument('--settings', nargs='?', const='', metavar='[KEY|KEY=VALUE]',
                    help='every setting the daemon is running with, the ones matching a word, or set one')
+    # (5.42.1) one setting's value alone, as a script wants it; and --set as
+    # the short way of --settings KEY=VALUE
+    a.add_argument('--get', metavar='KEY',
+                   help='the value of one setting alone (exactly that name); a secret only as set or not')
+    a.add_argument('--set', metavar='KEY=VALUE', dest='set_one',
+                   help='change one setting, as --settings KEY=VALUE (asks for --pin)')
     a.add_argument('--alerts', action='store_true',
                    help='every kind of message and where it goes, and the ones you wrote')
     a.add_argument('--heating', action='store_true',
@@ -56900,6 +56950,14 @@ def _dispatch(args, pal):
         return cmd_scripts(args, pal)
     if getattr(args, 'proxy', False):
         return cmd_proxy(args, pal)
+    if getattr(args, 'get', None) is not None:
+        return cmd_get(args, pal)
+    if getattr(args, 'set_one', None) is not None:
+        if '=' not in args.set_one:
+            print(pal.crit('--set takes KEY=VALUE, e.g. --set block_minutes=180'))
+            return 2
+        args.settings = args.set_one
+        return cmd_settings(args, pal)
     if getattr(args, 'settings', None) is not None:
         return cmd_settings(args, pal)
     if getattr(args, 'alerts', False):
