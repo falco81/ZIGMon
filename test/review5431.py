@@ -17,9 +17,18 @@ Fails on 5.43.0.
   * a user button in the header for whoever is signed in or unlocked - a
     password account and a PIN account: it opens the account's popup with
     its passkeys (and the looks of the meter, while it is on), and a PIN
-    account adds a passkey from there (a virtual authenticator).
+    account adds a passkey from there (a virtual authenticator);
+  * the meter for whoever may see the dashboard - a locked page, a viewer, an
+    operator (nobody only while the view is public, as /api/status) - with
+    the processes and the filesystems an administrator's only, left out of
+    the daemon's answer to anybody else;
+  * the load: one thread that reads every 5 s while a page asks and ends by
+    itself 45 s after the last ask (shortened here), one row per node in the
+    database however many readings, the page asking once a reading, and each
+    graph moved by one SVG animation - no timer redrawing anything.
 
 Ports 19580 (the daemon), 19581 (php -S, this page), 19582 (php -S, 5.43.0's).
+REVIEW5431_DAEMON=dir: the daemon (zigmon.py) of that folder, to see its checks fail on 5.43.0's.
 """
 import json
 import os
@@ -66,7 +75,7 @@ def finish():
 
 __import__('atexit').register(lambda: [p.kill() for p in PROCS if p.poll() is None])
 
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, os.environ.get('REVIEW5431_DAEMON') or str(HERE))
 sys.argv = ['zigmon']
 import zigmon                                           # noqa: E402
 
@@ -85,6 +94,38 @@ api.start()
 time.sleep(0.3)
 d.account_add('owner', 'admin', 'owner pass 12', must_change=False, quiet=True)
 d.account_add('pin', 'admin', '4826', kind='pin', quiet=True)
+d.account_add('vik', 'viewer', 'vik pass 1234', must_change=False, quiet=True)
+d.account_add('jana', 'operator', 'jana pass 12', must_change=False, quiet=True)
+
+
+def call(path, session=None):
+    import urllib.request
+    import urllib.error
+    h = {'X-Zigmon-Token': d.token, 'X-Zigmon-Client': '192.168.40.10'}
+    if session:
+        h['X-Zigmon-Session'] = session
+    try:
+        with urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:%d%s' % (API_PORT, path), headers=h),
+                                    timeout=30) as r:
+            return r.status, json.loads(r.read() or b'{}')
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b'{}')
+        except ValueError:
+            return e.code, {}
+
+
+def login(name, pw):
+    import urllib.request
+    req = urllib.request.Request('http://127.0.0.1:%d/api/auth/login' % API_PORT,
+                                 data=json.dumps({'name': name, 'password': pw}).encode(),
+                                 headers={'X-Zigmon-Token': d.token, 'Content-Type': 'application/json',
+                                          'X-Zigmon-Client': '192.168.40.10'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read()).get('token') or ''
+
+
+S_ADMIN, S_OP, S_VIEW = login('owner', 'owner pass 12'), login('jana', 'jana pass 12'), login('vik', 'vik pass 1234')
 
 # ---- the page, this one and 5.43.0's, both relaying to the daemon above -------------------
 NOW, OLD = W / 'web', W / 'old'
@@ -167,6 +208,7 @@ async function open(b, base, kind, w, h, as, init) {
   await p.goto(base + '/');
   if (as === 'pin') await post(p, 'unlock', {pin: '4826', minutes: 60});
   if (as === 'owner') await post(p, 'login', {name: 'owner', password: 'owner pass 12'});
+  if (as === 'vik') await post(p, 'login', {name: 'vik', password: 'vik pass 1234'});
   if (as) { await p.reload(); }
   await wait(1200);
   return [ctx, p];
@@ -392,6 +434,61 @@ const measure = () => {
       out.user.nobody = await p.evaluate(() => { const u = document.getElementById('userbtn'); return !!u && u.getClientRects().length > 0; });
       await ctx.close();
     }
+    // ---- (4) the meter for whoever may see the dashboard, and how it moves ----
+    // every setInterval and requestAnimationFrame of the meter counted as it fires
+    const spy = () => {
+      window.__fires = {interval: 0, raf: 0};
+      const meter = x => /hload|\bhl[A-Z]|\bhp[A-Z]/.test(x);
+      const si = window.setInterval.bind(window), raf = window.requestAnimationFrame.bind(window);
+      window.setInterval = function (fn, ms) {
+        const mine = meter(String(new Error().stack)) || meter(String(fn));
+        const rest = Array.prototype.slice.call(arguments, 2);
+        return si.apply(window, [function () { if (mine && window.__counting) window.__fires.interval++;
+          return typeof fn === 'function' ? fn.apply(this, arguments) : (0, eval)(fn); }, ms].concat(rest));
+      };
+      window.requestAnimationFrame = function (fn) {
+        const mine = meter(String(new Error().stack)) || meter(String(fn));
+        return raf(function (t) { if (mine && window.__counting) window.__fires.raf++; return fn(t); });
+      };
+    };
+    out.meter = {};
+    for (const as of [null, 'vik', 'owner']) {
+      const [ctx, p] = await open(b, base, 'desk', 1600, 1000, as, spy);
+      const asked = [];
+      p.on('request', r => { if (/[?&]api=perf(&|$)/.test(r.url())) asked.push(Date.now()); });
+      const up = await waitMeter(p);
+      const r = {up: up};
+      await wait(1500);
+      const t0 = Date.now();
+      r.points0 = await p.evaluate(() => { const pl = document.querySelector('#hload .hl-cpu polyline'); return pl ? pl.getAttribute('points').trim().split(/\s+/).length : 0; });
+      await p.evaluate(() => { window.__counting = true; });
+      await wait(12000);
+      r.fires = await p.evaluate(() => { window.__counting = false; return window.__fires; });
+      r.asks = asked.filter(x => x >= t0).length;
+      r.points1 = await p.evaluate(() => { const pl = document.querySelector('#hload .hl-cpu polyline'); return pl ? pl.getAttribute('points').trim().split(/\s+/).length : 0; });
+      // each graph of the header: one animation, the scroll of its group
+      r.anim = await p.evaluate(() => Array.from(document.querySelectorAll('#hload .hl-spark')).map(svg => {
+        const a = svg.getAnimations ? svg.getAnimations({subtree: true}) : [];
+        return {n: a.length, name: a.length ? (a[0].animationName || '') : '', state: a.length ? a[0].playState : ''};
+      }));
+      // a panel opened: the processes and the filesystems an administrator's only
+      await p.evaluate(() => { hlSavePrefs({hpanel: 'tiles'}); });
+      await p.hover('#hload [data-k="cpu"]').catch(() => {});
+      await p.waitForFunction(() => HLOAD.detail && !document.getElementById('hload-panel').hidden, null, {timeout: 10000}).catch(() => {});
+      await wait(800);
+      r.panelCpu = await p.evaluate(() => { const x = document.getElementById('hload-panel'); return x && !x.hidden ? x.textContent : ''; });
+      r.panelAnim = await p.evaluate(() => { const g = document.querySelector('#hload-panel .hp-graph svg');
+        return g && g.getAnimations ? g.getAnimations({subtree: true}).length : -1; });
+      await p.mouse.move(5, 950); await wait(700);
+      await p.hover('#hload [data-k="disk"]').catch(() => {});
+      await p.waitForFunction(() => HLOAD.detail && !document.getElementById('hload-panel').hidden && HLOAD.open === 'disk', null, {timeout: 10000}).catch(() => {});
+      await wait(800);
+      r.panelDisk = await p.evaluate(() => { const x = document.getElementById('hload-panel'); return x && !x.hidden ? x.textContent : ''; });
+      if (cfg.shots) await p.screenshot({path: cfg.shots + '/meter-panel-disk-' + (as || 'nobody') + '.png'}).catch(() => {});
+      await p.mouse.move(5, 950);
+      out.meter[as || 'nobody'] = r;
+      await ctx.close();
+    }
   } catch (e) {
     out.error = String(e.stack || e).slice(0, 600);
   }
@@ -478,6 +575,108 @@ check(ad.get('n', 0) > ((o.get('user') or {}).get('pin desk 1600') or {}).get('b
       'the PIN account could not add a passkey from the user button: %r' % ad)
 check((o.get('user') or {}).get('nobody') is False, 'a user button with nobody signed in')
 check(not o.get('errors'), 'the page threw: %r' % (o.get('errors') or [])[:5])
+
+print('the meter for whoever may see the dashboard, and how it moves')
+for who in ('nobody', 'vik', 'owner'):
+    m = (o.get('meter') or {}).get(who) or {}
+    check(m.get('up'), '%s: no meter on the page' % who)
+    f = m.get('fires') or {}
+    check(f and f.get('interval', 1) == 0 and f.get('raf', 1) == 0,
+          '%s: the meter ran timers over 12 s (setInterval %s, requestAnimationFrame %s)' % (who, f.get('interval'), f.get('raf')))
+    check(2 <= m.get('asks', 0) <= 3, '%s: the page asked %s time(s) in 12 s, not once a reading (5 s)' % (who, m.get('asks')))
+    an = m.get('anim') or []
+    check(an and all(a['n'] == 1 and a['name'].startswith('hl-scroll') for a in an),
+          '%s: the graphs are not moved by one animation each: %r' % (who, an))
+    check(m.get('panelAnim') == 1, '%s: the panel\'s graph is not moved by one animation: %r' % (who, m.get('panelAnim')))
+    admin = who == 'owner'
+    for part, words in (('panelCpu', 'Taking most of the processor'), ('panelDisk', 'Filesystems')):
+        txt = m.get(part) or ''
+        check(txt and ((words in txt) == admin),
+              '%s: the %s panel %s %r' % (who, part, 'lacks' if admin else 'shows', words))
+
+zigmon.CONFIG['public_view'] = False
+st, out = call('/api/perf')
+check(st == 403 and 'cpu' not in out, 'the view not public, nobody was answered the meter: %s' % st)
+zigmon.CONFIG['public_view'] = True
+for who, sess in (('nobody', None), ('an operator', S_OP), ('a viewer', S_VIEW), ('an administrator', S_ADMIN)):
+    st, out = call('/api/perf?detail=1', sess)
+    x = out.get('detail') or {}
+    inside = set(x) & {'top_cpu', 'top_mem', 'procs', 'filesystems'}
+    want = who == 'an administrator'
+    check(st == 200 and out.get('mem_total') and x.get('cores') is not None and x.get('disks') is not None
+          and (inside == {'top_cpu', 'top_mem', 'procs', 'filesystems'} if want else not inside),
+          '%s was answered %s %r' % (who, st, sorted(x) if x else str(out)[:120]))
+
+print('the watching: one thread, a reading every 5 s, over 45 s after the last ask')
+check(getattr(zigmon, 'PERF_SAMPLE_S', None) == 5.0 and getattr(zigmon, 'PERF_IDLE_S', None) == 45.0
+      and getattr(zigmon, 'PERF_KEEP', None) == 24,
+      'the meter is not a reading every 5 s ending 45 s after the last ask: %r %r'
+      % (getattr(zigmon, 'PERF_SAMPLE_S', None), getattr(zigmon, 'PERF_IDLE_S', None)))
+if not check(hasattr(zigmon, 'perf_read') and hasattr(zigmon, 'PERF_WATCH'), 'the meter has no watcher of its own'):
+    finish()
+
+
+def watchers():
+    return [t for t in __import__('threading').enumerate() if t.name == 'perf-watch' and t.is_alive()]
+
+
+zigmon.perf_forget()
+for t in watchers():
+    t.join(10)
+check(not watchers(), 'a watcher outlived the meter being switched off')
+zigmon.PERF_SAMPLE_S, zigmon.PERF_IDLE_S = 0.5, 2.0       # shortened; the real ones are checked above
+READ_AT = []
+_real_read = zigmon.perf_read
+
+
+def counted_read():
+    READ_AT.append(time.time())
+    return _real_read()
+
+
+zigmon.perf_read = counted_read
+d.store.flush()
+with d.store.lock:
+    d.store.db.execute('DELETE FROM perf_now')
+time.sleep(1.0)
+check(not READ_AT, 'nothing asked, and the meter read %d time(s)' % len(READ_AT))
+st, out = call('/api/perf', S_VIEW)
+check(st == 200 and 'cpu' in out and len(watchers()) == 1, 'the first ask did not start the one watcher with '
+      'numbers at once: %s %r %d' % (st, sorted(out), len(watchers())))
+last = time.time()
+while time.time() - last < 4.0:
+    s_ = time.time()
+    call('/api/perf', S_ADMIN)
+    call('/api/perf', S_VIEW)
+    time.sleep(0.3)
+asked_until = time.time()
+gaps = [b - a for a, b in zip(READ_AT[1:], READ_AT[2:])]
+check(len(gaps) >= 5 and all(0.4 <= g <= 0.8 for g in gaps),
+      'the readings were not one every PERF_SAMPLE_S however many asks: %r' % [round(g, 2) for g in gaps])
+while watchers() and time.time() - asked_until < 8:
+    time.sleep(0.1)
+ended = time.time() - asked_until
+check(not watchers() and ended <= zigmon.PERF_IDLE_S + zigmon.PERF_SAMPLE_S + 0.8,
+      'the watcher did not end by itself after the last ask (%.1f s)' % ended)
+n = len(READ_AT)
+time.sleep(1.5)
+check(len(READ_AT) == n, 'no page asking, and the meter still read')
+d.store.flush()
+with d.store.lock:
+    rows = d.store.db.execute('SELECT node, at, data FROM perf_now').fetchall()
+host = __import__('socket').gethostname().split('.')[0] or 'this machine'
+check(len(rows) == 1 and rows[0][0] == host and 'cpu' in json.loads(rows[0][2] or '{}') and n >= 8,
+      'not one row of this node after %d readings: %r' % (n, [tuple(r) for r in rows]))
+# switched off: the row and the watcher gone
+call('/api/perf', S_ADMIN)
+d.save_config_overrides({'perf_meter': 0})
+time.sleep(1.0)
+d.store.flush()
+with d.store.lock:
+    rows = d.store.db.execute('SELECT COUNT(*) FROM perf_now').fetchone()[0]
+check(rows == 0 and not watchers(), 'switched off, the row (%d) or the watcher (%d) stayed' % (rows, len(watchers())))
+zigmon.perf_read = _real_read
+zigmon.PERF_SAMPLE_S, zigmon.PERF_IDLE_S = 5.0, 45.0
 
 if SHOTS and not AGAINST_OLD:
     print('screenshots in ' + SHOTS)

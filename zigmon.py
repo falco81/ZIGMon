@@ -595,8 +595,8 @@ DEFAULTS = {
     'cert_push': 0,
     'cert_push_other_names': 0,   # a certificate for other names taken where acme says so
     # the performance meter (5.43): the processor, the memory, the disks and the
-    # network in the header of an administrator's page - off until switched
-    # on (About); off, nothing is read and nothing runs for it
+    # network in the header of the page (whoever may see the dashboard, 5.43.1)
+    # - off until switched on (About); off, nothing is read and nothing runs for it
     'perf_meter': 0,
     # the way out to the web through an HTTP proxy (5.35, otp 1.0.166), off
     # until switched on (Control - Proxy) - not the server in front, whose
@@ -5180,6 +5180,15 @@ CREATE TABLE IF NOT EXISTS wifi_seen (
     times    INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS wifi_seen_last ON wifi_seen (last);
+
+-- The performance meter's newest reading (5.43.1): one small row per node,
+-- the same row written again every 5 s while a page shows the meter -
+-- never a growing table. Gone when the meter is switched off.
+CREATE TABLE IF NOT EXISTS perf_now (
+    node  TEXT PRIMARY KEY,
+    at    REAL,
+    data  TEXT
+);
 """
 SCHEMA += SCHEMA_ACCOUNTS
 
@@ -7357,6 +7366,22 @@ class Storage(object):
     def _write_meta(self, key, value):
         with self.lock:
             self.db.execute('INSERT OR REPLACE INTO meta (key,value) VALUES (?,?)', (key, value))
+
+    # the performance meter's newest reading (5.43.1): the one row of this
+    # node, written over by the deferred writer - nothing waits on it
+    def perf_keep(self, node, at, data):
+        self._defer(self._write_perf, str(node), float(at), json.dumps(data, separators=(',', ':')))
+
+    def _write_perf(self, node, at, data):
+        with self.lock:
+            self.db.execute('INSERT OR REPLACE INTO perf_now (node,at,data) VALUES (?,?,?)', (node, at, data))
+
+    def perf_drop(self):
+        self._defer(self._delete_perf)
+
+    def _delete_perf(self):
+        with self.lock:
+            self.db.execute('DELETE FROM perf_now')
 
     def forget_meta(self, key):
         """A note that no longer applies: gone from memory, out of the queue,
@@ -40515,24 +40540,34 @@ for _name in ('save_scenes', 'save_rooms', 'save_scripts', 'save_sequences', 'sa
 # in the header): off, nothing here is ever called - no thread, no read, and
 # /api/perf answers only that it is off.
 #
-# Nothing runs in the background, on: a reading is taken only when a page
-# asks (every 3 s while one is shown), straight from the kernel's counters in
-# /proc and /sys and os.statvfs - no program is started - and pages asking
-# within the same second share it. Every reading is taken under PERF_LOCK
-# alone, which nothing else takes: not the broker's thread, not the plugs',
-# not the database's. Nothing is written down: the last two minutes, which
-# the graphs draw, are kept in memory (PERF_RING, 40 readings at most) so a
-# page loaded again draws them at once rather than starting from nothing.
+# On (5.43.1): a page asking starts one small thread (perf-watch) that takes
+# a reading every 5 s (PERF_SAMPLE_S), straight from the kernel's counters in
+# /proc and /sys - no program is started - and it ends by itself 45 s
+# (PERF_IDLE_S) after the last ask: no page open, no thread and nothing read.
+# A page's ask reads nothing itself; it is answered the newest reading, and
+# however many pages ask, there is one reading in 5 s. The newest reading is
+# kept as ONE small row of this node in the database (perf_now, written over
+# through the deferred writer); the last two minutes, which the graphs draw,
+# are kept in memory (PERF_RING, 24 readings) so a page loaded again draws
+# them at once. Every reading is taken under PERF_LOCK alone, which nothing
+# else takes: not the broker's thread, not the plugs', not the database's.
+# The details of a panel (each core, the disks one by one...) are read only
+# while a panel is open, on its asking, as before.
 PERF_PROC = '/proc'              # the tests point these at a /proc and a /sys of their own
 PERF_SYS = '/sys'
 PERF_STATVFS = os.statvfs
 PERF_LOCK = threading.Lock()
 PERF_LAST = {'at': 0.0, 'raw': None, 'out': None}
 PERF_DETAIL = {'at': 0.0, 'raw': None, 'out': None}
-PERF_KEEP = 40                   # readings a graph draws: two minutes at one every 3 s
+PERF_SAMPLE_S = 5.0              # one reading in this long, while a page shows the meter (5.43.1)
+PERF_IDLE_S = 45.0               # the watching ends by itself this long after the last ask (5.43.1)
+PERF_KEEP = 24                   # readings a graph draws: two minutes at one every 5 s
 PERF_RING = collections.deque(maxlen=PERF_KEEP)
-PERF_SHARE_S = 1.0               # pages asking within this long share one reading
+PERF_SHARE_S = 1.0               # pages asking for the details within this long share one reading
 PERF_STEP_S = 2.5                # the history keeps one reading in this long at the most
+PERF_WATCH_LOCK = threading.Lock()
+PERF_WATCH = {'asked': 0.0, 'thread': None, 'next': 0.0, 'stop': threading.Event(), 'first': threading.Event()}
+PERF_STORE = None                # the Storage the newest reading is kept in (set by the API)
 PERF_NIC_SKIP = ('veth', 'docker', 'br-', 'virbr', 'podman', 'cni', 'flannel', 'tun', 'tap', 'vnet', 'ifb',
                  'dummy', 'lxc', 'kube', 'cali', 'vxlan', 'genev')
 # Free space is asked only of the kernel's own filesystems, which answer from
@@ -40642,14 +40677,12 @@ def _perf_raw():
     return raw
 
 
-def perf_load():
-    """The summary: CPU %, memory used of all, disks read and written B/s,
-    network in and out B/s, the load - and, now and then, one more reading
-    kept for the graphs."""
+def perf_read():
+    """One reading - the watcher's, every PERF_SAMPLE_S: CPU %, memory used of
+    all, disks read and written B/s, network in and out B/s, the load - kept
+    for the graphs as well."""
     with PERF_LOCK:
         now = time.time()
-        if PERF_LAST['out'] and now - PERF_LAST['at'] < PERF_SHARE_S:
-            return PERF_LAST['out']
         raw = _perf_raw()
         was = PERF_LAST['raw']
         out = {'at': round(now, 3), 'cores': os.cpu_count() or 1, 'mem_total': raw.get('mem_total'),
@@ -40658,7 +40691,7 @@ def perf_load():
             out['load'] = [round(float(x), 2) for x in _perf_first(os.path.join(PERF_PROC, 'loadavg')).split()[:3]]
         except ValueError:
             out['load'] = None
-        if was and now - was['at'] < 300:
+        if was and now - was['at'] < max(15.0, PERF_SAMPLE_S * 3):
             dt = max(0.2, raw['at'] - was['at'])
 
             def rate(k):
@@ -40681,11 +40714,77 @@ def perf_load():
         return out
 
 
+def _perf_watcher():
+    """The one thread of the meter (5.43.1): a reading every PERF_SAMPLE_S
+    while pages ask, its newest kept as this node's one row; it ends by itself
+    PERF_IDLE_S after the last ask, at once when the meter is switched off."""
+    stop = PERF_WATCH['stop']              # this thread's own: a later start has its own
+    while True:
+        with PERF_WATCH_LOCK:
+            if stop.is_set() or not perf_on() or time.time() - PERF_WATCH['asked'] > PERF_IDLE_S:
+                if PERF_WATCH['thread'] is threading.current_thread():
+                    PERF_WATCH['thread'] = None
+                return
+        try:
+            out = perf_read()
+        except Exception as e:                      # noqa: BLE001 - the meter never takes the daemon down
+            log('performance meter: %s' % e, 'debug')
+            out = {}
+        # the first reading of a start has no rates yet: the second follows a
+        # moment later, so a page opened shows numbers at once
+        wait = PERF_SAMPLE_S if 'cpu' in out else min(1.0, PERF_SAMPLE_S)
+        PERF_WATCH['next'] = time.time() + wait
+        if 'cpu' in out:
+            PERF_WATCH['first'].set()
+            store = PERF_STORE
+            if store is not None:
+                try:
+                    store.perf_keep(socket.gethostname().split('.')[0] or 'this machine', out['at'],
+                                    {k: out.get(k) for k in ('cpu', 'mem_used', 'mem_total', 'disk_rd', 'disk_wr',
+                                                             'net_rx', 'net_tx', 'load')})
+                except Exception:                   # noqa: BLE001
+                    pass
+        if stop.wait(wait):
+            continue                                # switched off: the top of the loop ends it
+
+
+def perf_watch():
+    """A page asked: the watching goes on for PERF_IDLE_S more, and starts if
+    it had ended. True when this ask started it."""
+    with PERF_WATCH_LOCK:
+        PERF_WATCH['asked'] = time.time()
+        t = PERF_WATCH['thread']
+        if t is not None and t.is_alive() and not PERF_WATCH['stop'].is_set():
+            return False
+        # none, or one told to end (switched off and on again): a new one, with
+        # a stop of its own - the old one ends by its own
+        PERF_WATCH['stop'] = threading.Event()
+        PERF_WATCH['first'].clear()
+        t = threading.Thread(target=_perf_watcher, name='perf-watch', daemon=True)
+        PERF_WATCH['thread'] = t
+        t.start()
+        return True
+
+
+def perf_load():
+    """The summary a page is answered (5.43.1): the watcher's newest reading -
+    nothing is read for the ask itself. The ask that starts the watching waits
+    a moment for its first rates; next_in says when the next reading is due."""
+    started = perf_watch()
+    if started:
+        PERF_WATCH['first'].wait(2.5)
+    with PERF_LOCK:
+        out = dict(PERF_LAST['out'] or {})
+    out['next_in'] = round(max(0.0, PERF_WATCH['next'] - time.time()), 2)
+    out['every_s'] = PERF_SAMPLE_S
+    return out
+
+
 def perf_history():
     """The readings of the last two minutes, oldest first, for a page drawn
     again (F5) to start its graphs from."""
     with PERF_LOCK:
-        since = time.time() - PERF_KEEP * 3.0 - 5
+        since = time.time() - PERF_KEEP * PERF_SAMPLE_S - 5
         return [dict(x) for x in PERF_RING if x['at'] >= since]
 
 
@@ -40955,16 +41054,41 @@ def perf_detail():
 
 
 def perf_forget():
-    """Switched off: nothing of the last readings is kept."""
+    """Switched off: nothing of the last readings is kept - the watcher ends
+    and the node's row is gone (5.43.1)."""
+    PERF_WATCH['stop'].set()
     with PERF_LOCK:
+        had = PERF_LAST['out'] is not None or bool(PERF_RING)
         PERF_LAST.update(at=0.0, raw=None, out=None)
         PERF_DETAIL.update(at=0.0, raw=None, out=None)
         PERF_RING.clear()
+    store = PERF_STORE
+    if had and store is not None:
+        try:
+            store.perf_drop()
+        except Exception:                           # noqa: BLE001
+            pass
+
+
+# What of the details describes the machine's insides (5.43.1): the processes
+# by name and number, the filesystems by mount point and device - an
+# administrator's only; everybody else who may see the dashboard is answered
+# the four numbers, their graphs and the rest of the panels without them.
+PERF_ADMIN_ONLY = ('top_cpu', 'top_mem', 'procs', 'filesystems')
+
+
+def perf_for(out, admin):
+    if admin or not isinstance(out.get('detail'), dict):
+        return out
+    out = dict(out)
+    out['detail'] = {k: v for k, v in out['detail'].items() if k not in PERF_ADMIN_ONLY}
+    return out
 
 
 def perf_api(detail=False, history=False):
-    """GET /api/perf (an administrator's): the summary; with detail=1 the
-    details as well, with history=1 the last two minutes for the graphs."""
+    """GET /api/perf (whoever may see the dashboard, 5.43.1): the summary; with
+    detail=1 the details as well, with history=1 the last two minutes for the
+    graphs."""
     out = dict(perf_load())
     if history:
         out['history'] = perf_history()
@@ -41048,9 +41172,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the last two characters of each kept secret (5.38.2)
                      '/api/secret_hints',
                      # Certificates from acme (5.40): its card
-                     '/api/acmepush',
-                     # how busy the machine is, its disks and cards (5.43)
-                     '/api/perf')
+                     '/api/acmepush')
+    # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
+    # dashboard sees how busy the machine is; its insides are cut out below
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -41597,16 +41721,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if path not in ('/api/health', '/api/healthz') and not d.session_valid(token):
                     return self._error(403, 'view locked - sign in to see the house')
             if path == '/api/perf':
-                # the performance meter (5.43): an administrator's (ALWAYS_LOCKED
-                # let only one this far - asked again, as the hints are). Off,
-                # nothing is read and nothing is said but that it is off
-                if not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin') and not REQUEST_CALLER.cli:
-                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                # the performance meter (5.43): whoever may see the dashboard
+                # (5.43.1 - the view's own rule just above, as /api/status);
+                # the processes and the filesystems an administrator's only.
+                # Off, nothing is read and nothing is said but that it is off
                 if not perf_on():
                     perf_forget()
                     return self._error(404, 'the performance meter is off')
-                return self._send(200, dict(perf_api(detail=q.get('detail') == '1',
-                                                     history=q.get('history') == '1'), ok=True))
+                global PERF_STORE
+                PERF_STORE = d.store
+                admin = REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')
+                return self._send(200, dict(perf_for(perf_api(detail=q.get('detail') == '1',
+                                                              history=q.get('history') == '1'), admin), ok=True))
             if path == '/api/secret_hints':
                 # ALWAYS_LOCKED let only an administrator this far; asked
                 # again here, so a road moved out of that list one day does

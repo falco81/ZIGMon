@@ -8,8 +8,9 @@ administrator's page, as ai 1.0.72-1.0.76 has it. Fails on 5.42.1.
     is off, the page draws nothing and asks nothing;
   * on: the numbers are what a /proc and a /sys of the test's own say (the
     processor, the memory, the disks, the network, each core, the sensors,
-    the filesystems by a statvfs of the test's own), an administrator's only -
-    through the daemon and through the relay (php -S on index.php);
+    the filesystems by a statvfs of the test's own), for whoever may see the
+    dashboard - the processes and the filesystems an administrator's only
+    (5.43.1) - through the daemon and through the relay (php -S on index.php);
   * the last two minutes are kept, so a page loaded again draws its graphs at
     once with the points it had;
   * a socket switched by a sensor is as quick with the meter reading flat out
@@ -535,7 +536,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   });
   t = Date.now();
   await sleep(1500);
-  out.hidden = {asked: hiddenAsked, back: since(asked, t).length};
+  out.hidden = {asked: hiddenAsked, back: since(asked, t).length,
+                state: await p.evaluate(() => ({timer: HLOAD.timer, busy: HLOAD.busy, hidden: document.hidden, paused: STATE.paused, wanted: perfWanted(), look: HLOAD.look}))};
   await p.click('#updated');
   const paused = await p.evaluate(() => !!STATE.paused);
   t = Date.now() + 300;
@@ -568,13 +570,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   out.aboutOn = {shown: await p.evaluate(shown), same: (await p.evaluate(() => window.__pageId)) === before};
   await p.close();
 
-  // ---- a viewer's page: nothing ------------------------------------------
+  // ---- a viewer's page: the meter too (5.43.1), without the processes -------
   const viewer = await ctxAs('vik', 'vik pass 1234');
   p = await viewer.newPage();
   asked = watch(p);
   await p.goto(BASE + 'index.php');
-  await sleep(6000);
-  out.viewer = {asked: asked.length, hidden: await p.evaluate(() => { const h = document.getElementById('hload'); return !!h && h.hidden && !h.children.length; })};
+  await p.waitForFunction(shown, null, {timeout: 20000}).catch(() => {});
+  await sleep(1500);
+  out.viewer = {asked: asked.length, shown: await p.evaluate(shown)};
   await viewer.close();
 
   // ---- a phone, 420 px wide -----------------------------------------------
@@ -674,21 +677,41 @@ try:
     # ---- on: an administrator's ----------------------------------------------------
     st, _ = call('/api/config', dict(perf_meter=1, session=S_ADMIN))
     check(st == 200 and zigmon.CONFIG.get('perf_meter') == 1, 'the meter could not be switched on (%s)' % st)
-    for who, s in (('nobody signed in', ''), ('an operator', S_OP), ('a viewer', S_VIEW)):
-        st, out = call('/api/perf', session=s)
-        check(st == 403 and 'cpu' not in out and 'mem_total' not in out,
-              '%s was answered %s %r' % (who, st, str(out)[:120]))
-    zigmon.CONFIG['public_view'] = True
+    # whoever may see the dashboard (5.43.1): the view's own rule, as /api/status
+    zigmon.CONFIG['public_view'] = False
     st, out = call('/api/perf')
-    check(st == 403, 'with the view public, /api/perf answered nobody %s' % st)
-    print('on: refused to nobody, an operator and a viewer - also with the view public')
+    check(st == 403 and 'cpu' not in out and 'mem_total' not in out,
+          'the view not public, nobody signed in was answered %s %r' % (st, str(out)[:120]))
+    for who, s in (('an operator', S_OP), ('a viewer', S_VIEW)):
+        st, out = call('/api/perf?detail=1', session=s)
+        x = out.get('detail') or {}
+        check(st == 200 and out.get('mem_total') and x.get('cores') and x.get('disks') is not None
+              and not set(x) & {'top_cpu', 'top_mem', 'procs', 'filesystems'},
+              '%s was answered %s %r' % (who, st, sorted(x) if x else str(out)[:120]))
+    zigmon.CONFIG['public_view'] = True
+    st, out = call('/api/perf?detail=1')
+    x = out.get('detail') or {}
+    check(st == 200 and out.get('mem_total') and not set(x) & {'top_cpu', 'top_mem', 'procs', 'filesystems'},
+          'with the view public, nobody was answered %s %r' % (st, sorted(x) if x else str(out)[:120]))
+    st, out = call('/api/perf?detail=1', session=S_ADMIN)
+    x = out.get('detail') or {}
+    check(st == 200 and set(x) >= {'top_cpu', 'top_mem', 'procs', 'filesystems'},
+          'an administrator was not answered the processes and the filesystems: %r' % sorted(x))
+    print('on: the numbers for whoever may see the dashboard (nobody only with the view public), '
+          'the processes and the filesystems an administrator\'s only')
+    # the numbers below are the test's own readings, one after another: the
+    # watcher the asks above started is ended first
+    zigmon.perf_forget()
+    _w = zigmon.PERF_WATCH['thread']
+    if _w is not None:
+        _w.join(10)
 
     # the numbers, against the counters of the test's own /proc
     for n in range(8):
         COUNT['cpu'][n], COUNT['idle'][n] = 1000, 9000
     write_proc()
-    st, first = call('/api/perf', session=S_ADMIN)
-    check(st == 200 and 'cpu' not in first, 'the first reading had a rate already: %r' % first)
+    first = zigmon.perf_read()
+    check('cpu' not in first, 'the first reading had a rate already: %r' % first)
     check(first.get('mem_total') == 32 * GiB and first.get('mem_used') == 10 * GiB,
           'memory: %r of %r (MemTotal - MemAvailable)' % (first.get('mem_used'), first.get('mem_total')))
     check(first.get('load') == [3.92, 3.1, 2.71], 'the load: %r' % first.get('load'))
@@ -703,9 +726,9 @@ try:
     COUNT['rx']['veth1a2b'] += 10 ** 10
     write_proc()
     time.sleep(1.2)
-    st, s2 = call('/api/perf', session=S_ADMIN)
+    s2 = zigmon.perf_read()
     dt = s2.get('over_s') or 1
-    check(st == 200 and s2.get('cpu') == 75.0, 'the processor: %r %% (75 wanted)' % s2.get('cpu'))
+    check(s2.get('cpu') == 75.0, 'the processor: %r %% (75 wanted)' % s2.get('cpu'))
     check(0 <= (s2.get('cpu') or -1) <= 100, 'the processor out of 0-100: %r' % s2.get('cpu'))
 
     def near(got, want):
@@ -719,8 +742,10 @@ try:
           % (s2.get('net_rx'), s2.get('net_tx')))
     print('the summary: cpu %s %%, memory %d of %d GiB, disks and network rates as the counters moved'
           % (s2.get('cpu'), s2['mem_used'] // GiB, s2['mem_total'] // GiB))
-    st, s3 = call('/api/perf', session=S_ADMIN)
-    check(s3.get('at') == s2.get('at'), 'two asks within a second were two readings')
+    # an ask reads nothing itself (5.43.1): the watcher's newest reading
+    _seen = [call('/api/perf', session=S_ADMIN)[1].get('at') for _ in range(5)]
+    check(len(set(_seen)) == 1 and zigmon.PERF_WATCH['thread'] is not None,
+          'five asks in a row were %d readings: %r' % (len(set(_seen)), _seen))
 
     call('/api/perf?detail=1', session=S_ADMIN)        # the panel's first look
     for n in range(8):
@@ -785,22 +810,25 @@ try:
               'core ids %s: the four logical processors\' temperatures %r (%r wanted)' % (ids, got, want))
     zigmon.PERF_SYS = _was_sys
     print('each logical processor its physical core\'s temperature, by topology (hyperthreads, cores 0 and 4)')
-    check(not perf_threads(), 'on, the meter started a thread of its own: %s' % perf_threads())
+    check(perf_threads() == ['perf-watch'], 'on, the meter has not its one thread: %s' % perf_threads())
 
     # ---- the last two minutes are kept ----------------------------------------------
     MOVING['on'] = True
     zigmon.PERF_RING.clear()
-    for _ in range(4):
+    _every = zigmon.PERF_SAMPLE_S
+    zigmon.PERF_SAMPLE_S = 2.6                         # the watcher's readings, closer for the test
+    for _ in range(5):
         call('/api/perf', session=S_ADMIN)
         time.sleep(2.7)
+    zigmon.PERF_SAMPLE_S = _every
     st, h = call('/api/perf?history=1', session=S_ADMIN)
     hist = h.get('history') or []
     check(len(hist) >= 4 and all(set(e) >= {'at', 'cpu', 'mem', 'disk', 'net'} for e in hist),
           'the history kept %d reading(s): %r' % (len(hist), hist[:1]))
     check(all(b['at'] - a['at'] >= zigmon.PERF_STEP_S - 0.01 for a, b in zip(hist, hist[1:])),
           'the history kept readings closer than %s s apart' % zigmon.PERF_STEP_S)
-    check(zigmon.PERF_RING.maxlen == 40, 'the history is not capped at the 40 a graph draws')
-    print('the history: %d readings kept for a page loaded again, at most 40' % len(hist))
+    check(zigmon.PERF_RING.maxlen == 24, 'the history is not capped at the 24 a graph draws')
+    print('the history: %d readings kept for a page loaded again, at most 24' % len(hist))
 
     # ---- off again: nothing kept, nothing read --------------------------------------
     check(touched(_off_from) and READS, 'on, the meter read nothing')
@@ -812,8 +840,9 @@ try:
     VFS_ASKED[:] = []
     _off_again = time.time()
     st, out = call('/api/perf?history=1', session=S_ADMIN)
-    time.sleep(3.5)                                    # one interval of the page
+    time.sleep(3.5)                                    # the watcher sees it is off
     call('/api/perf?detail=1', session=S_ADMIN)
+    time.sleep(1.5)
     check(st == 404 and not READS and not touched(_off_again) and not VFS_ASKED and not zigmon.PERF_RING
           and not perf_threads(), 'switched off again: %s, %d read(s), %d touched, %d kept, threads %s'
           % (st, len(READS), len(touched(_off_again)), len(zigmon.PERF_RING), perf_threads()))
@@ -885,6 +914,7 @@ try:
     VFS_HOLD['s'] = 2.5
     VFS_ASKED[:] = []
     holder = threading.Thread(target=lambda: zigmon.perf_detail(), daemon=True)
+    zigmon.perf_load()                                 # the watcher running again (its first wait is its own)
     holder.start()
     time.sleep(0.9)                                    # past its first look's wait, into the statvfs
     check(holder.is_alive(), 'the reading held up was over before it could be looked at')
@@ -939,10 +969,14 @@ try:
         return go
 
     _nobody, _admin, _op = relay_as(), relay_as('owner', 'owner pass 12'), relay_as('jana', 'jana pass 12')
+    zigmon.CONFIG['public_view'] = False
     st, out = _nobody('perf')
-    check(st == 403 and 'cpu' not in out, 'through the relay, nobody was answered %s' % st)
+    check(st == 403 and 'cpu' not in out, 'through the relay, the view not public, nobody was answered %s' % st)
+    zigmon.CONFIG['public_view'] = True
     st, out = _op('perf&detail=1')
-    check(st == 403 and 'detail' not in out, 'through the relay, an operator was answered %s' % st)
+    check(st == 200 and 'mem_total' in out and 'cores' in (out.get('detail') or {})
+          and not set(out.get('detail') or {}) & {'top_cpu', 'top_mem', 'procs', 'filesystems'},
+          'through the relay, an operator was answered %s %r' % (st, sorted(out.get('detail') or {})))
     _admin('perf')                                    # a first reading, for the rates of the next
     time.sleep(1.2)
     st, out = _admin('perf&detail=1&history=1&what=else')
@@ -953,7 +987,8 @@ try:
     st2, out = _admin('perf')
     check(st == 200 and st2 == 404 and 'cpu' not in out,
           'switched off through the relay (%s), /api/perf answered %s' % (st, st2))
-    print('through the relay: an administrator\'s only, the details and the history on asking, nothing while off')
+    print('through the relay: the numbers for whoever may see the dashboard, the processes and the filesystems '
+          'an administrator\'s, the details and the history on asking, nothing while off')
 
     # ---- the page, in Chromium ---------------------------------------------------
     root = subprocess.run(['npm', 'root', '-g'], capture_output=True, text=True).stdout.strip()
@@ -994,8 +1029,8 @@ try:
         check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
         check(r['off']['asked'] == 0 and r['off']['hidden'],
               'off, the page asked %d time(s) or drew the meter (%r)' % (r['off']['asked'], r['off']))
-        check(r['viewer']['asked'] == 0 and r['viewer']['hidden'],
-              'a viewer\'s page asked %d time(s) or drew it' % r['viewer']['asked'])
+        check(r['viewer']['asked'] >= 1 and r['viewer']['shown'],
+              'a viewer\'s page has no meter (5.43.1): %r' % r['viewer'])
         check(r['on']['shown'] and r['on']['chips'] == 4, 'switched on, the meter was not drawn: %r' % r['on'])
         for look, seen in sorted(r['looks'].items()):
             check(seen['cls'].startswith('hload look-' + look if look != 'off' else 'hload')
@@ -1028,7 +1063,7 @@ try:
         check(z['widths'].get('ringStroke') in ('transparent', 'rgba(0, 0, 0, 0)'),
               'a ring at 0 %% still has a stroke (a dot): %r' % z['widths'].get('ringStroke'))
         check(r['hidden']['asked'] == 0 and r['hidden']['back'] >= 1,
-              'hidden, the page asked %d time(s); shown again, %d' % (r['hidden']['asked'], r['hidden']['back']))
+              'hidden, the page asked %d time(s); shown again, %d (%r)' % (r['hidden']['asked'], r['hidden']['back'], r['hidden'].get('state')))
         check(r['paused']['asked'] == 0, 'paused, the page asked %d time(s)' % r['paused']['asked'])
         _off_page = [p for t, p, on in TOUCHED if BROWSER['from'] <= t < (BROWSER.get('on_at') or 0) and not on]
         check(BROWSER.get('on_at') and not _off_page,
@@ -1041,7 +1076,7 @@ try:
         ph = r['phone']
         check(ph['wide'] <= 420 and ph['shown'] and ph['visible'] == ['cpu', 'mem'], 'at 420 px: %r' % ph)
         check(ph['tap'] and ph['panelRight'] <= 420 and ph['shut'], 'a tap at 420 px: %r' % ph)
-        print('the page: off and to a viewer nothing; four looks, five styles, the pickers; nothing asked '
+        print('the page: off nothing, a viewer the meter too; four looks, five styles, the pickers; nothing asked '
               'hidden or paused; details only while open; after F5 %d points at once; at 420 px no wider '
               'than the screen' % f5['points'])
         if SHOTS:

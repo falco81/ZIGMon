@@ -4802,6 +4802,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .pal-card.on{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
   .pal-sw{border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:6px;border:1px solid rgba(255,255,255,.08)}
   .pal-name{font-size:12.5px;font-weight:600}
+  /* a graph slides one step to the left over the 5 s to the next reading (5.43.1):
+     one animation of its group, s for the header's graphs (56 wide, 23 steps),
+     a for the panels' areas (400 wide) */
+  .hl-scroll-s{animation:hl-scroll-s 5s linear forwards}
+  .hl-scroll-a{animation:hl-scroll-a 5s linear forwards}
+  @keyframes hl-scroll-s{from{transform:translateX(0)}to{transform:translateX(-2.4348px)}}
+  @keyframes hl-scroll-a{from{transform:translateX(0)}to{transform:translateX(-17.3913px)}}
+  @media (prefers-reduced-motion:reduce){.hl-scroll-s,.hl-scroll-a{animation-duration:.01s}}
   /* how busy the machine is, beside the pills (5.43) */
   .hload{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0}
   .hl{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;
@@ -16475,10 +16483,11 @@ $('reset-device-btn').onclick = function () {
    The performance meter (5.43): how busy the machine is - the processor,
    the memory, the disks, the network - in the header, beside the pills, as
    ai 1.0.72-1.0.76 draws it (its hload.js and hload.css, in English only).
-   An administrator's, and only while About - The performance meter is
-   on: otherwise nothing is drawn and nothing is asked. Asked every 3 s
-   while the page is shown and live, never while it is hidden or paused; the
-   details only while a panel is open. Four looks and five styles of the
+   Whoever may see the dashboard (5.43.1; the processes and the filesystems
+   of the panels an administrator's), and only while About - The performance
+   meter is on: otherwise nothing is drawn and nothing is asked. Asked once a
+   reading, every 5 s (5.43.1), while the page is shown and live, never while
+   it is hidden or paused; the details only while a panel is open. Four looks and five styles of the
    details, chosen in the account's popup (the name in the header) and kept
    in this browser.
    ========================================================================== */
@@ -16521,14 +16530,29 @@ function hloadRate(n) {
 }
 /* Four looks to choose from (5.43): pills with a bar, one plain line,
    small graphs of the last two minutes, rings. */
-var HLOAD_KEEP = 40;
-function hloadSpark(vals, max, cls) {
+var HLOAD_KEEP = 24;                     // two minutes at one reading every 5 s (5.43.1)
+/* How a graph moves (5.43.1): one SVG animation per graph, nothing redrawn by
+   a timer. The newest point is drawn one step past the right edge, and the
+   line slides left by that one step over the 5 s to the next reading (a CSS
+   animation of the group, hl-scroll-s or hl-scroll-a by the graph's width);
+   the line is only drawn again, one point longer, when a reading comes. A
+   graph drawn again meanwhile (a panel, a look) carries on where it was, by
+   the animation's delay. A preview stands still, already moved. */
+function hlScroll(w, n, preview) {
+  var step = w / (HLOAD_KEEP - 1);
+  var x = function (i) { return (w + step - (n - 1 - i) * step).toFixed(1); };
+  var gone = HLOAD.pointAt ? Math.max(0, (Date.now() - HLOAD.pointAt) / 1000) : 99;
+  var g = preview ? '<g class="hl-still" transform="translate(' + (-step).toFixed(3) + ' 0)">'
+    : '<g class="hl-scroll hl-scroll-' + (w === 56 ? 's' : 'a') + '" style="animation-delay:-' + gone.toFixed(2) + 's">';
+  return {x: x, open: g, close: '</g>'};
+}
+function hloadSpark(vals, max, cls, preview) {
   var w = 56, h = 18, n = vals.length;
   var svg = '<svg class="hl-spark ' + (cls || '') + '" viewBox="0 0 ' + w + ' ' + h + '" width="' + w + '" height="' + h + '" preserveAspectRatio="none" aria-hidden="true">';
   if (n > 1) {
-    var top = Math.max(max || 0, 1);
-    var pts = vals.map(function (v, i) { return (i * w / (HLOAD_KEEP - 1)).toFixed(1) + ',' + (h - 1 - (h - 2) * Math.min(1, (v || 0) / top)).toFixed(1); });
-    svg += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+    var top = Math.max(max || 0, 1), sc = hlScroll(w, n, preview);
+    var pts = vals.map(function (v, i) { return sc.x(i) + ',' + (h - 1 - (h - 2) * Math.min(1, (v || 0) / top)).toFixed(1); });
+    svg += sc.open + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' + sc.close;
   }
   return svg + '</svg>';
 }
@@ -16554,9 +16578,11 @@ function hloadDraw(d, into, asLook) {
   else {
     HLOAD.last = d;
     hist = HLOAD.hist || (HLOAD.hist = {cpu: [], mem: [], disk: [], net: []});
+    HLOAD.liveHist = hist;
     var push = function (k, v) { hist[k].push(v || 0); if (hist[k].length > HLOAD_KEEP) hist[k].shift(); };
-    // a reading two pages shared is one point, not two (5.43)
-    if (d.cpu !== undefined && d.at !== HLOAD.histAt) { HLOAD.histAt = d.at; push('cpu', d.cpu); push('mem', mp); push('disk', (d.disk_rd || 0) + (d.disk_wr || 0)); push('net', (d.net_rx || 0) + (d.net_tx || 0)); }
+    // a reading two pages shared is one point, not two (5.43); a new one starts
+    // the graphs' one step to the left (5.43.1)
+    if (d.cpu !== undefined && d.at !== HLOAD.histAt) { HLOAD.histAt = d.at; HLOAD.pointAt = Date.now(); push('cpu', d.cpu); push('mem', mp); push('disk', (d.disk_rd || 0) + (d.disk_wr || 0)); push('net', (d.net_rx || 0) + (d.net_tx || 0)); }
   }
   var look = asLook || HLOAD.look || 'graphs';
   host.className = 'hload look-' + look + (preview ? ' hl-preview' : '');
@@ -16607,7 +16633,7 @@ function hloadDraw(d, into, asLook) {
       if (look === 'graphs') {
         var g = el('span', 'hl-g');
         var vals = hist[x[2]], max = x[4] || Math.max.apply(null, vals.concat([1024]));
-        g.innerHTML = hloadSpark(vals, max);
+        g.innerHTML = hloadSpark(vals, max, '', preview);
         c.appendChild(g);
       }
       heat(c, x[3]);
@@ -16791,10 +16817,10 @@ function hpArea(k, h, grid) {
   var svg = '<svg viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '" preserveAspectRatio="none" aria-hidden="true">';
   if (grid) [0.25, 0.5, 0.75].forEach(function (g) { svg += '<line x1="0" x2="' + w + '" y1="' + h * g + '" y2="' + h * g + '" class="hp-grid" vector-effect="non-scaling-stroke"/>'; });
   if (vals.length > 1) {
-    var pts = vals.map(function (v, i) { return (i * w / (HLOAD_KEEP - 1)).toFixed(1) + ',' + (h - 1 - (h - 3) * Math.min(1, (v || 0) / top)).toFixed(1); });
-    var last = ((vals.length - 1) * w / (HLOAD_KEEP - 1)).toFixed(1);
-    svg += '<polygon points="0,' + h + ' ' + pts.join(' ') + ' ' + last + ',' + h + '" fill="currentColor" opacity=".16"/>';
-    svg += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+    var sc = hlScroll(w, vals.length, HLOAD.hist !== HLOAD.liveHist);
+    var pts = vals.map(function (v, i) { return sc.x(i) + ',' + (h - 1 - (h - 3) * Math.min(1, (v || 0) / top)).toFixed(1); });
+    svg += sc.open + '<polygon points="' + sc.x(0) + ',' + h + ' ' + pts.join(' ') + ' ' + sc.x(vals.length - 1) + ',' + h + '" fill="currentColor" opacity=".16"/>';
+    svg += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' + sc.close;
   }
   box.innerHTML = svg + '</svg>';
   return box;
@@ -16863,6 +16889,10 @@ function hpNicRows(host, x) {
   if (!(x.nics || []).length) host.appendChild(el('p', 'muted small', 'no card'));
 }
 function hpDisks(x) { return (x.disks || []).filter(function (dk) { return dk.size > 64 * 1048576; }); }
+/* The processes and the filesystems are an administrator's (5.43.1): the daemon
+   leaves them out of anybody else's answer, and their sections are drawn into
+   nothing then (a box that is never shown) - not drawn empty. */
+function hpOwn(x, k, host) { return x && x[k] !== undefined ? host : el('div'); }
 function hpHead(p, k, extra) {
   var head = el('div', 'hp-head');
   head.appendChild(el('b', '', HP_TITLE[k]));
@@ -16889,10 +16919,10 @@ function hpTable(p, k) {
     });
     p.appendChild(t);
     hpNoTemp(p, x);
-    hpProcs(hpSec(p, 'Taking most of the processor'), x.top_cpu || [], 'cpu');
+    hpProcs(hpSec(hpOwn(x, 'top_cpu', p), 'Taking most of the processor'), x.top_cpu || [], 'cpu');
   } else if (k === 'mem') {
     hpMemRows(hpSec(p, ''), x);
-    hpProcs(hpSec(p, 'Taking most memory'), x.top_mem || [], 'mem');
+    hpProcs(hpSec(hpOwn(x, 'top_mem', p), 'Taking most memory'), x.top_mem || [], 'mem');
   } else if (k === 'disk') {
     var td = el('table', 'hp-t'), hr = el('tr', 'hp-th');
     ['disk', 'read', 'written', 'busy', '°C'].forEach(function (h, i) { hpTd(hr, el('span', '', h), i ? 'num' : ''); });
@@ -16903,7 +16933,7 @@ function hpTable(p, k) {
       td.appendChild(tr);
     });
     p.appendChild(td);
-    var s2 = hpSec(p, 'Filesystems'), tf = el('table', 'hp-t');
+    var s2 = hpSec(hpOwn(x, 'filesystems', p), 'Filesystems'), tf = el('table', 'hp-t');
     (x.filesystems || []).forEach(function (f) {
       var pct = f.total ? 100 * f.used / f.total : 0, tr = el('tr', '');
       hpTd(tr, f.mount, 'mono hp-name'); hpTd(tr, hlBar(pct), 'hp-barc'); hpTd(tr, hlBytes(f.used) + ' / ' + hlBytes(f.total), 'num muted small'); hpTd(tr, Math.round(pct) + ' %', 'num');
@@ -16952,12 +16982,12 @@ function hpMap(p, k) {
     });
     s.appendChild(g);
     hpNoTemp(s, x);
-    var s3 = hpSec(p, 'Taking most of the processor'), w = el('div', 'hp-pills');
+    var s3 = hpSec(hpOwn(x, 'top_cpu', p), 'Taking most of the processor'), w = el('div', 'hp-pills');
     (x.top_cpu || []).slice(0, 6).forEach(function (q) { var c = el('span', 'hp-pill'); c.appendChild((el('span', 'mono', q.name))); c.appendChild((el('b', '', Math.round(q.cpu) + ' %'))); w.appendChild(c); });
     s3.appendChild(w);
   } else if (k === 'mem') {
     hpMemRows(hpSec(p, ''), x);
-    hpProcs(hpSec(p, 'Taking most memory'), x.top_mem || [], 'mem');
+    hpProcs(hpSec(hpOwn(x, 'top_mem', p), 'Taking most memory'), x.top_mem || [], 'mem');
   } else if (k === 'disk') {
     var cards = el('div', 'hp-cards');
     hpDisks(x).forEach(function (dk) {
@@ -16972,7 +17002,7 @@ function hpMap(p, k) {
       cards.appendChild(c);
     });
     p.appendChild(cards);
-    var s2 = hpSec(p, 'Filesystems'), rings = el('div', 'hp-rings');
+    var s2 = hpSec(hpOwn(x, 'filesystems', p), 'Filesystems'), rings = el('div', 'hp-rings');
     (x.filesystems || []).forEach(function (f) {
       var pct = f.total ? 100 * f.used / f.total : 0, one = el('div', 'hp-fsring');
       one.appendChild(hpRing(pct, Math.round(pct) + '%', null, 64));
@@ -17026,7 +17056,7 @@ function hpWide(p) {
       col.appendChild((el('div', 'muted small', 'load ' + (d.load || []).join(' / ') + ' · ' + hlUp(x.uptime))));
     } else if (k === 'mem') {
       hpMemRows(col, x);
-      hpProcs(hpSec(col, 'Taking most memory'), (x.top_mem || []).slice(0, 4), 'mem');
+      hpProcs(hpSec(hpOwn(x, 'top_mem', col), 'Taking most memory'), (x.top_mem || []).slice(0, 4), 'mem');
     } else if (k === 'disk') {
       var td = el('table', 'hp-t');
       hpDisks(x).forEach(function (dk) {
@@ -17037,7 +17067,7 @@ function hpWide(p) {
         tr2.lastChild.colSpan = 3; td.appendChild(tr2);
       });
       col.appendChild(td);
-      var s2 = hpSec(col, 'Filesystems'), tf = el('table', 'hp-t');
+      var s2 = hpSec(hpOwn(x, 'filesystems', col), 'Filesystems'), tf = el('table', 'hp-t');
       (x.filesystems || []).forEach(function (f) {
         var pct = f.total ? 100 * f.used / f.total : 0, tr = el('tr', '');
         hpTd(tr, f.mount, 'mono hp-name'); hpTd(tr, hlBar(pct), 'hp-barc'); hpTd(tr, Math.round(pct) + ' %', 'num'); tf.appendChild(tr);
@@ -17060,7 +17090,7 @@ function hpWide(p) {
   });
   p.appendChild(grid);
   if (x) {
-    var s = hpSec(p, 'Taking most of the processor'), w = el('div', 'hp-pills');
+    var s = hpSec(hpOwn(x, 'top_cpu', p), 'Taking most of the processor'), w = el('div', 'hp-pills');
     (x.top_cpu || []).slice(0, 8).forEach(function (q) { var c = el('span', 'hp-pill'); c.appendChild((el('span', 'mono', q.name))); c.appendChild((el('b', '', Math.round(q.cpu) + ' %'))); w.appendChild(c); });
     s.appendChild(w);
   }
@@ -17073,7 +17103,7 @@ function hpTiles(p, k) {
   var big = el('div', 'hp-graph');
   var vals = (HLOAD.hist || {})[k] || [];
   var max = (k === 'cpu' || k === 'mem') ? 100 : Math.max.apply(null, vals.concat([1024]));
-  big.innerHTML = hloadSpark(vals, max).replace('width="56" height="18"', 'width="100%" height="54"');
+  big.innerHTML = hloadSpark(vals, max, '', HLOAD.hist !== HLOAD.liveHist).replace('width="56" height="18"', 'width="100%" height="54"');
   big.classList.add('hl-' + k);
   var scale = el('span', 'hp-scale muted small', k === 'cpu' || k === 'mem' ? '100 %' : hloadRate(max));
   head.appendChild(scale);
@@ -17088,7 +17118,7 @@ function hpTiles(p, k) {
     var s1 = sec('');
     row(s1, [el('span', 'muted', 'Now'), (el('b', '', d.cpu === undefined ? '…' : Math.round(d.cpu) + ' %')), el('span', 'muted', 'load'), (el('span', '', (d.load || []).join(' / ')))]).classList.add('hp-kv');
     if (x.model) row(s1, [(el('span', 'hp-wide muted small', x.model))]);
-    row(s1, [el('span', 'muted', 'Up for'), (el('span', '', hlUp(x.uptime))), el('span', 'muted', 'processes'), (el('span', '', String(x.procs || '')))]).classList.add('hp-kv');
+    row(s1, [el('span', 'muted', 'Up for'), (el('span', '', hlUp(x.uptime))), el('span', 'muted', x.procs !== undefined ? 'processes' : ''), (el('span', '', String(x.procs || '')))]).classList.add('hp-kv');
     (tps.cpu || []).forEach(function (t) { row(s1, [(el('span', 'muted', t[0])), hlTemp(t[1])]).classList.add('hp-kv'); });
     var s2 = sec('Each core');
     var grid = el('div', 'hp-cores');
@@ -17108,7 +17138,7 @@ function hpTiles(p, k) {
     });
     s2.appendChild(grid);
     if (!(tps.cpu || []).length && !Object.keys(tps.cores || {}).length) s2.appendChild(el('p', 'muted small', 'No temperature: this machine has no sensors the kernel reads (a virtual machine has none).'));
-    var s3 = sec('Taking most of the processor');
+    var s3 = x.top_cpu !== undefined ? sec('Taking most of the processor') : el('div');
     (x.top_cpu || []).slice(0, 5).forEach(function (q) { row(s3, [(el('span', 'mono', q.name)), (el('span', 'muted small', 'pid ' + q.pid)), (el('span', 'num', Math.round(q.cpu) + ' %'))]); });
     if (!(x.top_cpu || []).length) s3.appendChild(el('p', 'muted small', 'nothing busy just now'));
   } else if (k === 'mem') {
@@ -17122,7 +17152,7 @@ function hpTiles(p, k) {
       var su = m.swap_total - (m.swap_free || 0);
       row(s1m, [el('span', 'muted', 'Swap'), (el('span', 'num', hlBytes(su) + ' / ' + hlBytes(m.swap_total)))]).classList.add('hp-kv2');
     } else row(s1m, [el('span', 'muted', 'Swap'), el('span', 'num muted', 'none')]).classList.add('hp-kv2');
-    var s2m = sec('Taking most memory');
+    var s2m = x.top_mem !== undefined ? sec('Taking most memory') : el('div');
     (x.top_mem || []).slice(0, 5).forEach(function (q) { row(s2m, [(el('span', 'mono', q.name)), (el('span', 'muted small', 'pid ' + q.pid)), (el('span', 'num', hlBytes(q.rss)))]); });
   } else if (k === 'disk') {
     var s1d = sec('Each disk');
@@ -17136,7 +17166,7 @@ function hpTiles(p, k) {
       u.appendChild((el('span', 'small num', dk.util === undefined ? '…' : Math.round(dk.util) + ' %')));
       s1d.appendChild(u);
     });
-    var s2d = sec('Filesystems');
+    var s2d = x.filesystems !== undefined ? sec('Filesystems') : el('div');
     (x.filesystems || []).forEach(function (f) {
       var pct = f.total ? 100 * f.used / f.total : 0;
       var r = row(s2d, [(el('span', 'mono', f.mount)), (el('span', 'muted small', f.kind)), (el('span', 'num', hlBytes(f.used) + ' / ' + hlBytes(f.total)))]);
@@ -17164,11 +17194,12 @@ function hpTiles(p, k) {
 var HL_LOOKS = [['graphs', 'with a graph of the last two minutes'], ['pills', 'pills with a bar'], ['line', 'one plain line'],
                 ['rings', 'with rings'], ['off', 'not shown']];
 function hlLook() { var v = hlPrefs().hload; return HL_LOOKS.some(function (x) { return x[0] === v; }) ? v : 'graphs'; }
-/* Whether this page is to have the meter at all: switched on, and an
-   administrator signed in here. */
+/* Whether this page is to have the meter at all: switched on - for whoever
+   may see the dashboard (5.43.1; the processes and the filesystems of its
+   panels are an administrator's, and the daemon leaves them out for others). */
 function perfWanted(st) {
   var rc = ((st || STATE.status || {}).runtime_config || {}).perf_meter || {};
-  return !!(+rc.value) && isAdmin();
+  return !!(+rc.value);
 }
 /* The last two minutes the daemon kept, put in front of the graphs: a page
    loaded again (F5) draws them at once rather than starting from nothing. */
@@ -17178,16 +17209,26 @@ function hloadSeed(list) {
     h.cpu.push(x.cpu || 0); h.mem.push(x.mem || 0); h.disk.push(x.disk || 0); h.net.push(x.net || 0);
     HLOAD.histAt = x.at;
   });
-  HLOAD.hist = h;
+  HLOAD.hist = HLOAD.liveHist = h;
+  HLOAD.pointAt = Date.now();
   HLOAD.seeded = true;
+}
+/* The next ask (5.43.1): a moment after the daemon's next reading is due (it
+   says when), every 5 s - asked once, not by a timer that runs on its own. */
+function hloadNext(ms) {
+  if (!HLOAD.timer) return;
+  clearTimeout(HLOAD.timer);
+  HLOAD.timer = setTimeout(function () { hloadTick(); }, Math.max(1000, Math.min(7000, ms)));
 }
 function hloadTick(now) {
   var host = $('hload');
-  if (!host || (HLOAD.busy && !now) || document.hidden || STATE.paused) return;
+  if (!host || (HLOAD.busy && !now)) return;
+  if (document.hidden || STATE.paused) { hloadNext(5000); return; }
   if (!perfWanted()) { hloadStop(); return; }
   HLOAD.look = hlLook();
-  if (HLOAD.look === 'off') { host.hidden = true; hloadPanelClose(); return; }
+  if (HLOAD.look === 'off') { host.hidden = true; hloadPanelClose(); hloadNext(5000); return; }
   HLOAD.busy = true;
+  hloadNext(5000);
   var ask = [];
   if (HLOAD.open) ask.push('detail=1');
   if (!HLOAD.seeded) ask.push('history=1');
@@ -17196,6 +17237,7 @@ function hloadTick(now) {
     if (d.history) hloadSeed(d.history);
     if (d.detail) { HLOAD.detail = d.detail; HLOAD.detailAt = Date.now(); }
     hloadDraw(d);
+    if (typeof d.next_in === 'number') hloadNext(d.next_in * 1000 + 300);
   }).catch(function (e) {
     // switched off, or the sign-in is gone: nothing shown, nothing kept
     if (e && (e.status === 404 || e.status === 403)) hloadStop();
@@ -17203,13 +17245,12 @@ function hloadTick(now) {
 }
 function hloadLoop() {
   if (!$('hload')) return;
-  clearInterval(HLOAD.timer);
-  HLOAD.timer = setInterval(hloadTick, 3000);
+  clearTimeout(HLOAD.timer);
+  HLOAD.timer = -1;                                /* running; the first ask sets the next (5.43.1) */
   hloadTick(true);
-  setTimeout(function () { if (HLOAD.timer) hloadTick(); }, 1200);   /* the first rate needs a second reading */
 }
 function hloadStop() {
-  clearInterval(HLOAD.timer);
+  clearTimeout(HLOAD.timer);
   HLOAD.timer = null;
   hloadPanelClose();
   var host = $('hload');
@@ -20537,10 +20578,11 @@ var SETTINGS_LAYOUT = [
   ['The performance meter in the header', [
     ['perf_meter', 'The performance meter in the header',
      'How busy the server is - the processor, the memory, the disks and the network - beside the state at the top '
-     + 'of these pages, every 3 s, with the cores, the temperatures, the disks and the processes behind each number. '
-     + 'An administrator\u2019s only, and read from the kernel only while one of their pages is shown. Off: nothing '
-     + 'is read, nothing runs and nothing is shown. How it looks is each person\u2019s own, chosen under their name '
-     + 'in the header'],
+     + 'of these pages, every 5 s, with the cores, the temperatures and the disks behind each number (the processes '
+     + 'and the filesystems for an administrator only). Shown to whoever may see the dashboard. Read from the kernel '
+     + 'only while one of these pages is open, and the watching ends by itself 45 s after the last is closed; the '
+     + 'newest reading is one small row of this server in the database. Off: nothing is read, nothing runs and '
+     + 'nothing is shown. How it looks is each person\u2019s own, chosen under their name in the header'],
   ]],
   // the updates of the system on a schedule (5.34): otp's own words, for one machine
   ['On a schedule', [
@@ -21818,8 +21860,9 @@ var SETTING_SAYS_UNDER = {
   cert_push: 'Off: hello says only that it is off, and nothing is taken.',
   // the performance meter (5.43), in plexmon's words
   perf_meter: 'How busy the server is - the processor, the memory, the disks and the network - beside the state at '
-    + 'the top of these pages, every 3 s, with the cores, the temperatures, the disks and the processes behind each '
-    + 'number. An administrator’s only. Off: nothing is read, nothing runs and nothing is shown.',
+    + 'the top of these pages, every 5 s, for whoever may see the dashboard; the processes and the filesystems behind '
+    + 'the numbers for an administrator only. Read only while a page is open, ending by itself 45 s after the last. '
+    + 'Off: nothing is read, nothing runs and nothing is shown.',
   cert_push_other_names: 'Off: a certificate must hold the name of this server (<span class="push-name">its name</span>). '
     + 'On: acme may say not to check it.'
 };
