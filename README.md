@@ -2083,7 +2083,29 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.43.0**
+Current version: **5.43.1**
+
+5.43.1 — on an iPad as it should be; a button for whoever is signed in; the meter for everyone who sees the house.
+
+* **The header**: the title, the state, *Editing*, *Rearrange* and the user
+  in one row with *Live* and the clock at its right; the performance meter's
+  chips in the row under it, beside the search. *Live* no longer falls under
+  the chips (an iPad, and a desk as well). A phone as before.
+* **The keyboard on the screen** no longer covers a dialog: the PIN box, the
+  sign-in, every popup with a field moves into what the keyboard leaves and
+  scrolls inside it, and comes back when the keyboard goes (iPad, iPhone).
+* **A button for whoever is signed in or unlocked** - a PIN too - with the
+  name: *Your account* - its passkeys, the meter's looks, Lock now (and
+  Change PIN for an administrator's PIN). A PIN user had no way to it.
+* **The performance meter for everyone who may see the dashboard**, editing
+  unlocked or not; the processes and the filesystems only for an
+  administrator, left out of the answer for anyone else.
+* **How it costs**: one small thread reads every 5 s while a page asks and
+  ends by itself 45 s after the last ask; one small row per node in the
+  database, the newest reading; each graph slides by one SVG animation -
+  nothing is redrawn by a timer. Switched off, nothing at all.
+
+`test/review5431.py`; it fails on 5.43.0.
 
 5.43.0 — passkeys (Touch ID, Face ID), the dashboard on an iPad, and the performance meter.
 
