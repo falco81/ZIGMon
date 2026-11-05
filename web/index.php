@@ -1804,6 +1804,26 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .lockpill.unlocked.role-viewer{background:var(--panel2);color:var(--tx-dim);border-color:var(--line)}
   .lockpill.arrange.on{background:rgba(88,166,255,.14);color:var(--info);border-color:rgba(88,166,255,.45)}
   .lockpill.unlocked .lockpill-time{font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  /* the user button (5.43.1): the account of whoever is signed in or unlocked */
+  .lockpill.userbtn .ub-name{max-width:16ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* the title row (5.43.1): a phone keeps the header's items as they were */
+  .hrow{display:contents}
+  @media (min-width:701px){
+    /* a row of its own that takes what is left beside the search and the clock:
+       short of room its pills go onto a second line inside it, and Live and the
+       clock stay where they are at the right (as wide as before, nothing moves) */
+    header > .hrow{display:flex;align-items:center;gap:14px;flex-wrap:wrap;flex:1 1 240px;min-width:0}
+    header > .spacer{display:none}
+    /* the performance meter on: the title row with Live and the clock at its
+       right, then the chips in a row of their own with the search at the right -
+       never the clock alone on a row under the chips (an iPad, 5.43.0) */
+    header:has(> #hload:not([hidden])) > .hrow{order:1}
+    header:has(> #hload:not([hidden])) > #updated{order:2;align-self:flex-start;margin-top:1px}
+    header:has(> #hload:not([hidden])) > #hload{order:3;flex:1 1 calc(100% - 274px)}
+    header:has(> #hload:not([hidden])) > .app-find-wrap{order:4}
+  }
+  /* a phone: the person only, beside the pills */
+  @media (max-width:700px){.lockpill.userbtn{padding:7px 10px}.lockpill.userbtn .ub-name{display:none}}
   body.locked .needs-unlock{opacity:.55}
   body.locked .needs-unlock:not(:disabled){cursor:pointer}
   /* Belt and suspenders: whatever else runs or fails to run on a tick,
@@ -4765,6 +4785,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      page itself never scrolls) */
   html.ios body.kb-up > .wrap > header, html.ios body.kb-up > .wrap > .tabs{display:none !important}
   html.ios body.kb-up{padding-top:6px !important;padding-bottom:0 !important}
+  /* a dialogue lifted above the keyboard (5.43.1): no taller than what the
+     keyboard leaves, scrolled inside, the PIN's padlock picture left out */
+  html.ios .kb-lift{padding-top:8px;padding-bottom:8px}
+  html.ios .kb-lift > .pinbox, html.ios .kb-lift > .askbox{max-height:100%;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  html.ios #zmodal.kb-lift .box{max-height:100%}
+  html.ios .kb-lift .pinicon{display:none}
+  html.ios .kb-lift .pinbox{padding:18px 22px 16px}
+  html.ios .kb-lift .pinwhat{margin-bottom:12px}
   /* ---- the performance meter (5.43), as ai 1.0.72-1.0.76 draws it ---------- */
   /* the cards to pick from, in the account's popup */
   .pal-pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:8px}
@@ -4969,6 +4997,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 <div class="wrap">
 
 <header>
+  <!-- the title row (5.43.1): the title, the pills and the user button - on a phone
+       simply the header's own items (display:contents), on a wider screen a row of
+       its own with Live and the clock beside it, so the meter's chips take the next -->
+  <div class="hrow" id="hrow">
   <h1>Sensors <span class="host">· <?= h($host) ?></span></h1>
   <span class="pill unknown" id="pill"><span class="dot"></span><span id="pill-text">Connecting…</span></span>
   <button class="lockpill locked" id="lockpill" type="button" title="Nobody is signed in on this page. Click to sign in.">
@@ -4980,6 +5012,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 9h14M5 15h14"/><path d="M9 5 12 2l3 3M9 19l3 3 3-3"/></svg>
     <span id="arrangepill-text">Rearrange off</span>
   </button>
+  <!-- whoever is signed in or unlocked (5.43.1): their account - its passkeys, the meter's looks -->
+  <button class="lockpill userbtn" id="userbtn" type="button" hidden title="Your account">
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.9-3.7 3.9-5.6 7.5-5.6s6.6 1.9 7.5 5.6"/></svg>
+    <span class="ub-name" id="userbtn-name"></span>
+  </button>
+  </div>
   <!-- the performance meter (5.43): filled only for an administrator, while it is on -->
   <div class="hload" id="hload" hidden aria-live="off"></div>
   <span class="spacer"></span>
@@ -16236,6 +16274,12 @@ function renderLock() {
   setIf($('pw-change'), 'hidden', !who || byPin);
   // the passkeys of whoever is signed in, a PIN account's too (5.43) - while they are on
   setIf($('pk-manage'), 'hidden', !who || !pkShape().on);
+  // the user button (5.43.1): whoever is signed in or unlocked, by name
+  var ub = $('userbtn');
+  setIf(ub, 'hidden', !who);
+  setIf($('userbtn-name'), 'textContent', who ? who.name : '');
+  titleIf(ub, who ? 'Your account: ' + who.name + ' (' + (ROLE_NAMES[who.role] || who.role) + ') - its passkeys'
+    + (perfWanted() ? ' and the looks of the performance meter' : '') : 'Your account');
   var heldState = held && !held.isCollapsed && held.anchorNode && $('lock-state').contains(held.anchorNode);
   if (!heldState) {
     setIf($('lock-state'), 'textContent', byPin
@@ -16311,6 +16355,14 @@ function passwordChange(forced) {
 function accountMenu() {
   var who = LOCK.who;
   if (!who) { unlockFlow(); return; }
+  // unlocked with a PIN (5.43.1): the same popup - its passkeys, the meter's
+  // looks - with Lock now, and a new PIN where it may give one (an administrator)
+  var byPin = who.kind === 'pin';
+  var acts = byPin
+    ? [{words: 'Lock now', icon: 'lock', close: true, go: lockNow}].concat(isAdmin() ? [{words: 'Change PIN', icon: 'key',
+        go: function () { accountPin({name: who.name, kind: 'pin'}); ZM.onClose = whoamiCheck; }}] : [])
+    : [{words: 'Sign out', icon: 'door', close: true, go: lockNow},
+       {words: 'Change password', icon: 'key', go: function () { passwordChange(false); }}];
   zmodal(who.name, function (body) {
     body.appendChild(el('p', 'note', (ROLE_NAMES[who.role] || who.role) + ': ' + ({
       viewer: 'sees the house - also when the view is not public - and changes nothing.',
@@ -16318,8 +16370,7 @@ function accountMenu() {
       admin: 'everything: the settings, the security, the accounts, the machine.'}[who.role] || '')));
     pkSection(body, who.name, true);       // Your account: its passkeys (5.43)
     perfAccountSection(body);            // the looks of the performance meter (5.43)
-  }, [{words: 'Sign out', icon: 'door', close: true, go: lockNow},
-      {words: 'Change password', icon: 'key', go: function () { passwordChange(false); }}]
+  }, acts
     .concat(isAdmin() ? [{words: 'Accounts', icon: 'person', close: true, go: function () {
       showTab('control'); showControlSection('sec-access'); }}] : []), perfWanted() ? 'medium' : 'narrow');
 }
@@ -16327,6 +16378,7 @@ function accountMenu() {
 $('lockpill').onclick = function () {
   if (LOCK.who && LOCK.who.kind === 'pin') lockNow(); else if (LOCK.who) accountMenu(); else unlockFlow();
 };
+$('userbtn').onclick = accountMenu;       // the account, a PIN account's too (5.43.1)
 $('arrangepill').onclick = function () {
   REARRANGE = !REARRANGE;
   SIGS = {}; renderLock();
@@ -33149,6 +33201,42 @@ function pinCtlNav(on) {
   vv.addEventListener('resize', fit);
   vv.addEventListener('scroll', fit);
   document.addEventListener('focusout', function () { setTimeout(fit, 120); }, true);
+  // A dialogue with a box typed into (5.43.1) - the PIN's four boxes, the name
+  // and the password, a popup's fields: it stood in the middle of the whole
+  // window and the keyboard covered its lower half, Unlock and all. While the
+  // keyboard is up it is put in what the keyboard leaves (the visual viewport:
+  // its top and its height), as high as that at the most and scrolled inside
+  // when taller; it goes back to the middle once the keyboard is down.
+  var LIFT = '.backdrop, #zmodal';
+  var lift = function () {
+    var act = document.activeElement;
+    var typing = !!(act && (/^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName || '') || act.isContentEditable));
+    var kb = typing && vv.height < window.innerHeight - 120;
+    Array.prototype.forEach.call(document.querySelectorAll(LIFT), function (o) {
+      var box = o.firstElementChild;
+      if (kb && !o.hidden && o.contains(act)) {
+        o.classList.add('kb-lift');
+        o.style.top = Math.round(vv.offsetTop) + 'px';
+        o.style.height = Math.round(vv.height) + 'px';
+        o.style.bottom = 'auto';
+        // the box typed in within sight, inside the dialogue's own scroll
+        var sc = act.closest('#zmodal-body') || box;
+        if (sc && sc.scrollHeight > sc.clientHeight + 1) {
+          var a = act.getBoundingClientRect(), b = sc.getBoundingClientRect();
+          if (a.bottom > b.bottom - 8) sc.scrollTop += a.bottom - b.bottom + 8;
+          else if (a.top < b.top + 8) sc.scrollTop -= b.top + 8 - a.top;
+        }
+      } else if (o.classList.contains('kb-lift')) {
+        o.classList.remove('kb-lift');
+        o.style.top = o.style.height = o.style.bottom = '';
+        if (box) box.scrollTop = 0;
+      }
+    });
+  };
+  vv.addEventListener('resize', lift);
+  vv.addEventListener('scroll', lift);
+  document.addEventListener('focusin', function () { setTimeout(lift, 60); }, true);
+  document.addEventListener('focusout', function () { setTimeout(lift, 120); }, true);
 })();
 // Upgrades and maintenance saves its three settings the way otp does
 // (1.0.123): with the bar at the end of the pane - Save the changes, Put them
