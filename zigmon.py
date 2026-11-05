@@ -358,6 +358,10 @@ DEFAULTS = {
     # the house may be watched without signing in; changing anything always
     # needs a sign-in. Off: nothing is shown until somebody signs in
     'public_view': True,
+    # Signing in with a passkey (5.43): Touch ID, Face ID, Windows Hello in
+    # place of the name and password, or of the PIN. Off until an
+    # administrator switches it on; while off, no passkey is offered or taken.
+    'passkeys': False,
     # How a one-tap link may be opened. 'link' is the address in the URL, the
     # way it has always been; 'header' carries the same secret in a header of
     # a POST, where no web server log, no link preview and no browser history
@@ -2323,6 +2327,208 @@ def totp_uri(secret, label, issuer='zigmon'):
     return ('otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=%d'
             % (quote(issuer, safe=''), quote(str(label or 'phone'), safe=''),
                secret, quote(issuer, safe=''), TOTP_STEP))
+
+
+# ---- passkeys: WebAuthn checked with the standard library and openssl (5.43) ----
+# A passkey is a key pair the person's own device makes and keeps (the
+# Keychain on an iPad, Windows Hello, a security key); the server is given
+# the public half once, and from then on a signature over a one-time
+# challenge. Everything below is the few pieces of WebAuthn that needs: the
+# base64url it travels in, the CBOR its key comes in, the key made into a PEM
+# openssl reads, and openssl to weigh the signature. No attestation is relied
+# on (the page asks for "none"): what a passkey proves is the signature.
+PASSKEY_ALGS = (-7, -257)               # ES256 (Apple, Google, most keys), RS256 (Windows Hello)
+PASSKEY_WAIT_S = 300                    # a challenge lives five minutes, and is used once
+PASSKEY_MOST = 20                       # passkeys one account may have
+
+
+def pk_b64d(text):
+    """base64url without padding, as WebAuthn writes it, to bytes."""
+    text = str(text or '').strip()
+    if not re.match(r'^[A-Za-z0-9_-]*$', text):
+        raise ValueError('not base64url')
+    return base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
+
+
+def pk_b64e(data):
+    return base64.urlsafe_b64encode(bytes(data)).decode('ascii').rstrip('=')
+
+
+def pk_cbor(data, at=0, depth=0):
+    """One CBOR item from data at offset `at`: (value, the offset after it).
+    Enough of RFC 8949 for an attestation object and a COSE key - definite
+    lengths only, which is all an authenticator sends - and refusing
+    anything that would read past the end or nest without end."""
+    if depth > 16:
+        raise ValueError('CBOR nested too deep')
+    if at >= len(data):
+        raise ValueError('CBOR ends early')
+    first = data[at]
+    major, info = first >> 5, first & 31
+    at += 1
+    if info < 24:
+        n = info
+    elif info in (24, 25, 26, 27):
+        size = {24: 1, 25: 2, 26: 4, 27: 8}[info]
+        if at + size > len(data):
+            raise ValueError('CBOR ends early')
+        n = int.from_bytes(data[at:at + size], 'big')
+        at += size
+    else:
+        raise ValueError('CBOR of an indefinite length')
+    if major == 0:
+        return n, at
+    if major == 1:
+        return -1 - n, at
+    if major in (2, 3):
+        if at + n > len(data):
+            raise ValueError('CBOR ends early')
+        raw = bytes(data[at:at + n])
+        return (raw if major == 2 else raw.decode('utf-8')), at + n
+    if major == 4:
+        if n > len(data):
+            raise ValueError('CBOR list longer than its data')
+        out = []
+        for _ in range(n):
+            item, at = pk_cbor(data, at, depth + 1)
+            out.append(item)
+        return out, at
+    if major == 5:
+        if n > len(data):
+            raise ValueError('CBOR map longer than its data')
+        out = {}
+        for _ in range(n):
+            key, at = pk_cbor(data, at, depth + 1)
+            value, at = pk_cbor(data, at, depth + 1)
+            if isinstance(key, (list, dict)):
+                raise ValueError('CBOR map with a key that is not a value')
+            out[key] = value
+        return out, at
+    if major == 6:
+        return pk_cbor(data, at, depth + 1)          # a tag: the item it tags
+    if info == 20:
+        return False, at
+    if info == 21:
+        return True, at
+    if info in (22, 23):
+        return None, at
+    if info == 25:
+        return None, at                              # a half float: nothing here uses one
+    if info == 26:
+        return struct.unpack('>f', bytes(data[at - 4:at]))[0], at
+    if info == 27:
+        return struct.unpack('>d', bytes(data[at - 8:at]))[0], at
+    raise ValueError('CBOR simple value %d' % info)
+
+
+def _pk_der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    raw = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def _pk_der(tag, body):
+    return bytes([tag]) + _pk_der_len(len(body)) + body
+
+
+def _pk_der_int(raw):
+    raw = bytes(raw).lstrip(b'\x00') or b'\x00'
+    if raw[0] & 0x80:
+        raw = b'\x00' + raw
+    return _pk_der(0x02, raw)
+
+
+def pk_cose_pem(cose):
+    """A COSE public key (a CBOR map) as (alg, PEM SubjectPublicKeyInfo)."""
+    if not isinstance(cose, dict):
+        raise ValueError('the key is not a COSE key')
+    kty, alg = cose.get(1), cose.get(3)
+    if kty == 2 and alg == -7:
+        x, y = cose.get(-2), cose.get(-3)
+        if cose.get(-1) != 1 or not isinstance(x, bytes) or not isinstance(y, bytes) \
+                or len(x) != 32 or len(y) != 32:
+            raise ValueError('an ES256 key that is not on P-256')
+        der = bytes.fromhex('3059301306072a8648ce3d020106082a8648ce3d030107034200') + b'\x04' + x + y
+    elif kty == 3 and alg == -257:
+        n, e = cose.get(-1), cose.get(-2)
+        if not isinstance(n, bytes) or not isinstance(e, bytes) or len(n.lstrip(b'\x00')) * 8 < 2048:
+            raise ValueError('an RS256 key shorter than 2048 bits')
+        inner = _pk_der(0x30, _pk_der_int(n) + _pk_der_int(e))
+        der = _pk_der(0x30, bytes.fromhex('300d06092a864886f70d0101010500') + _pk_der(0x03, b'\x00' + inner))
+    else:
+        raise ValueError('a kind of key this server does not take (only ES256 and RS256)')
+    body = base64.b64encode(der).decode('ascii')
+    return alg, ('-----BEGIN PUBLIC KEY-----\n' + '\n'.join(body[i:i + 64] for i in range(0, len(body), 64))
+                 + '\n-----END PUBLIC KEY-----\n')
+
+
+def pk_signed_ok(pem, signature, data):
+    """Whether `signature` is the key's over `data` (SHA-256; ES256 sends a
+    DER ECDSA signature, RS256 PKCS#1 v1.5 - openssl dgst takes both)."""
+    if not signature or len(signature) > 1024:
+        return False
+    with tempfile.TemporaryDirectory(prefix='zigmon-pk-') as folder:
+        key, sig = os.path.join(folder, 'key.pem'), os.path.join(folder, 'sig.bin')
+        with open(key, 'w') as f:
+            f.write(pem)
+        with open(sig, 'wb') as f:
+            f.write(bytes(signature))
+        try:
+            got = subprocess.run(['openssl', 'dgst', '-sha256', '-verify', key, '-signature', sig],
+                                 input=bytes(data), capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return got.returncode == 0 and b'Verified OK' in got.stdout
+
+
+def pk_auth_data(raw):
+    """authenticatorData taken apart: the hash of the RP ID, the flags, the
+    counter, and - when the key is attached (AT) - the credential and its
+    COSE key."""
+    raw = bytes(raw)
+    if len(raw) < 37:
+        raise ValueError('the authenticator data is too short')
+    out = {'rp_hash': raw[:32], 'flags': raw[32], 'count': int.from_bytes(raw[33:37], 'big')}
+    if out['flags'] & 0x40:
+        if len(raw) < 55:
+            raise ValueError('the authenticator data has no key in it')
+        size = int.from_bytes(raw[53:55], 'big')
+        if size < 16 or size > 1023 or 55 + size > len(raw):
+            raise ValueError('the credential id is not of a sensible length')
+        out['cred_id'] = raw[55:55 + size]
+        out['cose'], _end = pk_cbor(raw, 55 + size)
+    return out
+
+
+def pk_rp_place(host):
+    """The RP ID a page opened on `host` (Host, maybe with a port) is, and
+    the origins the browser may say it is: (rp_id, origins) or (None, why).
+    WebAuthn ties a passkey to a NAME: on a bare address there is none."""
+    host = str(host or '').strip().lower()[:255]
+    bare = ('passkeys work on the page opened by its name (https://name/), not by an address: '
+            'a passkey is tied to a name')
+    if not host:
+        return None, 'the page did not say which name it was opened on'
+    if host.startswith('['):
+        return None, bare
+    name = host
+    if ':' in name:
+        name, port = name.rsplit(':', 1)
+        if not port.isdigit():
+            return None, 'the name the page was opened on is not one'
+    try:
+        ipaddress.ip_address(name)
+        return None, bare
+    except ValueError:
+        pass
+    if not re.match(r'^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)*$', name) \
+            or name.replace('.', '').isdigit():
+        return None, 'the name the page was opened on is not one'
+    origins = {'https://' + host}
+    if name == 'localhost':
+        origins.add('http://' + host)            # a browser takes localhost as secure, as WebAuthn does
+    return name, origins
 
 
 # ---------------------------------------------------------------------------
@@ -4936,6 +5142,22 @@ CREATE TABLE IF NOT EXISTS signins (
     ip          TEXT DEFAULT '',
     agent       TEXT DEFAULT ''
 );
+-- The passkeys of the accounts (5.43): the public half of a key the
+-- person's own device holds (Touch ID, Face ID, Windows Hello), never
+-- anything secret. One account has up to twenty; each is tied to the name
+-- the page was opened on when it was made (host).
+CREATE TABLE IF NOT EXISTS passkeys (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL COLLATE NOCASE,
+    label       TEXT DEFAULT '',
+    pem         TEXT NOT NULL,
+    alg         INTEGER NOT NULL,
+    count       INTEGER DEFAULT 0,
+    created     INTEGER,
+    last_used   INTEGER,
+    host        TEXT DEFAULT '',
+    backed_up   INTEGER DEFAULT 0
+);
 
 -- Every other network the access points have ever heard, one row each, with
 -- when it was first and last heard and the best it was ever received. The
@@ -6839,8 +7061,9 @@ class Storage(object):
         # password - and whoever is restoring stays signed in.
         try:
             keep_accounts, keep_signins = self.accounts_all(), self.signins_all()
+            keep_passkeys = self.passkeys_all()          # and their passkeys (5.43)
         except sqlite3.Error as e:
-            keep_accounts, keep_signins = None, None
+            keep_accounts, keep_signins, keep_passkeys = None, None, None
             log('the accounts could not be read before the database was put back (%s): it brings '
                 'its own' % e, 'warn')
         src = sqlite3.connect('file:%s?mode=ro' % quote(str(source)), uri=True)
@@ -6884,10 +7107,13 @@ class Storage(object):
             with self.lock:
                 self.db.execute('DELETE FROM accounts')
                 self.db.execute('DELETE FROM signins')
+                self.db.execute('DELETE FROM passkeys')
             for row in keep_accounts:
                 self.account_put(row)
             for row in keep_signins:
                 self.signin_put(row)
+            for row in keep_passkeys or []:
+                self.passkey_put(row)
         # the restored contents, read into memory in one go - the settings in
         # them are in force from this moment, not from the next restart.
         # The parsed lists are dropped AGAIN here, after the copy: they were
@@ -6977,6 +7203,9 @@ class Storage(object):
         with self.lock:
             self.db.execute('DELETE FROM accounts WHERE name = ?', (name,))
             self.db.execute('DELETE FROM signins WHERE name = ?', (name,))
+            # its passkeys with it (5.43): one left behind would open nothing,
+            # but a new account given the same name would inherit it
+            self.db.execute('DELETE FROM passkeys WHERE name = ?', (name,))
 
     def signins_all(self):
         with self.lock:
@@ -6997,6 +7226,28 @@ class Storage(object):
     def signin_touch(self, token_hash, last):
         with self.lock:
             self.db.execute('UPDATE signins SET last = ? WHERE token_hash = ?', (int(last), token_hash))
+
+    # the passkeys of the accounts (5.43): public keys only, read into the
+    # daemon's memory once as the accounts are
+    def passkeys_all(self):
+        with self.lock:
+            try:
+                return [dict(r) for r in self.db.execute('SELECT * FROM passkeys')]
+            except sqlite3.OperationalError:
+                return []
+
+    def passkey_put(self, row):
+        with self.lock:
+            self.db.execute('INSERT OR REPLACE INTO passkeys (id, name, label, pem, alg, count, created, '
+                            'last_used, host, backed_up) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                            (row['id'], row['name'], str(row.get('label') or '')[:80], row['pem'],
+                             int(row['alg']), int(row.get('count') or 0), row.get('created'),
+                             row.get('last_used'), str(row.get('host') or '')[:255],
+                             int(bool(row.get('backed_up')))))
+
+    def passkey_delete(self, ident):
+        with self.lock:
+            self.db.execute('DELETE FROM passkeys WHERE id = ?', (ident,))
 
     def get_meta(self, key, default=None):
         """Small settings read on the dashboard path (a plug's counter reset
@@ -10135,6 +10386,7 @@ class Daemon(object):
         'rbackup_keep': (1, 1000), 'rbackup_keep_days': (0, 3650), 'rbackup_password': 'str',
         'rbackup_verify': 'str',
         'public_view': (0, 1), 'login_tries': (1, 50), 'login_wait_min': (1, 1440),
+        'passkeys': (0, 1),
         'session_idle_min': (0, 43200), 'session_hours': (1, 8760),
         'chart_outages': (0, 1), 'link_plugs': (0, 1), 'link_sensors': (0, 1), 'link_buttons': (0, 1),
         'backup_time': 'str',
@@ -31225,7 +31477,7 @@ class Daemon(object):
     # Settings that keep the house safe are read here and never set from a
     # script, a message or a fact: who may control it, who is never kept
     # out, the PIN and every password, token and key.
-    SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|never_block|block|blacklist|'
+    SETTINGS_LOCKED = re.compile(r'pin|password|token|secret|_key$|skey|passkey|never_block|block|blacklist|'
                                  r'public_view|session|allow|trusted|duo|mikrotik|proxy_|intel_|feeds?\b|'
                                  r'feed_|sms_to$|sms_user|api_|sms_objects|login_|confirm_min|reboot_|upgrade_|downgrade_|rbackup',
                                  re.I)
@@ -38790,7 +39042,7 @@ class Daemon(object):
             # signing in (5.19): who is signed in is each page's own question
             # (/api/auth/whoami), never part of what every page is sent
             'signin': dict(self.pin_shape(), public_view=bool(CONFIG.get('public_view', True)),
-                           accounts=len(self.accounts)),
+                           accounts=len(self.accounts), **self.passkey_shape()),
             'plugs': [self.plug_snapshot(p) for p in self.plugs.values()],
             'bindings': self.bindings(),
             'rules': [dict(r, **{'holds': (self.rule_runtime.get(r['id']) or {}).get('holds'),
@@ -38982,6 +39234,11 @@ class Daemon(object):
                 self.signins[r['token_hash']] = r
             else:
                 self.store.signin_drop(r['token_hash'])
+        # the passkeys (5.43), by their credential id; the challenges given out
+        # for them are kept here only, never written anywhere
+        self.passkeys = {r['id']: r for r in self.store.passkeys_all()
+                         if str(r['name']).lower() in self.accounts}
+        self._pk_waiting = {}
         self._login_fails = collections.defaultdict(list)
         self.cli_key = self._ensure_cli_key()
         self.pin_from_before(self.ensure_first_admin())
@@ -39071,7 +39328,9 @@ class Daemon(object):
                 'note': a.get('note') or '', 'created': a.get('created'), 'last_in': a.get('last_in'),
                 'last_from': a.get('last_from') or '',
                 'signed_in': sum(1 for r in list(self.signins.values())
-                                 if str(r['name']).lower() == a['name'].lower())}
+                                 if str(r['name']).lower() == a['name'].lower()),
+                'passkeys': sum(1 for r in list(getattr(self, 'passkeys', {}).values())
+                                if str(r['name']).lower() == a['name'].lower())}
 
     def pin_accounts(self):
         return [a for a in list(self.accounts.values()) if (a.get('kind') or '') == 'pin']
@@ -39195,6 +39454,8 @@ class Daemon(object):
             self.accounts.pop(a['name'].lower(), None)
             for h in [h for h, r in list(self.signins.items()) if str(r['name']).lower() == a['name'].lower()]:
                 self.signins.pop(h, None)
+            for k in [k for k, r in list(self.passkeys.items()) if str(r['name']).lower() == a['name'].lower()]:
+                self.passkeys.pop(k, None)          # the database lost them with the account
         self.store.add_event('security', '%s removed the account %s' % (by or 'the command line', a['name']),
                              'warn')
         self.bump()
@@ -39560,6 +39821,388 @@ class Daemon(object):
         if gone:
             self.bump()
         return len(gone)
+
+
+    # ---- passkeys (5.43) ----------------------------------------------------------
+    # A passkey signs in in place of the name and the password, or unlocks in
+    # place of the PIN, for the one account that made it - and that account
+    # had to be signed in (or unlocked) to make it. It is never a way round
+    # what the password and the PIN are held to: an address kept out is kept
+    # out before any of this runs, the wrong tries of an address count
+    # against it here too (and a passkey counts against them), an account
+    # switched off opens nothing, and a password still to be changed is
+    # still to be changed. Off until an administrator switches it on: then
+    # nothing is offered and nothing is taken.
+    PK_OFF = 'passkeys are switched off on this server (Settings → Signing in)'
+
+    def passkeys_on(self):
+        return bool(CONFIG.get('passkeys'))
+
+    def passkey_shape(self):
+        """What a sign-in page needs to know: whether passkeys are on, and
+        whether a PIN account or a password account has one - a button no
+        passkey here could answer is not drawn."""
+        on = self.passkeys_on()
+        kinds = set()
+        if on:
+            for r in list(self.passkeys.values()):
+                a = self.accounts.get(str(r['name']).lower())
+                if a and not a.get('disabled'):
+                    kinds.add(a.get('kind') or 'password')
+        return {'passkeys': on, 'passkey_pin': 'pin' in kinds, 'passkey_name': 'password' in kinds}
+
+    @staticmethod
+    def passkey_public(r):
+        """A passkey as it is shown: never its key, which is public anyway,
+        and is nobody's business but the check's."""
+        return {'id': r['id'], 'name': r['name'], 'label': r.get('label') or '', 'alg': r.get('alg'),
+                'created': r.get('created'), 'last_used': r.get('last_used'), 'host': r.get('host') or '',
+                'backed_up': bool(r.get('backed_up'))}
+
+    def passkeys_of(self, name=None):
+        rows = [r for r in list(self.passkeys.values())
+                if name is None or str(r['name']).lower() == str(name).lower()]
+        return [self.passkey_public(r)
+                for r in sorted(rows, key=lambda r: (str(r['name']).lower(), r.get('created') or 0))]
+
+    @staticmethod
+    def _pk_user_id(name):
+        """The user handle a passkey keeps for its account: the same every
+        time for one name, and not the name itself."""
+        return hashlib.sha256(('zigmon-user:' + str(name).lower()).encode('utf-8')).digest()[:16]
+
+    def _pk_challenge(self, kind, name, rp):
+        """A challenge of 32 random bytes, kept here only - five minutes,
+        for one kind (making a passkey, or using one), one account and one
+        name the page is on."""
+        now = time.time()
+        with self._auth_lock:
+            waiting = self._pk_waiting
+            for k in [k for k, v in waiting.items() if now - v['at'] > PASSKEY_WAIT_S]:
+                waiting.pop(k, None)
+            while len(waiting) >= 500:
+                waiting.pop(min(waiting, key=lambda k: waiting[k]['at']), None)
+            challenge = pk_b64e(secrets.token_bytes(32))
+            waiting[challenge] = {'kind': kind, 'name': str(name or ''), 'rp': rp, 'at': now}
+        return challenge
+
+    def _pk_client(self, raw, kind, rp, origins, name=None):
+        """The browser's clientDataJSON, checked: the kind, the challenge
+        (taken away whatever follows: it is used once), its age, the name it
+        was given for, the account it was given to, and the page."""
+        try:
+            said = json.loads(bytes(raw).decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            raise ValueError('the browser\'s answer is not JSON')
+        if not isinstance(said, dict) or said.get('type') != ('webauthn.create' if kind == 'register'
+                                                               else 'webauthn.get'):
+            raise ValueError('the browser\'s answer is of the wrong kind')
+        with self._auth_lock:
+            got = self._pk_waiting.pop(str(said.get('challenge') or ''), None)
+        if not got or got['kind'] != kind:
+            raise ValueError('that challenge is not one this server is waiting for (used already, '
+                             'or never given) - try again')
+        if time.time() - got['at'] > PASSKEY_WAIT_S:
+            raise ValueError('the challenge has run out (five minutes) - try again')
+        if got['rp'] != rp:
+            raise ValueError('the challenge was given for another name than the one this page is on')
+        if name is not None and got['name'].lower() != str(name).lower():
+            raise ValueError('the challenge was given to another account')
+        if said.get('origin') not in origins:
+            raise ValueError('the passkey was used on another page (%s), not on this one'
+                             % re.sub(r'[^\x20-\x7e]', '?', str(said.get('origin')))[:80])
+        if said.get('crossOrigin') is True:
+            raise ValueError('the passkey was used inside a frame of another site')
+        return got
+
+    @staticmethod
+    def _pk_flags(ad, rp):
+        if not hmac.compare_digest(ad['rp_hash'], hashlib.sha256(rp.encode('ascii')).digest()):
+            raise ValueError('the passkey is for another name than %s' % rp)
+        if not ad['flags'] & 0x01:
+            raise ValueError('the device did not see anybody there (user presence)')
+        if not ad['flags'] & 0x04:
+            raise ValueError('the device did not check who you are (Touch ID, Face ID or its own PIN): '
+                             'a passkey here has to')
+
+    def passkey_register_begin(self, token, host):
+        """The options for navigator.credentials.create(): a passkey for the
+        account signed in on this page, on the name the page is on."""
+        if not self.passkeys_on():
+            raise PermissionError(self.PK_OFF)
+        s = self.session_get(token)
+        if not s:
+            raise PermissionError('not signed in - sign in first')
+        rp, origins = pk_rp_place(host)
+        if rp is None:
+            raise ValueError(origins)
+        name = s['account']['name']
+        mine = [r for r in list(self.passkeys.values()) if str(r['name']).lower() == name.lower()]
+        if len(mine) >= PASSKEY_MOST:
+            raise ValueError('%s has %d passkeys already, the most one account may have - remove one first'
+                             % (name, PASSKEY_MOST))
+        return {'publicKey': {
+            'challenge': self._pk_challenge('register', name, rp),
+            'rp': {'id': rp, 'name': 'zigmon · ' + rp},
+            'user': {'id': pk_b64e(self._pk_user_id(name)), 'name': name, 'displayName': name},
+            'pubKeyCredParams': [{'type': 'public-key', 'alg': a} for a in PASSKEY_ALGS],
+            'authenticatorSelection': {'residentKey': 'required', 'requireResidentKey': True,
+                                       'userVerification': 'required'},
+            'excludeCredentials': [{'type': 'public-key', 'id': r['id']} for r in mine],
+            'attestation': 'none', 'timeout': PASSKEY_WAIT_S * 1000}}
+
+    def passkey_register_finish(self, token, host, label, client, attestation):
+        """The browser's answer to create(), checked through, and the
+        passkey kept: its public key, made a PEM, and nothing else."""
+        if not self.passkeys_on():
+            raise PermissionError(self.PK_OFF)
+        s = self.session_get(token)
+        if not s:
+            raise PermissionError('not signed in - sign in first')
+        rp, origins = pk_rp_place(host)
+        if rp is None:
+            raise ValueError(origins)
+        name = s['account']['name']
+        client, attestation = pk_b64d(client), pk_b64d(attestation)
+        if not client or len(client) > 4096 or not attestation or len(attestation) > 16384:
+            raise ValueError('the browser\'s answer is not of a sensible size')
+        self._pk_client(client, 'register', rp, origins, name=name)
+        obj, _end = pk_cbor(attestation)
+        if not isinstance(obj, dict) or not isinstance(obj.get('authData'), bytes):
+            raise ValueError('the attestation is not one')
+        raw = obj['authData']
+        ad = pk_auth_data(raw)
+        self._pk_flags(ad, rp)
+        if 'cred_id' not in ad:
+            raise ValueError('the device sent no key')
+        alg, pem = pk_cose_pem(ad['cose'])
+        fmt, stmt = obj.get('fmt'), obj.get('attStmt') or {}
+        if fmt == 'packed' and isinstance(stmt, dict) and 'x5c' not in stmt:
+            # self attestation: signed by the very key being made, so it is
+            # checked as cheaply as a sign-in is
+            if stmt.get('alg') != alg or not pk_signed_ok(pem, stmt.get('sig') or b'',
+                                                          raw + hashlib.sha256(client).digest()):
+                raise ValueError('the device\'s own signature on the new passkey is not right')
+        elif fmt not in ('none', 'packed'):
+            # "none" was asked for; nothing here relies on who made the device
+            raise ValueError('the device answered with an attestation of a kind not taken here (%s)'
+                             % re.sub(r'[^\w-]', '', str(fmt))[:20])
+        ident = pk_b64e(ad['cred_id'])
+        label = re.sub(r'[\x00-\x1f\x7f]', '', str(label or '')).strip()[:80] or 'passkey'
+        now = int(time.time())
+        with self._auth_lock:
+            cur = self.accounts.get(name.lower())
+            if not cur or cur.get('disabled') or s['hash'] not in self.signins:
+                raise PermissionError('the sign-in has run out - sign in again')
+            if ident in self.passkeys:
+                raise ValueError('this passkey is here already')
+            if sum(1 for r in self.passkeys.values() if str(r['name']).lower() == name.lower()) >= PASSKEY_MOST:
+                raise ValueError('%s has %d passkeys already' % (name, PASSKEY_MOST))
+            row = {'id': ident, 'name': cur['name'], 'label': label, 'pem': pem, 'alg': alg,
+                   'count': ad['count'], 'created': now, 'last_used': None, 'host': rp,
+                   'backed_up': int(bool(ad['flags'] & 0x10))}
+            self.store.passkey_put(row)
+            self.passkeys[ident] = row
+        self.store.add_event('security', '%s added a passkey (%s) for %s' % (cur['name'], label, rp), 'warn')
+        log('%s added a passkey (%s) for %s' % (cur['name'], label, rp))
+        self.bump()
+        return self.passkey_public(row)
+
+    def passkey_login_begin(self, host):
+        """The options for navigator.credentials.get(): no account named - the
+        browser offers the passkeys it holds for this name."""
+        if not self.passkeys_on():
+            raise PermissionError(self.PK_OFF)
+        rp, _origins = pk_rp_place(host)
+        if rp is None:
+            raise ValueError(_origins)
+        return {'publicKey': {'challenge': self._pk_challenge('login', '', rp), 'rpId': rp,
+                              'userVerification': 'required', 'allowCredentials': [],
+                              'timeout': PASSKEY_WAIT_S * 1000}}
+
+    def passkey_login(self, host, body, ip='', agent=''):
+        """A sign-in with a passkey: (answer, None) or (None, (status, why)).
+        A password account is signed in as its password signs it in; a PIN
+        account is unlocked for the while asked for, as its PIN unlocks it.
+        Counted per address as wrong passwords are - the same count, so an
+        address waiting for its wrong passwords waits for this too - and a
+        passkey's own refusals are counted there as well."""
+        if not self.passkeys_on():
+            return None, (403, self.PK_OFF)
+        rp, origins = pk_rp_place(host)
+        if rp is None:
+            return None, (400, origins)
+        body = body if isinstance(body, dict) else {}
+        ident = str(body.get('id') or '')[:1400]
+        ip = str(ip or '').split(' (')[0][:60]
+        tries = max(1, int(CONFIG.get('login_tries') or 5))
+        span = max(60, int(CONFIG.get('login_wait_min') or 15) * 60)
+        now = time.time()
+        who = ip
+        try:
+            addr = ipaddress.ip_address(ip)
+            if addr.version == 6:
+                who = str(ipaddress.ip_network('%s/64' % ip, strict=False))
+            home = addr.is_private or addr.is_loopback
+        except ValueError:
+            home = False
+        keys = [('ip', who)] + ([] if home else [('passkey', ident[:200])])
+        with self._auth_lock:
+            # a PIN guessed from here holds this address back from a passkey
+            # too: one road may not be the way round the other's wait
+            for key, limit, what in ((('ip', who), tries, 'wrong passwords from this address'),
+                                     (('pin-ip', who), tries, 'wrong PINs from this address'),
+                                     (('passkey', ident[:200]), tries * 4, 'refused tries of this passkey')):
+                if key[0] == 'passkey' and home:
+                    continue
+                fails = [t for t in self._login_fails.get(key, []) if now - t < span]
+                self._login_fails[key] = fails
+                if len(fails) >= limit:
+                    return None, (429, 'too many %s - try again in %s'
+                                  % (what, human_span(span - (now - fails[0]))))
+            for key in keys:
+                self._login_fails[key].append(now)
+            mine = len(self._login_fails[keys[0]])
+
+        def refused(why, status=401, level='warn'):
+            self.store.add_event('security', 'a passkey was refused from %s: %s' % (ip or '?', why), level)
+            if mine == tries:
+                self.notify('A sign-in was refused %d times in a row from %s, so signing in from there '
+                            'waits %s. If that was not you, somebody is trying.'
+                            % (tries, ip or 'one address', human_span(span)),
+                            'warn', dedup='pin-locked|%s' % ip, title='Somebody is guessing a password',
+                            about='pin')
+            return None, (status, why)
+        try:
+            client = pk_b64d(body.get('clientDataJSON'))
+            raw = pk_b64d(body.get('authenticatorData'))
+            signature = pk_b64d(body.get('signature'))
+            handle = pk_b64d(body.get('userHandle') or '')
+            if not client or len(client) > 4096 or len(raw) > 4096:
+                raise ValueError('the browser\'s answer is not of a sensible size')
+            self._pk_client(client, 'login', rp, origins)
+            row = self.passkeys.get(ident)
+            if not row:
+                return refused('this passkey is not known here (removed, or from another server)')
+            ad = pk_auth_data(raw)
+            self._pk_flags(ad, rp)
+            if (row.get('host') or rp) != rp:
+                raise ValueError('this passkey was made for %s, not for %s' % (row.get('host'), rp))
+            if handle and not hmac.compare_digest(handle, self._pk_user_id(row['name'])):
+                raise ValueError('the passkey says it is of another account than the one it was made by')
+            if not pk_signed_ok(row['pem'], signature, raw + hashlib.sha256(client).digest()):
+                raise ValueError('the passkey\'s signature is not right')
+        except ValueError as e:
+            return refused(str(e))
+        old = int(row.get('count') or 0)
+        if (old or ad['count']) and ad['count'] <= old:
+            return refused('the passkey\'s counter went back (%d after %d): it may have been copied'
+                           % (ad['count'], old), level='crit')
+        with self._auth_lock:
+            cur = self.accounts.get(str(row['name']).lower())
+            if ident not in self.passkeys:
+                cur = None
+            if cur and not cur.get('disabled'):
+                for key in keys:                  # it went well: the place is given back
+                    try:
+                        self._login_fails[key].remove(now)
+                    except ValueError:
+                        pass
+        if not cur:
+            return refused('this passkey is not known here (removed, or from another server)')
+        if cur.get('disabled'):
+            return refused('the account of this passkey (%s) is switched off' % cur['name'], 403)
+        if ip and ip not in ('127.0.0.1', '::1'):
+            self.forget_anomaly(ip)
+        pin = (cur.get('kind') or '') == 'pin'
+        hours = max(1, int(CONFIG.get('session_hours') or 720))
+        minutes = 0
+        if pin:
+            try:
+                minutes = max(1, min(720, int(body.get('minutes') or 15)))
+            except (TypeError, ValueError, OverflowError):
+                minutes = 15
+        token = secrets.token_urlsafe(32)
+        with self._auth_lock:
+            srow = {'token_hash': self._token_hash(token), 'name': cur['name'], 'created': int(now),
+                    'last': int(now), 'ip': ip, 'agent': str(agent or '')[:120],
+                    'expires': int(now + (min(minutes * 60, hours * 3600) if pin else hours * 3600))}
+            self.signins[srow['token_hash']] = srow
+            if not pin:
+                mine_rows = sorted((r for r in self.signins.values() if r['name'] == cur['name']),
+                                   key=lambda r: r['last'])
+                for gone in mine_rows[:-50]:
+                    self.signins.pop(gone['token_hash'], None)
+                    self.store.signin_drop(gone['token_hash'])
+            a = dict(cur, last_in=int(now), last_from=ip)
+            self.accounts[a['name'].lower()] = a
+            row = dict(row, count=ad['count'], last_used=int(now), backed_up=int(bool(ad['flags'] & 0x10)))
+            self.passkeys[ident] = row
+            self.store.signin_put(srow)
+            self.store.account_put(a)
+            self.store.passkey_put(row)
+        where = (' from ' + ip) if ip else ''
+        if pin:
+            self.store.add_event('security', '%s: editing unlocked with a passkey (%s) for %d min%s'
+                                 % (a['name'], row['label'], minutes, where))
+            log('%s: dashboard editing unlocked with a passkey for %d min' % (a['name'], minutes))
+            self.notify('Editing was unlocked with a passkey of %s for %d min%s.' % (a['name'], minutes, where),
+                        'info', title='Editing unlocked', about='editing')
+            return {'token': token, 'until': srow['expires'], 'minutes': minutes, 'passkey': True,
+                    'who': self.who_of(a, srow), 'must_change': False}, None
+        self.store.add_event('security', '%s signed in with a passkey (%s)%s' % (a['name'], row['label'], where))
+        log('%s signed in to the dashboard with a passkey%s' % (a['name'], where))
+        self.notify('%s signed in with a passkey%s.' % (a['name'], where), 'info',
+                    title='Somebody signed in', about='editing')
+        return {'token': token, 'who': self.who_of(a), 'passkey': True,
+                'must_change': bool(a.get('must_change'))}, None
+
+    def passkey_change(self, token, act, ident, label='', by_cli=False):
+        """Rename or remove a passkey: one's own, or - an administrator, or
+        root's command line - anybody's (a lost iPad). 'all' removes every
+        passkey, from the command line only."""
+        s = self.session_get(token) if not by_cli else None
+        if not by_cli and not s:
+            raise PermissionError('not signed in - sign in first')
+        boss = by_cli or (s and not s['must_change'] and s['role'] == 'admin')
+        by = s['name'] if s else 'the command line'
+        if act == 'delete' and ident == 'all':
+            if not by_cli:
+                raise PermissionError('every passkey at once is removed from the command line only')
+            with self._auth_lock:
+                gone = list(self.passkeys)
+                for one in gone:
+                    self.passkeys.pop(one, None)
+                    self.store.passkey_delete(one)
+            if gone:
+                self.store.add_event('security', '%s removed every passkey (%d)' % (by, len(gone)), 'warn')
+                self.bump()
+            return len(gone)
+        row = self.passkeys.get(str(ident or ''))
+        if not row:
+            raise ValueError('there is no such passkey')
+        if not boss and str(row['name']).lower() != s['name'].lower():
+            raise PermissionError('only an administrator changes the passkeys of another account')
+        if act == 'rename':
+            label = re.sub(r'[\x00-\x1f\x7f]', '', str(label or '')).strip()[:80]
+            if not label:
+                raise ValueError('a passkey needs a name')
+            with self._auth_lock:
+                row = dict(self.passkeys.get(row['id']) or row, label=label)
+                self.passkeys[row['id']] = row
+                self.store.passkey_put(row)
+            self.bump()
+            return 1
+        if act != 'delete':
+            raise ValueError('a passkey is renamed or removed, nothing else')
+        with self._auth_lock:
+            self.passkeys.pop(row['id'], None)
+            self.store.passkey_delete(row['id'])
+        self.store.add_event('security', '%s removed the passkey %s of %s'
+                             % (by, row.get('label') or '', row['name']), 'warn')
+        log('%s removed a passkey (%s) of %s' % (by, row.get('label') or '', row['name']))
+        self.bump()
+        return 1
 
     def permit_join(self, enable, seconds=254):
         if not self.connected or not self.client:
@@ -40431,7 +41074,29 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, dict(d.pin_shape(), ok=True,
                                             who=d.who_of(s['account'], s['row']) if s else None,
                                             public_view=bool(CONFIG.get('public_view', True)),
-                                            idle_min=int(CONFIG.get('session_idle_min') or 0)))
+                                            idle_min=int(CONFIG.get('session_idle_min') or 0),
+                                            # passkeys (5.43): on, and of which kinds of account
+                                            **d.passkey_shape()))
+            if path == '/api/auth/passkeys':
+                # the passkeys of the account signed in on this page (5.43);
+                # an administrator (or root's command line) may ask for one
+                # account's (?name=) or everybody's (?all=1)
+                token = self.headers.get('X-Zigmon-Session') or ''
+                s = d.session_get(token)
+                if not s and not REQUEST_CALLER.cli:
+                    return self._error(403, 'not signed in - sign in first')
+                boss = REQUEST_CALLER.cli or d.may(token, 'admin')
+                name = str(q.get('name') or '').strip()
+                if q.get('all') or (name and (not s or name.lower() != s['name'].lower())):
+                    if not boss:
+                        return self._error(403, 'only an administrator sees the passkeys of another account')
+                    rows = d.passkeys_of(None if q.get('all') else name)
+                else:
+                    rows = d.passkeys_of(s['name'] if s else None)
+                rp, _why = pk_rp_place(self.headers.get('X-Zigmon-Host') or '')
+                return self._send(200, {'ok': True, 'passkeys': rows, 'on': d.passkeys_on(),
+                                        'here': rp or '', 'here_why': '' if rp else _why,
+                                        'most': PASSKEY_MOST})
             # Some answers are not a view of the house at all but the whole of
             # how it is set up, passwords and phone numbers with them. Those
             # ask for the PIN whatever public_view says: public_view means
@@ -41331,6 +41996,62 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, {'ok': True, 'message': 'the password is changed; every other '
                                         'sign-in of this account has ended',
                                         'who': d.who_of(s['account']) if s else None})
+            # ---- passkeys (5.43) ----
+            # The name the page was opened on is the RP ID: the relay says it
+            # (X-Zigmon-Host, the Host the browser sent), and a passkey made
+            # on one name never answers on another.
+            if path == '/api/auth/passkey/register':
+                # making one needs the sign-in it is for - and one that may do
+                # things at all: a password still to be changed is changed first
+                err = d.auth_refusal(body.get('session'), 'viewer')
+                if err:
+                    return self._error(403, err)
+                place = self.headers.get('X-Zigmon-Host') or ''
+                try:
+                    if str(body.get('step') or '') == 'begin':
+                        return self._send(200, dict(d.passkey_register_begin(body.get('session'), place), ok=True))
+                    if str(body.get('step') or '') != 'finish':
+                        return self._error(400, 'step is begin or finish')
+                    one = d.passkey_register_finish(body.get('session'), place, body.get('name'),
+                                                    body.get('clientDataJSON'), body.get('attestationObject'))
+                except PermissionError as e:
+                    return self._error(403, str(e))
+                except ValueError as e:
+                    return self._error(400, str(e))
+                return self._send(200, {'ok': True, 'passkey': one,
+                                        'message': 'the passkey is added - next time, sign in with it',
+                                        'passkeys': d.passkeys_of(one['name']), 'on': True, 'most': PASSKEY_MOST})
+            if path == '/api/auth/passkey/begin':
+                try:
+                    return self._send(200, dict(d.passkey_login_begin(self.headers.get('X-Zigmon-Host') or ''),
+                                                ok=True))
+                except PermissionError as e:
+                    return self._error(403, str(e))
+                except ValueError as e:
+                    return self._error(400, str(e))
+            if path == '/api/auth/passkey/login':
+                result, err = d.passkey_login(self.headers.get('X-Zigmon-Host') or '', body,
+                                              str(getattr(REQUEST_CALLER, 'who', '') or ''),
+                                              str(self.headers.get('X-Zigmon-Agent') or '')[:120])
+                if err:
+                    return self._error(err[0], err[1])
+                return self._send(200, dict(result, ok=True))
+            if path == '/api/auth/passkeys':
+                try:
+                    d.passkey_change(body.get('session'), str(body.get('do') or ''), str(body.get('id') or ''),
+                                     body.get('name'), by_cli=bool(REQUEST_CALLER.cli))
+                except PermissionError as e:
+                    return self._error(403, str(e))
+                except ValueError as e:
+                    return self._error(400, str(e))
+                s = d.session_get(body.get('session'))
+                owner = str(body.get('owner') or '').strip()
+                if owner and (REQUEST_CALLER.cli or d.may(body.get('session'), 'admin')):
+                    rows = d.passkeys_of(owner)
+                else:
+                    rows = d.passkeys_of(s['name']) if s else d.passkeys_of()
+                return self._send(200, {'ok': True, 'passkeys': rows, 'on': d.passkeys_on(), 'most': PASSKEY_MOST,
+                                        'message': 'renamed' if body.get('do') == 'rename' else 'the passkey is removed'})
             if path == '/api/accounts':
                 err = d.auth_refusal(body.get('session'), 'admin')
                 if err:
@@ -44032,6 +44753,8 @@ def accounts_main(arguments):
       zigmon --account-role NAME ROLE       viewer, operator or admin
       zigmon --account-off NAME / --account-on NAME
       zigmon --account-add NAME ROLE --with-pin   a PIN account (5.19.1), its PIN made up here
+      zigmon --passkeys [NAME]              the passkeys (5.43), of everybody or of NAME
+      zigmon --passkey-forget ID|all        remove one passkey (a lost iPad), or every one
     A password made up here is changed at the first sign-in; --account-password
     on a PIN account makes up a new PIN."""
     pal = Palette('--no-color' not in arguments and sys.stdout.isatty())
@@ -44052,6 +44775,36 @@ def accounts_main(arguments):
                                               time.strftime('%Y-%m-%d %H:%M', time.localtime(a['last_in']))
                                               + (' from %s' % a['last_from'] if a.get('last_from') else '')
                                               if a.get('last_in') else 'never'))
+        return 0
+    if word == '--passkeys':
+        # the passkeys (5.43): their names, whose, for which name, when used -
+        # never their keys
+        code, out = api_call('/api/auth/passkeys' + ('?name=%s' % quote(rest[0]) if rest else '?all=1'))
+        if code != 200:
+            print(pal.crit('refused: %s' % (out or {}).get('error', 'the daemon did not answer')))
+            return 1
+        print(pal.dim('passkeys are %s on this server' % ('switched on' if out.get('on') else
+                                                          'switched off (zigmon --set passkeys=true)')))
+        rows = out.get('passkeys') or []
+        if not rows:
+            print(pal.ok('no passkey'))
+            return 0
+        print(pal.title('%-18s %-24s %-22s %-17s %s' % ('account', 'passkey', 'for', 'last used', 'id')))
+        for r in rows:
+            print('  %-18s %-24s %-22s %-17s %s' % (
+                str(r.get('name'))[:18], str(r.get('label') or '')[:24], str(r.get('host') or '')[:22],
+                time.strftime('%Y-%m-%d %H:%M', time.localtime(r['last_used'])) if r.get('last_used') else 'never',
+                str(r.get('id') or '')))
+        return 0
+    if word == '--passkey-forget':
+        if not rest:
+            print('which passkey? zigmon --passkey-forget ID (zigmon --passkeys shows them), or all')
+            return 2
+        code, out = api_call('/api/auth/passkeys', 'POST', {'do': 'delete', 'id': rest[0]})
+        if code != 200:
+            print(pal.crit('refused: %s' % (out or {}).get('error', 'the daemon did not answer')))
+            return 1
+        print(pal.ok('every passkey is removed' if rest[0] == 'all' else 'the passkey is removed'))
         return 0
     if not rest:
         print('which account? zigmon %s NAME' % word)
@@ -51628,6 +52381,8 @@ HELP_LINES = [
     ('sudo zigmon --account-password admin', 'a new password, when it is forgotten'),
     ('sudo zigmon --account-role jana admin', 'what an account may do: viewer, operator, admin'),
     ('sudo zigmon --account-off jana', 'may not sign in any more (--account-on again)'),
+    ('sudo zigmon --passkeys', 'the passkeys (Touch ID, Face ID) of the accounts; --passkeys NAME of one'),
+    ('sudo zigmon --passkey-forget ID', 'remove a passkey - a lost iPad (all: every one)'),
     ('zigmon --sessions', 'who is signed in, and from where'),
     ('sudo zigmon --full-backup', 'a backup of the whole installation, made by root'),
     ('sudo zigmon --full-inspect FILE', 'what one holds, and whether this machine made it'),
@@ -51871,6 +52626,9 @@ def build_parser():
     a.add_argument('--account-role', metavar='NAME', nargs='+', help='(root) NAME ROLE: what the account may do')
     a.add_argument('--account-off', metavar='NAME', help='(root) NAME may not sign in any more')
     a.add_argument('--account-on', metavar='NAME', help='(root) NAME may sign in again')
+    a.add_argument('--passkeys', metavar='NAME', nargs='?', const='',
+                   help='(root) the passkeys of the accounts (5.43), or of NAME')
+    a.add_argument('--passkey-forget', metavar='ID', help='(root) remove a passkey (all: every one)')
     a.add_argument('--backup', nargs='?', const='list', metavar='[now]',
                    help='the backups there are, or write one now')
     a.add_argument('--full-backup', action='store_true',
@@ -56855,7 +57613,7 @@ def main(argv=None):
     if arguments and arguments[0] in ('--change-keep', '--change-back', '--changes'):
         return change_main(arguments)
     if arguments and arguments[0] in ('--accounts', '--account-add', '--account-password', '--account-role',
-                                      '--account-off', '--account-on'):
+                                      '--account-off', '--account-on', '--passkeys', '--passkey-forget'):
         load_config()
         return accounts_main(arguments)
 

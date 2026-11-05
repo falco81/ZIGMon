@@ -940,7 +940,8 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do',
+                       'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -992,7 +993,11 @@ if (isset($_GET['api'])) {
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
                   'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about',
                   'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy',
-                  'acmepush-do' => '/api/acmepush'];
+                  'acmepush-do' => '/api/acmepush',
+                  /* passkeys (5.43): making one (signed in), the options of a sign-in
+                     (nobody signed in yet), renaming and removing one */
+                  'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
+                  'passkeys-do' => '/api/auth/passkeys'];
         $body = is_array($in) ? $in : [];
         // a package is checked when its last piece arrives, a certificate made
         // with openssl: longer than an ordinary save
@@ -1003,10 +1008,128 @@ if (isset($_GET['api'])) {
         exit;
     }
     if ($what === 'manifest') {
+        // The dashboard on an iPad's home screen (5.43): its own window with
+        // no Safari bars, turning with the iPad, and its own icon. Answered
+        // before any sign-in - the iPad reads it off the sign-in page.
         header('Content-Type: application/manifest+json');
-        echo json_encode(['name' => 'zigmon', 'short_name' => 'zigmon', 'start_url' => './', 'display' => 'standalone',
+        header('Cache-Control: max-age=86400');
+        echo json_encode(['name' => 'zigmon', 'short_name' => 'zigmon',
+            'description' => 'The house: sensors, sockets, heating and alerts',
+            'start_url' => './', 'scope' => './', 'display' => 'standalone', 'orientation' => 'any',
             'background_color' => '#0d1117', 'theme_color' => '#0d1117',
-            'icons' => [['src' => '?api=icon', 'sizes' => 'any', 'type' => 'image/svg+xml', 'purpose' => 'any']]]);
+            'icons' => [['src' => '?api=icon&size=192', 'sizes' => '192x192', 'type' => 'image/png'],
+                        ['src' => '?api=icon&size=512', 'sizes' => '512x512', 'type' => 'image/png'],
+                        ['src' => '?api=icon', 'sizes' => 'any', 'type' => 'image/svg+xml', 'purpose' => 'any']]]);
+        exit;
+    }
+    if ($what === 'icon' && in_array((string) ($_GET['size'] ?? ''), ['180', '192', '512'], true)) {
+        // the icon on the home screen (5.43): favicon.svg's thermometer on the
+        // panel's colour, square and opaque - iOS rounds the corners itself,
+        // and see-through corners would show as a black frame. RGB PNGs, made
+        // once and kept here so the page needs no file of its own for them.
+        $zigmon_icons = [
+        180 => 'iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAFqElEQVR42u3dPWobQRjG8T1FigRciJDGBgeMcBGwC4MxOOAUKZzOnUlrcOVSbQ'
+            . 'o3KZMylU/gE/gEuUBOkBMkDwiEEn/N7O7Mvu87f3gKf0i7K+1PM7Mzo53uxasZIQ+m4y0g4CDgIOAg4CDgIOAg4CDgIOAg4CAEHAQcBBwEHAQc'
+            . 'BBwEHAQcBBwEHISAg4CDgIOAg4CDgIOAg4DDWd7sfdo+udw9u96/uDla3P0X/VH/0gP0MHA0kc3D83efv7//8vP0x5+s6Cl6op4OjoAmVBJ8/P'
+            . 'Y718T9aCPaVCNKIuN4+frtzuniw9dfw03cjzarjWsX4PDHQi2GUYqKZwsS7SgqkS5kJVKotHiiFAlZ0XTBCoyDq9uaLNajXQcrQrpIBUaFeuTZ'
+            . 'WiZSERIEh64zp2WxHh0MOKhKglcxnXcZPXq06kQH5t1Hhwx8RMNhX0YAH15x7F/cjNVFcbS4UxNy9+x6Ff2qP47VWaJDBUe96PwNHx/ZPrnc2N'
+            . 'p7ekd6gB42fFxGBwyOSkPtQ8oJnewe5byeoicOKUs8Dv137poa/T7ESxbDD6A3ER22u8ZH10JTQ22IEU+MNtWvz81d46OLXaHo81qoPNdme5Rh'
+            . 'vioXTzhyr131+GebnEOijfc4JHCMH1X2BjsYenS3jNL0Acc/yWoG1ux6yvWhFwKOyYoNNQVm8+Oah6fdZbU/vBQePnAcLe7S3/pJZlRop+lHqJ'
+            . 'cDjtHafVlj5VMdZ9bMgaIt5YZwpHcqTNvRlNVB52JCUBepKTr5EEb6oI+LZmkXpk6x0D+dVXjYr1ms49g5XfgqqNMrQb00cFQaTDHyQUwv6uwP'
+            . 'tXQxGhymuqUT+8TsNzus4/A4mya9WQqOGsOwpkY7nR52WBym5tHoYMBhpXzW1aO1I0+8oDU+tzQCDoNDFYmDQeAABzi84ZjNj1XlP5t+o//g8I'
+            . '0j8fwV3Tg4wAEOcIADHOAABzjAAQ5wgAMc4AAHOMABDnCAAxzgAAc4wAEOcIADHOAABzjAAQ5wgAMc4AAHOMABDnCAAxzgAAc4wAEOcIADHOAA'
+            . 'BzjAAQ5wgAMc4AAHOMABDnCAAxzgAAc4wAEOcIADHK3i6HcH46I4uINx8RS993k5HNz73BaO3Hc5faXxHmues2pCpYy+hpfOR9Yan6sVSdNPZP'
+            . 'pKXsbf/IZWaprNj7MWL36wikm52zUrNVXKWGu8pX+aB5ZSrPFWL+mr2D92ztQ8TPwop0cbfKwJnK7Q/or2wdeVVS2QvtBrVrTZ+1UM68rWTvrn'
+            . '/r9ug3IyHvORvvSfqeUsHeNIX3d4vfDQD+nrnPeOdrG+x3SL9lcc9oEjvWZZXnNm9XENz6qXLOsK2X6d4gNH7plWQy+9sBkl2l16w9nmumOOcW'
+            . 'wenmc1BYo2NYbvUS8HHBP0htmP/b4vfziyym3Lsd+94Q9HzTZmhdYrOCYbpDUb48OwjnGMO0RSP+lDx+DokzpdW6W7y8BRKrP5sUcc/Va2BkfB'
+            . 'DnUjcdFZHgRH1jyPyWN/3kY0HF6ubH1du8bBUWIWT7U5QeBo2od3Ge5xmG1/+G1nRMORNQWrQox/j605HMvO9coj9Q+O3fvqIG8Fh4XOdXcd5A'
+            . '3hyJoTVCJeZvG0iCP9G8yF4v3yJDKO3Fm+42Y1txkczPnwPVejRRxTdau77iZvCMckhUe8YiMmjvotj3itjcg4sr6ZOLzjK9hFSnAcNSuXkBVK'
+            . 'cBx1vuri6Eso4KjqI7aM+DjK+QgvowkcywnrI36hQZvyOJUcHE9dv4wyZquNRL02aRfHMhtbe72njemJLu64Ao6hRHZOF+l3MNaDW2PRLo51JZ'
+            . 'uH57tn1wdXt0eLu1X0q/6of7VpAhwEHAQcBBwEHAQcBBwEHAQcBByEgIOAg4CDgIOAg4CDgIOAg4CDgIOAgxBwEHAQcBBwEHAQcBBwEHCQuPkL'
+            . 'y31cHuW5FtMAAAAASUVORK5CYII=',
+        192 => 'iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAGI0lEQVR42u3dvUpcQRjG8XMVKRKwkJBGwYCEFIIWgggKprAwXbqQVrCy3NYiTU'
+            . 'otU3kFXoFX4A3kCryC5A0HlkVdd945X/O884en0v04u+e3M++cOedM8+bdOiHZafgKCIAIgAiACIAIARABEAEQARAhACIAIgAiACIEQARABEAE'
+            . 'QIQAiACIAIgAiACIEAARABEAEQARAiACIAIgAiBCAPR61jZ3P+x+/fzt586Pm8PZ/Yuxf9kD7GH2YL4xAP1Hs30227+8O71+PPv91xV7ij3Rnl'
+            . '45pqZON9aQfPn1x4tmWeyl7AXrlFQXIOt9rCfqy83z2IvbWwAoYDYOvvfY5KxskOztAESrQ2tUN6C37z/auGl8OouxDbDNAJBkwzNan7WyRwvc'
+            . 'FMUEZGOiEugsxjYJQBrd1t75bWl62tiGxevOmmB6jq8eytTTxjYvmKEGPRgCkIyeeIYa9GCodkD7l3c9DrkPZ/c2Ympn3edp/2L/6vHQgG02gK'
+            . 'ZPL4cKXfPq8zn8Xg4zAmjiGa4u++/0+rHLLHo7q59xKshi1GfNGunSJ3vntXR6qULsRbowsidKF0NNhaWPlTK9n7tjL5g9ZStdDDW1dV5Wvgy3'
+            . 'VfbitXVkqoAyRkPWWYwwqWlvkdGd2ccB0HjJ+KHbTl3/dDTO5tkbZRgatGkEUKfaeUw92YZEq2k9QFsnF94f98h65oa822kfDUDFVT8T7hWvdc'
+            . 'VKSAyQlahaI2TvsQa5cxfFALlOFiuhqvBWbPYBATTgzlAsKbwdmVYprQTIdfCwqHrCVbdpHVRsovZfRY1oXI2QVi/WhBx/WdlR2sanV0JaYzEZ'
+            . 'QGubu9I/YlfzKXSfhiZkAVTgYNh1AEKoDJIBlH6tYIH9l7cXE7oKUQZQ+hG5Yk+vCfARhAGln65V7M83vRG1Dwugydr/YguI9DKu2F5YGFCA6S'
+            . 'RXHQ2gyQAVOwZ2HYkA0GSA+BQAmuarX3Z76OcBEIDCvgWAAAQgAAEIQAACEIAABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQAACEIAABCAA'
+            . 'AQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQAACEIAABCAAAQhAAAIQgAAEIAABCEAAAhCAAAQgAAEIQAACEIAABKDqAWWvOTr03nWt+QqgyQBlL3'
+            . 'Uw9N5lqQMAAUgW0AjLPQ29d1nuSQNQ3mptrpVQ8tZzSV9wDkD9J/3n6131eOPge/quXWTqXZgsfdVplrzsP66l19c/HSXSSd+py7AmMrJNEl30'
+            . 'Pggg1w7Y+XGzssNK7xNTepyVnZptUu8/AAD5kr7q5eu9mLUZ6S+Vvkjl601RelMntN6lGCBXpbJsd6bXUhlZVru4Fr0XWrJZDJCrDHpxILN3fj'
+            . 'ucnjb2Fl2GkFoFkBgg11TA8yOKriqkS55UYK7jh12mYgDUcy+2WAm5Wq/uWWxFXAM9rf5LD5DXQVuU2KCm96p5ZSHcjqS8JZdW/6UHyDUWm3dk'
+            . 'x1cPY+ppY2/q7by0xl+qgAYdRk0boQPQwoCsxhy5Pxqt19Mqn1UBRW2EFJsfVUDxGiHR5kcVkGX7bBYJkH0c0R2hCsgyydhqoPGa7l4QBuSany'
+            . '85QnPvoQDF6Mh0O68IgLyTG6VFbuIiICAbvIgWQ7bZoiOvUIDa0wvlRvW2wXln5gNoqIJayNB8qhVAGKpaTyhAEoaC6YkGqK2Hiq2pbcNi1D2R'
+            . 'AbXjsgLH9rZJAcZcVQAq8Bij+tHCGgG5bpYwdAJ/yZEB9XjtacfrVgFEL0b/VR8g1x1bhku8kVctgEqYag0wXVo1IO+FNb0n+357AKKUDl4+1w'
+            . 'JowhMXg81aVApoqsuARC/TAVARZ+BLnycPoIkvJdO9yAtA05/sEe+EDQCNZ6g2PdUBGvSEoZCn+wDo5Xqo99vd2QvWU/fUDmh+kLrjXcbnN9IL'
+            . 'f7gZQEuzdXKRzcieKHdHOgAN1Rrtnd8m1tf2MHtwza0OgF4bpm2fzaygOZzdP4n90f5V2yALQARABEAEQIQAiACIAIgAiBAAEQARABEAEQARAi'
+            . 'ACIAIgAiBCAEQARABEAEQIgAiACIAIgAgBEAEQARABEAEQIQAi0+QfQGJG+F9wurQAAAAASUVORK5CYII=',
+        512 => 'iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAIAAAB7GkOtAAASfklEQVR42u3dsUpkyRrA8X2KG7hgIGKioCBiILSBIAMOaLCBZmZiKhgZmk5gYr'
+            . 'iGN/IJfIJ5gnkBn2CfYPcbXGTR0XG6+9RXdeoHv+Ryd9e2uq3/6Tp1zvntf78vAdCh3wwBgAAAIAAACAAAAgCAAAAgAAAIAAACAIAAACAAAAgA'
+            . 'AAIAgAAAIAAACAAAAgCAAAAgAAAIAAACAIAAACAAAAgAgAAAIAAACAAAAgCAAAAgAAAIAAACAIAAACAAAAgAAAIAgAAAIAAACAAAAgCAAAAgAA'
+            . 'AIAAACAIAAACAAAAgAgAAYBQABAEAAABAAAAQAAAEAQAAAEAAABAAAAQBAAAAQAAAEAAABAEAAABAAAAQAAAEAQAAAEAAABAAAAQBAAAAQAAAB'
+            . 'AEAAABAAAAQAAAEAQAAAEAAABAAAAQBAAAAQAAAEAAaxMjkJm8fX26c3Ye/q4dP112d//PnX8f//fhb/87//b/zDT/9W/OtP/x3jiQBAjRbXJj'
+            . 'FHx3y9e3H/enKfl6dIxI+IHxQ/Ln6okUcAoLSF5Y3V/bOYiIeb7j+ehHgZ8WLiJXlfEAAYcNLfOb/7/OVb1oz/vnhh8fLEAAGA+VjaOtg8vo4D'
+            . '7Ton/bfEC46XHS/eO4gAwC/P+3E0fXT72Na8/1r8CvGLKAECAD8/nRsHziOY939YgvjVnDpGAOCl9cPL5tZ5pl4dil/WO44A4JB/sn16k7iTJ3'
+            . 'EHUfzivhAgAHR6odbuxX1v8/5rMQguNEMA6Gjq72S155fWhWQAAcDULwM+KggApn4ZAAGg6dO8e1cPpvVfFYPmFDECQKsWljd2zu9M5bOIAXRj'
+            . 'CQSA9vb1d7i5c6ANo64bQABoZs3Hcv8QJwasCCEAVG379MZkPZwYXp8xBIDqLG0dVHuj5jGJQXZrOQSAimweX5uaS4oB96lDAMjf6mPFP+usgA'
+            . '1CCACZl3fZ6pO7QcglYwgAzvc6MwwCQJFlHxf31nbZsOUgBAC7fewOAgHAor9TAiAAzMX64aVJtn7uG4EAYKe/qwRAAJiZZze2+KRJn1sEALO/'
+            . 'BoAAYPbXABAAzP4aAAKA2V8DEAAw+2sAAoDZHw1AALDfH9cHIAC41hfXCSMAjM/S1kFXT1N5oZ/f3T3jEABezv7ju8tbTOu7F/fbpzer+2crk5'
+            . 'PFtclHhiL+sfiH41+JfzH+9fG1Id5oDUAA+NfC8sY47vAcv8XO+d364eUH5/qPi/9g/GfjPz6agfL8AASA75p+ukscz8ZxehywF5vR4gfFj4sf'
+            . '2vR3pnjTffIRgN41+mTHmHzjeDx9KSNeQLyMRkvgWZIIQNdWJictHrrGAXhtIxkvqcUvUh4gIwBGod+l/4YOXeOlxhHr3Bf3536qIF5kW6PqZI'
+            . 'AA0KNW9rcc3T6uH142NE/FS40XHC+7lb1S/hYEAFf8Vjr1N31hXRMZcIWwAOCar+oWfEawOhG/QhOLQq4MEAB6Uflm9t2L+5EtTMevU/kt9uIj'
+            . '4e9CALDvM3kaGvG+lPjVak6vXaECwMgtrk1MQAL8lso3WSEAjHDnz9HtY1dr0PHL1nly2I4gAWC06rzb8/hW/Js+K+B+0QKAy75MN50m2aVhAo'
+            . 'ClZzclLrccVFuYnQ0WAJz7HXa3j/ON/313atsd5N0RAMajqvuUuRn9DxfoqmqAm0ULAOPZfl7VKV/vyFuqOi3sRqECgK2fZv9OG2BLqADg8N/s'
+            . '328DfAkQABz+m/07bYAvAQKAw383GktQyTlhXwIEAIf/9vx0ui/IlwABoNUrjGq42suO8lmuD6jhGjHX6wkA1pHNHZ1W3PkbAaC9g0cPGhyHGh'
+            . '7e6WucANCS9Dv/OGwc05c5dwcSAFqSu3Z8dPvoxO98TwjnPj8gPk7eBQGgDek3Gbb0P76TAZ4TIAC0IffWb5YLRrms5/ZwAoDTvz9f/PEWDCd3'
+            . 'IcipYAHAphEXjqbJvbTbti4BwEGinT+d7gjy9U4AcKrQs2STdwQlbvFyel8AqNfO+Z1zv84GDyc+YMZfALD+Y+N/j5cFWAUSAOz/sUm830s97A'
+            . 'USAOz/cVTY6bc9e4EEgBpl3f3f4X9XXwI8IUAAqHFd2OYf24HK8I4LAHVZ3T+z+cd2oDLiw2bwBQAbQJ0S7PG0v82gAkBdUp4f6wZh6VJu/Bcf'
+            . 'NiMvAPR+AsBSQLdLf04DCAC1SLlHmIeEVCLlVLC7/gkAXZ8MdOu3SqTcHs7JfwGg6ysArP/0vArkagABoN9FAOs/PgCGXQDo9Ayw9R+rQM4DCw'
+            . 'CdngF2+4eqpNwWwnlgAaDTM8CO/nwLdB5YAOjx67/rgFwJaBlQAOh0C5A7AVSo/L1AbAQSAHrcAeIEgNMANgIJAFXwZHBCvCnlPwmGXQDwZ49D'
+            . 'AQSADvaAWvl1NshOUAGg05Vfez/sB3M2SADo9CIAu799GHwYBIBO/+bdA65a5e8KJwACQF/f+i37OiFkPVAA6PS8n40ftoTZESAAdBoAY24nqA'
+            . 'AIAAKAAAiAACAACAACwLgD4PYvlSt8YygBEAAc8eEbIQKAACAACAACMOKJzzgIgAAgAAIgAP4MBQABEAABQAAQAAEQAAQAARAAAUAAEAABEAAE'
+            . 'AAEQAAFAABAAARAABAABEAABQAAQAAEQAAQAARAAAUAAEAABEAAEAAEQAAFAAARAAARAABAAATDxGQcBQAAEwMRnHAQAARAAE59xEAAEQABMfM'
+            . 'ZBABAAATDxGQcBQAAEwMRnHARAABAAE59xEAABQABMfMZBAAQAATDxGQcBEAAEwMRnHARAABAAATAOAiAACIAACAACgAAIgAAgAAiAAAgAAoAA'
+            . 'CIAAIAAIgAAIAAKAAAiAACAACIAACAACgAAIgAAgAAiAAAgAAoAACIAAIAAIgAAIAAKAAAiAACAAAmDiEwABQAAEwMRnHAQAARAAE59xEAAEQA'
+            . 'BMfMZBABAAATDxGQcBQAAEwMRnHARAABAAE59xEAABQABMfMZBAAQAATDxGQcBEAAEwMRnHARAABAAATAOAiAACIAACAACgAAIgAAgAAiAAAgA'
+            . 'AoAACIAAIAAIgAAIAAKAAAiAACAACIAACAACgAAIgAAgAAiAAAgAAoAACIAAIAAIgAAIAAKAAAiAACAAAmDiEwABQAAEwMRnHAQAARAAE59xEA'
+            . 'AEQABMfMZBABAAATDxGQcBQAAEwMRnHARAAAyBAJj4jIMACAACYOIzDgIgAAiAic84CIAAIAAmPuMgAAKAAJj4jIMACAACIAACIAACgAAIgAAg'
+            . 'AAiAAAgAAoAACIAAIAAIgAAIAAKAAAiAACAACIAACAACgAAIgAAgAAiAAAgAAoAACIAAIAAIgAAIAAKAAAiAACAACIAACAACIAAmPuMgAAiAAJ'
+            . 'j4jIMAIAACYOIzDgKAAAiAic84CAACIAAmPuMgAAiAAJj4jIMACAACYOIzDgIgAAiAic84CIAAIAAmPuMgAAKAAJj4jIMACAACIADGQQAEAAEQ'
+            . 'AAFAABAAARAABAABEAABQAAQAAEQAAQAARAAAUAAEAABEAAEAAEQAAFAAJjC0e2jiU8AssYhPn7+BgUAR3wC4BshAoAACIAAIAAIgAAIAAKAAA'
+            . 'iAACAANB6AlcmJcahz4ou3RgAQgI5sn94IgABkBSA+fv4GBYCOArB5fC0AdQYg3hoBQAAEoLu/eQHwYUAAumPZVwCcEEIABKDriz8FoPxl4QIg'
+            . 'ACRbWN4o/Ddf505QASi/BzTEx8/foADQ1599hcd9AlD+u6A7wQkA+T5/+ebUnwCUPwMcHzx/fQJAd6f+9q4e6lkBWz+8jNdT/uA3fmj86HrWQM'
+            . 'oPgqvABIAeD/3++POv9N96df8sZd7/YQnixaQPSLwpvggiAN2J49Dys97S1kHWIf/m8XX57S4f2RwVLyzrC0G8HeV/5fjg+esTAHo8+1f+euCY'
+            . 'W+OQs/xx7q9+N4oXWT4D5a8BtgdUAOh3I1DJE4BNTP25GSi/EcAWIAGg341AxfaArx9eNjT1v8hAmUWSlGtBbAESAGqxe3E/viXgpa2D8hucht'
+            . 'gqM/T5kpSTQPGR83cnAFQhZQl40F2A5bc2tbthJiWTdd4UFgHoUcomkLC4Nhnid0lZ0SqwZjLEV4F4C1J+naxtYAgAVWwDH+LANuWrTNMHzilf'
+            . 'lWq4EAQBIPNC0PneGXRheaOSC7sKXDg2x/PnKZdE1HMpOAJA5rHzXC6CXVybjHLZ553loLmsnsXgj+N7DAJAk6cBZj8VHK+80Y2eM66izL6Mnr'
+            . 'VLygkAAaA6WTdImOVgtt1t/ukXCmSd/q3ziUAIgKsB7lNmhKm3hKdsYK/N1A1o7u1GABhQ1orwdF8CzP6zNCDr8H9eZ30QAMZwS4DpjgrN/jM2'
+            . 'IOvw32MgBQCbQWf6EmD2n7EBiYf/NoAKAPVKnFs/uB2ozz0/890XlHiLJM8AEACsAk15g3iz/+wNSHn8g/UfAcAq0EwbBGPu6Opqr6mvEXt/kk'
+            . '18Gpr1HwHAXqAp7w7UyZ0eBp1nc2+Sav+PANCA3GWWHy5ijP4ubwXutZB1sbcbwAkALdk5v8tdxKhq5mrU647mLqDFh8pflgDQgMRtgq8Xgiz9'
+            . 'z+VkQPoTcoZ49gMCwCDSH6b4vCMo9+tI054PunN3/gz99DcEgPFcEPC8ZBwHsBZ/Zl8IimFM3ztr+78A0JjE/YLPh40Wf2ZfCEr/Muf2nwJAe2'
+            . 'y8weNfEIB+rwp22S1zWcrz1yQAtCd96wite+fKPgQAXwJw+I8A4EsADv8RAHwJwOE/AoAvATj8RwDwJQCH/wgArgnA3n8EgF4uDKYVLv0VAMYm'
+            . '/YZitOKnj/ZEAGhP+l1lqJ8bfwoA47S4NnE2mPfP/brvvwBgSyi2fiIAjI5bNPPBZ3kiAIyNh7TwwacQIwBYCMLiDwKAhSAs/iAAjGAhyI4gnn'
+            . 'b+WPwRANwfAnd9QADoxt7VgxmwZ/EB8FcgAHRqYXnDPYJ6vuePW34KgFFwMsDJAEv/CABdWj+8NCH2Jt50n3wEgO92zu/Mif2It9tnHgHACWEn'
+            . 'fhEAnBBe3nB1WA/XfDnxiwBgU5BtPwiAUcCmINt+EADQALM/AoAGaIDZHwFAAzD7IwBoAGZ/BAANwOyPAKABmP0RADQAsz8CwNga4DrhVq71Nf'
+            . 'sjALhXhDs9gAAwP7sX9+bZOsVb4/OJADAsDxP2aF8EgH6tTE6cFq7nlG+8HT6TCADlLK5NnBKoYdE/3gifRgSABB4l5sFeCAD9Wt0/sxxUftkn'
+            . 'ht1nDwHA1iAbfkAAsC/Inh8QAApfJ2xSLsm1vggAFXEaoOQJAJ83BICK7F09mJrLiKH2eUMAqMj64aWpuYwYap83BIC6rgszNZfhyi8EgOq4ML'
+            . 'jMpb8+aQgANoPaAAoCgFUg6z8gANgLZP8PCAD2Atn/AwJAQUe3j2bqIcTA+nQhAFRt+/TGZD2EGFifLgSAqi0sb7gtxBC3f/C0dwSABnhKjGe/'
+            . 'IAD0ux/Ul4D5Hv7b/YkA4EyA1X8QAJwJsPoPAkCd3BnCvR8QAPrl9nBu/YYA0KmVyYlJfBYxgD5FCAC2hNr6CQJAa2eD3Rxiuhs/OPeLAGAhyO'
+            . 'IPCAAuC7DxHwSA5ny6/mpm/4gYKJ8WBAAnAyz9gwAwCktbBy4Pfv+i3xginxMEgHFa3T8z0b8lBscnBAFgzDw20uMeEQA0ALM/AoAGmP1BANAA'
+            . 'sz8IABpg9gcBYNT7gjrcGxq/sj0/CAB8vz6gq2vE4pe13x8BgH8tLG90cq+I+DVd64sAwEujv2ecu7whAPCmlcnJKJeD4pdyh2cEAH6+HDSy54'
+            . 'jFr2PZBwGAvr4KOPBHAGD6swKNbhKNl23FHwGA7laErPkgADA3i2uT3Yv7+qf+eJHxUr1fCADM/9tAnYtCTws+jvoRABjc+uFlJReOxctwSx8E'
+            . 'ABLWhTaPrz9/+VZ+3o8fGj/aag8CAFWUYO/qYeh5P36EeR8BgHovIHiKwVy+GcR/5GnSt50fAYD2erC6f7Z9ehM+XX998qIN8T+f/6+nfzL+FT'
+            . 'M+AgCAAAAgAAAIAAACAIAAACAAAAgAAAIAgAAAIAAACAAAAgCAAAAgAAAIAAACAIAAACAAAAgAAAIAIAAACAAAAgCAAAAgAAAIAAACAIAAACAA'
+            . 'AAgAAAIAgAAAIAAACAAAAgCAAAAgAAAIAAACAIAAACAAAAgAAAIAIACGAEAAABAAAAQAAAEAQAAAEAAABAAAAQBAAAAQAAAEAAABAEAAABAAAA'
+            . 'QAAAEAQAAAEAAABAAAAQBAAAAQAAAEAEAAABAAAAQAAAEAQAAAEAAABAAAAQBAAAAQAAAEAAABAEAAABAAAAQAgGH8A+h56kUlNkaiAAAAAElF'
+            . 'TkSuQmCC',
+        ];
+        header('Content-Type: image/png');
+        header('Cache-Control: max-age=604800');
+        echo base64_decode($zigmon_icons[(int) $_GET['size']]);
         exit;
     }
     if ($what === 'icon') {
@@ -1220,18 +1343,28 @@ if (isset($_GET['api'])) {
     // from here on, and nothing in the page holds it.
     // A PIN (5.19.1) goes the same way: ?api=unlock, as it always did, or a
     // sign-in that carries a PIN and how long to unlock for.
-    if (($what === 'login' || $what === 'unlock') && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    // A passkey (5.43) signs in the same way: ?api=passkey-login, its answer
+    // to the challenge, and the cookie set from the token the daemon gives.
+    if (($what === 'login' || $what === 'unlock' || $what === 'passkey-login') && $_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         $in = json_decode((string) file_get_contents('php://input'), true);
         $in = is_array($in) ? $in : [];
         $old = zigmon_session();
-        $send = isset($in['pin']) && !isset($in['name'])
+        $send = $what === 'passkey-login'
+            ? ['id' => substr((string) ($in['id'] ?? ''), 0, 1400),
+               'clientDataJSON' => substr((string) ($in['clientDataJSON'] ?? ''), 0, 6000),
+               'authenticatorData' => substr((string) ($in['authenticatorData'] ?? ''), 0, 6000),
+               'signature' => substr((string) ($in['signature'] ?? ''), 0, 1400),
+               'userHandle' => substr((string) ($in['userHandle'] ?? ''), 0, 200),
+               'minutes' => max(1, min(720, (int) ($in['minutes'] ?? 15)))]
+            : (isset($in['pin']) && !isset($in['name'])
             ? ['pin' => substr((string) $in['pin'], 0, 32),
                'minutes' => max(1, min(720, (int) ($in['minutes'] ?? 15)))]
             : ['name' => substr((string) ($in['name'] ?? ''), 0, 64),
-               'password' => substr((string) ($in['password'] ?? ''), 0, 200)];
-        [$status, $reply] = zigmon_call($what === 'unlock' ? '/api/unlock' : '/api/auth/login', 'POST', $send, 30.0);
+               'password' => substr((string) ($in['password'] ?? ''), 0, 200)]);
+        [$status, $reply] = zigmon_call($what === 'unlock' ? '/api/unlock'
+            : ($what === 'passkey-login' ? '/api/auth/passkey/login' : '/api/auth/login'), 'POST', $send, 30.0);
         if ($status === 0) {
             http_response_code(503);
             echo json_encode(['ok' => false, 'error' => 'the monitoring daemon is not responding — is zigmon.service running?']);
@@ -1264,6 +1397,14 @@ if (isset($_GET['api'])) {
     }
     if ($what === 'whoami') {
         zigmon_relay('/api/auth/whoami', 'GET', null, 10.0);
+        exit;
+    }
+    if ($what === 'passkeys' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        // the passkeys of whoever is signed in (5.43); an administrator's
+        // ?name= or ?all=1 is the daemon's to allow
+        $name = substr((string) ($_GET['name'] ?? ''), 0, 64);
+        zigmon_relay('/api/auth/passkeys' . ($name !== '' ? '?name=' . rawurlencode($name)
+                     : (!empty($_GET['all']) ? '?all=1' : '')), 'GET', null, 10.0);
         exit;
     }
     if ($what === 'password' && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -1350,11 +1491,19 @@ if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex">
 <title>Sign in — <?= h($host) ?></title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<!-- the home screen reads these off the sign-in page (5.43) -->
+<link rel="manifest" href="?api=manifest">
+<meta name="theme-color" content="#0d1117">
+<link rel="apple-touch-icon" href="?api=icon&amp;size=180">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="zigmon">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <style>
   :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c222b;--line:#262c37;--tx:#e6e9ef;--tx-dim:#8b94a3;
     --tx-mut:#5b6472;--ok:#3fb950;--crit:#f85149;--info:#58a6ff}
@@ -1383,6 +1532,13 @@ if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
   .row select{padding:9px 11px;font:inherit;color:var(--tx);border:1px solid var(--line);border-radius:10px}
   .row{display:flex;gap:10px;align-items:center;color:var(--tx-dim);font-size:13px;justify-content:space-between}
   .other{font-size:12.5px;margin-top:12px} .other a{color:var(--info);text-decoration:none}
+  .pk-or{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin-top:14px;text-align:center}
+  .pk-or .pk-word{color:var(--tx-dim);font-size:13px}
+  .pk-or .pk-go{background:var(--panel2);border-color:var(--line);color:var(--tx)}
+  .pk-or .pk-go:hover:not(:disabled){background:var(--panel2);border-color:var(--tx-dim)}
+  .pk-here{margin:14px 0 0;color:var(--tx-mut);font-size:12.5px}
+  /* an iPad on its side, or the app on its home screen: clear of the edges (5.43) */
+  .signin{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -1414,6 +1570,22 @@ if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
         d="M14 12h7"/><path d="M18 9l3 3-3 3"/></svg><span>Sign in</span></button>
       <div class="said" id="in-said"></div>
     </form>
+<?php
+// a passkey in place of the password or the PIN (5.43): only while they are on
+// and an account of that kind has one; the script then asks whether this page
+// can use one (HTTPS, opened by its name) and says why not where it cannot
+$pk_name = !empty($whoami['passkeys']) && !empty($whoami['passkey_name']);
+$pk_pin = !empty($whoami['passkeys']) && !empty($whoami['passkey_pin']);
+if ($pk_name || $pk_pin) { ?>
+    <div class="pk-or" id="pk-or" data-name="<?= $pk_name ? '1' : '' ?>" data-pin="<?= $pk_pin ? '1' : '' ?>" hidden>
+      <span class="pk-word">or</span>
+      <button type="button" class="pk-go" id="pk-go"><svg viewBox="0 0 24 24" width="17" height="17" fill="none"
+        stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle
+        cx="8" cy="9" r="4"/><path d="M2 21v-1a6 6 0 0 1 9-5.2"/><path d="M15.5 13.5a3 3 0 1 1 3 3v4.5l-1.5 1-1.5-1v-1l1-1-1-1v-1.5"/></svg><span>Sign in with a passkey (Touch ID, Face ID)</span></button>
+      <div class="said" id="pk-said"></div>
+    </div>
+    <p class="pk-here" id="pk-here" hidden></p>
+<?php } ?>
 <?php if ($pin_first) { ?>
     <div class="other"><a href="#" id="in-other">Sign in with a name and a password instead</a></div>
 <?php } ?>
@@ -1447,7 +1619,71 @@ if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
     pinForm.hidden = !pinForm.hidden; form.hidden = !pinForm.hidden;
     other.textContent = pinForm.hidden ? 'Use a PIN instead' : 'Sign in with a name and a password instead';
     shown();
+    pkShown();
   });
+  // ---- a passkey (5.43) ----
+  var pkOr = document.getElementById('pk-or'), pkGo = document.getElementById('pk-go'),
+      pkSaid = document.getElementById('pk-said'), pkHere = document.getElementById('pk-here');
+  function pkBytes(s) {
+    s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out.buffer;
+  }
+  function pkText(buf) {
+    var b = new Uint8Array(buf), bin = '';
+    for (var i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function pkWhyNot() {
+    var h = location.hostname || '';
+    if (/^[0-9.]+$/.test(h) || h.indexOf(':') >= 0 || h.charAt(0) === '[')
+      return 'Passkeys work on this page opened by its name (https://name/), not by its address: a passkey is tied to a name.';
+    if (!window.isSecureContext) return 'Passkeys work on this page opened over HTTPS (https://name/).';
+    return '';
+  }
+  function pkPost(what, body) {
+    return fetch('?api=' + what, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)}).then(function (r) {
+      return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status)); return d; });
+    });
+  }
+  function pkShown() {
+    if (!pkOr) return;
+    var byPin = !pinForm.hidden, why = pkWhyNot();
+    var want = byPin ? pkOr.dataset.pin : pkOr.dataset.name;
+    var can = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.get);
+    pkOr.hidden = !want || !!why || !can;
+    pkHere.hidden = !want || !why;
+    pkHere.textContent = why;
+    pkGo.querySelector('span').textContent = byPin ? 'Unlock with a passkey (Touch ID, Face ID)'
+                                                   : 'Sign in with a passkey (Touch ID, Face ID)';
+  }
+  if (pkGo) pkGo.addEventListener('click', function () {
+    var words = pkGo.querySelector('span').textContent;
+    pkSaid.className = 'said'; pkSaid.textContent = '';
+    pkGo.disabled = true;
+    pkPost('passkey-begin', {}).then(function (d) {
+      var o = d.publicKey;
+      o.challenge = pkBytes(o.challenge);
+      o.allowCredentials = (o.allowCredentials || []).map(function (c) { return {type: c.type, id: pkBytes(c.id)}; });
+      return navigator.credentials.get({publicKey: o});
+    }).then(function (cr) {
+      return pkPost('passkey-login', {id: cr.id, clientDataJSON: pkText(cr.response.clientDataJSON),
+        authenticatorData: pkText(cr.response.authenticatorData), signature: pkText(cr.response.signature),
+        userHandle: cr.response.userHandle ? pkText(cr.response.userHandle) : '',
+        minutes: parseInt(document.getElementById('in-minutes').value, 10) || 240});
+    }).then(function () {
+      pkSaid.className = 'said good'; pkSaid.textContent = 'Welcome back.'; location.reload();
+    }).catch(function (err) {
+      pkGo.disabled = false; pkGo.querySelector('span').textContent = words;
+      // closing the browser's own dialogue is not a mistake to report
+      if (err && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return;
+      pkSaid.className = 'said bad'; pkSaid.textContent = String(err.message || err);
+    });
+  });
+  pkShown();
   pinForm.addEventListener('submit', function (e) {
     e.preventDefault();
     pinSaid.className = 'said'; pinSaid.textContent = '';
@@ -1489,6 +1725,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 <meta name="color-scheme" content="dark">
 <title>Sensors — <?= h($host) ?></title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml" id="favicon">
+<!-- on an iPad's home screen (5.43): its own icon, its own window without Safari's bars -->
+<link rel="apple-touch-icon" href="?api=icon&amp;size=180">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="zigmon">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="theme-color" content="#161b22">
 <style>
   :root{
@@ -3428,6 +3670,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .pinother a{color:var(--info);text-decoration:none}
   .pinother a:hover{text-decoration:underline}
   .pinerr{min-height:19px;margin:8px 0 16px;font-size:13px;color:var(--crit)}
+  /* a passkey in the sign-in (5.43): a quiet "or", then a button the width of the box */
+  .pk-or{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin-top:12px;text-align:center}
+  .pk-or[hidden], #pk-manage[hidden]{display:none}
+  .pk-or .pk-word{color:var(--tx-dim);font-size:13px}
+  .pk-or .btn{justify-content:center}
+  .pk-box{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+  .pk-box h4{margin:0 0 6px;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-dim)}
+  .pk-box .pk-why{align-self:center}
   .pinrow{display:flex;gap:10px;justify-content:center}
   .pinrow .btn{min-width:108px;justify-content:center}
   .btn.primary.danger{background:var(--crit-bg);border-color:rgba(248,81,73,.45);color:var(--crit)}
@@ -4481,6 +4731,27 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .cert-grid > .note{grid-column:1/-1;margin:0}
   .ot .cert-follow{border-top:1px solid var(--line);padding-top:8px}
   .ot .cert-follow .note{margin:6px 0 0}
+  /* ---- an iPad, and an iPhone (5.43) ----------------------------------------
+     None of this reaches a desk: a finger (pointer:coarse), or the class the
+     script puts on an iPad or an iPhone only. A desk keeps every pixel it had. */
+  @media (pointer:coarse){
+    /* what a mouse finds by resting on it is there for a finger all along */
+    .appr-row .iconbtn{opacity:1}
+    /* a button a finger can hit: thirty points at the least */
+    .btn.iconbtn{min-width:32px;min-height:32px}
+    /* lists that scroll by themselves scroll smoothly under a finger and do
+       not hand the scroll on to the page behind them */
+    .scroll, .ctl-main, .findlist, .pickbox{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  }
+  /* the right edge clear of a rounded corner on its side, as the left is */
+  html.ios body{padding-right:max(16px,env(safe-area-inset-right))}
+  html.ios.standalone body{padding-bottom:max(56px,env(safe-area-inset-bottom))}
+  /* The keyboard on the screen is up: the page as high as what it leaves,
+     the header and the tabs out of the way while typing, so the box being
+     typed in is not under the keys (the whole-width layout only, where the
+     page itself never scrolls) */
+  html.ios body.kb-up > .wrap > header, html.ios body.kb-up > .wrap > .tabs{display:none !important}
+  html.ios body.kb-up{padding-top:6px !important;padding-bottom:0 !important}
 </style>
 </head>
 <body class="app-shell">
@@ -4492,6 +4763,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 (function () {
   if (/^#control\b/.test(location.hash || '')) document.body.classList.add('ctl-shell');
   if (window.innerWidth <= 980) document.documentElement.classList.remove('app-shell-root');
+  // an iPad or an iPhone (5.43) - iPadOS says it is a Mac and is told apart
+  // by its touch screen - and the app opened from the home screen
+  var ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+    document.documentElement.classList.add('ios');
+    if (window.navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches))
+      document.documentElement.classList.add('standalone');
+  }
   // the tab the address names is the first one seen, not Overview for a moment
   // before it (a fail-safe shows the page anyway should the script stop)
   if (location.hash && !/^#overview\b/.test(location.hash)) {
@@ -4798,6 +5077,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="btnrow">
       <button class="btn cmd primary" id="lock-toggle" type="button">Sign in</button>
       <button class="btn cmd" id="pw-change" type="button" hidden>Change password</button>
+      <button class="btn cmd" id="pk-manage" type="button" hidden>Passkeys</button>
       <span class="muted small" id="lock-state" style="align-self:center"></span>
     </div>
   </div>
@@ -5759,6 +6039,11 @@ sudo ./install.sh --upgrade                # a backup first, and the old one put
       <input type="password" id="signin-pass" name="password" placeholder="password"
              autocomplete="current-password" aria-label="password">
     </form>
+    <!-- a passkey in place of the password or the PIN (5.43): only where one could answer -->
+    <div class="pk-or" id="pin-passkey" hidden>
+      <span class="pk-word">or</span>
+      <button class="btn cmd" id="pin-pk-go" type="button">Sign in with a passkey</button>
+    </div>
     <p class="pinother" id="pin-other" hidden><a href="#" id="pin-other-link">Sign in with a name and a password instead</a></p>
     <p class="pinerr" id="pinerr"></p>
     <div class="pinrow">
@@ -15298,6 +15583,7 @@ function pinMode(mode) {
   $('signform').hidden = !name;
   $('pin-other').hidden = !(pin || (name && pinShape().pin));
   setIf($('pin-other-link'), 'textContent', pin ? 'Sign in with a name and a password instead' : 'Use a PIN instead');
+  pkDialogRow(mode);                     // or a passkey, where one could answer (5.43)
   if (pin) {
     buildPinBoxes();
     pinInputs().forEach(function (input) { input.value = ''; input.classList.remove('filled'); });
@@ -15408,6 +15694,206 @@ $('pincancel').onclick = function () { closePin(null); };
 $('pinback').addEventListener('mousedown', function (e) { if (e.target === $('pinback')) closePin(null); });
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('pinback').hidden) closePin(null); });
 
+// ---- passkeys (5.43) ------------------------------------------------------------------
+// Touch ID, Face ID or Windows Hello in place of the name and the password -
+// or, for a PIN account, in place of the PIN. The device keeps the key; the
+// daemon has the public half and checks a signature over a challenge it
+// gave out a moment before. Everything travels as base64url, as the daemon
+// writes it. The browser's dialog is opened straight from the click (Safari
+// allows the one fetch of the challenge in between and nothing more), and a
+// dialog the person closes says nothing.
+function pkBytes(s) {
+  s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  var bin = atob(s), out = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+function pkText(buf) {
+  var b = new Uint8Array(buf), bin = '';
+  for (var i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+// whether passkeys are on here, and whether a PIN account or a password
+// account has one - as the daemon says it with the PIN's shape
+function pkShape() {
+  var s = (STATE.status && STATE.status.signin) || window.ZIGMON_PIN || {};
+  return {on: !!s.passkeys, pin: !!s.passkey_pin, name: !!s.passkey_name};
+}
+// Why a passkey cannot be used on this page, or '' when it can. A passkey is
+// tied to a name: on a page opened by its address there is none to tie it to.
+function pkWhyNot() {
+  var h = location.hostname || '';
+  if (/^[0-9.]+$/.test(h) || h.indexOf(':') >= 0 || h.charAt(0) === '[')
+    return 'A passkey is tied to a name: open the page by its name (https://name/), not by its address.';
+  if (!window.isSecureContext) return 'Passkeys work on the page opened over HTTPS (https://name/).';
+  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get)
+    return 'This browser cannot use passkeys.';
+  return '';
+}
+// what the device is called in the list: iPadOS says it is a Mac, and is
+// told apart by its touch screen
+function pkDevice() {
+  var ua = navigator.userAgent || '';
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'iPad';
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/Mac/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows';
+  if (/Android/.test(ua)) return 'Android';
+  return 'this device';
+}
+function pkCancelled(e) { return !!e && (e.name === 'NotAllowedError' || e.name === 'AbortError'); }
+// Sign in (or, for a PIN account, unlock for `minutes`) with whichever
+// passkey of this name the person picks: the browser offers them itself.
+function passkeySignIn(minutes) {
+  return post('passkey-begin', {}).then(function (d) {
+    var o = d.publicKey;
+    o.challenge = pkBytes(o.challenge);
+    o.allowCredentials = (o.allowCredentials || []).map(function (c) { return {type: c.type, id: pkBytes(c.id)}; });
+    return navigator.credentials.get({publicKey: o});
+  }).then(function (cr) {
+    if (!cr) throw new Error('no passkey was picked');
+    return post('passkey-login', {id: cr.id, clientDataJSON: pkText(cr.response.clientDataJSON),
+      authenticatorData: pkText(cr.response.authenticatorData), signature: pkText(cr.response.signature),
+      userHandle: cr.response.userHandle ? pkText(cr.response.userHandle) : '', minutes: minutes || 15});
+  });
+}
+// A passkey of this device for the account signed in on this page.
+function passkeyAdd() {
+  return post('passkey-register', {step: 'begin'}).then(function (d) {
+    var o = d.publicKey;
+    o.challenge = pkBytes(o.challenge);
+    o.user.id = pkBytes(o.user.id);
+    o.excludeCredentials = (o.excludeCredentials || []).map(function (c) { return {type: c.type, id: pkBytes(c.id)}; });
+    return navigator.credentials.create({publicKey: o});
+  }).then(function (cr) {
+    if (!cr) throw new Error('no passkey was made');
+    return post('passkey-register', {step: 'finish', name: pkDevice() + ' · ' + new Date().toLocaleDateString(),
+      clientDataJSON: pkText(cr.response.clientDataJSON), attestationObject: pkText(cr.response.attestationObject)});
+  });
+}
+// The button of the sign-in dialogue: "Sign in with a passkey" under the
+// name and the password, "Unlock with a passkey" under the PIN - drawn only
+// where passkeys are on, one of that kind of account has one, and this page
+// can use it.
+function pkDialogRow(mode) {
+  var s = pkShape(), row = $('pin-passkey');
+  var want = s.on && !pkWhyNot() && ((mode === 'pin' && s.pin) || (mode === 'signin' && s.name));
+  setIf(row, 'hidden', !want);
+  if (want) setButtonIcon($('pin-pk-go'), 'passkey', mode === 'pin' ? 'Unlock with a passkey' : 'Sign in with a passkey');
+}
+$('pin-pk-go').onclick = function () {
+  if (PIN.busy) return;
+  var b = $('pin-pk-go');
+  b.disabled = true; PIN.busy = true;
+  $('pinerr').textContent = '';
+  passkeySignIn(PIN.mode === 'pin' ? (parseInt($('unlock-minutes').value, 10) || 15) : 0).then(function (r) {
+    b.disabled = false; PIN.busy = false;
+    signedInAs(r.who);
+    closePin(true);
+  }, function (e) {
+    b.disabled = false; PIN.busy = false;
+    if (!pkCancelled(e)) $('pinerr').textContent = e.message || String(e);
+  });
+};
+// The passkeys of one account, drawn into `body`: one's own (with Add), or -
+// for an administrator - somebody else's, to take one away (a lost iPad).
+function pkSection(body, owner, own) {
+  var box = el('div', 'pk-box');
+  box.appendChild(el('h4', '', 'Passkeys — Touch ID, Face ID'));
+  var pin = own && LOCK.who && LOCK.who.kind === 'pin';
+  box.appendChild(el('p', 'note', (pin
+    ? 'A passkey unlocks editing with your face, your finger or this device’s own PIN, in place of typing the PIN. '
+    : 'A passkey signs you in with your face, your finger or this device’s own PIN — no name and no password to type. ')
+    + 'It is kept on the device (on an iPad and an iPhone in the iCloud Keychain, so on your other Apple devices too); '
+    + 'this server has only its public half.'));
+  var list = el('div', 'pk-list');
+  box.appendChild(list);
+  var row = el('div', 'btnrow');
+  var add = null, why = el('span', 'muted small pk-why', '');
+  if (own) {
+    add = el('button', 'btn cmd primary', ''); add.type = 'button'; add.id = 'pk-add';
+    setButtonIcon(add, 'passkey', 'Add a passkey of this device');
+    row.appendChild(add);
+  }
+  row.appendChild(why);
+  box.appendChild(row);
+  body.appendChild(box);
+  var draw = function (r) {
+    var rows = r.passkeys || [];
+    list.innerHTML = '';
+    list.appendChild(zTable(['Passkey', 'For', 'Added', 'Last used', ''], rows, function (x) {
+      var tr = el('tr');
+      tr.appendChild(el('td', '', x.label || 'passkey'));
+      tr.appendChild(el('td', 'mono', x.host || ''));
+      tr.appendChild(el('td', 'muted', stamp(x.created)));
+      tr.appendChild(el('td', 'muted', x.last_used ? ago(x.last_used) : 'never'));
+      var acts = el('td', 'acts');
+      var ren = iconButton('pencil', 'Rename this passkey');
+      ren.classList.remove('needs-unlock');
+      ren.onclick = function () {
+        askText('Rename the passkey', 'What it is called in this list.', x.label || '', function (v) {
+          return v ? '' : 'a name, please';
+        }).then(function (v) {
+          if (v === null) return;
+          post('passkeys-do', {'do': 'rename', id: x.id, name: v, owner: own ? '' : owner}).then(draw, zoops);
+        });
+      };
+      var rm = iconButton('trash', 'Remove this passkey');
+      rm.classList.remove('needs-unlock'); rm.classList.add('danger');
+      rm.onclick = function () {
+        // asked in the row itself: the popup around it stays as it is
+        acts.innerHTML = '';
+        var q = el('span', 'muted small', 'It will not sign in any more; it stays on the device until it is removed there (Settings – Passwords). ');
+        var yes = el('button', 'btn small danger', 'Remove'); yes.type = 'button';
+        var no = el('button', 'btn small', 'Keep it'); no.type = 'button';
+        yes.onclick = function () {
+          post('passkeys-do', {'do': 'delete', id: x.id, owner: own ? '' : owner}).then(function (y) {
+            toast(y.message || 'the passkey is removed', true); draw(y); tick(true);
+          }, zoops);
+        };
+        no.onclick = function () { draw(r); };
+        [q, yes, no].forEach(function (n) { acts.appendChild(n); });
+      };
+      acts.appendChild(ren); acts.appendChild(rm);
+      tr.appendChild(acts);
+      return tr;
+    }, 'plain|No passkey yet'));
+    if (add) {
+      var not = r.on === false ? 'Passkeys are switched off on this server (an administrator switches them on in Settings → Signing in).'
+        : (pkWhyNot() || r.here_why || '');
+      if (r.on !== false && !not && rows.length >= (r.most || 20)) not = 'The most one account may have; remove one first.';
+      add.disabled = !!not;
+      why.textContent = not;
+    }
+  };
+  var load = function () {
+    api('passkeys' + (own ? '' : '&name=' + encodeURIComponent(owner))).then(draw, function (e) {
+      list.textContent = e.message || String(e);
+    });
+  };
+  if (add) add.onclick = function () {
+    add.disabled = true;
+    passkeyAdd().then(function (y) {
+      toast(y.message || 'the passkey is added', true);
+      draw({passkeys: y.passkeys || [], on: true});
+      whoamiCheck();
+    }, function (e) {
+      add.disabled = false;
+      if (e && e.name === 'InvalidStateError') toast('This device has a passkey for this account already', false);
+      else if (!pkCancelled(e)) zoops(e);
+    });
+  };
+  load();
+  return box;
+}
+function passkeysOpen() {
+  var who = LOCK.who;
+  if (!who) { unlockFlow(); return; }
+  zmodal('Your passkeys', function (body) { pkSection(body, who.name, true); }, [{words: 'Close', close: true}]);
+}
+$('pk-manage').onclick = passkeysOpen;
+
 // ---- who is signed in -----------------------------------------------------------------
 function signedInAs(who) {
   var was = LOCK.who ? LOCK.who.name + '|' + LOCK.who.role + '|' + !!LOCK.who.must_change : '';
@@ -15442,7 +15928,8 @@ function signInNeeded(message) {
 // ended this sign-in, or changed what the account may do.
 function whoamiCheck() {
   return api('whoami').then(function (r) {
-    if (r) window.ZIGMON_PIN = {pin: !!r.pin, pin_length: r.pin_length || 0};
+    if (r) window.ZIGMON_PIN = {pin: !!r.pin, pin_length: r.pin_length || 0, passkeys: !!r.passkeys,
+                                passkey_pin: !!r.passkey_pin, passkey_name: !!r.passkey_name};
     var who = r && r.who && r.who.name ? r.who : null;
     if (!who && LOCK.who) { setLocked('Signed out: the sign-in has ended'); return; }
     if (who) signedInAs(who);
@@ -15555,6 +16042,8 @@ function renderLock() {
     : (pinShape().pin ? 'Unlock editing with a PIN for a chosen time, or sign in with a name and a password'
        : 'Sign in with your name and password'));
   setIf($('pw-change'), 'hidden', !who || byPin);
+  // the passkeys of whoever is signed in, a PIN account's too (5.43) - while they are on
+  setIf($('pk-manage'), 'hidden', !who || !pkShape().on);
   var heldState = held && !held.isCollapsed && held.anchorNode && $('lock-state').contains(held.anchorNode);
   if (!heldState) {
     setIf($('lock-state'), 'textContent', byPin
@@ -15635,6 +16124,7 @@ function accountMenu() {
       viewer: 'sees the house - also when the view is not public - and changes nothing.',
       operator: 'uses the house: switches the sockets and lights, runs scenes and sequences, sets the rooms, clears the alerts. The settings are an administrator’s.',
       admin: 'everything: the settings, the security, the accounts, the machine.'}[who.role] || '')));
+    pkSection(body, who.name, true);       // Your account: its passkeys (5.43)
   }, [{words: 'Sign out', icon: 'door', close: true, go: lockNow},
       {words: 'Change password', icon: 'key', go: function () { passwordChange(false); }}]
     .concat(isAdmin() ? [{words: 'Accounts', icon: 'person', close: true, go: function () {
@@ -15747,6 +16237,8 @@ var ICONS = {
   // all until now, since an unknown name makes an empty <svg> rather than a
   // complaint
   key: '<circle cx="8" cy="12" r="3.2"/><path d="M11.2 12H21"/><path d="M17 12v3"/><path d="M20 12v2.4"/>',
+  // a person with a key: a passkey (5.43)
+  passkey: '<circle cx="8" cy="9" r="4"/><path d="M2 21v-1a6 6 0 0 1 9-5.2"/><path d="M15.5 13.5a3 3 0 1 1 3 3v4.5l-1.5 1-1.5-1v-1l1-1-1-1v-1.5"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
   reset: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
   reboot: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
@@ -18493,7 +18985,7 @@ function energyResetTail(st, host, plugs) {
 
 // ---- the tunable slice of config.json ----------------------------------------------
 var SETTINGS = { dirty: false };
-var SETTINGS_BOOL = { chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, upgrade_check: 1, downgrade_show: 1, rbackup: 1, public_view: 1, silence_alert_buttons: 1,
+var SETTINGS_BOOL = { passkeys: 1, chart_outages: 1, link_plugs: 1, link_sensors: 1, link_buttons: 1, backup_enabled: 1, backup_zigbee: 1, full_backup_nightly: 1, upgrade_check: 1, downgrade_show: 1, rbackup: 1, public_view: 1, silence_alert_buttons: 1,
                       watchdog: 1, route_watch: 1, mqtt_only: 1, debug: 1, debug_events: 1 };
 var SETTINGS_TIME = { backup_time: 1, rbackup_at: 1 };
 var SETTINGS_STEP = { price_per_kwh: '0.01', standing_charge_month: '0.01', heating_enforce_delta: '0.1', latitude: '0.000001', longitude: '0.000001', plug_min_request_gap: '0.05', plug_command_gap: '0.01' };
@@ -18938,6 +19430,11 @@ var SETTINGS_LAYOUT = [
     ['session_hours', 'A sign-in lasts at most (hours)'],
     ['login_tries', 'Wrong passwords before an address waits'],
     ['login_wait_min', '...and how long it waits (min)'],
+    ['passkeys', 'Sign in with a passkey (Touch ID, Face ID, Windows Hello)',
+     'Each account may add passkeys under its name → Your passkeys (signed in, or unlocked with its PIN). The sign-in then '
+     + 'offers Sign in with a passkey — or, for a PIN account, Unlock with a passkey: no name, no password and no PIN, a '
+     + 'face, a finger or the device’s own PIN. Only on the page opened by its name over HTTPS, never by an address. While '
+     + 'this is off, no passkey is offered or taken; switching it off removes none.'],
   ]],
   ['Changes kept on trial', [
     ['|', 'a change that could cut the house off goes back by itself unless it is kept'],
@@ -21525,6 +22022,15 @@ function drawAccounts(r) {
       });
     };
     [pw, onoff, rm].forEach(function (b) { acts.appendChild(b); });
+    if (a.passkeys) {
+      // what it signs in with besides (5.43): an administrator may take one away
+      var pks = iconButton('passkey', 'The passkeys of ' + a.name + ' (' + a.passkeys + ')');
+      pks.onclick = function () {
+        zmodal('The passkeys of ' + a.name, function (body) { pkSection(body, a.name, false); },
+          [{words: 'Close', close: true, go: function () { loadAccounts(true); }}]);
+      };
+      acts.insertBefore(pks, acts.firstChild);
+    }
     tr.appendChild(acts);
     return tr;
   }, 'plain|No account'));
@@ -31603,6 +32109,55 @@ function pinCtlNav(on) {
       window.innerWidth > 980 && document.body.classList.contains('app-shell'));
   });
   pinCtlNav(CTLNAV.pinned);
+})();
+// ---- an iPad: turning it round, and the keyboard on the screen (5.43) ----------------
+// Only on an iPad or an iPhone (html.ios, put on at the top of the page); a
+// desk never runs any of it.
+(function () {
+  var root = document.documentElement;
+  if (!root.classList.contains('ios')) return;
+  // Turned round: Safari settles the new width over a moment, and a single
+  // look caught the old one - the whole-width layout stayed on in portrait,
+  // or stayed off on its side. Looked at again three times as it settles;
+  // each iPadOS sends a different one of these three.
+  var settle = function () {
+    [60, 300, 800].forEach(function (ms) {
+      setTimeout(function () { window.dispatchEvent(new Event('resize')); }, ms);
+    });
+  };
+  window.addEventListener('orientationchange', settle);
+  if (window.screen && screen.orientation && screen.orientation.addEventListener)
+    screen.orientation.addEventListener('change', settle);
+  if (window.matchMedia) {
+    var wide = window.matchMedia('(min-width: 981px)');
+    if (wide.addEventListener) wide.addEventListener('change', settle); else if (wide.addListener) wide.addListener(settle);
+  }
+  // The keyboard on the screen: the page is as high as the window and the
+  // keyboard only covers its lower part, so a box near the bottom of a
+  // section was typed into blind. While it is up and a box has the focus,
+  // the page is made as high as what the keyboard leaves (visualViewport),
+  // the header and the tabs step aside, and the box is brought into view.
+  var vv = window.visualViewport;
+  if (!vv) return;
+  var fit = function () {
+    var body = document.body, act = document.activeElement;
+    var typing = !!(act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName || '') || (act && act.isContentEditable));
+    var up = typing && root.classList.contains('app-shell-root') && vv.height < window.innerHeight - 120;
+    if (up) {
+      body.style.height = Math.round(vv.height) + 'px';
+      if (!body.classList.contains('kb-up')) {
+        body.classList.add('kb-up');
+        setTimeout(function () { try { act.scrollIntoView({block: 'nearest'}); } catch (e) {} }, 60);
+      }
+      if (window.scrollY) window.scrollTo(0, 0);
+    } else if (body.classList.contains('kb-up')) {
+      body.style.height = '';
+      body.classList.remove('kb-up');
+    }
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  document.addEventListener('focusout', function () { setTimeout(fit, 120); }, true);
 })();
 // Upgrades and maintenance saves its three settings the way otp does
 // (1.0.123): with the bar at the end of the pane - Save the changes, Put them

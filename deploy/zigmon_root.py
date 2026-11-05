@@ -2804,7 +2804,11 @@ ACCOUNT_TABLES = ("CREATE TABLE IF NOT EXISTS accounts (name TEXT PRIMARY KEY CO
                   "pin_len INTEGER DEFAULT 0);"
                   "CREATE TABLE IF NOT EXISTS signins (token_hash TEXT PRIMARY KEY, name TEXT NOT NULL, "
                   "created INTEGER, last INTEGER, expires INTEGER, ip TEXT DEFAULT '', "
-                  "agent TEXT DEFAULT '');")
+                  "agent TEXT DEFAULT '');"
+                  # the passkeys of the accounts (5.43): public keys, kept with them
+                  "CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, "
+                  "label TEXT DEFAULT '', pem TEXT NOT NULL, alg INTEGER NOT NULL, count INTEGER DEFAULT 0, "
+                  "created INTEGER, last_used INTEGER, host TEXT DEFAULT '', backed_up INTEGER DEFAULT 0);")
 
 
 def accounts_of(db):
@@ -2821,13 +2825,18 @@ def accounts_of(db):
             con.row_factory = sqlite3.Row
             acc = [dict(r) for r in con.execute('SELECT * FROM accounts')]
             sig = [dict(r) for r in con.execute('SELECT * FROM signins')]
+            # and their passkeys (5.43), where the database is new enough to have them
+            try:
+                pks = [dict(r) for r in con.execute('SELECT * FROM passkeys')]
+            except sqlite3.OperationalError:
+                pks = []
         finally:
             con.close()
     except sqlite3.Error as e:
         print('zigmon_root.py: the accounts of the dashboard could not be read before the database '
               'was put back (%s): it brings its own' % e, file=sys.stderr)
         return None
-    return {'accounts': acc, 'signins': sig} if acc else None
+    return {'accounts': acc, 'signins': sig, 'passkeys': pks} if acc else None
 
 
 def accounts_into(db, kept, owner):
@@ -2842,8 +2851,9 @@ def accounts_into(db, kept, owner):
                 pass
         con.execute('DELETE FROM accounts')
         con.execute('DELETE FROM signins')
-        for table in ('accounts', 'signins'):
-            for row in kept[table]:
+        con.execute('DELETE FROM passkeys')
+        for table in ('accounts', 'signins', 'passkeys'):
+            for row in kept.get(table) or []:
                 cols = sorted(row)
                 con.execute('INSERT INTO %s (%s) VALUES (%s)' % (table, ','.join(cols), ','.join('?' * len(cols))),
                             [row[c] for c in cols])

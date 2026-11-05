@@ -139,6 +139,14 @@ function zigmon_call(string $path, string $method = 'GET', ?array $payload = nul
     if ($agent !== '') {
         $headers[] = 'X-Zigmon-Agent: ' . $agent;
     }
+    // the name the page was opened on, as the browser sent it (5.43): a
+    // passkey is tied to that name (its RP ID), and the daemon cannot see it -
+    // its own requests all come from here. Only what a host and a port are
+    // made of, like every other value in a header line here.
+    $place = preg_replace('/[^A-Za-z0-9.:\[\]-]/', '', substr((string) ($_SERVER['HTTP_HOST'] ?? ''), 0, 255));
+    if ($place !== '') {
+        $headers[] = 'X-Zigmon-Host: ' . $place;
+    }
     foreach ($extra as $one) {          // a one-tap link's own secret, and its code
         $headers[] = $one;
     }
