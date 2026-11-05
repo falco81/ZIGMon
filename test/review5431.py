@@ -678,6 +678,42 @@ check(rows == 0 and not watchers(), 'switched off, the row (%d) or the watcher (
 zigmon.perf_read = _real_read
 zigmon.PERF_SAMPLE_S, zigmon.PERF_IDLE_S = 5.0, 45.0
 
+# ---- the graphs drawn from the right (5.43.1) --------------------------------------------
+# The newest reading at the right edge and the line growing to the left from
+# there, as every graph of load is read: 5.43.0 put the first point at the left
+# and a short history filled the left of the graph only.
+print('the graphs grow from the right')
+for label, folder in (('this page', NOW), ('5.43.0', OLD)):
+    src = (folder / 'index.php').read_text()
+
+    def fn(name):
+        at = src.find('function %s(' % name)
+        if at < 0:
+            return ''
+        end = src.find('\nfunction ', at + 10)
+        return src[at:end]
+    js = ('var HLOAD = {pointAt: 0}; var HLOAD_KEEP = 24;\n' + fn('hlScroll') + '\n' + fn('hloadSpark')
+          + '\nvar svg = hloadSpark([10, 50, 90], 100, "", true);'
+          + '\nvar m = /points="([^"]+)"/.exec(svg); var xs = m[1].split(" ").map(function (p) { return Number(p.split(",")[0]); });'
+          + '\nconsole.log(JSON.stringify(xs));')
+    got = subprocess.run(['node', '-e', js], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    try:
+        xs = json.loads(got.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        xs = []
+    # shown through a 56-wide window, translated one step left in a preview:
+    # the newest point at the right edge, the three of them in its right part
+    step = 56 / 23.0
+    seen = [x - (step if 'hl-still' in fn('hlScroll') else 0) for x in xs]
+    ok = len(seen) == 3 and abs(seen[-1] - 56) < 1.5 and min(seen) > 56 * 0.75 and seen == sorted(seen)
+    if label == 'this page':
+        check(ok, 'the newest reading is not at the right edge, the line not growing leftwards: %r %s'
+              % (seen, got.stderr[-200:]))
+    elif ok:
+        print('  (5.43.0 already drew from the right?: %r)' % seen)
+    else:
+        print('  5.43.0 drew it from the left: %r' % [round(x, 1) for x in seen])
+
 if SHOTS and not AGAINST_OLD:
     print('screenshots in ' + SHOTS)
 finish()
