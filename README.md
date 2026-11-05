@@ -2090,7 +2090,8 @@ Current version: **5.43.2**
 * On a screen wide enough the meter's chips stand in the row of the title,
   the state, *Editing* and the user, with the search and the clock after
   them. Short of room (an iPad, a narrower window) the two rows of 5.43.1:
-  the title row with the clock at its right, the chips under it. Tried as
+  the title row with the clock at its right, the chips under it. An iPad
+  and an iPhone keep the two rows always. Tried as
   one row whenever the header changes size or what it holds, and kept only
   when everything then stands on that one line.
 

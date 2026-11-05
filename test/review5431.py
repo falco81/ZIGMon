@@ -266,6 +266,7 @@ const measure = () => {
     sizes.push(['desk', 1000, 1000], ['desk', 1280, 1000], ['desk', 1336, 1000]);
     // (5.43.2) a wide screen: the chips in the row of the title and Editing
     sizes.push(['desk', 2560, 1000], ['desk', 2800, 1000]);
+    sizes.push(['ipad', 2560, 1400]);   // an iPad wide enough for one row still keeps two
     for (const as of ['pin', 'owner']) {
       const [ctx, p] = await open(b, base, 'desk', 1600, 1000, as);
       await waitMeter(p);
@@ -537,6 +538,9 @@ for k, m in sorted((o.get('layout') or {}).items()):
     if phone:
         check(m.get('chips') == ['cpu', 'mem'], '%s: a phone has more than CPU and RAM: %r' % (k, m.get('chips')))
     # (5.43.2) a screen wide enough: the meter in the row of Editing, not under it
+    # ...and an iPad keeps the two rows whatever its width (5.43.2)
+    if ' ipad ' in k:
+        check(not m.get('chipsOnTitle'), '%s: an iPad has the meter in the title row' % k)
     if not phone and int(k.split()[-1].split('x')[0]) >= 2560:
         check(m.get('chipsOnTitle'), '%s: the meter is not in the row of the title and Editing' % k)
 check(len(o.get('layout') or {}) >= 30, 'not every width was measured: %d' % len(o.get('layout') or {}))

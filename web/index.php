@@ -17273,6 +17273,8 @@ function hloadStop() {
 function headerFit() {
   var hd = document.querySelector('header'), hr = $('hrow'), hl = $('hload'), up = $('updated');
   if (!hd || !hr || !hl || !up) return;
+  // an iPad, an iPhone: always the two rows - the title with the clock, the chips under it
+  if (document.documentElement.classList.contains('ios')) { hd.classList.remove('hl-one'); return; }
   hd.classList.add('hl-one');
   if (hl.hidden || window.innerWidth <= 700) return;
   var top = hr.getBoundingClientRect().top, bottom = hr.getBoundingClientRect().bottom;
