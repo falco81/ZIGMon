@@ -2083,7 +2083,37 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.42.1**
+Current version: **5.43.0**
+
+5.43.0 — passkeys (Touch ID, Face ID), the dashboard on an iPad, and the performance meter.
+
+* **Passkeys** (off until switched on: Settings → Signing in → *passkeys*,
+  or `zigmon --set passkeys=1`). An account with a password adds one in
+  *Your account* (the lock pill) and signs in with it instead of its name and
+  password; a PIN user adds one with *Passkeys* on the Signed in card and
+  unlocks with it wherever the PIN is asked. Verified here with openssl
+  (ES256, RS256; user verification required; one-time challenges of five
+  minutes; the counter must climb). Blocked addresses, the count of wrong
+  tries, a switched-off account and a password that must be changed hold for
+  a passkey as for the password. Only on the page opened by its name over
+  HTTPS, never by an address. An administrator lists and removes them in
+  Accounts; `zigmon --passkeys`, `zigmon --passkey-forget`.
+* **iPad / iPhone**: on the home screen with zigmon's own icon and no
+  Safari bars; bigger targets under a finger, what hover shows always shown,
+  the layout following a turn, the field being typed in kept above the
+  on-screen keyboard. A desk sees every pixel as before.
+* **The performance meter in the header** (off until switched on: Settings
+  → About; administrators only): CPU, memory, disks and network as graphs,
+  pills, a line or rings, and behind each a panel - tiles, a table, a map of
+  the cores, or one wide panel - with every core's frequency and
+  temperature (by topology, hyperthreads too), the sensors, the disks, the
+  filesystems (statvfs only of the kernel's own: never FUSE, a network share
+  or FAT), the network cards and the busiest processes. The looks are chosen
+  in the account's popup. Read only while an administrator's page shows it;
+  switched off, nothing is read at all. The last two minutes are kept in
+  memory, so the graphs are whole again after a reload.
+
+`test/passkeys.py`, `test/perfmeter.py`; both fail on 5.42.1.
 
 5.42.1 — `zigmon --get KEY`, `zigmon --set KEY=VALUE`; `--settings KEY=VALUE` saves again.
 

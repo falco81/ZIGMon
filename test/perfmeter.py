@@ -214,7 +214,10 @@ def _touch(path):
     except TypeError:
         return
     if isinstance(path, str) and path.startswith(_FAKE) and threading.current_thread().name != 'test-mover':
-        TOUCHED.append((time.time(), path))
+        # whether the meter was on at that very moment: the page switching it
+        # on is seen by the test's own thread up to a poll later, and a read in
+        # that gap was counted as one made while off (5.43)
+        TOUCHED.append((time.time(), path, bool(zigmon.CONFIG.get('perf_meter'))))
 
 
 def _counted(real):
@@ -230,7 +233,7 @@ for _fn in ('listdir', 'scandir', 'stat', 'lstat', 'readlink'):
 
 
 def touched(since):
-    return [p for t, p in TOUCHED if t >= since]
+    return [p for t, p, _on in TOUCHED if t >= since]
 
 MOVING = {'on': False}
 
@@ -1027,7 +1030,7 @@ try:
         check(r['hidden']['asked'] == 0 and r['hidden']['back'] >= 1,
               'hidden, the page asked %d time(s); shown again, %d' % (r['hidden']['asked'], r['hidden']['back']))
         check(r['paused']['asked'] == 0, 'paused, the page asked %d time(s)' % r['paused']['asked'])
-        _off_page = [p for t, p in TOUCHED if BROWSER['from'] <= t < (BROWSER.get('on_at') or 0)]
+        _off_page = [p for t, p, on in TOUCHED if BROWSER['from'] <= t < (BROWSER.get('on_at') or 0) and not on]
         check(BROWSER.get('on_at') and not _off_page,
               'the page loaded with the meter off, and the meter touched %d path(s): %s'
               % (len(_off_page), _off_page[:3]))
