@@ -594,6 +594,10 @@ DEFAULTS = {
     # pairings stay and nothing is taken
     'cert_push': 0,
     'cert_push_other_names': 0,   # a certificate for other names taken where acme says so
+    # the performance meter (5.43): the processor, the memory, the disks and the
+    # network in the header of an administrator's page - off until switched
+    # on (About); off, nothing is read and nothing runs for it
+    'perf_meter': 0,
     # the way out to the web through an HTTP proxy (5.35, otp 1.0.166), off
     # until switched on (Control - Proxy) - not the server in front, whose
     # settings are the proxy_* ones
@@ -10376,6 +10380,8 @@ class Daemon(object):
         'acme_dns_wait': (0, 600), 'acme_resolvers': 'str',
         # Certificates from acme (5.40, acme push)
         'cert_push': (0, 1), 'cert_push_other_names': (0, 1),
+        # the performance meter (5.43)
+        'perf_meter': (0, 1),
         # the way out to the web through an HTTP proxy (5.35)
         'webproxy': (0, 1), 'webproxy_url': 'str', 'webproxy_user': 'str',
         'webproxy_password': 'str', 'webproxy_no': 'str', 'webproxy_os': (0, 1),
@@ -10629,6 +10635,8 @@ class Daemon(object):
                 threading.Thread(target=self._sms_poll_thread, name='sms-poll', daemon=True).start()
             if any(k.startswith('acme') for k in changed):
                 self.acme_settings_changed(changed)
+            if 'perf_meter' in changed and not perf_on():
+                perf_forget()                       # switched off (5.43): nothing of it kept, at once
         self.bump()
         return changed
 
@@ -40500,6 +40508,471 @@ for _name in ('save_scenes', 'save_rooms', 'save_scripts', 'save_sequences', 'sa
     setattr(Daemon, _name, _follows_renames(getattr(Daemon, _name)))
 
 
+# ---- the performance meter (5.43) --------------------------------------------
+# How busy the machine is - the processor, the memory, the disks, the network -
+# in the header of an administrator's page, as ai 1.0.72-1.0.76 has it (its
+# load.py, put here). Off until switched on (About - The performance meter
+# in the header): off, nothing here is ever called - no thread, no read, and
+# /api/perf answers only that it is off.
+#
+# Nothing runs in the background, on: a reading is taken only when a page
+# asks (every 3 s while one is shown), straight from the kernel's counters in
+# /proc and /sys and os.statvfs - no program is started - and pages asking
+# within the same second share it. Every reading is taken under PERF_LOCK
+# alone, which nothing else takes: not the broker's thread, not the plugs',
+# not the database's. Nothing is written down: the last two minutes, which
+# the graphs draw, are kept in memory (PERF_RING, 40 readings at most) so a
+# page loaded again draws them at once rather than starting from nothing.
+PERF_PROC = '/proc'              # the tests point these at a /proc and a /sys of their own
+PERF_SYS = '/sys'
+PERF_STATVFS = os.statvfs
+PERF_LOCK = threading.Lock()
+PERF_LAST = {'at': 0.0, 'raw': None, 'out': None}
+PERF_DETAIL = {'at': 0.0, 'raw': None, 'out': None}
+PERF_KEEP = 40                   # readings a graph draws: two minutes at one every 3 s
+PERF_RING = collections.deque(maxlen=PERF_KEEP)
+PERF_SHARE_S = 1.0               # pages asking within this long share one reading
+PERF_STEP_S = 2.5                # the history keeps one reading in this long at the most
+PERF_NIC_SKIP = ('veth', 'docker', 'br-', 'virbr', 'podman', 'cni', 'flannel', 'tun', 'tap', 'vnet', 'ifb',
+                 'dummy', 'lxc', 'kube', 'cali', 'vxlan', 'genev')
+# Free space is asked only of the kernel's own filesystems, which answer from
+# memory (as lsblk -o FSSIZE,FSUSED asks them): never FUSE (a program that
+# may go to the disks itself), never a network share (a statvfs on a server
+# that is gone hangs), never FAT (it may count its free clusters off the disk)
+# - plexmon 2.7.1 found these in ai's load.py
+PERF_FS_KINDS = ('ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'zfs', 'f2fs', 'exfat', 'ntfs3', 'jfs', 'reiserfs',
+                 'nilfs2', 'bcachefs')
+# The processor's chips in hwmon
+PERF_CPU_CHIPS = ('coretemp', 'k10temp', 'zenpower', 'cpu_thermal', 'soc_thermal', 'k8temp', 'via_cputemp')
+
+
+def perf_on():
+    return bool(int(CONFIG.get('perf_meter') or 0))
+
+
+def _perf_open(path):
+    """Every file the meter reads, by this one door (the tests count them)."""
+    return open(path)
+
+
+def _perf_first(path, default=''):
+    try:
+        with _perf_open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def _perf_meminfo():
+    mem = {}
+    with _perf_open(os.path.join(PERF_PROC, 'meminfo')) as f:
+        for line in f:
+            k, _s, rest = line.partition(':')
+            try:
+                mem[k] = int(rest.split()[0]) * 1024
+            except (ValueError, IndexError):
+                continue
+    return mem
+
+
+def perf_nic_counted(name):
+    """A network card counted: not the loopback, not the bridges and pairs of
+    containers, not a card that is a slave of a bond (the bond is counted)."""
+    if name == 'lo' or name.startswith(PERF_NIC_SKIP):
+        return False
+    master = os.path.join(PERF_SYS, 'class/net', name, 'master')
+    if os.path.islink(master) and os.path.isdir(os.path.join(os.path.realpath(master), 'bonding')):
+        return False
+    return True
+
+
+def _perf_whole_disks():
+    try:
+        return set(os.listdir(os.path.join(PERF_SYS, 'block')))
+    except OSError:
+        return set()
+
+
+def _perf_raw():
+    raw = {'at': time.time()}
+    try:
+        with _perf_open(os.path.join(PERF_PROC, 'stat')) as f:
+            parts = f.readline().split()[1:]
+        v = [int(x) for x in parts[:8]] + [0] * (8 - len(parts[:8]))
+        raw['cpu_idle'] = v[3] + v[4]
+        raw['cpu_all'] = sum(v)
+    except (OSError, ValueError):
+        pass
+    try:
+        mem = _perf_meminfo()
+        raw['mem_total'] = mem.get('MemTotal', 0)
+        raw['mem_used'] = mem.get('MemTotal', 0) - mem.get('MemAvailable', mem.get('MemFree', 0))
+        raw['swap_used'] = mem.get('SwapTotal', 0) - mem.get('SwapFree', 0)
+    except OSError:
+        pass
+    try:
+        rd = wr = 0
+        whole = _perf_whole_disks()
+        with _perf_open(os.path.join(PERF_PROC, 'diskstats')) as f:
+            for line in f:
+                x = line.split()
+                # whole disks only (a partition is in its disk's numbers
+                # already), no loop devices, no RAM disks, no device-mapper
+                if len(x) < 10 or x[2] not in whole or x[2].startswith(('loop', 'ram', 'dm-', 'zram', 'sr')):
+                    continue
+                rd += int(x[5]) * 512
+                wr += int(x[9]) * 512
+        raw['disk_rd'], raw['disk_wr'] = rd, wr
+    except (OSError, ValueError):
+        pass
+    try:
+        rx = tx = 0
+        with _perf_open(os.path.join(PERF_PROC, 'net/dev')) as f:
+            for line in f.readlines()[2:]:
+                name, _s, rest = line.partition(':')
+                name = name.strip()
+                if not perf_nic_counted(name):
+                    continue
+                x = rest.split()
+                rx += int(x[0])
+                tx += int(x[8])
+        raw['net_rx'], raw['net_tx'] = rx, tx
+    except (OSError, ValueError, IndexError):
+        pass
+    return raw
+
+
+def perf_load():
+    """The summary: CPU %, memory used of all, disks read and written B/s,
+    network in and out B/s, the load - and, now and then, one more reading
+    kept for the graphs."""
+    with PERF_LOCK:
+        now = time.time()
+        if PERF_LAST['out'] and now - PERF_LAST['at'] < PERF_SHARE_S:
+            return PERF_LAST['out']
+        raw = _perf_raw()
+        was = PERF_LAST['raw']
+        out = {'at': round(now, 3), 'cores': os.cpu_count() or 1, 'mem_total': raw.get('mem_total'),
+               'mem_used': raw.get('mem_used'), 'swap_used': raw.get('swap_used')}
+        try:
+            out['load'] = [round(float(x), 2) for x in _perf_first(os.path.join(PERF_PROC, 'loadavg')).split()[:3]]
+        except ValueError:
+            out['load'] = None
+        if was and now - was['at'] < 300:
+            dt = max(0.2, raw['at'] - was['at'])
+
+            def rate(k):
+                if k in raw and k in was and raw[k] >= was[k]:
+                    return round((raw[k] - was[k]) / dt)
+                return None
+            if raw.get('cpu_all') and was.get('cpu_all') and raw['cpu_all'] > was['cpu_all']:
+                busy = 1 - (raw['cpu_idle'] - was['cpu_idle']) / float(raw['cpu_all'] - was['cpu_all'])
+                out['cpu'] = round(max(0.0, min(1.0, busy)) * 100, 1)
+            for k in ('disk_rd', 'disk_wr', 'net_rx', 'net_tx'):
+                out[k] = rate(k)
+            out['over_s'] = round(dt, 1)
+        PERF_LAST.update(at=now, raw=raw, out=out)
+        if 'cpu' in out and (not PERF_RING or now - PERF_RING[-1]['at'] >= PERF_STEP_S):
+            PERF_RING.append({'at': out['at'], 'cpu': out['cpu'],
+                              'mem': round(100.0 * out['mem_used'] / out['mem_total'], 1)
+                              if out.get('mem_total') else None,
+                              'disk': (out.get('disk_rd') or 0) + (out.get('disk_wr') or 0),
+                              'net': (out.get('net_rx') or 0) + (out.get('net_tx') or 0)})
+        return out
+
+
+def perf_history():
+    """The readings of the last two minutes, oldest first, for a page drawn
+    again (F5) to start its graphs from."""
+    with PERF_LOCK:
+        since = time.time() - PERF_KEEP * 3.0 - 5
+        return [dict(x) for x in PERF_RING if x['at'] >= since]
+
+
+def perf_temps():
+    """What the sensors say: {'cpu': [[label, °C]], 'cores': {n: °C}, 'pkg_cores': {'package:core': °C},
+    'disks': {name: °C}, 'other': [...]}. hwmon first (coretemp, k10temp, zenpower, nvme, drivetemp, acpitz...), then
+    the thermal zones."""
+    out = {'cpu': [], 'cores': {}, 'pkg_cores': {}, 'disks': {}, 'other': []}
+    base = os.path.join(PERF_SYS, 'class/hwmon')
+    try:
+        mons = sorted(os.listdir(base))
+    except OSError:
+        mons = []
+    for m in mons:
+        d = os.path.join(base, m)
+        chip = _perf_first(os.path.join(d, 'name'))
+        try:
+            files = sorted(f for f in os.listdir(d) if re.match(r'^temp\d+_input$', f))
+        except OSError:
+            continue
+        for f in files:
+            n = f.split('_')[0]
+            try:
+                t = int(_perf_first(os.path.join(d, f), 'x')) / 1000.0
+            except ValueError:
+                continue
+            if t <= -40 or t > 150:
+                continue
+            label = _perf_first(os.path.join(d, n + '_label')) or chip
+            core = re.match(r'^Core (\d+)$', label)
+            if chip in PERF_CPU_CHIPS:
+                if core:
+                    # a physical core's, in its package (coretemp.P): a
+                    # logical processor finds it by its topology (2.7.3)
+                    out['cores'][int(core.group(1))] = round(t, 1)
+                    pkg = re.search(r'\.(\d+)$', os.path.realpath(os.path.join(d, 'device')))
+                    out['pkg_cores']['%s:%s' % (pkg.group(1) if pkg else '0', core.group(1))] = round(t, 1)
+                else:
+                    out['cpu'].append([label, round(t, 1)])
+            elif chip in ('nvme', 'drivetemp'):
+                # a disk's own: an NVMe one by its controller, a SATA one by
+                # drivetemp, each put to its disk by name
+                dev = ''
+                try:
+                    dev = os.path.basename(os.path.realpath(os.path.join(d, 'device')))
+                    if chip == 'nvme':
+                        nv = [x for x in os.listdir(os.path.join(d, 'device')) if re.match(r'^nvme\d+n\d+$', x)]
+                        dev = nv[0] if nv else dev
+                    else:
+                        blk = os.listdir(os.path.join(d, 'device', 'block'))
+                        dev = blk[0] if blk else dev
+                except OSError:
+                    pass
+                if label.lower() in ('composite', chip, '') or dev not in out['disks']:
+                    out['disks'][dev or chip] = round(t, 1)
+            else:
+                out['other'].append([chip + (' ' + label if label != chip else ''), round(t, 1)])
+    if not out['cpu'] and not out['cores']:
+        tz = os.path.join(PERF_SYS, 'class/thermal')
+        try:
+            zones = sorted(z for z in os.listdir(tz) if z.startswith('thermal_zone'))
+        except OSError:
+            zones = []
+        for z in zones:
+            kind = _perf_first(os.path.join(tz, z, 'type'))
+            try:
+                t = int(_perf_first(os.path.join(tz, z, 'temp'), 'x')) / 1000.0
+            except ValueError:
+                continue
+            if -40 < t < 150:
+                (out['cpu'] if re.search(r'cpu|x86_pkg|soc|core', kind, re.I) else out['other']).append(
+                    [kind, round(t, 1)])
+    return out
+
+
+def perf_core_temp(n, temps):
+    """A logical processor's temperature: its physical core's, found by its
+    topology - with hyperthreads, cpu2 is the second thread of core 0, and
+    on a Xeon the cores are numbered 0, 1, 4, 5... (plexmon 2.7.3). Without
+    a topology, by its own number as before. AMD's k10temp and zenpower say
+    only the package's, so no core has one there, which is right."""
+    topo = os.path.join(PERF_SYS, 'devices/system/cpu/cpu%d/topology' % n)
+    cid = _perf_first(os.path.join(topo, 'core_id'))
+    if not cid.isdigit():
+        return temps['cores'].get(n)
+    pid = _perf_first(os.path.join(topo, 'physical_package_id'), '0')
+    got = temps['pkg_cores'].get('%s:%s' % (pid if pid.isdigit() else '0', cid))
+    return got if got is not None else temps['cores'].get(int(cid))
+
+
+def _perf_filesystems():
+    """Each filesystem once, with its size and use - by statvfs, of the
+    kernel's own filesystems only (PERF_FS_KINDS), and under no lock."""
+    fss, seen = [], set()
+    try:
+        with _perf_open(os.path.join(PERF_PROC, 'mounts')) as f:
+            mounts = f.read().splitlines()
+    except OSError:
+        mounts = []
+    for line in mounts:
+        try:
+            dev, mnt, kind = line.split()[:3]
+        except ValueError:
+            continue
+        if kind not in PERF_FS_KINDS or dev in seen:
+            continue
+        if not dev.startswith('/') and kind not in ('zfs', 'btrfs'):
+            continue
+        seen.add(dev)
+        mnt = mnt.replace('\\040', ' ')
+        try:
+            sv = PERF_STATVFS(mnt)
+        except OSError:
+            continue
+        total = sv.f_blocks * sv.f_frsize
+        if not total:
+            continue
+        fss.append({'mount': mnt, 'dev': dev, 'kind': kind, 'total': total,
+                    'used': total - sv.f_bfree * sv.f_frsize, 'free': sv.f_bavail * sv.f_frsize})
+    return fss
+
+
+def _perf_detail_raw():
+    raw = {'at': time.time(), 'cores': {}, 'disks': {}, 'nics': {}, 'procs': {}}
+    try:
+        with _perf_open(os.path.join(PERF_PROC, 'stat')) as f:
+            for line in f:
+                m = re.match(r'^cpu(\d+)\s+(.*)$', line)
+                if m:
+                    v = [int(x) for x in m.group(2).split()[:8]]
+                    raw['cores'][int(m.group(1))] = (v[3] + v[4], sum(v))
+    except (OSError, ValueError):
+        pass
+    try:
+        whole = _perf_whole_disks()
+        with _perf_open(os.path.join(PERF_PROC, 'diskstats')) as f:
+            for line in f:
+                x = line.split()
+                if len(x) < 13 or x[2] not in whole or x[2].startswith(('loop', 'ram', 'zram', 'sr')):
+                    continue
+                raw['disks'][x[2]] = (int(x[5]) * 512, int(x[9]) * 512, int(x[12]))
+    except (OSError, ValueError):
+        pass
+    try:
+        with _perf_open(os.path.join(PERF_PROC, 'net/dev')) as f:
+            for line in f.readlines()[2:]:
+                name, _s, rest = line.partition(':')
+                name = name.strip()
+                if perf_nic_counted(name):
+                    x = rest.split()
+                    raw['nics'][name] = (int(x[0]), int(x[8]))
+    except (OSError, ValueError, IndexError):
+        pass
+    tick = os.sysconf('SC_CLK_TCK') if hasattr(os, 'sysconf') else 100
+    page = os.sysconf('SC_PAGE_SIZE') if hasattr(os, 'sysconf') else 4096
+    try:
+        pids = [p for p in os.listdir(PERF_PROC) if p.isdigit()]
+    except OSError:
+        pids = []
+    for pid in pids:
+        try:
+            with _perf_open(os.path.join(PERF_PROC, pid, 'stat')) as f:
+                st = f.read()
+            name = st[st.index('(') + 1:st.rindex(')')]
+            rest = st[st.rindex(')') + 2:].split()
+            raw['procs'][int(pid)] = (name[:40], (int(rest[11]) + int(rest[12])) / float(tick), int(rest[21]) * page)
+        except (OSError, ValueError, IndexError):
+            continue
+    return raw
+
+
+def perf_detail():
+    """What the panels show when opened: each core with its frequency and
+    temperature, the sensors, the disks one by one and the filesystems, the
+    cards one by one, the processes taking most - read only while a panel is
+    open."""
+    # PERF_LOCK is held only to look at and to keep what was read: the
+    # reading itself, the wait of a first look and every statvfs are done
+    # outside it, so nothing - not even another page's /api/perf - waits on
+    # a slow disk (2.7.1). Two pages asking at once may both read; that is
+    # all it costs.
+    with PERF_LOCK:
+        now = time.time()
+        if PERF_DETAIL['out'] and now - PERF_DETAIL['at'] < PERF_SHARE_S:
+            return PERF_DETAIL['out']
+        was = PERF_DETAIL['raw'] or {}
+    raw = _perf_detail_raw()
+    if not was or now - was.get('at', 0) > 30:
+        # the first look (or one long after the last): two readings a
+        # moment apart, so the panel opens with numbers, not dots - the
+        # wait is this request's own thread's
+        was = raw
+        time.sleep(0.3)
+        raw = _perf_detail_raw()
+    dt = max(0.2, raw['at'] - was.get('at', raw['at'] - 1))
+    temps = perf_temps()
+    cores = []
+    for n in sorted(raw['cores']):
+        idle, allc = raw['cores'][n]
+        busy = None
+        if n in was.get('cores', {}):
+            pi, pa = was['cores'][n]
+            if allc > pa:
+                busy = round(max(0.0, min(1.0, 1 - (idle - pi) / float(allc - pa))) * 100, 1)
+        mhz = _perf_first(os.path.join(PERF_SYS, 'devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq' % n))
+        cores.append({'n': n, 'busy': busy, 'mhz': round(int(mhz) / 1000) if mhz.isdigit() else None,
+                      'temp': perf_core_temp(n, temps)})
+    model = ''
+    try:
+        with _perf_open(os.path.join(PERF_PROC, 'cpuinfo')) as f:
+            info = f.read().splitlines()
+        for line in info:
+            if line.startswith(('model name', 'Hardware', 'Model')) and not model:
+                model = line.split(':', 1)[1].strip()
+        if cores and not any(c['mhz'] for c in cores):
+            mh = [float(x.split(':')[1]) for x in info if x.startswith('cpu MHz')]
+            for c, m in zip(cores, mh):
+                c['mhz'] = round(m)
+    except (OSError, ValueError, IndexError):
+        pass
+    disks = []
+    for name, (rd, wr, ms) in sorted(raw['disks'].items()):
+        one = {'name': name, 'temp': temps['disks'].get(name),
+               'size': int(_perf_first(os.path.join(PERF_SYS, 'block', name, 'size'), '0') or 0) * 512,
+               'model': _perf_first(os.path.join(PERF_SYS, 'block', name, 'device/model'))}
+        if name in was.get('disks', {}):
+            prd, pwr, pms = was['disks'][name]
+            one['rd'] = max(0, round((rd - prd) / dt))
+            one['wr'] = max(0, round((wr - pwr) / dt))
+            one['util'] = round(max(0.0, min(100.0, (ms - pms) / (dt * 10.0))), 1)
+        disks.append(one)
+    fss = _perf_filesystems()
+    nics = []
+    for name, (rx, tx) in sorted(raw['nics'].items()):
+        sp = _perf_first(os.path.join(PERF_SYS, 'class/net', name, 'speed'))
+        one = {'name': name, 'state': _perf_first(os.path.join(PERF_SYS, 'class/net', name, 'operstate')),
+               'speed': int(sp) if sp.lstrip('-').isdigit() and int(sp) > 0 else None, 'rx_all': rx, 'tx_all': tx}
+        if name in was.get('nics', {}):
+            one['rx'] = max(0, round((rx - was['nics'][name][0]) / dt))
+            one['tx'] = max(0, round((tx - was['nics'][name][1]) / dt))
+        nics.append(one)
+    procs = []
+    for pid, (name, cpu_s, rss) in raw['procs'].items():
+        p = {'pid': pid, 'name': name, 'rss': rss}
+        if pid in was.get('procs', {}):
+            p['cpu'] = round(max(0.0, (cpu_s - was['procs'][pid][1]) / dt) * 100, 1)
+        procs.append(p)
+    try:
+        mem = _perf_meminfo()
+    except OSError:
+        mem = {}
+    try:
+        up = float(_perf_first(os.path.join(PERF_PROC, 'uptime'), '0').split()[0])
+    except (ValueError, IndexError):
+        up = 0.0
+    out = {'cores': cores, 'model': model, 'temps': temps, 'disks': disks, 'filesystems': fss, 'nics': nics,
+           'top_cpu': sorted([p for p in procs if p.get('cpu')], key=lambda p: -p['cpu'])[:6],
+           'top_mem': sorted(procs, key=lambda p: -p['rss'])[:6], 'uptime': up,
+           'mem': {k: mem.get(v) for k, v in (('total', 'MemTotal'), ('available', 'MemAvailable'),
+                                              ('cached', 'Cached'), ('buffers', 'Buffers'),
+                                              ('swap_total', 'SwapTotal'), ('swap_free', 'SwapFree'),
+                                              ('shared', 'Shmem'))},
+           'procs': len(procs)}
+    with PERF_LOCK:
+        PERF_DETAIL.update(at=now, raw=raw, out=out)
+    return out
+
+
+def perf_forget():
+    """Switched off: nothing of the last readings is kept."""
+    with PERF_LOCK:
+        PERF_LAST.update(at=0.0, raw=None, out=None)
+        PERF_DETAIL.update(at=0.0, raw=None, out=None)
+        PERF_RING.clear()
+
+
+def perf_api(detail=False, history=False):
+    """GET /api/perf (an administrator's): the summary; with detail=1 the
+    details as well, with history=1 the last two minutes for the graphs."""
+    out = dict(perf_load())
+    if history:
+        out['history'] = perf_history()
+    if detail:
+        out['detail'] = perf_detail()
+    return out
+
+
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = 'zigmon/' + __version__
     daemon = None
@@ -40575,7 +41048,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the last two characters of each kept secret (5.38.2)
                      '/api/secret_hints',
                      # Certificates from acme (5.40): its card
-                     '/api/acmepush')
+                     '/api/acmepush',
+                     # how busy the machine is, its disks and cards (5.43)
+                     '/api/perf')
 
     def log_message(self, fmt, *args):
         # Who asked, as well as what for. Everything arrives over the loopback
@@ -41121,6 +41596,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 token = self.headers.get('X-Zigmon-Session') or ''
                 if path not in ('/api/health', '/api/healthz') and not d.session_valid(token):
                     return self._error(403, 'view locked - sign in to see the house')
+            if path == '/api/perf':
+                # the performance meter (5.43): an administrator's (ALWAYS_LOCKED
+                # let only one this far - asked again, as the hints are). Off,
+                # nothing is read and nothing is said but that it is off
+                if not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin') and not REQUEST_CALLER.cli:
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                if not perf_on():
+                    perf_forget()
+                    return self._error(404, 'the performance meter is off')
+                return self._send(200, dict(perf_api(detail=q.get('detail') == '1',
+                                                     history=q.get('history') == '1'), ok=True))
             if path == '/api/secret_hints':
                 # ALWAYS_LOCKED let only an administrator this far; asked
                 # again here, so a road moved out of that list one day does
