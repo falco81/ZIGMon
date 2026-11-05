@@ -16013,6 +16013,7 @@ function pkSection(body, owner, own) {
   var draw = function (r) {
     var rows = r.passkeys || [];
     list.innerHTML = '';
+    list.dataset.n = String(rows.length);  // how many the server said: drawn (5.43)
     list.appendChild(zTable(['Passkey', 'For', 'Added', 'Last used', ''], rows, function (x) {
       var tr = el('tr');
       tr.appendChild(el('td', '', x.label || 'passkey'));

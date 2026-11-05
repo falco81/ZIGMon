@@ -750,9 +750,11 @@ async function page(b, url, opts, init) {
     await pa.click('#lockpill');
     await pa.waitForSelector('#pk-add');
     await wait(900);
-    const rowsA = await pa.evaluate(() => document.querySelectorAll('#zmodal-body .pk-list tbody tr:not(.empty-row)').length);
+    // the list as the server has it, drawn - not counted while it is still on its way
+    await pa.waitForSelector('#zmodal-body .pk-list[data-n]');
+    const rowsA = await pa.evaluate(() => Number(document.querySelector('#zmodal-body .pk-list').dataset.n));
     await pa.click('#pk-add');
-    await pa.waitForFunction(n => document.querySelectorAll('#zmodal-body .pk-list tbody tr:not(.empty-row)').length > n, rowsA, {timeout: 15000});
+    await pa.waitForFunction(n => Number((document.querySelector('#zmodal-body .pk-list') || {dataset: {}}).dataset.n || 0) > n, rowsA, {timeout: 15000});
     out.addedA = await pa.evaluate(() => Array.from(document.querySelectorAll('#zmodal-body .pk-list tbody tr'))
       .map(t => t.textContent));
     await shot(pa, 'desktop-account-passkey-added.png');
@@ -765,9 +767,11 @@ async function page(b, url, opts, init) {
     out.manageB = await pb.evaluate(() => !document.getElementById('pk-manage').hidden);
     await pb.click('#pk-manage');
     await pb.waitForSelector('#pk-add'); await wait(900);
-    const rowsB = await pb.evaluate(() => document.querySelectorAll('#zmodal-body .pk-list tbody tr:not(.empty-row)').length);
+    // the list as the server has it, drawn - not counted while it is still on its way
+    await pb.waitForSelector('#zmodal-body .pk-list[data-n]');
+    const rowsB = await pb.evaluate(() => Number(document.querySelector('#zmodal-body .pk-list').dataset.n));
     await pb.click('#pk-add');
-    await pb.waitForFunction(n => document.querySelectorAll('#zmodal-body .pk-list tbody tr:not(.empty-row)').length > n, rowsB, {timeout: 15000});
+    await pb.waitForFunction(n => Number((document.querySelector('#zmodal-body .pk-list') || {dataset: {}}).dataset.n || 0) > n, rowsB, {timeout: 15000});
     out.addedB = await pb.evaluate(() => document.querySelector('#zmodal-body .pk-list tbody').textContent);
     await shot(pb, 'desktop-pin-account-passkey-added.png');
     await pb.evaluate(() => closeZModal());
