@@ -251,7 +251,9 @@ const measure = () => {
           underChips: chipTop !== null && upd.y >= Math.min.apply(null, chips.map(c => R(c).b)) - 1,
           chips: chips.map(c => c.dataset.k), overlaps: overlaps,
           scrollW: document.documentElement.scrollWidth, w: innerWidth,
-          header: R(hdr), user: vis(ub) ? R(ub) : null, meter: !!(window.HLOAD && HLOAD.last)};
+          header: R(hdr), user: vis(ub) ? R(ub) : null, meter: !!(window.HLOAD && HLOAD.last),
+          // every chip on the title's line (5.43.2)
+          chipsOnTitle: chips.length > 0 && chips.every(c => { const a = R(c); return a.y < row.b && a.b > row.y; })};
 };
 (async () => {
   const b = await chromium.launch();
@@ -262,6 +264,8 @@ const measure = () => {
                    ['ipad', 1180, 820], ['ipad', 820, 1180], ['phone', 420, 900]];
     for (let w = 700; w <= 1600; w += 50) sizes.push(['desk', w, 1000]);
     sizes.push(['desk', 1000, 1000], ['desk', 1280, 1000], ['desk', 1336, 1000]);
+    // (5.43.2) a wide screen: the chips in the row of the title and Editing
+    sizes.push(['desk', 2560, 1000], ['desk', 2800, 1000]);
     for (const as of ['pin', 'owner']) {
       const [ctx, p] = await open(b, base, 'desk', 1600, 1000, as);
       await waitMeter(p);
@@ -532,6 +536,9 @@ for k, m in sorted((o.get('layout') or {}).items()):
     check(m.get('scrollW', 1) <= m.get('w', 0), '%s: wider than the screen (%s > %s)' % (k, m.get('scrollW'), m.get('w')))
     if phone:
         check(m.get('chips') == ['cpu', 'mem'], '%s: a phone has more than CPU and RAM: %r' % (k, m.get('chips')))
+    # (5.43.2) a screen wide enough: the meter in the row of Editing, not under it
+    if not phone and int(k.split()[-1].split('x')[0]) >= 2560:
+        check(m.get('chipsOnTitle'), '%s: the meter is not in the row of the title and Editing' % k)
 check(len(o.get('layout') or {}) >= 30, 'not every width was measured: %d' % len(o.get('layout') or {}))
 
 print('the keyboard on the screen')

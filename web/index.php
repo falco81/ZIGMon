@@ -1821,6 +1821,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     header:has(> #hload:not([hidden])) > #updated{order:2;align-self:flex-start;margin-top:1px}
     header:has(> #hload:not([hidden])) > #hload{order:3;flex:1 1 calc(100% - 274px)}
     header:has(> #hload:not([hidden])) > .app-find-wrap{order:4}
+    /* One row when it all fits (5.43.2): the meter's chips in the row of the
+       title and the Editing pill, the search and the clock after them - set by
+       headerFit() only when every item then stands on one line; short of room
+       (an iPad) it is the two rows above */
+    header.hl-one:has(> #hload:not([hidden])) > .hrow{order:1;flex:0 1 auto}
+    header.hl-one:has(> #hload:not([hidden])) > #hload{order:2;flex:0 1 auto}
+    header.hl-one:has(> #hload:not([hidden])) > .app-find-wrap{order:3;margin-left:auto}
+    header.hl-one:has(> #hload:not([hidden])) > #updated{order:4;align-self:center;margin-top:0}
   }
   /* a phone: the person only, beside the pills */
   @media (max-width:700px){.lockpill.userbtn{padding:7px 10px}.lockpill.userbtn .ub-name{display:none}}
@@ -17258,6 +17266,28 @@ function hloadStop() {
   HLOAD.hist = null; HLOAD.histAt = null; HLOAD.last = null; HLOAD.detail = null; HLOAD.seeded = false;
 }
 /* Every status: started when it is wanted, stopped when it is not. */
+/* The header in one row when it fits (5.43.2): tried as one row, and kept so
+   only when the chips, the search and the clock all stand on the title's line;
+   otherwise the two rows. Asked again when the header changes size or what it
+   holds - read in the same frame, so nothing is seen moving. */
+function headerFit() {
+  var hd = document.querySelector('header'), hr = $('hrow'), hl = $('hload'), up = $('updated');
+  if (!hd || !hr || !hl || !up) return;
+  hd.classList.add('hl-one');
+  if (hl.hidden || window.innerWidth <= 700) return;
+  var top = hr.getBoundingClientRect().top, bottom = hr.getBoundingClientRect().bottom;
+  var line = function (e) { var r = e.getBoundingClientRect(); return r.top < bottom && r.bottom > top; };
+  if (!(line(hl) && line(up) && line(document.querySelector('header > .app-find-wrap')))) hd.classList.remove('hl-one');
+}
+(function () {
+  var hd = document.querySelector('header');
+  if (!hd || typeof ResizeObserver === 'undefined') return;
+  var busy = false;
+  var again = function () { if (busy) return; busy = true; try { headerFit(); } finally { busy = false; } };
+  new ResizeObserver(again).observe(document.documentElement);
+  new MutationObserver(again).observe(hd, {subtree: true, childList: true, attributes: true, attributeFilter: ['hidden']});
+  window.addEventListener('resize', again);
+})();
 function perfSync(st) {
   var want = perfWanted(st);
   if (want && !HLOAD.timer) hloadLoop();

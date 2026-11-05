@@ -2083,7 +2083,18 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.43.1**
+Current version: **5.43.2**
+
+5.43.2 — the performance meter in the row of Editing.
+
+* On a screen wide enough the meter's chips stand in the row of the title,
+  the state, *Editing* and the user, with the search and the clock after
+  them. Short of room (an iPad, a narrower window) the two rows of 5.43.1:
+  the title row with the clock at its right, the chips under it. Tried as
+  one row whenever the header changes size or what it holds, and kept only
+  when everything then stands on that one line.
+
+`test/review5431.py`; the new checks fail on 5.43.1.
 
 5.43.1 — on an iPad as it should be; a button for whoever is signed in; the meter for everyone who sees the house.
 
