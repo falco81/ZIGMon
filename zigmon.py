@@ -39450,8 +39450,11 @@ class Daemon(object):
             value = str(CONFIG.get(key) or '')
             if len(value) < 4:
                 continue
-            enc = json.dumps(value, ensure_ascii=False)[1:-1].encode('utf-8')
-            out = out.replace(enc, b'(kept)')
+            # whole, and as an administrator's page is shown it (its token kept)
+            for shown in {value, str(ntfy_kept(value) or '')}:
+                if len(shown) >= 4:
+                    enc = json.dumps(shown, ensure_ascii=False)[1:-1].encode('utf-8')
+                    out = out.replace(enc, b'(kept)')
         self._status_viewer = (body, out)
         return out
 

@@ -263,7 +263,9 @@ try:
           'a visitor\'s status carried the ntfy address with its token: %r'
           % ((st.get('runtime_config') or {}).get('notify_ntfy'),))
     c, st = call('/api/status', sess=T_OWNER)
-    check(c == 200 and (st.get('runtime_config') or {}).get('notify_ntfy', {}).get('value') == secret,
+    # an administrator's page: the server and the topic, its token kept (as test/hunt5433_msg.py wants)
+    _adm = (st.get('runtime_config') or {}).get('notify_ntfy', {}).get('value') or ''
+    check(c == 200 and _adm.endswith('@ntfy.example.net/zigmon-house-hunt') and 'tk_hunt5433secretvalue' not in _adm,
           'an administrator\'s page lost the ntfy address it edits: %r'
           % ((st.get('runtime_config') or {}).get('notify_ntfy'),))
     d.save_config_overrides({'notify_ntfy': '(kept)'})
