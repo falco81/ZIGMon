@@ -18608,8 +18608,13 @@ class Daemon(object):
         return ident
 
     def upgrade_forget(self):
-        if self.upgrade_state()['running']:
+        st = self.upgrade_state()
+        if st['running']:
             raise ValueError('not while an upgrade is going on')
+        # (5.44.1) nor while one is asked for and root has not taken it yet:
+        # the package would be gone from under it
+        if st.get('asked') and self.upgrade_dir('request.json').exists():
+            raise ValueError('not while an upgrade is asked for - root has not taken it yet')
         for p in list(self.upgrade_dir().glob('zigmon-*.tar.gz')) + [self.upgrade_dir('package.json')]:
             try:
                 p.unlink()

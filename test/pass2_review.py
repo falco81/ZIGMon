@@ -316,6 +316,27 @@ try:
     check(stamp.get('by') == 'the dashboard' and stamp.get('version') == zigmon.__version__,
           'the stamp of an upgrade from the dashboard says %r' % {k: stamp.get(k) for k in ('by', 'version')})
     print('5. install.sh\'s stamp is what the daemon reads as right (verified)')
+
+    # 6. (5.44.1) the package is not forgotten while an upgrade asked for waits for root
+    up = d.upgrade_dir()
+    up.mkdir(parents=True, exist_ok=True)
+    (up / 'zigmon-9.9.9.tar.gz').write_bytes(b'x')
+    (up / 'request.json').write_text('{"op": "upgrade"}')
+    real_asked = d.upgrade_asked
+    d.upgrade_asked = lambda: {'version': '9.9.9', 'at': time.time()}
+    try:
+        d.upgrade_forget()
+        refused = False
+    except ValueError:
+        refused = True
+    finally:
+        d.upgrade_asked = real_asked
+    check(refused and (up / 'zigmon-9.9.9.tar.gz').exists(),
+          'the package was forgotten from under an upgrade root had not taken yet')
+    (up / 'request.json').unlink()
+    d.upgrade_forget()
+    check(not (up / 'zigmon-9.9.9.tar.gz').exists(), 'the package was not forgotten once nothing waited for it')
+    print('6. a package waiting for root is not forgotten from under it')
 finally:
     server.shutdown()
     server.server_close()
