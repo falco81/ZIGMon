@@ -340,6 +340,11 @@ check(not kept or 'timed out' not in str(words).lower(),
 d.store.set_meta('sms_outbox', '[]')
 del d._sms_token
 
+# 17. the events saved as text say when they are only the newest of a search
+save = re.search(r'function saveEventsAsText\(\) \{(.*?)\n\}', page, re.S)
+check(save and 'EVENTS.matched' in save.group(1),
+      'the events saved as text called the newest few hundred of a bigger search the whole of it')
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 os._exit(1 if bad else 0)

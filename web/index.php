@@ -15448,7 +15448,11 @@ function saveEventsAsText() {
   if (f.text) said.push('containing \u201c' + f.text + '\u201d');
   var head = ['zigmon events', 'saved ' + when(Date.now() / 1000),
               said.length ? 'showing: ' + said.join(', ') : 'showing: everything',
-              rows.length + ' event(s)', ''];
+              // (5.43.3) what was loaded is the newest few hundred: the file
+              // said "500 event(s)" of a search that matched 852, as though
+              // it were the whole of it
+              rows.length + ' event(s)' + (EVENTS.matched > rows.length
+                ? ' — the newest of ' + EVENTS.matched + ' that match' : ''), ''];
   var body = rows.map(function (e) {
     return [when(e.ts), (e.level || 'info'), (e.kind || ''), (e.device_name || e.device || ''),
             (e.detail || '')].join('\t');
