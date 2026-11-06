@@ -870,6 +870,28 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/approvals?' . implode('&', $ask));
         exit;
     }
+    if ($what === 'proxy-requests' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.46) what the server in front wrote down, masked as it was kept;
+        // the daemon answers it to an administrator only
+        $ask = ['limit=' . max(1, min(200, (int) ($_GET['limit'] ?? 100)))];
+        if (isset($_GET['ip']) && preg_match('/^[0-9A-Fa-f.:]{2,45}$/', (string) $_GET['ip'])) {
+            $ask[] = 'ip=' . rawurlencode((string) $_GET['ip']);
+        }
+        if (isset($_GET['q']) && $_GET['q'] !== '') {
+            $ask[] = 'q=' . rawurlencode(substr((string) $_GET['q'], 0, 80));
+        }
+        if (isset($_GET['which']) && in_array($_GET['which'], ['tap', 'ntfy'], true)) {
+            $ask[] = 'which=' . $_GET['which'];
+        }
+        if (isset($_GET['found']) && $_GET['found'] === '1') {
+            $ask[] = 'found=1';
+        }
+        if (isset($_GET['before']) && ctype_digit((string) $_GET['before'])) {
+            $ask[] = 'before=' . (int) $_GET['before'];
+        }
+        zigmon_relay('/api/proxy/requests?' . implode('&', $ask));
+        exit;
+    }
     if ($what === 'proxy' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         zigmon_relay('/api/proxy');
         exit;
@@ -3440,6 +3462,22 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #approvals-past th:first-child, #approvals-past td:first-child{padding-left:7px}
   #approvals-past tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--info)}
   #blocked-history tbody tr:nth-child(odd){background:var(--panel2)}
+  /* (5.46) the requests at the server in front */
+  #preq-table{width:100%}
+  #preq-table td{vertical-align:top;font-size:13px}
+  #preq-table tbody tr.preq-row{cursor:pointer}
+  #preq-table tbody tr.preq-row:nth-child(4n+1){background:var(--panel2)}
+  #preq-table tbody tr.preq-row:hover{background:rgba(88,166,255,.07)}
+  #preq-table td.preq-req{overflow-wrap:anywhere;font-family:var(--mono,ui-monospace,monospace);font-size:12.5px}
+  #preq-table .preq-kind{display:inline-block;margin:0 4px 2px 0;padding:1px 6px;border-radius:9px;font-size:11.5px;background:rgba(248,81,73,.14);color:var(--crit)}
+  #preq-table .preq-s4{color:var(--warn)} #preq-table .preq-s2{color:var(--ok)}
+  #preq-table tr.preq-detail td{background:var(--panel2);padding:8px 12px}
+  .preq-fields{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:2px 14px;font-size:12.5px}
+  .preq-fields .k{color:var(--tx-dim);white-space:nowrap}
+  .preq-fields .v{overflow-wrap:anywhere;font-family:var(--mono,ui-monospace,monospace)}
+  .preq-fields .v.masked{color:var(--info)}
+  .preq-fields .v.bad{color:var(--crit)}
+  .preq-ip{color:var(--info);cursor:pointer;text-decoration:underline dotted}
   #blocked-history tbody tr:hover{background:rgba(88,166,255,.07)}
   #blocked-history th:first-child, #blocked-history td:first-child{padding-left:7px}
   #blocked-history tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--info)}
@@ -5444,6 +5482,28 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     </tr></thead><tbody></tbody></table>
     <div class="center" id="approvals-empty" hidden>No link has been pressed yet</div>
     <div class="pager" id="presses-pager"></div>
+  </div>
+  <div class="card full" style="margin-top:14px" id="preq-card" hidden>
+    <h2>Every request at the server in front</h2>
+    <p class="note">What the full logs of the server in front wrote down - every header it names, the
+      start of the body, and what the weighing made of each request. Secrets are written by their
+      shape and never whole: <i>Bearer •3x</i> is a token ending in 3x, <i>Basic •</i> a login
+      (with its name, <i>Basic user:jan •3x</i>, where an older front config wrote it whole and the
+      house masked it as it read it), a cookie by its names alone, a password in a body as •. Kept as long as the proxy's lines
+      (Settings → Data &amp; database); an administrator's to read.</p>
+    <div class="btnrow preq-filter" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <input id="preq-ip" type="text" autocomplete="off" placeholder="an address" style="max-width:200px" aria-label="Only this address">
+      <input id="preq-q" type="search" autocomplete="off" placeholder="find: a path, an agent, a header" style="max-width:280px" aria-label="Find in the requests">
+      <select id="preq-which" aria-label="Which server"><option value="">both servers</option><option value="tap">one-tap links</option><option value="ntfy">ntfy</option></select>
+      <label class="small" style="align-self:center"><input type="checkbox" id="preq-found"> only what was weighed</label>
+      <button class="btn cmd" id="preq-go" type="button">Show</button>
+      <span class="muted small" id="preq-note" style="align-self:center"></span>
+    </div>
+    <div class="table-wrap"><table id="preq-table"><thead><tr>
+      <th>When</th><th>Server</th><th>Asked from</th><th>Request</th><th>Answer</th><th>Found</th>
+    </tr></thead><tbody></tbody></table></div>
+    <div class="center" id="preq-empty" hidden></div>
+    <div class="btnrow" style="margin-top:8px"><button class="btn cmd" id="preq-more" type="button" hidden>Older</button></div>
   </div>
   <div class="card full" style="margin-top:14px" id="blocked-card">
     <h2>Addresses that may not talk to this</h2>
@@ -7582,6 +7642,125 @@ function paintPressesPager(pages) {
   pager.appendChild(mk('', PRESSES.page + 1, 'next'));
   pager.appendChild(mk('', pages, 'last'));
 }
+// ---- every request at the server in front (5.46) ---------------------------
+var PREQ = {rows: [], more: false, busy: false, at: 0, open: {}, key: ''};
+// the full log's own short names, as a person knows the headers
+var PREQ_NAMES = {proto: 'Protocol', bytes: 'Bytes sent', took: 'Took (s)', ref: 'Referer', ct: 'Content-Type',
+  clen: 'Content-Length (read)', ctlen: 'Content-Length', xff: 'X-Forwarded-For', xfh: 'X-Forwarded-Host',
+  xou: 'X-Original-URL', xru: 'X-Rewrite-URL', xfp: 'X-Forwarded-Proto', origin: 'Origin',
+  auth: 'Authorization', pauth: 'Proxy-Authorization', cookie: 'Cookie', secret: 'X-Zigmon-Tap',
+  code: 'X-Zigmon-Code', apikey: 'X-Api-Key', xtoken: 'X-Auth-Token', xcsrf: 'X-CSRF-Token',
+  te: 'Transfer-Encoding', exp: 'Expect', range: 'Range', acc: 'Accept', enc: 'Accept-Encoding',
+  lang: 'Accept-Language', conn: 'Connection', up: 'Upgrade', via: 'Via', xri: 'X-Real-IP',
+  xfport: 'X-Forwarded-Port', xcip: 'Client-IP', xff2: 'Forwarded', dnt: 'DNT', scheme: 'Scheme',
+  reqlen: 'Request length', ssl: 'TLS', sfs: 'Sec-Fetch-Site', sfm: 'Sec-Fetch-Mode', sfd: 'Sec-Fetch-Dest',
+  sfu: 'Sec-Fetch-User', chua: 'Sec-CH-UA', chm: 'Sec-CH-UA-Mobile', chp: 'Sec-CH-UA-Platform',
+  xrw: 'X-Requested-With', cc: 'Cache-Control', pragma: 'Pragma', ims: 'If-Modified-Since',
+  inm: 'If-None-Match', hmo: 'X-HTTP-Method-Override', xom: 'X-Original-Method', tcip: 'True-Client-IP',
+  cfip: 'CF-Connecting-IP', xhost: 'X-Host', xfs: 'X-Forwarded-Server', maxf: 'Max-Forwards',
+  prio: 'Priority', sni: 'TLS name (SNI)', rport: 'Client port', wap: 'X-Wap-Profile', te2: 'TE',
+  authk: 'A login everybody knows', authlook: 'Authorization carries', pauthlook: 'Proxy-Authorization carries',
+  cookielook: 'Cookie carries', authsize: 'Authorization size', cookiesize: 'Cookie size'};
+var PREQ_MASKED = {auth: 1, pauth: 1, cookie: 1, secret: 1, apikey: 1, xtoken: 1, xcsrf: 1, code: 1};
+var PREQ_BAD = {authk: 1, authlook: 1, pauthlook: 1, cookielook: 1};
+function preqKey() {
+  return [$('preq-ip').value.trim(), $('preq-q').value.trim(), $('preq-which').value,
+          $('preq-found').checked ? 1 : 0].join('#');
+}
+function loadProxyRequests(older) {
+  var card = $('preq-card'); if (!card) return;
+  card.hidden = !isAdmin();
+  if (card.hidden || PREQ.busy) return;
+  var ip = $('preq-ip').value.trim(), q = $('preq-q').value.trim();
+  if (ip && !/^[0-9A-Fa-f.:]{2,45}$/.test(ip)) { $('preq-note').textContent = 'that is not an address'; return; }
+  var key = preqKey();
+  if (!older && key !== PREQ.key) { PREQ.open = {}; }
+  var ask = 'proxy-requests&limit=100' + (ip ? '&ip=' + encodeURIComponent(ip) : '')
+    + (q ? '&q=' + encodeURIComponent(q) : '') + ($('preq-which').value ? '&which=' + $('preq-which').value : '')
+    + ($('preq-found').checked ? '&found=1' : '')
+    + (older && PREQ.rows.length ? '&before=' + PREQ.rows[PREQ.rows.length - 1].id : '');
+  PREQ.busy = true;
+  api(ask).then(function (r) {
+    PREQ.key = key;
+    PREQ.rows = older ? PREQ.rows.concat(r.rows || []) : (r.rows || []);
+    PREQ.more = !!r.more; PREQ.words = r.words || {}; PREQ.watching = !!r.watching; PREQ.total = r.total || 0;
+    PREQ.at = Date.now();
+    $('preq-note').textContent = PREQ.total ? PREQ.total + ' kept in all' : '';
+    paintProxyRequests();
+  }, function (e) {
+    PREQ.at = Date.now();                    // a failure waits its half minute too
+    $('preq-note').textContent = 'could not ask the daemon' + (e && e.message ? ': ' + e.message : '');
+  }).then(function () { PREQ.busy = false; }, function () { PREQ.busy = false; });
+}
+function preqFields(one) {
+  var box = el('div', 'preq-fields');
+  var put = function (k, v, cls) {
+    box.appendChild(el('div', 'k', PREQ_NAMES[k] || k));
+    box.appendChild(el('div', 'v' + (cls ? ' ' + cls : ''), String(v)));
+  };
+  put('ip', one.ip + (one.country ? ' (' + one.country + ')' : ''));
+  if (one.host) put('host', one.host);
+  if (one.ua) put('ua', one.ua);
+  var f = one.fields || {};
+  Object.keys(f).sort(function (a, b) {
+    return (PREQ_MASKED[b] ? 1 : 0) - (PREQ_MASKED[a] ? 1 : 0) || (PREQ_NAMES[a] || a).localeCompare(PREQ_NAMES[b] || b);
+  }).forEach(function (k) {
+    if (f[k] === 'none') return;          // not sent: nothing to say
+    put(k, f[k], PREQ_BAD[k] ? 'bad' : (PREQ_MASKED[k] ? 'masked' : ''));
+  });
+  if (one.body) put('body', one.body);
+  (one.kinds || []).forEach(function (k) { put('found', k + ' \u2014 ' + ((PREQ.words || {})[k] || ''), 'bad'); });
+  return box;
+}
+PREQ_NAMES.ip = 'Address'; PREQ_NAMES.host = 'Host'; PREQ_NAMES.ua = 'User-Agent';
+PREQ_NAMES.body = 'Body (start)'; PREQ_NAMES.found = 'Weighed as';
+function paintProxyRequests() {
+  var body = $('preq-table') && $('preq-table').querySelector('tbody'); if (!body) return;
+  body.innerHTML = '';
+  var empty = $('preq-empty');
+  empty.hidden = PREQ.rows.length > 0;
+  empty.textContent = !PREQ.watching
+    ? 'The full logs are not read: Settings \u2192 The server that faces the internet \u2192 the full log'
+    : (preqKey() !== '###0' ? 'Nothing like that has been written down' : 'Nothing written down yet');
+  PREQ.rows.forEach(function (one) {
+    var tr = el('tr', 'preq-row');
+    tr.appendChild(el('td', 'nowrap', stamp(one.ts)));
+    tr.appendChild(el('td', 'nowrap', one.which === 'ntfy' ? 'ntfy' : 'one-tap'));
+    var ipCell = el('td', 'nowrap');
+    var ipLink = el('span', 'preq-ip', one.ip); ipLink.title = 'Only this address';
+    ipLink.onclick = function (ev) { ev.stopPropagation(); $('preq-ip').value = one.ip; loadProxyRequests(false); };
+    ipCell.appendChild(ipLink);
+    if (one.country) ipCell.appendChild(el('span', 'muted small', ' ' + one.country));
+    tr.appendChild(ipCell);
+    tr.appendChild(el('td', 'preq-req', (one.method || '\u2014') + ' ' + (one.uri || '')));
+    var st = el('td', 'nowrap preq-s' + String(one.status || 0).charAt(0), String(one.status || ''));
+    tr.appendChild(st);
+    var kinds = el('td', '');
+    (one.kinds || []).forEach(function (k) {
+      var b = el('span', 'preq-kind', k); b.title = (PREQ.words || {})[k] || k; kinds.appendChild(b);
+    });
+    tr.appendChild(kinds);
+    body.appendChild(tr);
+    var more = el('tr', 'preq-detail'); var td = el('td'); td.colSpan = 6;
+    more.appendChild(td); more.hidden = !PREQ.open[one.id];
+    if (!more.hidden) td.appendChild(preqFields(one));
+    tr.onclick = function () {
+      PREQ.open[one.id] = !PREQ.open[one.id];
+      more.hidden = !PREQ.open[one.id];
+      if (!more.hidden && !td.firstChild) td.appendChild(preqFields(one));
+    };
+    body.appendChild(more);
+  });
+  // (a .btn.cmd is drawn whatever its hidden says: its display wins)
+  $('preq-more').hidden = !PREQ.more;
+  $('preq-more').style.display = PREQ.more ? '' : 'none';
+}
+$('preq-go').onclick = function () { loadProxyRequests(false); };
+$('preq-more').onclick = function () { loadProxyRequests(true); };
+['preq-ip', 'preq-q'].forEach(function (id) {
+  $(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') loadProxyRequests(false); });
+});
+['preq-which', 'preq-found'].forEach(function (id) { $(id).onchange = function () { loadProxyRequests(false); }; });
 function loadApprovals(quiet, fromClock) {
   // Both of these hold addresses, so the daemon refuses them without the PIN.
   // The tab asked for them twice a second anyway, locked or not: on one
@@ -7703,6 +7882,9 @@ function paintApprovalsLocked() {
 function renderApprovals() {
   paintApprovals();
   if (Date.now() - APPROVALS.at > 2000) loadApprovals(true);
+  // (5.46) the requests: once on opening, and every half minute after on the
+  // tab's clock, unless a row is open or the reader is further back in time
+  loadProxyRequests(false);
   clearInterval(APPROVALS.timer);
   // the countdown has to move on its own, and a press may be approved by
   // somebody else while this is open
@@ -7714,6 +7896,8 @@ function renderApprovals() {
     if (userHolding()) return;          // a list is open, or text is being copied
     paintApprovals();
     if (APPROVALS.waiting.length || Date.now() - APPROVALS.at > 5000) loadApprovals(true, true);
+    if (Date.now() - PREQ.at > 30000 && !Object.keys(PREQ.open).some(function (k) { return PREQ.open[k]; })
+        && PREQ.rows.length <= 100) loadProxyRequests(false);
   }, 1000);
 }
 function paintApprovals() {
@@ -21105,10 +21289,14 @@ var SETTINGS_LAYOUT = [
      + 'header worth naming, the times and the sizes \u2014 see log_format tapfull in '
      + 'deploy/nginx-tap-front.conf. It shows what an ordinary log cannot: a POST carrying no secret '
      + 'at all, a body or a content-type that road never takes, a header whose only purpose is to '
-     + 'send the request somewhere else, and a body trying to be code. The link\u2019s own secret '
-     + 'and the second-factor code are NOT in it \u2014 the log says whether each was there and '
-     + 'nothing more, because this file sits on the machine the internet is knocking at and is '
-     + 'copied here as well.'],
+     + 'send the request somewhere else, a body trying to be code, a login everybody knows '
+     + '(admin:admin) tried at the door, a JWT that signs itself off, a payload in a header or a '
+     + 'cookie. Every request is kept and shown under Public API \u2192 Every request at the server '
+     + 'in front. No secret is in it whole (5.46): a login, a token, a cookie, the link\u2019s '
+     + 'secret are written by their shape and their last two characters, a cookie by its names, '
+     + 'a password in a body or an address as \u2022, and the second-factor code only as sent or '
+     + 'not \u2014 by nginx itself, and again here as it is read, so a front server still on an '
+     + 'older config is kept no differently.'],
     ['proxy_full_log', 'Where it is',
      'The full path, e.g. /var/log/nginx/zigmon-tap-full.log. It holds bodies, so rotate it and keep '
      + 'it to root: a body is whatever somebody felt like sending. Empty and nothing of it is read.'],
@@ -21118,7 +21306,8 @@ var SETTINGS_LAYOUT = [
      + 'sense: a header that tries to send the request elsewhere, a body trying to be code, an odd '
      + 'method. The shape rules do not apply there, because somebody publishing a message '
      + 'legitimately sends any body at all; what counts instead is arriving with no name and being '
-     + 'refused for it. The Authorization value is not written down, only whether there was one.'],
+     + 'refused for it, and a login everybody knows tried and refused. The Authorization value '
+     + 'is written by its shape: which kind of login it was, and whether it is one of those.'],
     ['|', 'Suricata, where it is running'],
     ['suricata_watch', 'Read what Suricata saw',
      'Suricata watches the packets arriving at the server in front \u2014 which this house never '

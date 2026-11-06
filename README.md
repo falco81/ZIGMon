@@ -2083,7 +2083,44 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.45.0**
+Current version: **5.46.0**
+
+5.46.0 — the full logs of the server in front: every header, nobody's key.
+
+* The front configs (`deploy/nginx-tap-front.conf`, `deploy/nginx-ntfy-front.conf`)
+  write every header worth naming - the Sec-Fetch and client-hint ones, the
+  caches, X-HTTP-Method-Override, True-Client-IP, the TLS name, the client's
+  port - and write each secret by its **shape**, in nginx itself, so nothing
+  whole is ever on the proxy's disk: `Basic *`, `Bearer *Zk`,
+  `Bearer jwt:eyJhbGci... *Zk` (a JWT's header, which is not signed for),
+  a cookie by its names, the link's secret and X-Api-Key / X-Auth-Token /
+  X-CSRF-Token as `*` and their last two characters, the second-factor code
+  only as sent; a password, token, pin or key in a body, an address or a
+  referer as `*`, and `/tap/<secret>` as `/tap/*`. Alongside: whether a login
+  is one everybody knows (admin:admin, root:toor, pi:raspberry, ...), what a
+  value carries when it is a payload (jndi, sqli, xss, traversal, shell,
+  template, huge) and how big the Authorization and the Cookie are.
+* The house masks every line again **as it reads it**, the same way - a front
+  server still on an older config, which wrote a Cookie and a Basic login as
+  they came, is kept no differently (a Basic login is then kept with its name:
+  `Basic user:jan •3x`). Nothing whole reaches the database, the log or a page.
+* Weighed from the headers: a login everybody knows tried and refused
+  (*proxy-default-login*, 6), a JWT that signs itself off - no signature, or
+  `"alg": "none"` (*proxy-forged-token*, 8), a payload in a header (Shellshock in
+  the User-Agent, Log4j in a Referer) or in a cookie or a token as the front's
+  map says (*proxy-payload*, once per request whatever else carried one).
+* Every request is kept (`proxy_requests`, as long as the proxy's lines, at
+  most 200,000) and shown under **Public API → Every request at the server in
+  front**: filtered by address, by text, by server, by only what was weighed;
+  a row opens on its headers, masked. An administrator's only
+  (`/api/proxy/requests`). The same line twice is two requests; the same file
+  read again is kept once.
+
+Copy the two front configs to the server in front again to have the new
+fields; until then the house masks what the old ones write.
+
+`test/review546_fullmask.py` (real nginx and Chromium where they are installed);
+these checks fail on 5.45.0.
 
 5.45.0 — a tile for the proxy in front, and sharper blocking from its logs.
 

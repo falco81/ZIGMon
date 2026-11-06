@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.45.0'
+__version__ = '5.46.0'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -5272,6 +5272,28 @@ CREATE TABLE IF NOT EXISTS proxy_lines (
 );
 CREATE INDEX IF NOT EXISTS proxy_lines_ip ON proxy_lines (ip, ts);
 CREATE INDEX IF NOT EXISTS proxy_lines_ts ON proxy_lines (ts);
+-- (5.46) Every request the full logs of the server in front wrote, whole but
+-- for its secrets: the headers, the start of the body, what the weighing made
+-- of it. Masked before it is written here - a password, a token, a cookie's
+-- value never reaches this table, only its kind and its last two characters
+-- (see full_mask). Shown under Public API to an administrator.
+CREATE TABLE IF NOT EXISTS proxy_requests (
+    id     INTEGER PRIMARY KEY,
+    ts     REAL NOT NULL,
+    h      TEXT NOT NULL UNIQUE,    -- the line, as a fingerprint: read twice, kept once
+    which  TEXT,                    -- 'tap' or 'ntfy': which server wrote it
+    ip     TEXT NOT NULL,
+    method TEXT,
+    uri    TEXT,
+    status INTEGER,
+    host   TEXT,
+    ua     TEXT,
+    fields TEXT,                    -- every other header, masked, as JSON
+    body   TEXT,                    -- the start of the body, masked
+    kinds  TEXT                     -- what the weighing made of it, comma separated
+);
+CREATE INDEX IF NOT EXISTS proxy_requests_ip ON proxy_requests (ip, ts);
+CREATE INDEX IF NOT EXISTS proxy_requests_ts ON proxy_requests (ts);
 
 -- Lists somebody else keeps: ranges known for scanning, for botnets, for
 -- being somewhere nothing of this house should ever hear from. Fetched whole,
@@ -7028,6 +7050,78 @@ class Storage(object):
                                    (time.time() - days * 86400,))
             self.db.commit()
         return done.rowcount or 0
+
+    PROXY_REQUESTS_MOST = 200000      # rows kept at most, whatever the days say
+
+    def keep_proxy_requests(self, rows):
+        """(5.46) The full logs' requests, masked already (Daemon.full_mask).
+        A line read a second time - a reading again from the start - is the
+        same fingerprint and is not written twice."""
+        if not rows:
+            return 0
+        step = 500
+        for at in range(0, len(rows), step):
+            with self.lock:
+                self._bulk('INSERT OR IGNORE INTO proxy_requests (ts, h, which, ip, method, uri, status, '
+                           'host, ua, fields, body, kinds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                           rows[at:at + step])
+            if at + step < len(rows):
+                time.sleep(0.005)
+        return len(rows)
+
+    def proxy_requests_forget(self, days):
+        """As the lines go: after the same days, and never more than
+        PROXY_REQUESTS_MOST of them whatever the days say."""
+        gone = 0
+        with self.lock:
+            if days:
+                gone += self.db.execute('DELETE FROM proxy_requests WHERE ts < ?',
+                                        (time.time() - days * 86400,)).rowcount or 0
+            row = self.db.execute('SELECT id FROM proxy_requests ORDER BY id DESC LIMIT 1 OFFSET ?',
+                                  (self.PROXY_REQUESTS_MOST,)).fetchone()
+            if row:
+                gone += self.db.execute('DELETE FROM proxy_requests WHERE id <= ?', (row['id'],)).rowcount or 0
+            self.db.commit()
+        return gone
+
+    def proxy_requests_list(self, ip='', q='', which='', found=False, before=0, limit=100):
+        """Newest first, a page at a time (before: the id the last page
+        ended at). q is looked for in the address asked for, the agent, the
+        name and the headers - as written, masked."""
+        where, args = [], []
+        if ip:
+            where.append('ip = ?')
+            args.append(str(ip)[:64])
+        if which in ('tap', 'ntfy'):
+            where.append('which = ?')
+            args.append(which)
+        if found:
+            where.append("kinds <> ''")
+        if before:
+            where.append('id < ?')
+            args.append(int(before))
+        if q:
+            like = '%' + str(q)[:80].replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            where.append("(uri LIKE ? ESCAPE '\\' OR ua LIKE ? ESCAPE '\\' OR host LIKE ? ESCAPE '\\' "
+                         "OR fields LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR kinds LIKE ? ESCAPE '\\')")
+            args += [like] * 6
+        limit = max(1, min(int(limit or 100), 200))
+        sql = 'SELECT * FROM proxy_requests' + (' WHERE ' + ' AND '.join(where) if where else '') + \
+            ' ORDER BY id DESC LIMIT ?'
+        with self.lock:
+            rows = self.db.execute(sql, args + [limit + 1]).fetchall()
+            total = self.db.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
+        out = []
+        for r in rows[:limit]:
+            one = dict(r)
+            one.pop('h', None)
+            try:
+                one['fields'] = json.loads(one.get('fields') or '{}')
+            except ValueError:
+                one['fields'] = {}
+            one['kinds'] = [k for k in str(one.get('kinds') or '').split(',') if k]
+            out.append(one)
+        return out, len(rows) > limit, int(total or 0)
 
     def paths_in(self, ip, seconds):
         """How many different paths this address has asked for lately, and how
@@ -25624,7 +25718,18 @@ class Daemon(object):
                       # written down nowhere but the house's own phones. Seven,
                       # so that with the eight of the thing itself the first
                       # one is a block at the standing bar.
-                      'proxy-aimed': 7}
+                      'proxy-aimed': 7,
+                      # (5.46) admin:admin, root:toor, pi:raspberry - the logins
+                      # everybody knows, tried at a door of this house and
+                      # refused. Nobody of the house types one of those; a list
+                      # being worked through does. Six, so a second one, or one
+                      # and anything else, is a block.
+                      'proxy-default-login': 6,
+                      # (5.46) a JWT that signs itself off - no signature at
+                      # all, or "alg": "none" - which is a forgery by
+                      # construction: nothing here issues one, and the only
+                      # use of one is to see whether a server believes it
+                      'proxy-forged-token': 8}
     ANOMALY_WINDOW = 600
     # The things nobody does by accident. Each weighs half the standing bar,
     # so one on its own is not a block; and they are remembered for a day
@@ -25661,7 +25766,9 @@ class Daemon(object):
                     # (5.45) ...and a round done from many addresses at once:
                     # each of them comes back as surely as one that asked
                     # twice by itself
-                    'proxy-swarm')
+                    'proxy-swarm',
+                    # (5.46) a login everybody knows, and a forged token
+                    'proxy-default-login', 'proxy-forged-token')
     # The kinds above are not folded when they come twice in a breath - but a
     # round that is working out what a machine is asks for the same page twice
     # as readily as a browser does, and forty-five of one page should weigh as
@@ -26088,6 +26195,8 @@ class Daemon(object):
         # (5.45) being on somebody's list is not working at a lock; a round
         # from many addresses and a probe aimed at the house's own name are
         'ids-listed': 'ordinary', 'proxy-swarm': 'serious', 'proxy-aimed': 'serious',
+        # (5.46) somebody working at the lock with a list, and with a forgery
+        'proxy-default-login': 'serious', 'proxy-forged-token': 'serious',
     }
 
     @staticmethod
@@ -26694,6 +26803,8 @@ class Daemon(object):
         'ids-listed': 'on a reputation list Suricata carries (Spamhaus DROP, DShield, CINS)',
         'proxy-swarm': 'one of several addresses asking for the same unmistakable thing within minutes',
         'proxy-aimed': 'asked for at this house\'s own name, not at an address being walked',
+        'proxy-default-login': 'a login everybody knows (admin:admin, root:toor) tried and refused',
+        'proxy-forged-token': 'a JWT that signs itself off - no signature, or "alg": "none"',
     }
 
     def anomaly_words(self, recent):
@@ -28217,8 +28328,10 @@ class Daemon(object):
         return known
 
     def weigh_one(self, one):
-        """One request, as a dict of the shape the full log writes."""
-        return self.full_weigh([json.dumps(one)])
+        """One request, as a dict of the shape the full log writes - weighed,
+        and not kept: a press the daemon weighs where it arrives is the full
+        log's line already."""
+        return self.full_weigh([json.dumps(one)], keep=False)
 
     def _friends_from(self, lines):
         """(5.45) The house, as the full logs show it: a press answered 200
@@ -28226,24 +28339,25 @@ class Daemon(object):
         name it took. Looked for by two plain words before any JSON is read,
         so the scanners' lines - nearly all of them - cost a substring test."""
         for line in lines or ():
-            if '200' not in line or ('sent' not in line and 'ntfy' not in line):
+            # (5.46) a secret is written by its shape now, not as "sent"
+            if '200' not in line:
                 continue
             try:
-                one = json.loads(line.strip())
+                one = full_mask(json.loads(line.strip()))
             except Exception:
                 continue
             if self._leak_checker(one.get('ua')):
                 continue                  # a found password that works is not the house
             ntfy = str(one.get('which') or '') == 'ntfy'
             if ntfy:
-                ok = str(one.get('auth') or 'none') not in ('', 'none', '-')
+                ok = full_sent(one.get('auth'))
             else:
-                ok = (str(one.get('m') or '') == 'POST' and str(one.get('secret') or '') == 'sent'
+                ok = (str(one.get('m') or '') == 'POST' and full_sent(one.get('secret'))
                       and str(one.get('u') or '').split('?')[0] in ('/tap', '/api/tap'))
             if ok and str(one.get('s')) == '200':
                 self._friend_seen(one.get('ip'), self._iso_moment(one.get('t')))
 
-    def full_weigh(self, lines):
+    def full_weigh(self, lines, keep=True):
         """The full log: one line of JSON per request, with the body and the
         headers, weighed for the things only a whole request shows.
 
@@ -28254,17 +28368,25 @@ class Daemon(object):
         sending.
         """
         seen, checks = {}, {}
+        rows = []
+        twins = {}                    # the same line twice is two requests, not one read twice
         self._friends_from(lines)
         for line in lines:
             line = line.strip()
             if not line.startswith('{'):
                 continue
             try:
-                one = json.loads(line)
+                # (5.46) every secret by its shape before anything else reads
+                # it - a config from before 5.46 writes a Cookie as it came
+                one = full_mask(json.loads(line))
             except Exception:
                 continue
             ip = str(one.get('ip') or '')
-            if not ip or self.spared(ip):
+            if not ip:
+                continue
+            if self.spared(ip):
+                if keep:
+                    rows.append(self._full_row(one, [], twins))
                 continue
             at = self._iso_moment(one.get('t'))
             method = str(one.get('m') or '')[:12]
@@ -28274,7 +28396,7 @@ class Daemon(object):
             found = []
             if self._leak_checker(one.get('ua')):
                 found.append(('proxy-leak-check', '%s %s, answered %d' % (method, where[:40], status)))
-                self._leak_seen(checks, ip, one.get('host'), status, one.get('auth') == 'sent')
+                self._leak_seen(checks, ip, one.get('host'), status, full_sent(one.get('auth')))
             # Deliberately NOT the scanner-agent rule here, though the full
             # log carries the agent and this is the obvious place for it.
             # Tried, measured, taken out again: the same request is written
@@ -28338,7 +28460,7 @@ class Daemon(object):
                 if status == 401:
                     found.append(('ntfy-guess', '%s %s with %s'
                                   % (method, where[:40],
-                                     'no name at all' if str(one.get('auth')) != 'sent'
+                                     'no name at all' if not full_sent(one.get('auth'))
                                      else 'a name it would not take')))
                 if status == 429:
                     found.append(('proxy-flood', '%s %s, past the limit' % (method, where[:40])))
@@ -28366,7 +28488,7 @@ class Daemon(object):
                 # the front server calls it /tap and hands it to the daemon as
                 # /api/tap, and a press weighed where it arrives carries the
                 # second - which is how two of these rules were silent there.
-                if method == 'POST' and str(one.get('secret')) != 'sent':
+                if method == 'POST' and not full_sent(one.get('secret')):
                     found.append(('tap-no-secret', 'POST /tap carrying no secret'))
                 kind_of = str(one.get('ct') or '').split(';')[0].strip().lower()
                 if method == 'POST' and kind_of and kind_of not in (
@@ -28387,11 +28509,114 @@ class Daemon(object):
             # for this too.
             if not found and status in (400, 405) and method and method not in ('GET', 'POST', 'HEAD'):
                 found.append(('proxy-odd-method', '%s %s' % (method, where[:40])))
+            # (5.46) ...and what the headers carry, now that they are written
+            # whole: one payload is one payload, wherever in the request it was
+            had_payload = any(k == 'proxy-payload' for k, _ in found)
+            for kind, detail in self._header_findings(one, method, where, status):
+                if kind == 'proxy-payload' and had_payload:
+                    continue
+                had_payload = had_payload or kind == 'proxy-payload'
+                found.append((kind, detail))
+            if keep:
+                rows.append(self._full_row(one, [k for k, _ in found], twins))
             for kind, detail in found:
                 seen[ip] = seen.get(ip, 0) + 1
                 self.note_anomaly(ip, kind, detail[:70], source='proxy', at=at)
         self._leak_tell(checks)
+        if rows:
+            try:
+                self.store.keep_proxy_requests(rows)
+            except Exception as e:                      # noqa: BLE001
+                log('keeping the full logs\' requests: %s' % e, 'warn')
         return seen
+
+    # (5.46) The headers written in the clear, by the names a person knows
+    # them by, read for a payload. Not the address asked for and not the body:
+    # the rules above read those already.
+    HEADER_FIELDS = (('ua', 'User-Agent'), ('ref', 'Referer'), ('origin', 'Origin'),
+                     ('xff', 'X-Forwarded-For'), ('xri', 'X-Real-IP'), ('xcip', 'Client-IP'),
+                     ('xff2', 'Forwarded'), ('tcip', 'True-Client-IP'), ('cfip', 'CF-Connecting-IP'),
+                     ('acc', 'Accept'), ('lang', 'Accept-Language'), ('enc', 'Accept-Encoding'),
+                     ('via', 'Via'), ('host', 'Host'), ('xrw', 'X-Requested-With'),
+                     ('chua', 'Sec-CH-UA'), ('cc', 'Cache-Control'), ('prio', 'Priority'),
+                     ('xhost', 'X-Host'), ('xfs', 'X-Forwarded-Server'), ('range', 'Range'),
+                     ('ims', 'If-Modified-Since'), ('inm', 'If-None-Match'), ('wap', 'X-Wap-Profile'),
+                     ('xfp', 'X-Forwarded-Proto'), ('conn', 'Connection'), ('up', 'Upgrade'))
+    LOOK_WORDS = {'jndi': 'a JNDI lookup - the Log4j one', 'sqli': 'SQL', 'xss': 'a script',
+                  'traversal': 'a path climbing out of where it is', 'shell': 'a shell command',
+                  'template': 'a template expression', 'huge': 'a value of more than 4 kB'}
+
+    @staticmethod
+    def _twin_print(whole, twins):
+        mark = hashlib.sha1(whole.encode('utf-8', 'replace')).hexdigest()[:32]
+        if twins is None:
+            return mark
+        n = twins.get(mark, 0)
+        twins[mark] = n + 1
+        return mark if not n else '%s#%d' % (mark, n)
+
+    def _header_findings(self, one, method, where, status):
+        """What only the headers say: a login everybody knows tried at the
+        door, a token that signs itself, a payload in a header - in the clear
+        ones read here, in a secret one as the mask says it carried."""
+        found = []
+        known = str(one.get('authk') or '')
+        if known and status >= 400:
+            # refused: tried, not the house's (a login of the house that works
+            # is answered 200 and is the house)
+            found.append(('proxy-default-login', '%s tried at %s %s, answered %d'
+                          % (known, method, where[:30], status)))
+        auth = str(one.get('auth') or '')
+        jwt = re.search(r'jwt:(eyJ[A-Za-z0-9_-]{0,160})', auth)
+        if jwt:
+            alg = str(_jwt_says(jwt.group(1)).get('alg') or '').strip().lower()
+            if auth.endswith(' unsigned') or alg in ('none', ''):
+                found.append(('proxy-forged-token', 'a JWT %s at %s %s'
+                              % ('with no signature' if auth.endswith(' unsigned') else 'saying alg "none"',
+                                 method, where[:30])))
+        for key, name in (('authlook', 'the Authorization'), ('pauthlook', 'the Proxy-Authorization'),
+                          ('cookielook', 'a Cookie')):
+            looks = [x for x in str(one.get(key) or '').split(',') if x in self.LOOK_WORDS]
+            if looks:
+                found.append(('proxy-payload', '%s in %s' % (self.LOOK_WORDS[looks[0]], name)))
+                break
+        if not any(k == 'proxy-payload' for k, _ in found):
+            for key, name in self.HEADER_FIELDS:
+                value = str(one.get(key) or '')
+                if not value:
+                    continue
+                looks = [x for x in value_looks(value).split(',') if x and x != 'huge']
+                if looks:
+                    found.append(('proxy-payload', '%s in the %s: %s'
+                                  % (self.LOOK_WORDS[looks[0]], name, _plain(value, 40))))
+                    break
+        return found
+
+    def _full_row(self, one, kinds, twins=None):
+        """One masked request as a row of proxy_requests. Its fingerprint is
+        the line and how many of the same line came before it in this
+        reading: a scanner sends one request ten times in a second and nginx
+        writes ten lines alike, which are ten requests - while the same file
+        read again from its start gives the same lines in the same order, and
+        is kept once."""
+        main = ('t', 'which', 'ip', 'm', 'u', 's', 'host', 'ua', 'body')
+        fields = {k: v for k, v in one.items() if k not in main and v not in ('', None, '-')}
+        packed = json.dumps(fields, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+        if len(packed) > 8000:
+            fields = {k: (str(v)[:120] if isinstance(v, str) else v) for k, v in fields.items()}
+            packed = json.dumps(fields, ensure_ascii=False, separators=(',', ':'), sort_keys=True)[:8000]
+        whole = json.dumps(one, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        try:
+            status = int(one.get('s') or 0)
+        except (TypeError, ValueError):
+            status = 0
+        return (self._iso_moment(one.get('t')) or time.time(),
+                self._twin_print(whole, twins),
+                'ntfy' if str(one.get('which') or '') == 'ntfy' else 'tap',
+                str(one.get('ip') or '')[:64], str(one.get('m') or '')[:16],
+                str(one.get('u') or '')[:600], status, str(one.get('host') or '')[:120],
+                str(one.get('ua') or '')[:400], packed, str(one.get('body') or '')[:1000],
+                ','.join(dict.fromkeys(kinds))[:300])
 
     # Tools that check whether a credential found published somewhere still
     # works. They say who they are, and they only ever come with something in
@@ -30315,6 +30540,10 @@ class Daemon(object):
                 self.store.set_meta('ntfy_full_at', '0')
             whole_lines = self.proxy_read_named('proxy_full_log', 'proxy_full_at')
             whole_lines += self.proxy_read_named('ntfy_full_log', 'ntfy_full_at')
+            # (5.46) masked the moment they are read: whatever is done with
+            # them afterwards - weighed, kept, counted, written to the log in
+            # debug - is done with no secret in them, whichever config wrote them
+            whole_lines = [x for x in (full_mask_line(one) for one in whole_lines) if x]
             self._friends_from(whole_lines)
         weighed = self.proxy_weigh(lines)
         # ...and the error log, where one is named: what nginx says about the
@@ -30412,6 +30641,7 @@ class Daemon(object):
                 weighed[ip] = weighed.get(ip, 0) + n
             troubles = list(troubles) + list(own) + list(told)
         self.store.proxy_lines_forget(int(CONFIG.get('proxy_lines_days') or 0))
+        self.store.proxy_requests_forget(int(CONFIG.get('proxy_lines_days') or 0))
         if weighed:
             self.store.add_event('control', 'the proxy log: %d line(s) read%s, %d address(es) weighed'
                                  % (len(lines),
@@ -43151,6 +43381,262 @@ def header_line(headers, secret_names=()):
     return ' | '.join(shown)
 
 
+# ---- the full logs, whole but for their secrets (5.46) -----------------------
+# The server in front writes every request as one line of JSON - every header
+# worth naming, the start of the body (deploy/nginx-*-front.conf). What it must
+# not write is anybody's key: the house's phones send their ntfy password in
+# Authorization, a browser sends its session in Cookie, a link sends its own
+# secret in X-Zigmon-Tap - and the file is on the machine the internet knocks
+# at, copied to the house over SSH, kept in a table here and shown on a page.
+#
+# So a secret is written by its SHAPE: which kind of credential it was, whether
+# it is a JWT and what its header claims, whether it is one of the logins every
+# scanner tries, whether it carries a payload - and its last two characters,
+# which is what an administrator is shown of every secret in this house. The
+# front config does that in nginx itself (its maps), so nothing whole is ever
+# on its disk; full_mask does it again here for whatever arrives, because a
+# config written before 5.46 still writes a Cookie and a Basic login as they
+# came. Nothing arrives anywhere whole: not this table, not the log, not the
+# page.
+FULL_MASK = '•'
+# The logins scanners try first, as everybody knows them: not anybody's
+# secret, which is exactly why one tried at this door says who is trying.
+# The same list is in the front config, base64 as the header carries it.
+DEFAULT_LOGINS = (
+    ('admin', 'admin'), ('admin', 'password'), ('admin', '1234'), ('admin', '12345'),
+    ('admin', '123456'), ('admin', ''), ('admin', 'admin123'), ('admin', 'pass'),
+    ('admin', 'default'), ('admin', 'changeme'), ('root', 'root'), ('root', 'toor'),
+    ('root', ''), ('root', '123456'), ('root', 'password'), ('user', 'user'),
+    ('user', 'password'), ('guest', 'guest'), ('test', 'test'), ('ubnt', 'ubnt'),
+    ('pi', 'raspberry'), ('support', 'support'), ('administrator', 'password'),
+    ('administrator', 'admin'), ('tomcat', 'tomcat'), ('tomcat', 's3cret'),
+    ('manager', 'manager'), ('operator', 'operator'), ('service', 'service'),
+    ('demo', 'demo'), ('ftp', 'ftp'), ('mqtt', 'mqtt'), ('ntfy', 'ntfy'))
+# What a header value carries when it is somebody's payload rather than a
+# value: the same words the front config's maps look for, so a line masked
+# there and one masked here say the same thing.
+VALUE_LOOKS = (
+    ('jndi', re.compile(r'\$\{(?:jndi|env|sys|lower|upper|\$\{)|JHtqbmRp', re.I)),
+    ('sqli', re.compile(r"union(?:\s|\+|%20|/\*.*?\*/)+(?:all(?:\s|\+|%20)+)?select|'\s*or\s+'?1'?\s*=\s*'?1"
+                        r"|\bor\s+1=1\b|sleep\(\s*\d|benchmark\(|waitfor\s+delay", re.I)),
+    ('xss', re.compile(r'<script|javascript:|onerror\s*=|onload\s*=|<svg[^>]*on\w+=', re.I)),
+    ('traversal', re.compile(r'\.\./|\.\.\\|\.\.%2f|%2e%2e|/etc/passwd|win\.ini', re.I)),
+    ('shell', re.compile(r'\(\)\s*\{\s*:\s*;\s*\}|\$\(|`|;\s*(?:wget|curl|bash|sh|nc|id)\b|\|\s*(?:sh|bash)\b'
+                         r'|/bin/(?:sh|bash)|cmd\.exe|powershell', re.I)),
+    ('template', re.compile(r'\{\{.*?\}\}|\$\{[^}]{0,80}\}|#\{[^}]{0,80}\}|<%=')),
+)
+# Keys in a body, a query or a form whose value is a secret, wherever they
+# stand. Bounded in front so "spin=" is not "pin=".
+_SECRET_PAIR = re.compile(
+    r'''(?i)((?:^|[?&;\s{,"'])"?(?:pass(?:word|wd)?|pwd|passcode|pin|otp|token|secret|api[_-]?key|apikey'''
+    r'''|access[_-]?token|refresh[_-]?token|auth|session|sessionid|sid|code|key)"?\s*[:=]\s*"?)'''
+    r'''([^&"',}\s]+)''')
+# The road whose path carries a link's own secret, while the address form of
+# the links is still accepted
+_SECRET_PATH = re.compile(r'^(/(?:api/)?tap/)([^/?#]+)')
+_MASKED_AUTH = re.compile(r'^(?:[A-Za-z][\w-]{0,19} )?(?:user:\S{0,40} )?(?:jwt:eyJ[A-Za-z0-9_-]{0,160} )?'
+                          r'(?:[*•]\S{0,2}|unsigned)$')
+# The fields the front config writes in the clear: what they say is the point
+_FULL_PLAIN = ('ip', 't', 'm', 'u', 'proto', 's', 'bytes', 'took', 'host', 'ua', 'ref', 'ct', 'clen',
+               'xff', 'xfh', 'xou', 'xru', 'xfp', 'origin', 'te', 'exp', 'range', 'acc', 'enc', 'lang',
+               'conn', 'up', 'via', 'xri', 'xfport', 'xcip', 'xff2', 'dnt', 'ctlen', 'scheme', 'reqlen',
+               'ssl', 'which', 'sfs', 'sfm', 'sfd', 'sfu', 'chua', 'chm', 'chp', 'xrw', 'cc', 'pragma',
+               'ims', 'inm', 'hmo', 'xom', 'tcip', 'cfip', 'xhost', 'xfs', 'maxf', 'prio', 'sni',
+               'rport', 'wap', 'te2', 'body')
+# ...and the ones that are somebody's key, written by their shape
+_FULL_AUTHS = ('auth', 'pauth')
+_FULL_TOKENS = ('secret', 'apikey', 'xtoken', 'xcsrf')
+# ...and what the front config worked out about them, in its own words
+_FULL_SAID = {'authk': r'^[A-Za-z0-9_.@-]{1,40}:[A-Za-z0-9_.@!$-]{0,40}$',
+              'authlook': r'^[a-z,]{1,60}$', 'cookielook': r'^[a-z,]{1,60}$',
+              'authsize': r'^(?:s|m|l|xl)$', 'cookiesize': r'^(?:s|m|l|xl)$'}
+
+
+def value_looks(text):
+    """Which of VALUE_LOOKS a value carries, as "jndi,shell", or ''."""
+    text = str(text or '')
+    if not text:
+        return ''
+    found = [name for name, rx in VALUE_LOOKS if rx.search(text)]
+    if len(text) > 4096:
+        found.append('huge')
+    return ','.join(found)
+
+
+def _size_word(n):
+    return 's' if n <= 32 else 'm' if n <= 256 else 'l' if n <= 2048 else 'xl'
+
+
+def _last_two(value, least=8):
+    """The last two characters, where the value is long enough that two of
+    them give nothing away; otherwise none."""
+    value = ''.join(ch for ch in str(value or '') if ch.isprintable() and not ch.isspace())
+    return value[-2:] if len(value) >= least else ''
+
+
+def _plain(text, most):
+    return ''.join(ch for ch in str(text or '') if ch.isprintable())[:most]
+
+
+def _jwt_says(head):
+    """What a JWT's own header claims - its algorithm, its key id - which is
+    no secret: the header is the part that is not signed for."""
+    try:
+        raw = base64.urlsafe_b64decode(head + '=' * (-len(head) % 4))
+        said = json.loads(raw.decode('utf-8', 'replace'))
+        return said if isinstance(said, dict) else {}
+    except Exception:
+        return {}
+
+
+def mask_auth(value):
+    """An Authorization value by its shape: (masked, what it showed).
+    Raw or masked already by the front config, the answer is the same shape
+    ("Basic user:admin •3x", "Bearer jwt:eyJ... •Zk", "Bearer •Zk")."""
+    value = str(value or '').strip()
+    said = {}
+    if value in ('', '-', 'none'):
+        return 'none', said
+    if value == 'sent':
+        return 'sent', said
+    if _MASKED_AUTH.match(value) and len(value) <= 220:
+        return value.replace('*', FULL_MASK), said
+    said['authsize'] = _size_word(len(value))
+    looks = value_looks(value)
+    found = re.match(r'^([A-Za-z][A-Za-z0-9_-]{0,19})\s+(\S.*)$', value)
+    scheme, cred = (found.group(1), found.group(2).strip()) if found else ('', value)
+    if scheme.lower() == 'basic':
+        try:
+            plain = base64.b64decode(cred + '=' * (-len(cred) % 4)).decode('utf-8', 'replace')
+        except Exception:
+            plain = ''
+        if plain:
+            more = value_looks(plain)
+            looks = ','.join(x for x in dict.fromkeys((looks + ',' + more).split(',')) if x)
+        user, colon, word = plain.partition(':')
+        if colon and (user, word) in DEFAULT_LOGINS:
+            said['authk'] = '%s:%s' % (user, word)
+        name = re.sub(r'[^A-Za-z0-9_.@-]', '?', user)[:40]
+        out = 'Basic ' + ('user:%s ' % name if colon and name else '') + FULL_MASK + _last_two(word, 8)
+    else:
+        jwt = re.match(r'^(eyJ[A-Za-z0-9_-]{2,160})\.([A-Za-z0-9_-]*)\.(\S*)$', cred)
+        if jwt:
+            head = jwt.group(1)
+            tail = FULL_MASK + _last_two(jwt.group(3), 8) if jwt.group(3) else 'unsigned'
+            out = (scheme + ' ' if scheme else '') + 'jwt:%s %s' % (head, tail)
+        else:
+            out = (scheme + ' ' if scheme else '') + FULL_MASK + _last_two(cred, 8)
+    if looks:
+        said['authlook'] = looks
+    return out[:220], said
+
+
+def mask_token(value):
+    """A key of the house's own or anybody's: there or not, and its last two."""
+    value = str(value or '').strip()
+    if value in ('', '-', 'none'):
+        return 'none'
+    if value == 'sent':
+        return 'sent'
+    if re.match(r'^[*•]\S{0,2}$', value):
+        return value.replace('*', FULL_MASK)
+    return FULL_MASK + _last_two(value, 12)
+
+
+def mask_cookie(value):
+    """A Cookie header: the names of the cookies and nothing of their values
+    ("names: PHPSESSID csrftoken"), and what the values carried."""
+    value = str(value or '').strip()
+    said = {}
+    if value in ('', '-', 'none'):
+        return 'none', said
+    if value in ('sent', 'odd'):
+        return value, said
+    if value.startswith('names:') and '=' not in value:
+        return _plain(re.sub(r'\s+', ' ', value), 300).strip(), said
+    said['cookiesize'] = _size_word(len(value))
+    looks = value_looks(value)
+    if looks:
+        said['cookielook'] = looks
+    names = []
+    for part in value.split(';'):
+        name, eq, _ = part.strip().partition('=')
+        name = name.strip()
+        if eq and re.match(r'^[^\s=;,]{1,40}$', name):
+            names.append(_plain(name, 40))
+        if len(names) >= 12:
+            break
+    return ('names: ' + ' '.join(names)) if names else 'odd', said
+
+
+def mask_pairs(text, most=2000):
+    """A body, a query, an address: every value whose key says it is a
+    secret, masked, wherever it stands - and a link's secret in its path."""
+    text = str(text or '')[:most * 2]
+    text = _SECRET_PATH.sub(lambda m: m.group(1) + FULL_MASK + _last_two(m.group(2), 12), text)
+    return _SECRET_PAIR.sub(lambda m: m.group(1) + FULL_MASK, text)[:most]
+
+
+def full_mask(one):
+    """One line of a full log as a dict, with every secret in it by its shape
+    alone. Masked twice is masked once: a line the front config masked
+    already comes out the same."""
+    if not isinstance(one, dict):
+        return {}
+    out = {}
+    said = {}
+    for key, value in one.items():
+        key = str(key)
+        if not re.match(r'^[a-z0-9_]{1,16}$', key):
+            continue
+        if key in _FULL_AUTHS:
+            out[key], got = mask_auth(value)
+            for k, v in got.items():
+                said.setdefault(k if key == 'auth' else 'p' + k, v)
+        elif key == 'cookie':
+            out[key], got = mask_cookie(value)
+            for k, v in got.items():
+                said.setdefault(k, v)
+        elif key in _FULL_TOKENS:
+            out[key] = mask_token(value)
+        elif key == 'code':
+            out[key] = 'none' if str(value or '') in ('', '-', 'none') else 'sent'
+        elif key in _FULL_SAID:
+            if re.match(_FULL_SAID[key], str(value or '')):
+                out[key] = str(value)
+        elif key in ('s', 'bytes', 'reqlen') and isinstance(value, (int, float)):
+            out[key] = value
+        elif key in ('u', 'ref', 'body', 'xou', 'xru', 'origin'):
+            out[key] = mask_pairs(value, 2000 if key == 'body' else 600)
+        elif key in _FULL_PLAIN:
+            out[key] = _plain(value, 600) if not isinstance(value, (int, float)) else value
+        elif re.search(r'auth|token|secret|pass|key|cookie|session|sig', key):
+            out[key] = mask_token(value)       # a field of somebody's own log format
+        else:
+            out[key] = _plain(value, 300) if not isinstance(value, (int, float)) else value
+    for k, v in said.items():
+        out.setdefault(k, v)
+    return out
+
+
+def full_mask_line(line):
+    """The same, for a line as it was read: a line that is no JSON is no
+    line of a full log, and is not passed on - whatever it holds."""
+    line = str(line or '').strip()
+    if not line.startswith('{'):
+        return ''
+    try:
+        one = json.loads(line)
+    except ValueError:
+        return ''
+    return json.dumps(full_mask(one), ensure_ascii=False, separators=(',', ':'))
+
+
+def full_sent(value):
+    """Whether a credential was sent at all, whichever form the line wrote."""
+    return str(value or '').strip() not in ('', '-', 'none')
+
+
 # Headers whose value is the thing itself: a link's secret, a six-digit code,
 # the API token, a session, and whatever a plug or Duo is answered with.
 SECRET_HEADER_NAMES = ('x-zigmon-tap', 'x-zigmon-code', 'x-zigmon-token', 'x-zigmon-session', 'x-zigmon-cli',
@@ -43878,7 +44364,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the last two characters of each kept secret (5.38.2)
                      '/api/secret_hints',
                      # Certificates from acme (5.40): its card
-                     '/api/acmepush')
+                     '/api/acmepush',
+                     # every request the server in front wrote down (5.46)
+                     '/api/proxy/requests')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -44586,6 +45074,31 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, {'ok': True, 'scripts': d.scripts(),
                                         'verbs': [{'verb': v[0], 'takes': v[1], 'what': v[2],
                                                    'example': v[3]} for v in d.SCRIPT_VERBS]})
+            if path == '/api/proxy/requests':
+                # (5.46) what the server in front wrote down, masked as it was
+                # kept; an administrator's (ALWAYS_LOCKED)
+                try:
+                    before = max(0, int(q.get('before') or 0))
+                except ValueError:
+                    before = 0
+                ip = str(q.get('ip') or '').strip()
+                if ip:
+                    try:
+                        ip = str(ipaddress.ip_address(ip))
+                    except ValueError:
+                        return self._error(400, 'that is not an address')
+                rows, more, total = d.store.proxy_requests_list(
+                    ip=ip, q=str(q.get('q') or '').strip(), which=str(q.get('which') or ''),
+                    found=str(q.get('found') or '') == '1', before=before,
+                    limit=int(q.get('limit') or 100) if str(q.get('limit') or '').isdigit() else 100)
+                words = {}
+                for one in rows:
+                    one['country'] = d.country_says(one.get('ip')) or ''
+                    for k in one['kinds']:
+                        words[k] = d.ANOMALY_WORDS.get(k, k)
+                return self._send(200, {'ok': True, 'rows': rows, 'more': more, 'total': total,
+                                        'words': words,
+                                        'watching': bool(int(CONFIG.get('proxy_full_watch') or 0))})
             if path == '/api/blocked':
                 if str(q.get('format') or '') == 'mikrotik':
                     return self._send(200, {'ok': True, 'lines': d.blocked_mikrotik()})

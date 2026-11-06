@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.45.0"
+VERSION="5.46.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -1338,6 +1338,8 @@ DEPLOY_CHANGES="
 5.17.0|nginx-zigmon.conf|/tap hands PHP api=tap and nothing else (it handed on the whole query); the tap rate limit counts the last X-Forwarded-For address
 5.17.0|nginx-tap-front.conf|the full log says whether a cookie or an Authorization header was sent, not what it was; /tap drops the query
 5.17.0|nginx-ntfy-front.conf|the full log says whether a cookie was sent, not what it was
+5.46.0|nginx-tap-front.conf|every header in the full log, and every secret written by its shape alone, never whole
+5.46.0|nginx-ntfy-front.conf|the same: every header in the full log, the phones' login by its shape alone
 "
 
 report_deploy_changes() {

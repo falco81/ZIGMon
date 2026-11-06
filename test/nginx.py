@@ -52,7 +52,7 @@ for line in text.split('\n'):
 # every brace balanced, or nginx says something far less helpful than this
 depth = 0
 for n, line in enumerate(text.split('\n'), 1):
-    without = re.sub(r'"[^"]*"|#.*$', '', line)
+    without = re.sub(r'"(?:[^"\\]|\\.)*"|#.*$', '', line)   # a \" inside a string is no end of it
     depth += without.count('{') - without.count('}')
     if depth < 0:
         bad.append('a } too many at line %d' % n)
@@ -113,7 +113,7 @@ for used in set(re.findall(r'limit_req\s+zone=(\w+)', text)):
 for m in re.finditer(r'\n\s*limit_req_zone\b', text):
     depth_here = 0
     for line in text[:m.start()].split('\n'):
-        counted = re.sub(r'"[^"]*"|\'[^\']*\'|#.*$', '', line)
+        counted = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|#.*$', '', line)
         depth_here += counted.count('{') - counted.count('}')
     if depth_here:
         bad.append('limit_req_zone is inside a block; it belongs at the top of the file')
