@@ -31293,8 +31293,13 @@ class Daemon(object):
         def spec_minutes(spec):
             m = re.match(r'^(sunrise|sunset)([+-]\d{1,3})?$', spec)
             if m:
-                base = sun_minutes(float(CONFIG['latitude']), float(CONFIG['longitude']),
-                                   now, sunset=m.group(1) == 'sunset')
+                # (5.43.3) a place taken out of the settings after the rule
+                # was saved: float(None) raised on every reading, and every
+                # rule after this one in the list went unheard with it
+                lat, lon = numeric(CONFIG.get('latitude')), numeric(CONFIG.get('longitude'))
+                if lat is None or lon is None:
+                    return None
+                base = sun_minutes(lat, lon, now, sunset=m.group(1) == 'sunset')
                 if base is None:
                     return None
                 return (base + int(m.group(2) or 0)) % 1440
@@ -35225,7 +35230,11 @@ class Daemon(object):
             return cached[1] if cached else None
         hourly = raw.get('hourly') or {}
         now = time.strftime('%Y-%m-%dT%H:00')
-        ahead = [{'at': w, 'c': c} for w, c in zip(hourly.get('time') or [], hourly.get('temperature_2m') or []) if w >= now]
+        # (5.43.3) an hour open-meteo has no figure for is null: min() over
+        # it raised behind the page, nothing was cached and no failure was
+        # stamped, so every status that followed fetched the forecast again
+        ahead = [{'at': w, 'c': c} for w, c in zip(hourly.get('time') or [], hourly.get('temperature_2m') or [])
+                 if w >= now and isinstance(c, (int, float))]
         now_ = raw.get('current') or {}
         daily = raw.get('daily') or {}
         out = {'now_c': now_.get('temperature_2m'),

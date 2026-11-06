@@ -274,6 +274,56 @@ check(d.sequence_positions().get(desk) == 1,
       % (d.sequence_positions().get(desk, 0) + 1))
 print('resetting a sequence keeps every press made meanwhile')
 
+# -- 13. a sunset window with the place taken away does not silence the rules after it -------
+dev('0xg1', 'Porch-PIR', occupancy=0)
+d.save_rules([{'device': '0xg1', 'key': 'occupancy', 'op': '==', 'value': 1, 'from': 'sunset', 'to': 'sunrise',
+               'plug': 'notify', 'do': 'on', 'cooldown_s': 0},
+              {'device': '0xg1', 'key': 'occupancy', 'op': '==', 'value': 1, 'plug': 'notify', 'do': 'on',
+               'cooldown_s': 0}])
+second = rule_ids()[1]
+zigmon.CONFIG['latitude'] = zigmon.CONFIG['longitude'] = None          # taken out in Settings
+del acted[:]
+try:
+    d.fire_rules('0xg1', 'Porch-PIR', {'occupancy': 1.0})
+    raised = None
+except Exception as e:                                                  # noqa: BLE001
+    raised = e
+check(raised is None and second in acted,
+      'with the house\'s place taken out of the settings, a sunset-window rule raised %r and the rule after '
+      'it never ran' % (raised,))
+zigmon.CONFIG.update({'latitude': 50.08, 'longitude': 14.42})
+d.save_rules([])
+print('a sunset window without a place set stays open, and the rules after it still run')
+
+# -- 14. an hour of the forecast without a figure does not lose the whole forecast -----------
+hour0 = time.strftime('%Y-%m-%dT%H:00')
+hour1 = time.strftime('%Y-%m-%dT%H:00', time.localtime(time.time() + 3600))
+hour2 = time.strftime('%Y-%m-%dT%H:00', time.localtime(time.time() + 7200))
+answer = json.dumps({'current': {'temperature_2m': 4.5, 'is_day': 0, 'weather_code': 3},
+                     'hourly': {'time': [hour0, hour1, hour2], 'temperature_2m': [4.5, None, 3.0]},
+                     'daily': {'sunrise': ['2026-11-06T07:01'], 'sunset': ['2026-11-06T16:24']}}).encode()
+
+
+class _Answer(object):
+    def read(self):
+        return answer
+
+
+was_open = zigmon.web_open
+zigmon.web_open = lambda *a, **k: _Answer()
+zigmon.CONFIG['weather'] = True
+try:
+    try:
+        got = d.weather(force=True)
+    except Exception as e:                                              # noqa: BLE001
+        got = e
+finally:
+    zigmon.web_open = was_open
+    zigmon.CONFIG['weather'] = False
+check(isinstance(got, dict) and got.get('min_c') == 3.0,
+      'an hour open-meteo had no temperature for (null) threw the forecast away: %r' % (got,))
+print('a forecast with an hour missing is kept, with the hours it has')
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_house: %s' % ('%d failed' % len(bad) if bad else 'all good'))
 os._exit(1 if bad else 0)
