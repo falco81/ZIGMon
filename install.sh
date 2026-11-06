@@ -415,6 +415,10 @@ write_config() {
         note "[would write] $CONFIG_FILE (broker $MQTT_HOST:$MQTT_PORT as $MQTT_USER, topic $BASE_TOPIC)"
         return
     fi
+    # (5.44.1) made under umask 077: a new file came out 0644 with the broker
+    # password in it, readable by every account on the machine until the
+    # chmod below narrowed it (an existing one keeps its own mode)
+    ( umask 077
     python3 - "$SOURCE_DIR/deploy/config.json" "$CONFIG_FILE" <<EOF
 import json, sys
 cfg = json.load(open(sys.argv[1]))
@@ -428,6 +432,7 @@ cfg.update({
 json.dump(cfg, open(sys.argv[2], "w"), indent=2)
 open(sys.argv[2], "a").write("\n")
 EOF
+    )
     chown root:"$SERVICE_USER" "$CONFIG_FILE"
     chmod 640 "$CONFIG_FILE"
     good "$CONFIG_FILE (root:$SERVICE_USER 640 — it holds the broker password)"
