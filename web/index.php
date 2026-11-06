@@ -16326,6 +16326,13 @@ function lockChanged() {
   renderSessions.at = 0;                      // who is signed in
   ACCOUNTS.at = 0;
   if (!PEOPLE.dirty) PEOPLE.rows = null;      // people and their numbers, unless being edited
+  // (5.44) the meter's details as they were read for the one before - an
+  // administrator's processes and filesystems - neither stay in the open
+  // panel nor in this tab's sessionStorage for whoever comes next
+  if (typeof HLOAD !== 'undefined' && HLOAD) {
+    if (HLOAD.open) hloadPanelClose();
+    HLOAD.detail = null; HLOAD.detailAt = 0; hloadForget();
+  }
   if (!open) {
     // What was read as an administrator goes off the screen too, rather than
     // sitting there until something else redraws it.
@@ -29756,11 +29763,28 @@ function certExportWait(asked) {
    that is bigger, deeper or locked with a password is refused. */
 var CERT_ZIP = {most: 2000000, files: 40, each: 200000, inside: /\.(pem|crt|cer|key|pfx|p12|chain|ca|ca-bundle|txt|cert)$/i};
 function certIsZip(b) { return b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04; }
-function certInflate(raw) {
+/* (5.44) unpacked only as far as `most`: what the ZIP says of a file's size is
+   the ZIP's word, and 200 kB of a crafted one unpacked to 200 MB in memory
+   before the size was ever compared */
+function certInflate(raw, most) {
   if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error('this browser cannot open a ZIP - unpack it and choose the files'));
-  var ds = new DecompressionStream('deflate-raw');
-  var out = new Response(new Blob([raw]).stream().pipeThrough(ds)).arrayBuffer();
-  return out.then(function (b) { return new Uint8Array(b); });
+  most = most || CERT_ZIP.each;
+  var reader = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader();
+  var parts = [], size = 0;
+  var pump = function () {
+    return reader.read().then(function (r) {
+      if (r.done) {
+        var out = new Uint8Array(size), at = 0;
+        parts.forEach(function (p) { out.set(p, at); at += p.length; });
+        return out;
+      }
+      size += r.value.length;
+      if (size > most) { try { reader.cancel(); } catch (e) {} throw new Error('a file in the ZIP unpacks to more than it says'); }
+      parts.push(r.value);
+      return pump();
+    });
+  };
+  return pump();
 }
 function certUnzip(name, b) {
   var dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -29792,7 +29816,7 @@ function certUnzip(name, b) {
     var from = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
     var raw = b.subarray(from, from + csize);
     jobs.push((function (base, method, raw, usize) {
-      return (method === 0 ? Promise.resolve(raw) : certInflate(raw)).then(function (data) {
+      return (method === 0 ? Promise.resolve(raw) : certInflate(raw, usize)).then(function (data) {
         if (data.length > CERT_ZIP.each || data.length !== usize) throw new Error(name + ': ' + base + ' does not unpack as it says');
         return certFileOf(name + ' › ' + base, data);
       });

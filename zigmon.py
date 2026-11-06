@@ -2350,6 +2350,10 @@ def totp_uri(secret, label, issuer='zigmon'):
 PASSKEY_ALGS = (-7, -257)               # ES256 (Apple, Google, most keys), RS256 (Windows Hello)
 PASSKEY_WAIT_S = 300                    # a challenge lives five minutes, and is used once
 PASSKEY_MOST = 20                       # passkeys one account may have
+# (5.44) the challenges one address may hold waiting to sign in: asked for with
+# no sign-in at all, 500 asks from one place pushed out the one a person was
+# about to touch Touch ID for, and nobody could sign in with a passkey
+PASSKEY_WAITING_PER = 8
 
 
 def pk_b64d(text):
@@ -3529,6 +3533,10 @@ ROLE_WORDS = {'viewer': 'sees the house - also when the view is not public - and
               'admin': 'everything: the settings, the security, the accounts, the machine'}
 # What an operator may do: what a person living in the house does every day.
 # Everything else that changes something is an administrator's.
+# The kinds of event an administrator alone reads (5.44): the guard of the
+# house - sign-ins and wrong passwords with their addresses, passkeys, who was
+# kept out by hand, the accounts.
+EVENTS_ADMIN_ONLY = ('security', 'audit')
 OPERATOR_ROADS = frozenset((
     '/api/plug/switch', '/api/scene/run', '/api/sequence/advance', '/api/sequence/reset',
     '/api/target/set', '/api/hold/release', '/api/alerts/clear', '/api/rule/dryrun',
@@ -6820,12 +6828,16 @@ class Storage(object):
                   " OR device IN (SELECT id FROM devices WHERE name LIKE ? ESCAPE '\\'"
                   " OR alias LIKE ? ESCAPE '\\'))")
 
-    def events(self, limit=100, device=None, text=None, kind=None, level=None):
+    def events(self, limit=100, device=None, text=None, kind=None, level=None, hide=None):
         """The newest events, and - when text is given - the newest ones that
         contain it, searched over the whole table rather than over whatever
         was on the page. Case does not matter, as in grep -i, and the words
-        may sit in the detail, the device or the kind."""
+        may sit in the detail, the device or the kind. `hide`: kinds left out
+        (5.44 - the guard's own, for whoever is not an administrator)."""
         where, args = [], []
+        if hide:
+            where.append('kind NOT IN (%s)' % ','.join('?' * len(hide)))
+            args += list(hide)
         if device:
             where.append('device=?')
             args.append(device)
@@ -6849,11 +6861,14 @@ class Storage(object):
             rows = self.db.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
-    def events_count(self, text=None, kind=None, level=None):
+    def events_count(self, text=None, kind=None, level=None, hide=None):
         """How many rows a search matches in the whole table - so the page can
         say "852 of 8 956" rather than "852 of what happened to be loaded".
         Counted in the database rather than by fetching the rows."""
         where, args = [], []
+        if hide:
+            where.append('kind NOT IN (%s)' % ','.join('?' * len(hide)))
+            args += list(hide)
         if kind:
             where.append('kind=?')
             args.append(kind)
@@ -8884,8 +8899,15 @@ class Daemon(object):
         path = token_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(token)
-            path.chmod(0o640)
+            # (5.44) made 0640, never written first and narrowed after: under
+            # umask 022 the token sat world-readable for that moment, and for
+            # good if the chmod failed
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+            try:
+                os.fchmod(fd, 0o640)
+                os.write(fd, token.encode())
+            finally:
+                os.close(fd)
             import grp
             import pwd
             info = path.stat()
@@ -23858,6 +23880,8 @@ class Daemon(object):
             one = ipaddress.ip_address(addr)
         except ValueError:
             return True                       # not an address at all: leave it alone
+        if one.version == 6 and one.ipv4_mapped:
+            one = one.ipv4_mapped             # (5.44) as its IPv4 is, on every Python
         return one.is_private or one.is_loopback or one.is_link_local
 
     # Three wrong secrets earns a block at the standing bar, or five wrong
@@ -24799,6 +24823,10 @@ class Daemon(object):
         # lookups against those took three and a half seconds.
         try:
             asked = ipaddress.ip_address(str(ip))
+            # (5.44) ::ffff:192.168.1.10 is 192.168.1.10 (a socket of both
+            # kinds says it so): it was spared by no IPv4 range
+            if asked.version == 6 and asked.ipv4_mapped:
+                asked = asked.ipv4_mapped
             number, family = int(asked), asked.version
         except ValueError:
             number, family = None, 0
@@ -29096,7 +29124,7 @@ class Daemon(object):
         stopped = []
         with self._waiting_cond:
             for key, entry in self._waiting.items():
-                if entry['state'] != 'waiting' or (ticket and key != ticket):
+                if entry['state'] != 'waiting' or (ticket is not None and key != ticket):   # (5.44) '' is none
                     continue
                 entry.update({'state': 'stopped', 'ended': time.time(),
                               'message': 'called off from the dashboard%s' % ((' by %s' % who) if who else '')})
@@ -29142,7 +29170,7 @@ class Daemon(object):
         with self._waiting_cond:
             self._held = max(0, getattr(self, '_held', 1) - 1)
 
-    def tap_waiting(self, ticket, seconds=20):
+    def tap_waiting(self, ticket, seconds=20, tap=None):
         """What became of a press that is waiting to be approved.
 
         The watch asks with this and is answered the moment somebody taps
@@ -29154,7 +29182,7 @@ class Daemon(object):
         with self._waiting_cond:
             while True:
                 entry = self._waiting.get(ticket)
-                if entry is None:
+                if entry is None or tap is not None and entry.get('tap') != tap:
                     return False, {'error': 'no such request', 'status': 404}
                 if entry['state'] != 'waiting':
                     return entry['state'] == 'done', {'state': entry['state'], 'message': entry['message']}
@@ -40416,7 +40444,7 @@ class Daemon(object):
         time for one name, and not the name itself."""
         return hashlib.sha256(('zigmon-user:' + str(name).lower()).encode('utf-8')).digest()[:16]
 
-    def _pk_challenge(self, kind, name, rp):
+    def _pk_challenge(self, kind, name, rp, who=''):
         """A challenge of 32 random bytes, kept here only - five minutes,
         for one kind (making a passkey, or using one), one account and one
         name the page is on."""
@@ -40425,11 +40453,35 @@ class Daemon(object):
             waiting = self._pk_waiting
             for k in [k for k, v in waiting.items() if now - v['at'] > PASSKEY_WAIT_S]:
                 waiting.pop(k, None)
+            # (5.44) one address holds a few at the most (its oldest goes),
+            # and a full store gives up a sign-in's challenge before one of
+            # making a passkey, which only a signed-in page is given
+            if kind == 'login':
+                mine = sorted((k for k, v in waiting.items() if v['kind'] == 'login' and v.get('who') == who),
+                              key=lambda k: waiting[k]['at'])
+                for k in mine[:max(0, len(mine) - PASSKEY_WAITING_PER + 1)]:
+                    waiting.pop(k, None)
             while len(waiting) >= 500:
-                waiting.pop(min(waiting, key=lambda k: waiting[k]['at']), None)
+                logins = [k for k in waiting if waiting[k]['kind'] == 'login']
+                waiting.pop(min(logins or waiting, key=lambda k: waiting[k]['at']), None)
             challenge = pk_b64e(secrets.token_bytes(32))
-            waiting[challenge] = {'kind': kind, 'name': str(name or ''), 'rp': rp, 'at': now}
+            waiting[challenge] = {'kind': kind, 'name': str(name or ''), 'rp': rp, 'at': now, 'who': who}
         return challenge
+
+    @staticmethod
+    def _pk_who(ip):
+        """An address as the challenges are counted by (5.44): itself, or
+        its /64 - one machine has a whole /64 to ask from."""
+        ip = str(ip or '').split(' (')[0].strip()[:60]
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return ip
+        if addr.version == 6 and addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        if addr.version == 6:
+            return str(ipaddress.ip_network('%s/64' % ip, strict=False))
+        return ip
 
     def _pk_client(self, raw, kind, rp, origins, name=None):
         """The browser's clientDataJSON, checked: the kind, the challenge
@@ -40556,7 +40608,7 @@ class Daemon(object):
         self.bump()
         return self.passkey_public(row)
 
-    def passkey_login_begin(self, host):
+    def passkey_login_begin(self, host, ip=''):
         """The options for navigator.credentials.get(): no account named - the
         browser offers the passkeys it holds for this name."""
         if not self.passkeys_on():
@@ -40564,7 +40616,7 @@ class Daemon(object):
         rp, _origins = pk_rp_place(host)
         if rp is None:
             raise ValueError(_origins)
-        return {'publicKey': {'challenge': self._pk_challenge('login', '', rp), 'rpId': rp,
+        return {'publicKey': {'challenge': self._pk_challenge('login', '', rp, self._pk_who(ip)), 'rpId': rp,
                               'userVerification': 'required', 'allowCredentials': [],
                               'timeout': PASSKEY_WAIT_S * 1000}}
 
@@ -40927,6 +40979,17 @@ def ntfy_unkept(url, current):
     user, secret = unquote(bits.username or ''), unquote(bits.password or '')
     if NTFY_KEPT not in (user, secret):
         return text
+    # (5.44) given back only to the server it was kept for: the shown form
+    # with another host typed in sent the token kept here to that one, and
+    # nobody - an administrator neither - is shown the token itself
+    try:
+        same = (bits.scheme.lower(), (bits.hostname or '').lower(), bits.port) == \
+            (was.scheme.lower(), (was.hostname or '').lower(), was.port)
+    except ValueError:
+        same = False
+    if not same:
+        raise ValueError('the token or the password of the ntfy address is kept for %s only - for '
+                         'another server, type its own' % ((was.hostname or 'the server it was given for')[:80]))
     if user == NTFY_KEPT:
         user = unquote(was.username or '')
     if secret == NTFY_KEPT:
@@ -41116,6 +41179,7 @@ PERF_STATVFS = os.statvfs
 PERF_LOCK = threading.Lock()
 PERF_LAST = {'at': 0.0, 'raw': None, 'out': None}
 PERF_DETAIL = {'at': 0.0, 'raw': None, 'out': None}
+PERF_DETAIL_READ = threading.Lock()   # (5.44) the details read by one ask at a time
 PERF_SAMPLE_S = 5.0              # one reading in this long, while a page shows the meter (5.43.1)
 PERF_IDLE_S = 45.0               # the watching ends by itself this long after the last ask (5.43.1)
 PERF_KEEP = 24                   # readings a graph draws: two minutes at one every 5 s
@@ -41561,6 +41625,27 @@ def perf_detail():
         now = time.time()
         if PERF_DETAIL['out'] and now - PERF_DETAIL['at'] < PERF_SHARE_S:
             return PERF_DETAIL['out']
+    # (5.44) one reading at a time: a page anybody may open (a public view)
+    # asking a hundred times at once read every process a hundred times over;
+    # the others wait for it and are answered the same. A reading stuck on a
+    # disk lets them go on by themselves after a while, as before
+    asked = time.time()
+    got = PERF_DETAIL_READ.acquire(timeout=10)
+    try:
+        if got:
+            with PERF_LOCK:
+                # one read while this one waited: that is the answer
+                if PERF_DETAIL['out'] and PERF_DETAIL.get('done', 0) >= asked:
+                    return PERF_DETAIL['out']
+        return _perf_detail_read()
+    finally:
+        if got:
+            PERF_DETAIL_READ.release()
+
+
+def _perf_detail_read():
+    with PERF_LOCK:
+        now = time.time()
         was = PERF_DETAIL['raw'] or {}
     raw = _perf_detail_raw()
     if not was or now - was.get('at', 0) > 30:
@@ -41640,7 +41725,7 @@ def perf_detail():
                                               ('shared', 'Shmem'))},
            'procs': len(procs)}
     with PERF_LOCK:
-        PERF_DETAIL.update(at=now, raw=raw, out=out)
+        PERF_DETAIL.update(at=now, raw=raw, out=out, done=time.time())
     return out
 
 
@@ -41651,7 +41736,7 @@ def perf_forget():
     with PERF_LOCK:
         had = PERF_LAST['out'] is not None or bool(PERF_RING)
         PERF_LAST.update(at=0.0, raw=None, out=None)
-        PERF_DETAIL.update(at=0.0, raw=None, out=None)
+        PERF_DETAIL.update(at=0.0, raw=None, out=None, done=0.0)
         PERF_RING.clear()
     store = PERF_STORE
     if had and store is not None:
@@ -42819,13 +42904,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                 text = (q.get('q') or '').strip()[:120]
                 kind = (q.get('kind') or '').strip()[:32] or None
                 level = (q.get('level') or '').strip()[:8] or None
-                rows = d.store.events(limit, device_id, text=text or None, kind=kind, level=level)
-                matched = d.store.events_count(text or None, kind, level) if (text or kind or level) else None
+                # (5.44) the guard's own events - a wrong password for whom from
+                # where, who signed in from which address, who was kept out by
+                # hand - are an administrator's, as /api/blocked and the
+                # sign-ins are; a public view showed them to anybody
+                hide = None if (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')) \
+                    else EVENTS_ADMIN_ONLY
+                if hide and kind in hide:
+                    return self._send(200, {'ok': True, 'events': [], 'matched': 0, 'total': 0, 'hidden': True})
+                rows = d.store.events(limit, device_id, text=text or None, kind=kind, level=level, hide=hide)
+                matched = d.store.events_count(text or None, kind, level, hide=hide) \
+                    if (text or kind or level) else None
                 names = {x['id']: x['name'] for x in d.store.devices(include_removed=True)}
                 for r in rows:
                     r['device_name'] = names.get(r['device']) if r['device'] else None
                 return self._send(200, {'ok': True, 'events': rows, 'matched': matched,
-                                        'total': d.store.events_count() if (text or kind or level) else None})
+                                        'total': d.store.events_count(hide=hide) if (text or kind or level)
+                                        else None, 'hidden': bool(hide)})
             if path == '/api/wait':
                 since = int(numeric(q.get('seq')) or 0)
                 timeout = float(numeric(q.get('timeout')) or 25.0)
@@ -43128,14 +43223,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                     if not d.tap_may_try(who.split(' (')[0]):
                         return self._error(429, 'too many tries')
                     token = str(self.headers.get('X-Zigmon-Tap') or '')
-                    if not any(secrets.compare_digest(str(t['token']), token) for t in d.taps()):
+                    mine = [t for t in d.taps() if secrets.compare_digest(str(t['token']), token)]
+                    if not mine:
                         d.tap_went_wrong(who.split(' (')[0])
                         # coming back for an answer with a secret that opens
                         # nothing counts the same as pressing with one
                         d.note_anomaly(who.split(' (')[0], 'bad-secret',
                                        hashlib.sha256(token.encode('utf-8')).hexdigest()[:10])
                         return self._send(404, {'ok': False, 'error': 'no such link'})
-                    ok, answer = d.tap_waiting(waiting, int(body.get('seconds') or 20))
+                    # (5.44) the ticket of this link's own press: the secret of
+                    # any link at all opened the answer of every other one
+                    ok, answer = d.tap_waiting(waiting, int(body.get('seconds') or 20), tap=mine[0].get('id'))
                     if isinstance(answer, dict) and answer.get('status'):
                         return self._send(int(answer['status']), {'ok': False, 'error': answer.get('error')})
                     out = {'ok': ok}
@@ -43233,7 +43331,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                                         'passkeys': d.passkeys_of(one['name']), 'on': True, 'most': PASSKEY_MOST})
             if path == '/api/auth/passkey/begin':
                 try:
-                    return self._send(200, dict(d.passkey_login_begin(self.headers.get('X-Zigmon-Host') or ''),
+                    return self._send(200, dict(d.passkey_login_begin(self.headers.get('X-Zigmon-Host') or '',
+                                                                      str(getattr(REQUEST_CALLER, 'who', '') or '')),
                                                 ok=True))
                 except PermissionError as e:
                     return self._error(403, str(e))
@@ -44113,6 +44212,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                     d.store.add_event('audit', 'the record of %d finished approval(s) was erased' % gone)
                     return self._send(200, {'ok': True, 'stopped': [],
                                             'message': 'erased %d finished approval(s)' % gone})
+                # (5.44) a ticket, or all: no ticket at all called off every
+                # press waiting, as "all" does
+                if not body.get('all') and not str(body.get('ticket') or '').strip():
+                    return self._error(400, 'which one - a ticket, or all')
                 stopped = d.approval_stop(None if body.get('all') else str(body.get('ticket') or ''),
                                           who=self._who())
                 return self._send(200, {'ok': True, 'stopped': stopped,
@@ -45743,6 +45846,14 @@ def cmd_settings(args, pal):
         if key not in live:
             print(pal.crit('no setting called %s' % key))
             return 2
+        # (5.44) a secret is said as set, never echoed back onto the screen
+        # (and into a scrollback, a script's log): as --get and --settings say it
+        if (live[key] or {}).get('kind') == 'secret':
+            shown = 'set' if value else 'not set'
+        elif key in Daemon.TUNABLE_URL_SECRETS:
+            shown = ntfy_kept(value)
+        else:
+            shown = value
         # The setting at the top of the body, as the page sends it (5.42.1):
         # sent inside {"settings": ...} the daemon found nothing it knew, saved
         # nothing, and this said "is now" all the same
@@ -45765,11 +45876,11 @@ def cmd_settings(args, pal):
                 except ValueError:
                     return a == b
             if same(now.get('value'), value):
-                print(pal.ok('%s was %s already' % (key, value)))
+                print(pal.ok('%s was %s already' % (key, shown)))
                 return 0
             print(pal.crit('%s was not changed%s' % (key, (' - ' + out['note']) if out.get('note') else '')))
             return 1
-        print(pal.ok('%s is now %s' % (key, value)) + ((' - ' + out['note']) if out.get('note') else ''))
+        print(pal.ok('%s is now %s' % (key, shown)) + ((' - ' + out['note']) if out.get('note') else ''))
         return 0
     rows = sorted(live.items())
     if wanted:
@@ -50435,6 +50546,12 @@ def push_signed(d, op, raw, headers, app_id):
     if not push_ed25519_verify(_push_b64_in(key['pub'], 32), sig_raw,
                                push_canonical(op, app_id, kid, ts, nonce, raw)):
         raise PushRefused(401, 'bad_signature', 'the signature does not match')
+    if op == 'pair' and not push_code_waiting(d):
+        # (5.44) refused as push_pair refuses it, before its nonce is kept: a
+        # pair is signed by the key in its own body, which anybody can make,
+        # and each one wrote the list of nonces (up to 20000) again
+        raise PushRefused(403, 'pairing_closed', 'no pairing code waits here: Pair with an acme on '
+                                                 'Certificates first')
     with PUSH_LOCK:
         now = int(time.time())
         seen = _push_meta(d, 'acme_push:nonces', {})
