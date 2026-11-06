@@ -2014,6 +2014,15 @@ class ShellyRPC(object):
             stale = []
             with self._conn_guard:
                 pool = self._conns.get(self.host) or []
+                if attempt:
+                    # (5.44.1) the second try is on a fresh connection, as it
+                    # was with one kept: the kept one just failed as stale,
+                    # and the others kept beside it are of the same moment -
+                    # a box that rebooted or closed them idle. Taken from the
+                    # pool, the retry failed on the next dead one, and the
+                    # command said "cannot reach" for a box that was there.
+                    stale.extend(c for c, _used in pool)
+                    pool[:] = []
                 while pool and conn is None:
                     one, used_at = pool.pop()
                     if window <= 0 or time.time() - used_at > window:
@@ -9330,6 +9339,12 @@ class Daemon(object):
                     cut = time.monotonic() - 60
                     for k in [k for k, v in sent.items() if v < cut]:
                         sent.pop(k, None)
+        elif qos and '_cmd_mids' in self.__dict__:
+            # (5.44.1) paho counts its message ids round from 1 to 65535: an
+            # id a command had days ago is now this message's, which is no
+            # command - left in the list, it was "late" at the next reconnect
+            # and taken out of paho's hands (a retained state, a ping)
+            self._cmd_mids.pop(getattr(info, 'mid', None), None)
         return info
 
     # A command the broker has not acknowledged by the time the link comes
@@ -21845,12 +21860,18 @@ class Daemon(object):
         if CONFIG.get('debug_events'):
             self.store.add_event('debug', line[:400], 'info')
 
-    def mqtt_command(self, p, method, params, fallback=None):
+    def mqtt_command(self, p, method, params, fallback=None, wait=False):
         """Send a box its command over the broker and do not wait for the
         answer: the box acts on the publish, and waiting for its echo would
         put a second and a half between a button and a light for no gain.
         The answer is still watched for - in a thread of its own - and when
-        it does not come the fallback runs and the log says why."""
+        it does not come the fallback runs and the log says why.
+
+        (5.44.1) wait=True: the answer (or the fallback behind it) is waited
+        for here, and a PlugError says it did not happen. A pulse needs that:
+        its "on" whose answer was lost fell back to HTTP two seconds later -
+        after its "off" had gone - and a garage door or a gate was pressed a
+        second time, or the relay was left on."""
         prefix = str(p.cfg.get('mqtt_name') or '').strip().strip('/')
         if not prefix or not self.connected or not p.cfg.get('mqtt'):
             return False
@@ -21877,7 +21898,7 @@ class Daemon(object):
             if got and not reply.get('error'):
                 self.debug('%s: %s confirmed over MQTT' % (p.name, method))
                 self._mqtt_road_off.pop(p.name, None)
-                return
+                return True
             if not got:
                 # silent: HTTP straight away for this box, for a while
                 self._mqtt_road_off[p.name] = time.time() + self.MQTT_ROAD_REST
@@ -21891,7 +21912,10 @@ class Daemon(object):
                 self.say_event('plug', '%s went unanswered over MQTT and HTTP is switched off (mqtt_only)'
                                % method, 'warn', p.device_id, about='plug_road',
                                title='A socket did not answer over MQTT')
-                return
+                if wait:                                 # (5.44.1)
+                    raise PlugError('%s did not answer %s over MQTT, and HTTP is switched off (mqtt_only)'
+                                    % (p.name, method))
+                return False
             if fallback is not None and getattr(p, 'cmd_seq', 0) != mine:
                 # A newer command went out in the two seconds this one was
                 # waited for. Sending this one now by HTTP would put the
@@ -21899,7 +21923,7 @@ class Daemon(object):
                 # seconds ended off, with the house believing on.
                 self.debug('%s: %s not sent again by HTTP - a newer command has gone out'
                            % (p.name, method))
-                return
+                return True
             if fallback is not None:
                 self.debug('%s: falling back to HTTP for %s' % (p.name, method))
                 try:
@@ -21922,8 +21946,16 @@ class Daemon(object):
                         self.bump()
                     else:
                         self.poll_plug(p, force=True)
+                    return True
                 except PlugError as e:
                     log('%s: %s over HTTP failed too: %s' % (p.name, method, e), 'warn')
+                    if wait:                             # (5.44.1)
+                        raise
+            return False
+        if wait:
+            # (5.44.1) answered, or done over HTTP behind it, before the caller
+            # goes on; False only with no fallback, when the caller has HTTP
+            return confirm()
         threading.Thread(target=confirm, name='mqtt-confirm', daemon=True).start()
         return True
 
@@ -22113,8 +22145,9 @@ class Daemon(object):
         pulse went over HTTP whatever the box was - with "MQTT only" on as
         well, which says in so many words that nothing goes over HTTP - and
         a box on the broker paid a TCP round trip for each half of it."""
+        # (5.44.1) waited for, leg by leg: see mqtt_command
         if self.mqtt_command(p, 'Switch.Set', {'id': int(p.cfg.get('switch_id') or 0), 'on': bool(on)},
-                             fallback=lambda: p.rpc().set_output(on)):
+                             fallback=lambda: p.rpc().set_output(on), wait=True):
             return
         if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
             raise PlugError('%s is set to MQTT only, and the broker is not carrying its commands' % p.name)
@@ -22129,7 +22162,11 @@ class Daemon(object):
         # press right behind a rule's "on" (a box taking its time over HTTP)
         # toggled from "off" and sent "on" again - nothing happened
         base = p.wanted if getattr(p, 'wanted', None) is not None else p.output
-        if p.cfg.get('mqtt') and self.connected and base is not None and self._mqtt_road_open(p):
+        # (5.44.1) ...and only with a prefix to send it on: without one the
+        # Set went over HTTP, aimed at a state up to a poll old, where the
+        # HTTP Toggle below flips whatever the relay is
+        if p.cfg.get('mqtt') and self.connected and base is not None and self._mqtt_road_open(p) \
+                and str(p.cfg.get('mqtt_name') or '').strip().strip('/'):
             # over the broker the answer says what it is now, not what it was:
             # aim at the opposite of what the box last said, which is a toggle.
             # A Set to the opposite, not a Toggle: the HTTP road behind it
@@ -22147,7 +22184,7 @@ class Daemon(object):
             # undoes itself) - with no state known yet there is nothing to set
             # it against, so it is said, until the box's first report
             message = ('%s is set to MQTT only, and the broker is not carrying its commands' % p.name
-                       if not self.connected else
+                       if not self.connected or base is not None else      # (5.44.1) or no prefix
                        '%s has not said yet whether it is on - switch it on or off, or wait for its '
                        'first report over the broker' % p.name)
             self.store.add_event('plug', message, 'warn', p.device_id)
