@@ -9924,7 +9924,16 @@ function renameDevice(d) {
   cell.appendChild(input); cell.appendChild(hint);
   input.focus(); input.select();
   var done = false;
-  function cancel() { if (done) return; done = true; RENAME.active = false; tick(true); }
+  // (5.44) the row drawn again as it is: the table keeps a row whose facts have
+  // not changed, so Escape (or a sign-in dismissed) left the box in the cell -
+  // and a second rename of that device did nothing, the box being there
+  function putBack() {
+    var tb = $('devices-table').querySelector('tbody');
+    if (tb && tb._rows) delete tb._rows[d.id];
+    forgetSig('devices-tab');
+    if (STATE.status && !RENAME.active) renderDevices(STATE.status);
+  }
+  function cancel() { if (done) return; done = true; RENAME.active = false; putBack(); tick(true); }
   function save() {
     if (done) return;
     var name = input.value.trim();
@@ -9932,8 +9941,8 @@ function renameDevice(d) {
     done = true;
     RENAME.active = false;
     withPin('Rename ' + old, 'New name: <b>' + esc(name) + '</b>' + (d.source === 'zigbee' ? '<br>Zigbee2MQTT is told as well, so the name holds everywhere.' : ''), function (pin) {
-      return post('rename', {id: d.id, name: name, pin: pin}).then(function (r) { return r.message || 'renamed'; });
-    });
+      return post('rename', {id: d.id, name: name, pin: pin}).then(function (r) { putBack(); return r.message || 'renamed'; });
+    }, false, putBack);
   }
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') save();
@@ -16553,6 +16562,14 @@ function accountMenu() {
     .concat(isAdmin() ? [{words: 'Accounts', icon: 'person', close: true, go: function () {
       showTab('control'); showControlSection('sec-access'); }}] : [])
     .concat([{spacer: true}, {words: 'Close', close: true}]), 'medium acct-box');
+  // (5.44) the focus on Close, not on the first button: that was Sign out (or
+  // Lock now), so the popup opened from the keyboard and Enter pressed - or a
+  // Space meant for scrolling it - signed the person out
+  setTimeout(function () {
+    var btns = $('zmodal-foot').querySelectorAll('.btn');
+    var close = btns[btns.length - 1];
+    if (close && !$('zmodal').hidden && $('zmodal-title').textContent === 'Your account') { try { close.focus(); } catch (e) {} }
+  }, 0);
 }
 // (5.43.4) two letters for the round mark: the first letters of two words
 // of the name, or the first two of one ("admin" AD, "jana.novak" JN)

@@ -14,13 +14,17 @@
     the closed select as wide as before and showing the same entry;
   * Alerts - Add message, then a name typed into "by text to": the box was
     given no status, and the first letter threw (whoCandidates);
+  * the account's popup opened with the focus on Sign out (Lock now): Enter
+    or a Space signed the person out; it is on Close;
   * the performance meter: an ask that hung past its 5 s and then failed left
     no next ask, and the meter stood still until a reload;
   * signed out, a socket that is on, its button pressed and the sign-in
     dismissed with Escape: the card went on saying "off";
   * signed out, a room's slider on the Heating tab (and a valve's on its
     card) dragged and the sign-in dismissed: the slider stayed where it was
-    dragged, saying a temperature the room was not holding.
+    dragged, saying a temperature the room was not holding;
+  * the Devices tab: a rename left with Escape (or its sign-in dismissed)
+    left the box in the row, and a second rename of that device did nothing.
 
 Ports 19430 (the daemon), 19431 (php -S), 19432 (a Shelly box).
 """
@@ -303,6 +307,14 @@ async function open(b, as, hash) {
       await wait(400);
       out.who = {errors: out.errors.slice(before), offered: await p.evaluate(() =>
         Array.from(document.querySelectorAll('.whopick button')).map(b => b.textContent))};
+      // the account's popup opened from the keyboard, and Enter
+      await p.keyboard.press('Escape');
+      await p.evaluate(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); accountMenu(); });
+      await wait(400);
+      out.acct = {focus: await p.evaluate(() => (document.activeElement || {}).textContent || '')};
+      await p.keyboard.press('Enter');
+      await wait(1200);
+      out.acct.after = await p.evaluate(() => ({open: !document.getElementById('zmodal').hidden, who: !!LOCK.who}));
       await ctx.close();
     }
     // (3) the performance meter, one ask hung for 6.5 s and then failed
@@ -354,6 +366,23 @@ async function open(b, as, hash) {
       await p.keyboard.press('Escape');
       await wait(3000);
       out.room.after = await slider();
+      // the Devices tab: a device renamed in its row, Escape; again, Enter, the sign-in dismissed
+      await p.evaluate(() => showTab('devices'));
+      await wait(1500);
+      const cell = () => p.evaluate(() => { const d = STATE.status.devices.filter(x => x.name === 'Temp-05')[0];
+        const c = document.getElementById('name-' + cssId(d.id)); return {box: !!c.querySelector('input'), asked: !document.getElementById('pinback').hidden}; });
+      const rename = () => p.evaluate(() => renameDevice(STATE.status.devices.filter(x => x.name === 'Temp-05')[0]));
+      out.rename = {};
+      await rename(); await wait(300);
+      out.rename.open = await cell();
+      await p.keyboard.press('Escape'); await wait(1500);
+      out.rename.esc = await cell();
+      await rename(); await wait(300);
+      out.rename.again = await cell();
+      await p.keyboard.press('End'); await p.keyboard.type('X'); await p.keyboard.press('Enter'); await wait(600);
+      out.rename.asked = await cell();
+      await p.keyboard.press('Escape'); await wait(1500);
+      out.rename.dismissed = await cell();
       // a valve in no room: its own target on its card
       out.valve = await p.evaluate(async () => {
         const d = {id: 'trv-1', name: 'Valve', online: true};
@@ -436,6 +465,11 @@ check(not w.get('errors'), 'a name typed into a new message\'s "by text to" thre
 check(any('Jana' in x for x in w.get('offered') or []),
       'a name typed into a new message\'s "by text to" offered nobody: %r' % w.get('offered'))
 print('Alerts: a new message, a name typed into "by text to"')
+ac = o.get('acct') or {}
+check('Close' in ac.get('focus', '') and ac.get('after') == {'open': False, 'who': True},
+      'the account\'s popup opened with the focus on %r, and Enter left it %r - Enter signed the person out'
+      % (ac.get('focus'), ac.get('after')))
+print('the account\'s popup and Enter')
 
 m = o.get('meter') or {}
 check(m.get('shown'), 'the performance meter was not shown: %r' % m)
@@ -462,6 +496,14 @@ v = o.get('valve') or {}
 check(v.get('asked') and v.get('slider') == 21 and v.get('shown') == '21 °C' and v.get('preset') == 'comfort',
       'signed out, a valve\'s target and preset changed on its card and the sign-in dismissed: %r' % v)
 print('signed out: a room\'s slider and a valve\'s, the sign-in dismissed')
+
+rn = o.get('rename') or {}
+check((rn.get('open') or {}).get('box') and rn.get('esc') == {'box': False, 'asked': False},
+      'the Devices tab: a rename left with Escape left its box in the row: %r' % rn)
+check((rn.get('again') or {}).get('box') and (rn.get('asked') or {}).get('asked')
+      and rn.get('dismissed') == {'box': False, 'asked': False},
+      'the Devices tab: a second rename of the device, the sign-in dismissed: %r' % rn)
+print('the Devices tab: a rename left with Escape, and one whose sign-in was dismissed')
 
 check(not o.get('errors'), 'errors on the page: %r' % (o.get('errors') or [])[:5])
 finish()
