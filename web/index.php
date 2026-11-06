@@ -3738,6 +3738,46 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .pk-box{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
   .pk-box h4{margin:0 0 6px;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-dim)}
   .pk-box .pk-why{align-self:center}
+  /* (5.43.4) the account's popup as plexmon draws "Your account": a head with
+     the round mark of the initials (its ring in the colour of the role), the
+     name in mono and the badges under it; the sections under thin lines with
+     small headings in capitals; a passkey renamed in its own row */
+  #zmodal .box.acct-box{width:min(900px,100%)}
+  #zmodal .body.acct{padding-top:20px}
+  .acct-head{display:flex;align-items:center;gap:14px;padding:0 0 18px}
+  .acct-av{flex:none;width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:17px;font-weight:700;letter-spacing:.5px;border:1.5px solid;box-sizing:border-box}
+  .acct-av.role-admin{color:#a371f7;border-color:rgba(163,113,247,.55);background:rgba(163,113,247,.16)}
+  .acct-av.role-operator{color:#58a6ff;border-color:rgba(88,166,255,.55);background:rgba(88,166,255,.14)}
+  .acct-av.role-viewer{color:#3fb950;border-color:rgba(63,185,80,.5);background:rgba(63,185,80,.13)}
+  .acct-who{min-width:0}
+  .acct-name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:16px;font-weight:700;color:var(--tx);
+    overflow-wrap:anywhere;line-height:1.3}
+  .acct-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .acct-b{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;line-height:1.5;
+    letter-spacing:.5px;text-transform:uppercase;white-space:nowrap}
+  .acct-b.role-admin{color:#a371f7;background:rgba(163,113,247,.16)}
+  .acct-b.role-operator{color:#58a6ff;background:rgba(88,166,255,.15)}
+  .acct-b.role-viewer{color:#3fb950;background:rgba(63,185,80,.14)}
+  .acct-b.kind{color:#58a6ff;background:rgba(56,139,253,.15)}
+  #zmodal .body.acct .acct-sec{margin:0;padding:16px 0 18px;border-top:1px solid var(--line)}
+  #zmodal .body.acct .acct-sec:last-child{padding-bottom:4px}
+  #zmodal .body.acct .acct-sec > h4{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.7px;
+    text-transform:uppercase;color:var(--tx-mut)}
+  #zmodal .body.acct .acct-sec > .note{margin:0;font-size:13.5px;line-height:1.55;color:var(--tx-dim)}
+  #zmodal .body.acct .pk-box > .note{margin:0 0 10px}
+  #zmodal .body.acct .pk-box .btnrow{margin-top:12px}
+  #zmodal .body.acct #pk-add{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  #zmodal .body.acct #pk-add:hover:not(:disabled){background:#388bfd;border-color:#388bfd}
+  #zmodal .body.acct #pk-add svg{opacity:1}
+  .pk-list td.acts{text-align:right;white-space:nowrap;width:1%}
+  .pk-list td.acts .btn + .btn{margin-left:6px}
+  .pk-list td.pk-name{min-width:9em}
+  .pk-list input.pk-rename{width:100%;min-width:9em;box-sizing:border-box;height:34px;padding:0 10px;font:inherit;font-size:13.5px;
+    background:var(--panel2);color:var(--tx);border:1px solid var(--info);border-radius:8px;
+    box-shadow:0 0 0 3px rgba(88,166,255,.18);outline:none}
+  .pk-list input.pk-rename.bad{border-color:var(--crit);box-shadow:0 0 0 3px rgba(248,81,73,.18)}
+  #zmodal .body.acct .hl-pickers{margin-top:0}
   .pinrow{display:flex;gap:10px;justify-content:center}
   .pinrow .btn{min-width:108px;justify-content:center}
   .btn.primary.danger{background:var(--crit-bg);border-color:rgba(248,81,73,.45);color:var(--crit)}
@@ -4540,6 +4580,29 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #up-pkg .notice{margin:12px 0 16px;font-size:14px;line-height:1.5}
   #up-pkg .notice b{display:block;margin-bottom:2px}
   #up-web p.mono{margin:1em 0;overflow-wrap:anywhere}
+  /* (5.43.4) more than one newer version, as isemon has it: a line over the
+     buttons - "N versions newer than this one are there - put in:" and the
+     list after the words, as tall as a button and as wide as its words - not
+     the whole width of the card (.ot select is 100 % wide), which put the
+     three buttons on three lines; its open list dark, as the page is */
+  #up-web p.up-many{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:0 0 14px;font-size:14px;color:var(--tx)}
+  #up-web p.up-many + .btnrow{margin-top:0}
+  #up-web select.up-pick{width:auto;flex:0 1 auto;min-width:0;max-width:100%;height:38px;box-sizing:border-box;
+    padding:0 34px 0 12px;font-size:13.5px;font-weight:600;line-height:36px;border-radius:10px;color-scheme:dark;
+    background-color:var(--panel2);color:var(--tx);border:1px solid rgba(88,166,255,.55);cursor:pointer}
+  #up-web select.up-pick:hover:not(:disabled){border-color:var(--info)}
+  #up-web select.up-pick option{background:var(--panel2);color:var(--tx);font-weight:500}
+  /* (5.43.4) From the web: how looking stands, beside the title, as acme has
+     it - looking every day (on or off), what the last look found (newer,
+     nothing newer, an error, not yet), and the circle turning while it looks */
+  .card.up > h2 .up-state{display:inline-flex;align-items:center;gap:5px;margin-left:10px;vertical-align:middle}
+  .card.up > h2 .up-state .dot{width:7px;height:7px}
+  .card.up > h2 .up-state .up-spin{display:inline-flex;margin-left:4px;color:var(--tx-mut);opacity:.6}
+  .card.up > h2 .up-state .up-spin svg{width:13px;height:13px}
+  .card.up > h2 .up-state .up-spin.on{color:var(--info);opacity:1}
+  .card.up > h2 .up-state .up-spin.on svg, .card.up .btn.up-looking svg{animation:upspin 1s linear infinite}
+  @keyframes upspin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.card.up > h2 .up-state .up-spin.on svg, .card.up .btn.up-looking svg{animation-duration:3s}}
   .card.up pre.zlines{font-size:12px;line-height:1.5}
   /* a fold: a bar with a chevron, otp's details.fold */
   .card.up details.zfold{border:1px solid var(--line);border-radius:12px;margin:0 0 10px;background:var(--panel2)}
@@ -4831,14 +4894,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .pal-card.on{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
   .pal-sw{border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:6px;border:1px solid rgba(255,255,255,.08)}
   .pal-name{font-size:12.5px;font-weight:600}
-  /* a graph slides one step to the left over the 5 s to the next reading (5.43.1):
-     one animation of its group, s for the header's graphs (56 wide, 23 steps),
-     a for the panels' areas (400 wide) */
-  .hl-scroll-s{animation:hl-scroll-s 5s linear forwards}
-  .hl-scroll-a{animation:hl-scroll-a 5s linear forwards}
-  @keyframes hl-scroll-s{from{transform:translateX(0)}to{transform:translateX(-2.4348px)}}
-  @keyframes hl-scroll-a{from{transform:translateX(0)}to{transform:translateX(-17.3913px)}}
-  @media (prefers-reduced-motion:reduce){.hl-scroll-s,.hl-scroll-a{animation-duration:.01s}}
+  /* a graph slides one step to the left until the next reading (5.43.1), every
+     graph in one phase (5.43.4): one animation of its group from --hl-a to
+     --hl-b, its duration and delay the meter's own (HLOAD.phase) - the same
+     for the header's graphs and a panel's - so they move together, and a
+     reading that comes early or late carries on from where the line was */
+  .hl-scroll{animation-name:hl-scroll;animation-timing-function:linear;animation-fill-mode:both}
+  @keyframes hl-scroll{from{transform:translateX(var(--hl-a))}to{transform:translateX(var(--hl-b))}}
+  @media (prefers-reduced-motion:reduce){.hl-scroll{animation:none !important;transform:translateX(var(--hl-c))}}
   /* how busy the machine is, beside the pills (5.43) */
   .hload{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0}
   .hl{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;
@@ -16087,7 +16150,7 @@ $('pin-pk-go').onclick = function () {
 // for an administrator - somebody else's, to take one away (a lost iPad).
 function pkSection(body, owner, own) {
   var box = el('div', 'pk-box');
-  box.appendChild(el('h4', '', 'Passkeys — Touch ID, Face ID'));
+  box.appendChild(el('h4', '', 'Passkeys - Face ID, Touch ID'));
   var pin = own && LOCK.who && LOCK.who.kind === 'pin';
   box.appendChild(el('p', 'note', (pin
     ? 'A passkey unlocks editing with your face, your finger or this device’s own PIN, in place of typing the PIN. '
@@ -16112,20 +16175,41 @@ function pkSection(body, owner, own) {
     list.dataset.n = String(rows.length);  // how many the server said: drawn (5.43)
     list.appendChild(zTable(['Passkey', 'For', 'Added', 'Last used', ''], rows, function (x) {
       var tr = el('tr');
-      tr.appendChild(el('td', '', x.label || 'passkey'));
+      var nameTd = el('td', 'pk-name', x.label || 'passkey');
+      tr.appendChild(nameTd);
       tr.appendChild(el('td', 'mono', x.host || ''));
       tr.appendChild(el('td', 'muted', stamp(x.created)));
       tr.appendChild(el('td', 'muted', x.last_used ? ago(x.last_used) : 'never'));
       var acts = el('td', 'acts');
       var ren = iconButton('pencil', 'Rename this passkey');
       ren.classList.remove('needs-unlock');
-      ren.onclick = function () {
-        askText('Rename the passkey', 'What it is called in this list.', x.label || '', function (v) {
-          return v ? '' : 'a name, please';
-        }).then(function (v) {
-          if (v === null) return;
-          post('passkeys-do', {'do': 'rename', id: x.id, name: v, owner: own ? '' : owner}).then(draw, zoops);
+      // (5.43.4) renamed in its row, as plexmon does it: the name becomes a
+      // box with the name chosen, Enter keeps it, Escape leaves it as it was
+      var putBack = function () { nameTd.textContent = x.label || 'passkey'; };
+      var keep = function (inp) {
+        var v = inp.value.trim();
+        if (!v) { inp.classList.add('bad'); inp.focus(); return; }
+        if (v === (x.label || '')) { putBack(); return; }
+        inp.disabled = true;
+        post('passkeys-do', {'do': 'rename', id: x.id, name: v, owner: own ? '' : owner}).then(draw, function (e) {
+          inp.disabled = false; inp.focus(); zoops(e);
         });
+      };
+      ren.onclick = function () {
+        var open = nameTd.querySelector('input.pk-rename');
+        if (open) { keep(open); return; }
+        var inp = el('input', 'pk-rename');
+        inp.type = 'text'; inp.value = x.label || ''; inp.autocomplete = 'off'; inp.spellcheck = false;
+        inp.setAttribute('aria-label', 'The name of this passkey');
+        inp.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); keep(inp); }
+          // the popup around it stays open: only the box is let go
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); putBack(); try { ren.focus(); } catch (e2) {} }
+        };
+        inp.oninput = function () { inp.classList.remove('bad'); };
+        nameTd.textContent = '';
+        nameTd.appendChild(inp);
+        inp.focus(); inp.select();
       };
       var rm = iconButton('trash', 'Remove this passkey');
       rm.classList.remove('needs-unlock'); rm.classList.add('danger');
@@ -16421,16 +16505,49 @@ function accountMenu() {
         go: function () { accountPin({name: who.name, kind: 'pin'}); ZM.onClose = whoamiCheck; }}] : [])
     : [{words: 'Sign out', icon: 'door', close: true, go: lockNow},
        {words: 'Change password', icon: 'key', go: function () { passwordChange(false); }}];
-  zmodal(who.name, function (body) {
-    body.appendChild(el('p', 'note', (ROLE_NAMES[who.role] || who.role) + ': ' + ({
+  // (5.43.4) drawn as plexmon's "Your account": the round mark with the
+  // initials, the name and what kind of account it is, then the sections
+  // under thin lines with their small headings, and Close at the right end
+  zmodal('Your account', function (body) {
+    body.classList.add('acct');
+    var head = el('div', 'acct-head');
+    head.id = 'acct-head';
+    var av = el('div', 'acct-av role-' + (who.role || 'viewer'), accountInitials(who.name));
+    av.setAttribute('aria-hidden', 'true');
+    head.appendChild(av);
+    var nm = el('div', 'acct-who');
+    nm.appendChild(el('div', 'acct-name mono', who.name));
+    var badges = el('div', 'acct-badges');
+    badges.appendChild(el('span', 'acct-b role-' + (who.role || 'viewer'),
+      {admin: 'Full admin', operator: 'Operator', viewer: 'Viewer'}[who.role] || String(who.role || '')));
+    badges.appendChild(el('span', 'acct-b kind', byPin ? 'PIN' : 'Local account'));
+    nm.appendChild(badges);
+    head.appendChild(nm);
+    body.appendChild(head);
+    var may = accountSection(body, 'What you may do');
+    may.appendChild(el('p', 'note', (ROLE_NAMES[who.role] || who.role) + ': ' + ({
       viewer: 'sees the house - also when the view is not public - and changes nothing.',
       operator: 'uses the house: switches the sockets and lights, runs scenes and sequences, sets the rooms, clears the alerts. The settings are an administrator’s.',
       admin: 'everything: the settings, the security, the accounts, the machine.'}[who.role] || '')));
-    pkSection(body, who.name, true);       // Your account: its passkeys (5.43)
-    perfAccountSection(body);            // the looks of the performance meter (5.43)
+    pkSection(body, who.name, true).classList.add('acct-sec');   // Your account: its passkeys (5.43)
+    if (perfWanted()) perfAccountSection(accountSection(body, 'The performance meter'));   // its looks (5.43)
   }, acts
     .concat(isAdmin() ? [{words: 'Accounts', icon: 'person', close: true, go: function () {
-      showTab('control'); showControlSection('sec-access'); }}] : []), perfWanted() ? 'medium' : 'narrow');
+      showTab('control'); showControlSection('sec-access'); }}] : [])
+    .concat([{spacer: true}, {words: 'Close', close: true}]), 'medium acct-box');
+}
+// (5.43.4) two letters for the round mark: the first letters of two words
+// of the name, or the first two of one ("admin" AD, "jana.novak" JN)
+function accountInitials(name) {
+  var words = String(name || '').split(/[^A-Za-z0-9À-ɏ]+/).filter(Boolean);
+  if (!words.length) return '?';
+  return (words.length > 1 ? words[0].charAt(0) + words[1].charAt(0) : words[0].slice(0, 2)).toUpperCase();
+}
+function accountSection(body, heading) {
+  var sec = el('div', 'acct-sec');
+  sec.appendChild(el('h4', 'acct-h', heading));
+  body.appendChild(sec);
+  return sec;
 }
 // unlocked with a PIN, the pill locks at once, as it always did
 $('lockpill').onclick = function () {
@@ -16583,17 +16700,54 @@ function hloadRate(n) {
 var HLOAD_KEEP = 24;                     // two minutes at one reading every 5 s (5.43.1)
 /* How a graph moves (5.43.1): one SVG animation per graph, nothing redrawn by
    a timer. The newest point is drawn one step past the right edge, and the
-   line slides left by that one step over the 5 s to the next reading (a CSS
-   animation of the group, hl-scroll-s or hl-scroll-a by the graph's width);
-   the line is only drawn again, one point longer, when a reading comes. A
-   graph drawn again meanwhile (a panel, a look) carries on where it was, by
-   the animation's delay. A preview stands still, already moved. */
+   line slides left by that one step until the next reading (a CSS animation
+   of the group); the line is only drawn again, one point longer, when a
+   reading comes. A preview stands still, already moved.
+   (5.43.4) Every graph in one phase, HLOAD.phase: begun when the newest
+   reading came (at), as long as the daemon says it is to the next one (dur,
+   from next_in - not a guess of 5 s), and from where the line was then
+   (from, in steps): a reading early or late is no jump back and no catch-up,
+   the line goes on from where it stood. It goes on at the same pace past
+   its step (to twice the duration) rather than stopping to wait. A graph
+   drawn again meanwhile (a panel, a look) is put at the same point of it. */
+var HLOAD_EVERY = 5;                    // the daemon's reading, every 5 s, when it does not say
+function hlDur(nextIn) {
+  // to the next reading, and the moment the page asks after it (+0.3 s) and is answered
+  return typeof nextIn === 'number' && isFinite(nextIn) ? Math.max(1, Math.min(10, nextIn + 0.35)) : HLOAD_EVERY;
+}
+function hlAt(ph, now) {
+  // where the line of phase ph stands at `now`, in steps (from at 0, -1 at dur)
+  var p = Math.min(2, Math.max(0, (now - ph.at) / 1000 / ph.dur));
+  return ph.from + (-1 - ph.from) * p;
+}
+function hlPhaseNew(nextIn) {
+  // a new reading: the line one point longer, every point one step to the
+  // left of where it was drawn - so the group starts one step to the right of
+  // where it stood, and the eye sees nothing move but the slide
+  var now = Date.now(), old = HLOAD.phase;
+  var from = old ? Math.max(-1, Math.min(1, hlAt(old, now) + 1)) : 0;
+  HLOAD.phase = {at: now, dur: hlDur(nextIn), from: from};
+  HLOAD.goneAt = 0;
+  HLOAD.pointAt = now;
+}
+function hlGone() {
+  // one moment for every graph drawn together: their delays are the same
+  var now = Date.now();
+  if (!HLOAD.goneAt || now - HLOAD.goneAt > 40) {
+    HLOAD.goneAt = now;
+    HLOAD.gone = HLOAD.phase ? Math.max(0, (now - HLOAD.phase.at) / 1000) : 0;
+  }
+  return HLOAD.gone;
+}
 function hlScroll(w, n, preview) {
   var step = w / (HLOAD_KEEP - 1);
   var x = function (i) { return (w + step - (n - 1 - i) * step).toFixed(1); };
-  var gone = HLOAD.pointAt ? Math.max(0, (Date.now() - HLOAD.pointAt) / 1000) : 99;
-  var g = preview ? '<g class="hl-still" transform="translate(' + (-step).toFixed(3) + ' 0)">'
-    : '<g class="hl-scroll hl-scroll-' + (w === 56 ? 's' : 'a') + '" style="animation-delay:-' + gone.toFixed(2) + 's">';
+  if (preview) return {x: x, open: '<g class="hl-still" transform="translate(' + (-step).toFixed(3) + ' 0)">', close: '</g>'};
+  var ph = HLOAD.phase || {at: 0, dur: HLOAD_EVERY, from: -1};
+  var gone = HLOAD.phase ? hlGone() : 2 * HLOAD_EVERY;
+  var a = ph.from * step, b = (ph.from + 2 * (-1 - ph.from)) * step;
+  var g = '<g class="hl-scroll" style="--hl-a:' + a.toFixed(3) + 'px;--hl-b:' + b.toFixed(3) + 'px;--hl-c:' + (-step).toFixed(3)
+    + 'px;animation-duration:' + (2 * ph.dur).toFixed(3) + 's;animation-delay:-' + gone.toFixed(3) + 's">';
   return {x: x, open: g, close: '</g>'};
 }
 function hloadSpark(vals, max, cls, preview) {
@@ -16632,7 +16786,14 @@ function hloadDraw(d, into, asLook) {
     var push = function (k, v) { hist[k].push(v || 0); if (hist[k].length > HLOAD_KEEP) hist[k].shift(); };
     // a reading two pages shared is one point, not two (5.43); a new one starts
     // the graphs' one step to the left (5.43.1)
-    if (d.cpu !== undefined && d.at !== HLOAD.histAt) { HLOAD.histAt = d.at; HLOAD.pointAt = Date.now(); push('cpu', d.cpu); push('mem', mp); push('disk', (d.disk_rd || 0) + (d.disk_wr || 0)); push('net', (d.net_rx || 0) + (d.net_tx || 0)); }
+    if (d.cpu !== undefined && d.at !== HLOAD.histAt) { HLOAD.histAt = d.at; hlPhaseNew(d.next_in); push('cpu', d.cpu); push('mem', mp); push('disk', (d.disk_rd || 0) + (d.disk_wr || 0)); push('net', (d.net_rx || 0) + (d.net_tx || 0)); }
+    if (!HLOAD.phase && HLOAD.fresh !== undefined) {
+      hlPhaseNew(HLOAD.fresh);
+      // a line already on the screen (kept from before) stands where it was drawn
+      if (HLOAD.restored) HLOAD.phase.from = -1;
+      HLOAD.restored = false;
+    }
+    HLOAD.fresh = undefined;
   }
   var look = asLook || HLOAD.look || 'graphs';
   host.className = 'hload look-' + look + (preview ? ' hl-preview' : '');
@@ -17253,16 +17414,44 @@ function perfWanted(st) {
 }
 /* The last two minutes the daemon kept, put in front of the graphs: a page
    loaded again (F5) draws them at once rather than starting from nothing. */
-function hloadSeed(list) {
+function hloadSeed(list, nextIn) {
   var h = {cpu: [], mem: [], disk: [], net: []};
   (list || []).slice(-HLOAD_KEEP).forEach(function (x) {
     h.cpu.push(x.cpu || 0); h.mem.push(x.mem || 0); h.disk.push(x.disk || 0); h.net.push(x.net || 0);
     HLOAD.histAt = x.at;
   });
   HLOAD.hist = HLOAD.liveHist = h;
-  HLOAD.pointAt = Date.now();
+  // (5.43.4) the graphs' phase begins with the reading drawn with them
+  // (hloadDraw): a new one, or - the newest being the history's last - this
+  // one, to the next reading the daemon says
+  HLOAD.phase = null;
+  HLOAD.fresh = nextIn;
   HLOAD.seeded = true;
 }
+/* (5.43.4) What the meter showed last, kept for this tab (sessionStorage): a
+   page loaded again, or opened again in this tab, draws it at once - the
+   numbers, the graphs and the last details of a panel - and the next reading
+   puts the new ones in. Kept for whoever it was read for only (a viewer does
+   not see what an administrator's page was answered), for three minutes. */
+var HLOAD_SAVE = 'zigmon-hload';
+function hlWho() { return LOCK.who ? LOCK.who.name + '|' + LOCK.who.role : ''; }
+function hloadSave() {
+  try {
+    sessionStorage.setItem(HLOAD_SAVE, JSON.stringify({who: hlWho(), t: Date.now(), last: HLOAD.last, hist: HLOAD.hist,
+      histAt: HLOAD.histAt, detail: HLOAD.detail}));
+  } catch (e) {}
+}
+function hloadRestore() {
+  var k = null;
+  try { k = JSON.parse(sessionStorage.getItem(HLOAD_SAVE) || 'null'); } catch (e) { k = null; }
+  if (!k || k.who !== hlWho() || !k.last || !(Date.now() - (k.t || 0) < 180000)) return false;
+  HLOAD.last = k.last; HLOAD.hist = HLOAD.liveHist = k.hist || {cpu: [], mem: [], disk: [], net: []};
+  HLOAD.histAt = k.histAt; HLOAD.detail = k.detail || null; HLOAD.detailAt = 0;
+  HLOAD.phase = null;                    // standing still, already moved, until a reading comes
+  HLOAD.restored = true;
+  return true;
+}
+function hloadForget() { try { sessionStorage.removeItem(HLOAD_SAVE); } catch (e) {} }
 /* The next ask (5.43.1): a moment after the daemon's next reading is due (it
    says when), every 5 s - asked once, not by a timer that runs on its own. */
 function hloadNext(ms) {
@@ -17284,9 +17473,10 @@ function hloadTick(now) {
   if (!HLOAD.seeded) ask.push('history=1');
   api('perf' + (ask.length ? '&' + ask.join('&') : '')).then(function (d) {
     if (!HLOAD.timer) return;                       // stopped meanwhile: drawn nowhere
-    if (d.history) hloadSeed(d.history);
+    if (d.history) hloadSeed(d.history, d.next_in);
     if (d.detail) { HLOAD.detail = d.detail; HLOAD.detailAt = Date.now(); }
     hloadDraw(d);
+    hloadSave();
     if (typeof d.next_in === 'number') hloadNext(d.next_in * 1000 + 300);
   }).catch(function (e) {
     // switched off, or the sign-in is gone: nothing shown, nothing kept
@@ -17297,6 +17487,9 @@ function hloadLoop() {
   if (!$('hload')) return;
   clearTimeout(HLOAD.timer);
   HLOAD.timer = -1;                                /* running; the first ask sets the next (5.43.1) */
+  // (5.43.4) what this tab showed last, at once - the ask below brings the new
+  HLOAD.look = hlLook();
+  if (!HLOAD.last && HLOAD.look !== 'off' && hloadRestore()) hloadDraw(HLOAD.last);
   hloadTick(true);
 }
 function hloadStop() {
@@ -17306,6 +17499,8 @@ function hloadStop() {
   var host = $('hload');
   if (host) { host.hidden = true; hlClear(host); }
   HLOAD.hist = null; HLOAD.histAt = null; HLOAD.last = null; HLOAD.detail = null; HLOAD.seeded = false;
+  HLOAD.phase = null;
+  hloadForget();
 }
 /* Every status: started when it is wanted, stopped when it is not. */
 /* The header in one row when it fits (5.43.2): tried as one row, and kept so
@@ -17341,7 +17536,13 @@ function perfSync(st) {
    is signed in a moment after the status is drawn, and a sign-in or a
    sign-out does not wait for the next status to start or stop the meter */
 setInterval(function () { if (STATE.status) perfSync(STATE.status); }, 1000);
-document.addEventListener('visibilitychange', function () { if (!document.hidden && HLOAD.timer) hloadTick(); });
+// back to the page (5.43.4): what was shown is drawn again at once, in its
+// phase - nothing asked for it - and the ask brings the new reading
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden || !HLOAD.timer) return;
+  if (HLOAD.last && hlLook() !== 'off') { HLOAD.look = hlLook(); hloadDraw(HLOAD.last); }
+  hloadTick(true);
+});
 document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && HLOAD.open) hloadPanelClose(); });
 
 /* The two pickers of the account's popup: cards drawn by the same code from
@@ -30706,8 +30907,10 @@ function drawUpWeb(d) {
   var w = d.web || {}, o = w.online || {};
   var here = esc(o.here || d.version || '?');
   host.innerHTML = '';
+  upWebState(w, o);
   var p = el('p', 'note' + (o.error ? ' bad' : (o.newer ? ' good' : '')));
-  if (!o.at) p.innerHTML = w.check ? 'Not looked at yet &ndash; within minutes, or press Look now.'
+  if (!o.at && w.busy) p.innerHTML = 'Looking at the address now&hellip;';    // (5.43.4)
+  else if (!o.at) p.innerHTML = w.check ? 'Not looked at yet &ndash; within minutes, or press Look now.'
     : 'Not looked at: looking every day is switched off below. Look now asks once.';
   else if (o.error) p.innerHTML = 'Looked ' + esc(ago(o.at)) + ': ' + esc(o.error);
   else if (o.newer) p.innerHTML = 'zigmon <b>' + esc(o.newest.version) + '</b> is there &ndash; this server runs '
@@ -30719,7 +30922,7 @@ function drawUpWeb(d) {
   // the address in a line of its own, as otp has it: its text, never markup
   host.appendChild(el('p', 'mono small muted', w.url || o.url || '–'));
   var row = el('div', 'btnrow');
-  var look = cmdButton('Look now', 'refresh', '');
+  var look = cmdButton('Look now', 'refresh', w.busy ? 'up-looking' : '');
   look.disabled = !!(d.running || w.busy);
   look.onclick = function () {
     zbusy(look, true);
@@ -30739,12 +30942,18 @@ function drawUpWeb(d) {
       }), v);
       pick.className = 'up-pick';
       pick.title = 'More than one newer version is there: the one to go to';
+      pick.setAttribute('aria-label', 'The version to go to');
       pick.onchange = function () {
         v = pick.value;
         vurl = String((many.filter(function (x) { return x.version === v; })[0] || {}).url || w.url || '');
         setButtonIcon(up, 'play', 'Upgrade to ' + v + ' now');
       };
-      row.appendChild(pick);
+      // (5.43.4) as isemon has it: a line of its own over the buttons, the
+      // words and then the list, as wide as its words
+      var line = el('p', 'up-many');
+      line.appendChild(el('span', '', many.length + ' versions newer than this one are there - put in:'));
+      line.appendChild(pick);
+      host.appendChild(line);
     }
     up.onclick = function () {
       zconfirm('Upgrade to zigmon ' + v + '?', 'It is fetched from ' + vurl + ', its signature '
@@ -30769,6 +30978,24 @@ function drawUpWeb(d) {
     row.appendChild(only);
   }
   host.appendChild(row);
+}
+/* (5.43.4) beside the title of From the web, as acme has it: a dot for
+   looking every day, a dot for what the last look found, and a circle that
+   turns while it looks. Only shown; nothing in it is pressed. */
+function upWebState(w, o) {
+  var h = document.querySelector('#up-web-card > h2');
+  if (!h) return;
+  var s = h.querySelector('.up-state');
+  if (!s) { s = el('span', 'up-state'); h.appendChild(s); }
+  s.innerHTML = '';
+  var daily = el('span', 'dot ' + (w.check ? 'ok' : ''));
+  daily.title = w.check ? 'Looked for every day' : 'Not looked for by itself: looking every day is switched off';
+  var found = el('span', 'dot ' + (o.error ? 'crit' : (o.at ? 'ok' : '')));
+  found.title = o.error ? 'The last look failed' : (o.newer ? 'A newer version is there' : (o.at ? 'Nothing newer' : 'Not looked at yet'));
+  var spin = el('span', 'up-spin' + (w.busy ? ' on' : ''));
+  spin.innerHTML = iconMarkup('refresh');
+  spin.title = w.busy ? 'Looking now' : 'Not looking now';
+  s.appendChild(daily); s.appendChild(found); s.appendChild(spin);
 }
 /* Maintenance (otp 1.0.37, for one machine): into it with a word of why,
    back in service at once. Nothing of the house stops for it. */

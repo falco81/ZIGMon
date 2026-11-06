@@ -572,7 +572,8 @@ for k in ('pin desk 1600', 'pin ipad 1194', 'pin phone 420', 'owner desk 1600', 
     if ' phone ' not in k:
         check(r.get('shown') and who in r['shown'].get('text', ''), '%s: the user button does not name %s: %r' % (k, who, r.get('shown')))
     pp = r.get('popup') or {}
-    check(pp.get('open') and pp.get('title') == who and pp.get('pk') and pp.get('add') and 'Administrator' in pp.get('body', ''),
+    # (5.43.4) the popup is "Your account" (plexmon's), the name in its head
+    check(pp.get('open') and pp.get('title') == 'Your account' and who in pp.get('body', '')[:80] and pp.get('pk') and pp.get('add') and 'Administrator' in pp.get('body', ''),
           '%s: the user button does not open the account with its passkeys: %r' % (k, pp))
     check(pp.get('pickers'), '%s: the account popup has no looks of the meter: %r' % (k, pp))
     if who == 'pin':

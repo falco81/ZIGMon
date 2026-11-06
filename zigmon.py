@@ -7423,6 +7423,26 @@ class Storage(object):
         with self.lock:
             self.db.execute('INSERT OR REPLACE INTO perf_now (node,at,data) VALUES (?,?,?)', (node, at, data))
 
+    def perf_row(self, node):
+        """(5.43.4) The node's kept reading, (at, data) or None: what a page is
+        answered at once when the watching had ended. Never waits behind a
+        long write - the meter's ask is not the database's to hold up."""
+        if not self.lock.acquire(timeout=0.2):
+            return None
+        try:
+            row = self.db.execute('SELECT at, data FROM perf_now WHERE node=?', (str(node),)).fetchone()
+        except Exception:                               # noqa: BLE001
+            row = None
+        finally:
+            self.lock.release()
+        if not row:
+            return None
+        try:
+            data = json.loads(row[1])
+        except (TypeError, ValueError):
+            return None
+        return (float(row[0] or 0), data) if isinstance(data, dict) else None
+
     def perf_drop(self):
         self._defer(self._delete_perf)
 
@@ -41311,8 +41331,39 @@ def perf_load():
     nothing is read for the ask itself. The ask that starts the watching waits
     a moment for its first rates; next_in says when the next reading is due."""
     started = perf_watch()
+    kept = None
     if started:
-        PERF_WATCH['first'].wait(2.5)
+        # (5.43.4) the watching had ended (no page for PERF_IDLE_S): its first
+        # reading has no rates yet and the second is a second away. A page
+        # coming back is answered at once what was last read - in memory, or
+        # the node's row in perf_now (a daemon started again) - marked stale,
+        # with next_in the moment the fresh one is due; only with nothing
+        # kept at all, or a reading recent enough to give its rates at once,
+        # is the first one waited for as before
+        with PERF_LOCK:
+            last = dict(PERF_LAST['out'] or {})
+            was = PERF_LAST['raw']
+        recent = was is not None and time.time() - was['at'] < max(15.0, PERF_SAMPLE_S * 3)
+        if 'cpu' in last and not recent:
+            kept = last
+        elif 'cpu' not in last:
+            store = PERF_STORE
+            row = None
+            if store is not None and hasattr(store, 'perf_row'):
+                try:
+                    row = store.perf_row(socket.gethostname().split('.')[0] or 'this machine')
+                except Exception:                   # noqa: BLE001
+                    row = None
+            if row and row[1].get('cpu') is not None:
+                kept = dict(row[1], at=row[0], cores=os.cpu_count() or 1)
+        if kept is None:
+            PERF_WATCH['first'].wait(2.5)
+    if kept is not None:
+        out = kept
+        out['stale'] = True
+        out['next_in'] = round(min(PERF_SAMPLE_S, 1.3), 2)
+        out['every_s'] = PERF_SAMPLE_S
+        return out
     with PERF_LOCK:
         out = dict(PERF_LAST['out'] or {})
     out['next_in'] = round(max(0.0, PERF_WATCH['next'] - time.time()), 2)
