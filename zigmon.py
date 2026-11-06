@@ -5251,8 +5251,26 @@ class Storage(object):
         self._wq_thread.start()
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=NORMAL')
-        self.db.executescript(SCHEMA)
+        self.schema_up()
         self.accounts_mend()
+        self.slim_samples()
+        self.last_sample = {}     # (device, key) -> ts of the last row written
+        self.last_written = {}    # (device, key) -> (value, ts) actually stored
+        # Every setting row, read once, here. This was only ever done before a
+        # VACUUM - so after a restart each key went to the database the first
+        # time anything asked for it, under the one lock, and the FIRST motion
+        # of the evening took that lock three times on its way to the light.
+        # Measured on this house's own database: 3 lock acquisitions on the
+        # first firing, 0 on the second and every one after.
+        self._warm_meta()
+
+    def schema_up(self):
+        """The tables and columns this version has, put in where the file
+        lacks them - at start, and again after a database is put back
+        (5.43.3): a backup from an older version restored in place came
+        without the tables added since, and every write to one of them (the
+        list of addresses kept out, ...) failed until the next restart."""
+        self.db.executescript(SCHEMA)
         try:
             self.db.execute('ALTER TABLE devices ADD COLUMN alias TEXT')
         except sqlite3.OperationalError:
@@ -5267,16 +5285,6 @@ class Storage(object):
             self.db.execute('ALTER TABLE taps_log ADD COLUMN mark TEXT')
         except sqlite3.OperationalError:
             pass                        # already there
-        self.slim_samples()
-        self.last_sample = {}     # (device, key) -> ts of the last row written
-        self.last_written = {}    # (device, key) -> (value, ts) actually stored
-        # Every setting row, read once, here. This was only ever done before a
-        # VACUUM - so after a restart each key went to the database the first
-        # time anything asked for it, under the one lock, and the FIRST motion
-        # of the evening took that lock three times on its way to the light.
-        # Measured on this house's own database: 3 lock acquisitions on the
-        # first firing, 0 on the second and every one after.
-        self._warm_meta()
 
     def slim_samples(self):
         """Store the readings once instead of twice.
@@ -7084,6 +7092,13 @@ class Storage(object):
             with self.lock:
                 src.backup(self.db)
                 self.db.commit()
+                # (5.43.3) what an older version's file lacks, put in now -
+                # not at the next restart
+                try:
+                    self.schema_up()
+                except sqlite3.Error as e:
+                    log('the tables of this version could not be put into the database put back: %s'
+                        % e, 'warn')
                 # read while the lock is still held (the first read after the
                 # copy builds the WAL index - a second on a big database) and
                 # put in place in one go
@@ -16127,20 +16142,31 @@ class Daemon(object):
         except Exception as e:
             log('zigbee backup: %s' % e, 'warn')
 
+    def backup_due(self, now=None):
+        """Whether the nightly backup is due now - once a day, from its time
+        on. The day is claimed in the database (5.43.3): it was kept in the
+        loop alone, so every restart of the daemon after the time (an
+        upgrade, a change of settings) made the backup of the whole
+        installation again, and with full_backup_keep the extra copies of one
+        day pushed out the older days."""
+        lt = time.localtime(time.time() if now is None else now)
+        when = str(CONFIG.get('backup_time') or '03:30')
+        if lt.tm_hour * 60 + lt.tm_min < hhmm_minutes(when):
+            return False
+        today = time.strftime('%Y-%m-%d', lt)
+        if self.store.get_meta('backup:nightly_day') == today:
+            return False
+        self.store.set_meta('backup:nightly_day', today)
+        return True
+
     def backup_loop(self):
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
-        last_day = None
         while not self._stop.wait(300):
             try:
                 if not int(CONFIG.get('backup_enabled') or 0):
                     continue
-                lt = time.localtime()
-                when = str(CONFIG.get('backup_time') or '03:30')
-                due = lt.tm_hour * 60 + lt.tm_min >= hhmm_minutes(when)
-                today = time.strftime('%Y-%m-%d')
-                if due and last_day != today:
-                    last_day = today
+                if self.backup_due():
                     self.run_backup()
                     if int(CONFIG.get('full_backup_nightly') or 0) and self.root_installed():
                         try:
@@ -16257,7 +16283,24 @@ class Daemon(object):
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as f:
             f.write(json.dumps(req))
-        os.replace(str(tmp), str(target))
+        # put down only where none is (5.43.3): two threads that both found
+        # root free (the drift put in again every half minute, a backup to
+        # other machines asking for the whole one) each replaced request.json,
+        # the first request was never seen by root, and whoever waited for
+        # it waited half an hour for nothing
+        try:
+            try:
+                os.link(str(tmp), str(target))
+            except FileExistsError:
+                raise ValueError('root is still busy with what was asked a moment ago - try again '
+                                 'when that is done')
+            except OSError:
+                os.replace(str(tmp), str(target))       # a file system without links
+        finally:
+            try:
+                os.unlink(str(tmp))
+            except OSError:
+                pass
         self._root_asked = ident
         kinds = self.__dict__.setdefault('_root_kinds', {})
         kinds[ident] = kind
@@ -17602,8 +17645,13 @@ class Daemon(object):
         st = self.upgrade_status()
         if (st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800) \
                 or self.upgrade_asked():
-            v = st.get('version') or (self._mj('upgrade_asked') or {}).get('version') or '?'
-            return 'upgrade', ('going back to zigmon %s' if st.get('downgrade') else
+            asked = self._mj('upgrade_asked') or {}
+            v = st.get('version') or asked.get('version') or '?'
+            # root's own status says nothing of going back (5.43.3): once it
+            # took the request, going back was called an upgrade here
+            down = st.get('downgrade') or (asked.get('downgrade') and
+                                           (not st.get('id') or asked.get('id') == st.get('id')))
+            return 'upgrade', ('going back to zigmon %s' if down else
                                'the upgrade to zigmon %s') % v
         if osup_updating(self):
             return 'osup', 'the update of the system'
@@ -45483,9 +45531,13 @@ def cmd_backup(args, pal):
         return 0
     print(pal.title('%-40s %10s  %s' % ('file', 'size', 'written')))
     for r in rows:
-        print('  %-40s %10s  %s' % (str(r.get('name'))[:40],
+        # the daemon gives file and ts (5.43.3): name and when_words were
+        # never in the answer, and every line said "None" and no time
+        ts = r.get('ts')
+        print('  %-40s %10s  %s' % (str(r.get('file') or r.get('name') or '?')[:40],
                                     '%.1f MB' % ((r.get('bytes') or 0) / 1e6),
-                                    r.get('when_words') or ''))
+                                    time.strftime('%Y-%m-%d %H:%M', time.localtime(float(ts)))
+                                    if isinstance(ts, (int, float)) and ts else (r.get('when_words') or '')))
     if not rows:
         print(pal.dim('  none yet - zigmon --backup now writes one'))
     return 0

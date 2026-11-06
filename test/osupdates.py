@@ -466,6 +466,14 @@ try:
 
     print('the schedule')
     lt = time.localtime()
+    # (5.43.3) the daemon's own system loop runs osup_tick on the real clock
+    # every few seconds: with the schedule switched on here, a tick of it
+    # past 06:15 today claimed today and asked for a look, and the tick of
+    # tomorrow 09:00 below then saw a day not claimed yet - 'looked twice on
+    # one day', only when the loop came round in between (the full suite).
+    # The clock of the schedule is this test's alone while it runs.
+    real_osup_tick = zigmon.osup_tick
+    zigmon.osup_tick = lambda d, now=None: zigmon.osup_follow(d)
 
     def at(days, hh, mm):
         return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + days, hh, mm, 0, 0, 0, -1))
@@ -524,6 +532,7 @@ try:
     settle('osup:run')
     settle('osup:check')
     zigmon.CONFIG.update(osup_auto=0)
+    zigmon.osup_tick = real_osup_tick
 
     print('the regular restart waits for an update')
     pm(slow=0.5, pending=[{'name': 'bash.x86_64', 'ver': '5.1.8-13.el9', 'sec': False}])

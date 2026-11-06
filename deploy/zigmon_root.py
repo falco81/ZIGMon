@@ -1839,6 +1839,14 @@ def full_make(why='by hand', db_name=None, keep=7, suffix=''):
             add_bytes(tar, '%s/MANIFEST.mac' % top,
                       hmac.new(backup_key(), body, hashlib.sha256).hexdigest().encode() + b'\n')
             add_bytes(tar, '%s/RESTORE.txt' % top, RESTORE_TXT.encode('utf-8'), 0o644)
+        # on the disk before it takes its name (5.43.3): a power cut just
+        # after the rename left an empty or cut-off file under a backup's
+        # name, which the pruning then counted as one of the days kept
+        sync_fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(sync_fd)
+        finally:
+            os.close(sync_fd)
         os.replace(tmp_path, path)
     except BaseException:
         try:
@@ -1887,7 +1895,14 @@ def full_list():
 def full_prune(keep, spare=None):
     """The newest `keep` made on the clock or by hand; of those made before a
     restore and those uploaded, the newest three each."""
-    names = [x['file'] for x in full_list()]
+    # newest first by when it was made (5.43.3), not by name: the name
+    # begins with the host's, and once the machine was renamed the backups
+    # of its old name sorted first - the newest `keep` were the old ones,
+    # kept for good, and every new one but the last was deleted
+    def made_at(x):
+        m = re.search(r'-(\d{4}-\d{2}-\d{2}-\d{6})', x['file'])
+        return (m.group(1) if m else '', x['ts'])
+    names = [x['file'] for x in sorted(full_list(), key=made_at, reverse=True)]
     groups = {'made': [], 'before': [], 'uploaded': []}
     for n in names:
         groups['uploaded' if '-uploaded' in n else 'before' if '-before-restore' in n else 'made'].append(n)
