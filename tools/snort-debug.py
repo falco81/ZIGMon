@@ -191,8 +191,10 @@ def where_we_come_from():
     # the public address, from a service that only echoes it
     for url in ('https://api.ipify.org', 'https://ifconfig.me/ip'):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'curl/8'}),
-                                        timeout=8) as r:
+            # (5.43.3) under its own name, as every other request here: it
+            # was sent as curl, which is a program this is not
+            with urllib.request.urlopen(urllib.request.Request(
+                    url, headers={'User-Agent': 'zigmon/%s' % zigmon_version()[0]}), timeout=8) as r:
                 line('  public address    %s   (from %s)' % (r.read(100).decode().strip(), url.split('/')[2]))
                 break
         except OSError:
@@ -202,13 +204,17 @@ def where_we_come_from():
 def show(step, answer_or_error, took, text):
     code = getattr(answer_or_error, 'status', None) or getattr(answer_or_error, 'code', '?')
     hdrs = getattr(answer_or_error, 'headers', None)
+    # (5.43.3) Every address shown without its query: a Cloudflare challenge
+    # sends the browser on with its token in the query (__cf_chl_rt_tk=,
+    # __cf_chl_f_tk=), in the final address, in Location and in the action of
+    # its form - and all three were printed whole into what is sent back.
     line('  -> HTTP %s   in %.2f s   final url %s'
-         % (code, took, (getattr(answer_or_error, 'geturl', lambda: '')() or '')[:90]))
+         % (code, took, (lambda u: shown_url(u) if u else '')(getattr(answer_or_error, 'geturl', lambda: '')() or '')[:90]))
     if hdrs:
         for name in SAY_HEADERS:
             value = hdrs.get(name)
             if value:
-                line('     %-22s %s' % (name, value[:120]))
+                line('     %-22s %s' % (name, (shown_url(value) if name == 'location' else value)[:120]))
         for value in hdrs.get_all('Set-Cookie') or []:
             name = value.split('=', 1)[0]
             attrs = '; '.join(a.strip() for a in value.split(';')[1:] if not a.strip().lower().startswith('path'))
@@ -226,7 +232,7 @@ def show(step, answer_or_error, took, text):
                 line('     cloudflare error       %s' % (cf.group(1) or cf.group(2)))
             forms = re.findall(r'<form\b[^>]*action="([^"]*)"', body, re.I)
             if forms:
-                line('     forms post to          %s' % ', '.join(forms[:4]))
+                line('     forms post to          %s' % ', '.join(shown_url(f) for f in forms[:4]))
             words = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', re.sub(r'<(script|style)\b.*?</\1>', ' ', body,
                                                                          flags=re.S | re.I))).strip()
             line('     the page says          %s' % words[:400])
@@ -238,7 +244,7 @@ def show(step, answer_or_error, took, text):
 def ask(web, step, url, data=None, referer='', extra=None):
     line()
     line('  %s' % step)
-    line('  %s %s' % ('POST' if data is not None else 'GET ', url))
+    line('  %s %s' % ('POST' if data is not None else 'GET ', shown_url(url)))
     req = urllib.request.Request(url, data=data)
     if referer:
         req.add_header('Referer', referer)
