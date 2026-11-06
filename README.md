@@ -2083,7 +2083,29 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.43.3**
+Current version: **5.43.4**
+
+5.43.4 — Upgrades from the web as in the other apps; Your account; the meter smooth and at once.
+
+* **Settings → Upgrades → From the web**: the list of versions to put in no
+  longer stretched across the card (since 5.21 it broke the buttons into
+  three lines): "N versions newer than this one are there - put in:" with
+  the list after it, then Look now / Upgrade to <the one chosen> now / Only
+  fetch it on one line. Two dots by the title (looking every day; the last
+  look) and a circle that turns while it looks; "Looking at the address
+  now…" while it does.
+* **Your account**: the initials in a ring of the role's colour, the name,
+  its badges (FULL ADMIN / OPERATOR / VIEWER; LOCAL ACCOUNT or PIN), then
+  What you may do, Passkeys - Face ID, Touch ID (renamed in the row itself:
+  Enter keeps it, Esc does not) and The performance meter; Close at the end.
+* **The performance meter**: every graph slides in one step with the others,
+  for as long as there is to the next reading - no stop, no jump at a new
+  point. Back on the tab, or a reload, or a panel opened again: drawn at
+  once from what was last known, refreshed with the next reading; a page
+  coming back after the watching ended is answered at once with the reading
+  kept, not after a new one.
+
+`test/review5434.py`; it fails on 5.43.3.
 
 5.43.3 — a bug hunt through the whole of it: 85 fixes.
 
