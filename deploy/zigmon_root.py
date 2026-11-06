@@ -165,10 +165,10 @@ def read_req(name, most=4 * 1024 * 1024):
     return data
 
 
-def write_here(name, text, dir_fd=None, mode=0o640):
+def write_here(name, text, dir_fd=None, mode=0o640, owner=None):
     """A file the dashboard reads, written into the zigmon account's folder:
     a new file beside it, renamed over it - a link put there is replaced,
-    never followed."""
+    never followed. `owner` (5.44.1): (uid, gid) in place of root:zigmon."""
     d = root_fd() if dir_fd is None else dir_fd
     data = text if isinstance(text, bytes) else text.encode('utf-8')
     for n in range(50):
@@ -181,9 +181,10 @@ def write_here(name, text, dir_fd=None, mode=0o640):
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
             try:
-                os.fchown(f.fileno(), 0, service_gid())
+                os.fchown(f.fileno(), *(owner or (0, service_gid())))
             except (OSError, KeyError):
                 pass
+            os.fchmod(f.fileno(), mode)
         os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
         return
     raise OSError('could not write %s' % name)
@@ -2882,11 +2883,20 @@ def accounts_into(db, kept, owner):
     finally:
         con.close()
     # root opened it: anything it left beside the file is the daemon's again
+    # (5.44.1) by the open file, never by its name: the folder is zigmon's,
+    # and a name there may be a link to a file of root's
     for extra in (db, db + '-wal', db + '-shm', db + '-journal'):
         try:
-            os.chown(extra, owner[0], owner[1])
+            fd = os.open(extra, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                os.fchown(fd, owner[0], owner[1])
         except OSError:
             pass
+        finally:
+            os.close(fd)
 
 
 def full_restore(path, parts, from_page=True, passphrase='', before=True, say=None):
@@ -2983,6 +2993,13 @@ def full_restore(path, parts, from_page=True, passphrase='', before=True, say=No
                     write_root(f['path'], data, 0o600)
                     note('%s put back' % f['path'])
                     continue
+            if f['part'] == 'zigbee':
+                # (5.44.1) into the state folder by its descriptor: the
+                # zigmon account may put a link in place of backups/
+                write_here(os.path.basename(f['path']), data, dir_fd=sub_fd('backups'),
+                           mode=mode, owner=(uid, gid))
+                note('%s put back' % f['path'])
+                continue
             write_root(f['path'], data, mode, owner=(uid, gid))
             note('%s put back' % f['path'])
         if {'web', 'tls'} & set(parts):
