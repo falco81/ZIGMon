@@ -214,6 +214,24 @@ if (isset($_GET['t']) && !isset($_GET['api'])) {
 if (isset($_GET['api'])) {
     $what = (string) $_GET['api'];
 
+    // (5.44.1) A download of a key or a backup, and a settings export, is a
+    // GET, and only a POST was ever asked where it came from. The sign-in
+    // cookie is SameSite Strict, which another site cannot send - but another
+    // app on the same domain (a Node-RED beside the dashboard) is the same
+    // site, and its page could load ?api=proxy-key-download or
+    // tls-download&file=... as an image with the administrator's cookie on
+    // it: nothing it could read, but each one a "private key was downloaded"
+    // alarm, and the certificate or the backup root handed over for one
+    // download taken away before its owner fetched it. The page fetches all
+    // of these itself (same-origin); a shortcut or curl says nothing and is
+    // let through as before.
+    if ((preg_match('/-download$/', $what) || $what === 'export') && zigmon_foreign_request()) {
+        http_response_code(403);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['ok' => false, 'error' => 'refused: this request was sent by another site']);
+        exit;
+    }
+
     if ($what === 'status') {
         zigmon_relay('/api/status');
         exit;

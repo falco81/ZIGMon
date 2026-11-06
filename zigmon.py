@@ -21841,9 +21841,11 @@ class Daemon(object):
         if not CONFIG.get('debug'):
             return
         line = '%s%s' % (what, (' - ' + detail) if detail else '')
-        log(line, 'debug')
+        # (5.44.1) a payload's password blotted (debug_blot) - in the event
+        # always, whatever debug_secrets says: the events are the page's
+        log(line if CONFIG.get('debug_secrets') else debug_blot(line), 'debug')
         if CONFIG.get('debug_events'):
-            self.store.add_event('debug', line[:400], 'info')
+            self.store.add_event('debug', debug_blot(line)[:400], 'info')
 
     def mqtt_command(self, p, method, params, fallback=None):
         """Send a box its command over the broker and do not wait for the
@@ -41854,7 +41856,26 @@ def debug_cut(text, normally=400):
     for tends to be.
     """
     text = str(text)
-    return text if CONFIG.get('debug_secrets') else text[:normally]
+    return text if CONFIG.get('debug_secrets') else debug_blot(text)[:normally]
+
+
+# (5.44.1) What a body says of a password, in a debug line. The headers of
+# every road were shortened (header_line), the bodies never were: writing the
+# broker into a Shelly is MQTT.SetConfig with {"user":..., "pass":...}, and
+# with debug on the line "http -> box POST /rpc ..." carried the broker's
+# password whole - and the same over MQTT (plug_rpc_over_mqtt), which with
+# debug_events on is an event, and events are shown in the page. A value
+# under a name that is a password, a key or a token is put as "…"; a
+# value cut off at the end of a line (a payload shortened to 300) as well.
+_DEBUG_SECRET_RE = re.compile(
+    r'("(?:pass|password|passwd|pwd|psk|ha1|secret|client_secret|token|auth_token|access_token|'
+    r'api_key|apikey|network_key|private_key|ssh_key|skey)"\s*:\s*)'
+    r'("(?:[^"\\]|\\.)*(?:"|$)|\[[^\]]*(?:\]|$))', re.I)
+
+
+def debug_blot(text):
+    """The text with the values of its secret-named JSON fields blotted out."""
+    return _DEBUG_SECRET_RE.sub(lambda m: m.group(1) + '"…"', str(text))
 
 
 def base_words(minutes):
