@@ -104,6 +104,24 @@ try:
     d.notices_tick()
     check(looked and 'root-parts' not in d.notices_all(),
           'Look again did not look in the first minutes after a start: %r' % (looked,))
+    # ---- "Done lately" cleared (5.44.3): of one pane, or all; what is to do stays ----
+    d.notice_raise('backup-failed', 'warn', 'Backups fail', 'why', link='#control/sys-backup')
+    d.notice_clear('backup-failed', 'went by itself')
+    d.notice_raise('still-open', 'warn', 'Still to do', 'why', link='#control/sys-upgrade')
+    before = d.notices_done_view()
+    shown = [[x['key'], x['at']] for x in before if x.get('key') != 'backup-failed']   # a pane's own
+    gone = d.notices_done_clear(shown, 'owner')
+    after = d.notices_done_view()
+    check(before and gone == len(shown) and [x.get('key') for x in after] == ['backup-failed'],
+          'Done lately: the entries one pane showed were not cleared alone: %r -> %r' % (before, after))
+    check('still-open' in d.notices_all(), 'clearing Done lately took away what is still to be done')
+    d.notices_done_clear(None, 'owner')
+    check(d.notices_done_view() == [], 'Done lately was not cleared whole: %r' % d.notices_done_view())
+    page = (HERE / 'web' / 'index.php').read_text()
+    fn = page[page.index('function noticeDoneTable('):page.index('function renderNoticeBands(')]
+    check("cmdButton('Clear'" in fn and "action: 'clear_done'" in fn, 'Done lately has no Clear on the page')
+    src = (HERE / 'zigmon.py').read_text()
+    check("if act == 'clear_done':" in src, '/api/notices takes no clear_done')
 finally:
     shutil.rmtree(str(W2), ignore_errors=True)
 

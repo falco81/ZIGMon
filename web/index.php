@@ -2939,6 +2939,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .todo-done{margin-top:16px}
   .todo-none{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:10px;color:var(--ok);font-size:14px;
     background:color-mix(in srgb, var(--ok) 12%, var(--panel));border:1px solid color-mix(in srgb, var(--ok) 45%, transparent)}
+  .todo-done-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px}
+  .todo-done-head .todo-done-h{margin:0}
   .todo-done-h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-dim);margin:0 0 6px}
   .todo-done-t{width:100%}
   .todo-done-t th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);text-align:left}
@@ -32343,7 +32345,16 @@ function noticeBand(n, opts) {
 }
 function noticeDoneTable(rows) {
   var box = el('div', 'todo-done');
-  box.appendChild(el('div', 'todo-done-h', 'Done lately'));
+  // (5.44.3) its heading with Clear at its right: this pane's list emptied
+  var head = el('div', 'todo-done-head');
+  head.appendChild(el('div', 'todo-done-h', 'Done lately'));
+  var clear = cmdButton('Clear', 'trash', 'small todo-done-clear');
+  clear.title = 'Empty this list - what is still to be done stays';
+  clear.onclick = function () {
+    noticeAsk(clear, {action: 'clear_done', items: rows.map(function (x) { return [x.key || '', x.at || 0]; })});
+  };
+  head.appendChild(clear);
+  box.appendChild(head);
   var t = el('table', 'plain todo-done-t');
   var hd = el('tr');
   ['What', 'How', 'Who', 'When'].forEach(function (w) { hd.appendChild(el('th', '', w)); });

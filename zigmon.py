@@ -19072,6 +19072,32 @@ class Daemon(object):
         self.store.add_event('control', 'marked done by %s: %s' % (who or 'the command line', key), 'info')
         return True
 
+    def notices_done_clear(self, items=None, who=''):
+        """(5.44.3) "Done lately" emptied by an administrator: the entries the
+        pane shows ([key, at] each), or all of it when none are named. What is
+        still to be done is not touched."""
+        want = None
+        if items is not None:
+            want = set()
+            for one in list(items)[:200]:
+                if isinstance(one, (list, tuple)) and len(one) == 2:
+                    try:
+                        want.add((str(one[0])[:80], int(one[1])))
+                    except (TypeError, ValueError):
+                        continue
+        with self._notices_lock():
+            try:
+                done = json.loads(self.store.get_meta('notices_done') or '[]')
+            except (ValueError, TypeError):
+                done = []
+            done = [x for x in done if isinstance(x, dict)]
+            keep = [] if want is None else [x for x in done
+                                             if (str(x.get('key') or ''), int(x.get('at') or 0)) not in want]
+            gone = len(done) - len(keep)
+            self.store.set_meta('notices_done', json.dumps(keep))
+        self.store.add_event('control', '"done lately" cleared by %s (%d)' % (who or 'the command line', gone), 'info')
+        return gone
+
     def notices_done_view(self, link=None):
         try:
             done = json.loads(self.store.get_meta('notices_done') or '[]')
@@ -43684,13 +43710,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 d.notice_done(str(body.get('key') or ''), me.get('name') or (
                     'the command line' if getattr(REQUEST_CALLER, 'cli', False) else who))
                 return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'marked done'}
+            if act == 'clear_done':
+                me = d.session_get(body.get('session')) or {}
+                items = body.get('items') if isinstance(body.get('items'), list) else None
+                gone = d.notices_done_clear(items, me.get('name') or (
+                    'the command line' if getattr(REQUEST_CALLER, 'cli', False) else who))
+                return {'notices': d.notices_view(), 'done': d.notices_done_view(),
+                        'message': 'done lately cleared (%d)' % gone}
             if act == 'look':
                 d._parts_force = True                    # the parts root installs looked at now (5.44.2: at once)
                 d.notices_tick()
                 return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'looked again'}
             if act in ('', 'list'):
                 return {'notices': d.notices_view(), 'done': d.notices_done_view()}
-            raise ValueError('what with the notice? (done, look, hide, list)')
+            raise ValueError('what with the notice? (done, look, hide, clear_done, list)')
         if path == '/api/upgrade':
             # maintenance (otp 1.0.37): this server in or out of it, by hand
             if act == 'maintenance':

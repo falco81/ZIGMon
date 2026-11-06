@@ -2093,6 +2093,8 @@ Current version: **5.44.3**
   looked at then, while things settle) - now it is taken back at once, and
   looked at again in five minutes.
 * *Look again* looks at once - in those first minutes too; it waited for them.
+* **Clear** beside *Done lately*: the list the pane shows emptied (written
+  down in the events); what is still to be done stays.
 
 `test/review5442.py`; these checks fail on 5.44.2.
 
