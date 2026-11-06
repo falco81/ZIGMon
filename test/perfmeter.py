@@ -530,11 +530,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   let t = Date.now() + 300;
   await sleep(7500);
   const hiddenAsked = since(asked, t).length;
+  // the window opened before the page is shown again: it asks at once, and an
+  // ask made while the call to show it was still on its way was not counted
+  t = Date.now();
   await p.evaluate(() => {
     delete document.hidden; delete document.visibilityState;
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  t = Date.now();
   await sleep(1500);
   out.hidden = {asked: hiddenAsked, back: since(asked, t).length,
                 state: await p.evaluate(() => ({timer: HLOAD.timer, busy: HLOAD.busy, hidden: document.hidden, paused: STATE.paused, wanted: perfWanted(), look: HLOAD.look}))};

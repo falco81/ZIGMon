@@ -541,7 +541,7 @@ for k, m in sorted((o.get('layout') or {}).items()):
     # ...and an iPad keeps the two rows whatever its width (5.43.2)
     if ' ipad ' in k:
         check(not m.get('chipsOnTitle'), '%s: an iPad has the meter in the title row' % k)
-    if not phone and int(k.split()[-1].split('x')[0]) >= 2560:
+    if not phone and ' ipad ' not in k and int(k.split()[-1].split('x')[0]) >= 2560:
         check(m.get('chipsOnTitle'), '%s: the meter is not in the row of the title and Editing' % k)
 check(len(o.get('layout') or {}) >= 30, 'not every width was measured: %d' % len(o.get('layout') or {}))
 
