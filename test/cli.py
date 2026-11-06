@@ -156,6 +156,11 @@ after = run('--get', 'block_minutes')
 if got.returncode != 0 or after.stdout.strip() != '240':
     bad.append(('zigmon --settings block_minutes=240', ['said %r, and it is %r' % ((got.stdout + got.stderr)[-200:],
                                                                                     after.stdout)]))
+# (5.43.3) a value it has already, written another way, is "already", not "not changed"
+run('--settings', 'debug=1', '--pin', '1234')
+got = run('--settings', 'debug=true', '--pin', '1234')
+if got.returncode != 0 or 'already' not in got.stdout:
+    bad.append(('zigmon --settings debug=true after 1', ['a switch on already said not changed: %r' % (got.stdout + got.stderr)[-200:]]))
 got = run('--settings', 'block_minutes=99999', '--pin', '1234')
 if got.returncode == 0:
     bad.append(('zigmon --settings block_minutes=99999', ['out of its range, and said done: %r' % got.stdout[-200:]]))

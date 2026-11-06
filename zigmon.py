@@ -45197,7 +45197,18 @@ def cmd_settings(args, pal):
             return 1
         if key not in (out.get('changed') or []):
             now = ((_need_daemon(pal, '/api/status') or {}).get('runtime_config') or {}).get(key) or {}
-            if str(now.get('value')) == value:
+            # the same value however it is written (5.43.3): a switch on is True
+            # here and 1, true or on as typed; a number 180 and 180.0
+            def same(a, b):
+                words = {'1': '1', 'true': '1', 'on': '1', 'yes': '1', '0': '0', 'false': '0', 'off': '0', 'no': '0'}
+                a, b = str(a).strip(), str(b).strip()
+                if a.lower() in words and b.lower() in words:
+                    return words[a.lower()] == words[b.lower()]
+                try:
+                    return float(a) == float(b)
+                except ValueError:
+                    return a == b
+            if same(now.get('value'), value):
                 print(pal.ok('%s was %s already' % (key, value)))
                 return 0
             print(pal.crit('%s was not changed%s' % (key, (' - ' + out['note']) if out.get('note') else '')))
