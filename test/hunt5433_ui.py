@@ -290,7 +290,10 @@ function counting(p) {
       await wait(1000);
       const cdp = await ctx.newCDPSession(p);
       await cdp.send('Performance.enable');
+      // detached nodes go with a full collection, not always with the first
+      // one asked for: collect twice, a pause between
       const nodes = async () => {
+        await cdp.send('HeapProfiler.collectGarbage'); await wait(250);
         await cdp.send('HeapProfiler.collectGarbage');
         const m = (await cdp.send('Performance.getMetrics')).metrics.filter(x => x.name === 'Nodes')[0];
         return m ? m.value : -1;
@@ -306,7 +309,9 @@ function counting(p) {
       out.cards = await redraw(10);
       const a = await nodes();
       await redraw(60);
-      const z = await nodes();
+      let z = await nodes();
+      // a leak stays; nodes the collector had not reached yet go on a second look
+      if (z - a >= 400) { await wait(1500); z = Math.min(z, await nodes()); }
       out.leak = {before: a, after: z, cards: out.cards};
       await ctx.close();
     }
