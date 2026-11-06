@@ -10535,6 +10535,8 @@ class Daemon(object):
                     raise ValueError('upgrade_url takes no name or password')
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
+                if key in self.TUNABLE_URL_SECRETS:
+                    value = ntfy_unkept(value, CONFIG.get(key) or '')
                 if key in ('backup_time', 'reboot_at', 'osup_check_at', 'osup_auto_at') and \
                         not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
                     raise ValueError('%s must look like 03:30' % key)
@@ -10769,6 +10771,11 @@ class Daemon(object):
     # it is the daemon that refuses a wrong one.
     TUNABLE_SECRETS = ('duo_skey', 'mikrotik_password', 'proxy_password', 'intel_shodan_key',
                        'acme_dns_key')
+    # (5.43.3) an address that may carry a token or a password in it: the
+    # status is read before the view lock and by every role, and it carried
+    # the ntfy server's token whole. The address goes out with the secret
+    # part as KEPT, and a save that sends KEPT back keeps what was there.
+    TUNABLE_URL_SECRETS = ('notify_ntfy',)
 
     # the words the settings of the system's updates take (5.34), checked on save
     OSUP_SETTING_WORDS = {'osup_auto_what': ('security', 'all'),
@@ -10931,6 +10938,9 @@ class Daemon(object):
             elif kind == 'phone' and not reveal:
                 value = self.mask_phone(value or '')
                 from_file = self.mask_phone(from_file or '')
+            elif key in self.TUNABLE_URL_SECRETS and not reveal:
+                value = ntfy_kept(value)
+                from_file = ntfy_kept(from_file)
             out[key] = {'value': value, 'file': from_file, 'default': default, 'source': source, 'in_file': in_file,
                         'kind': kind, 'overridden': key in overrides}
             if kind == 'choice':
@@ -40450,6 +40460,48 @@ def base_words(minutes):
     if minutes < 48 * 60:
         return '%.0f h' % (minutes / 60.0)
     return '%.0f days' % (minutes / 1440.0)
+
+
+NTFY_KEPT = '(kept)'
+
+
+def ntfy_kept(url):
+    """An ntfy address as the status may show it: the server and the topic,
+    and in place of its token or its user and password, NTFY_KEPT (5.43.3)."""
+    text = str(url or '')
+    try:
+        bits = urlsplit(text)
+    except Exception:
+        return text
+    if not bits.username and not bits.password:
+        return url
+    who = quote(NTFY_KEPT, safe='')
+    head = (':' + who) if not bits.username else (who + ':' + who)
+    netloc = head + '@' + bits.netloc.rsplit('@', 1)[1]
+    return urlunsplit((bits.scheme, netloc, bits.path, bits.query, bits.fragment))
+
+
+def ntfy_unkept(url, current):
+    """A saved ntfy address with NTFY_KEPT in it given back what it stands
+    for, from the address already kept. Anything typed afresh stands."""
+    text = str(url or '')
+    try:
+        bits, was = urlsplit(text), urlsplit(str(current or ''))
+    except Exception:
+        return text
+    user, secret = unquote(bits.username or ''), unquote(bits.password or '')
+    if NTFY_KEPT not in (user, secret):
+        return text
+    if user == NTFY_KEPT:
+        user = unquote(was.username or '')
+    if secret == NTFY_KEPT:
+        secret = unquote(was.password or '')
+    if not user and not secret:
+        who = ''
+    else:
+        who = (quote(user, safe='') + ':' + quote(secret, safe='')) + '@'
+    netloc = who + bits.netloc.rsplit('@', 1)[1]
+    return urlunsplit((bits.scheme, netloc, bits.path, bits.query, bits.fragment))
 
 
 def ntfy_address(url):

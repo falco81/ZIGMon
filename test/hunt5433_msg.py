@@ -239,6 +239,24 @@ for kind in ('sms', 'alert', 'notify'):
     check(kind in listed, 'the Events log\'s kind filter has no "%s", so texts and alerts could not be picked out'
           % kind)
 
+# 13. the ntfy server's token is not in the status, and a save of what the page
+#     was shown keeps it
+import json                                             # noqa: E402
+for url, secret in (('https://:tk_Abc123SecretToken@ntfy.example.org/house', 'tk_Abc123SecretToken'),
+                    ('https://falco:Pa55word-x@ntfy.example.org/house', 'Pa55word-x')):
+    zigmon.CONFIG['notify_ntfy'] = url
+    shown = d.runtime_config()['notify_ntfy']['value']
+    check(secret not in json.dumps(d.runtime_config()),
+          'the status carried the ntfy server\'s credentials whole: %s' % shown)
+    if hasattr(d, 'TUNABLE_URL_SECRETS'):
+        d.save_config_overrides({'notify_ntfy': shown})
+        check(zigmon.CONFIG['notify_ntfy'] == url,
+              'saving the ntfy address as the page was shown it lost its credentials: %s'
+              % zigmon.CONFIG['notify_ntfy'])
+        where, auth = zigmon.ntfy_address(zigmon.CONFIG['notify_ntfy'])
+        check(auth and where == 'https://ntfy.example.org/house', 'the kept address no longer logs in')
+zigmon.CONFIG['notify_ntfy'] = ''
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 os._exit(1 if bad else 0)
