@@ -4965,6 +4965,7 @@ CREATE TABLE IF NOT EXISTS samples (
 ) WITHOUT ROWID;
 -- No index on ts alone. It cost 29 MB on a real house and saved 6 ms on one
 -- query a night; the fold walks the whole table either way.
+-- (5.44) It no longer does: it goes series by series by this key (aggregate).
 
 CREATE TABLE IF NOT EXISTS samples_hourly (
     ts      INTEGER NOT NULL,
@@ -5129,6 +5130,12 @@ CREATE TABLE IF NOT EXISTS blocked (
 
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
 CREATE INDEX IF NOT EXISTS events_device_kind_ts ON events (device, kind, ts);
+-- (5.44) the warnings and the critical ones, which is what the level filter
+-- of the Events tab is asked for: without it a year of events was read from
+-- the newest back to find the few - 105 ms under the lock on a 65-device
+-- house, twice per refresh (the rows and the count). Partial: only the rows
+-- that are not plain info, a few per cent of the table.
+CREATE INDEX IF NOT EXISTS events_level_ts ON events (level, ts) WHERE level != 'info';
 
 CREATE TABLE IF NOT EXISTS meta (
     key     TEXT PRIMARY KEY,
@@ -5268,6 +5275,14 @@ class Storage(object):
         self._wq_thread.start()
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=NORMAL')
+        # (5.44) The write-ahead log folded back into the file by checkpoint()
+        # on a connection of its own, every half minute, rather than by
+        # whichever write on this one happened to fill a thousand pages - in
+        # its COMMIT, under the lock, with the fsync of the file in it (20 to
+        # 40 ms here, far more on an SD card), the writer and every reader
+        # behind it. Still at hand on this connection should nothing run
+        # the other (a command line, a test): at ten times the default.
+        self.db.execute('PRAGMA wal_autocheckpoint=%d' % self.WAL_PAGES)
         self.schema_up()
         self.accounts_mend()
         self.slim_samples()
@@ -5523,6 +5538,26 @@ class Storage(object):
             return False
         return True
 
+    WAL_PAGES = 10000            # see __init__ (5.44)
+
+    def checkpoint(self):
+        """A passive checkpoint on a connection of its own (5.44): it waits
+        for no reader and no writer and holds no lock of ours, so the fsync
+        it ends with is nobody's wait. Opened and closed each time, as the
+        counting does, so nothing is left holding the file. How many pages
+        of the log are now in the file, or None."""
+        try:
+            conn = sqlite3.connect(str(self.path), timeout=0, isolation_level=None)
+        except sqlite3.Error:
+            return None
+        try:
+            row = conn.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+            return int(row[2]) if row and row[2] is not None and row[2] >= 0 else None
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
     def trim_wal(self):
         """Fold the write-ahead log back into the file. SQLite reuses it in
         place, so after a VACUUM it can sit at the size of the whole database
@@ -5774,25 +5809,31 @@ class Storage(object):
         self._snap_whole = True                  # every row is in memory now
         return out
 
+    def _distinct_keys(self, table, device_id, most=2000):
+        """The keys one device has in a table, a seek of the table's key per
+        key (5.44): DISTINCT read every row the device has - a socket's
+        fortnight is 160 000 of them, 11 ms under the lock - for a handful
+        of names. Asked for every chart drawn without naming its keys."""
+        keys = []
+        row = self.db.execute('SELECT key FROM %s WHERE device=? ORDER BY key LIMIT 1' % table,
+                              (device_id,)).fetchone()
+        while row is not None and len(keys) < most:
+            keys.append(row[0])
+            row = self.db.execute('SELECT key FROM %s WHERE device=? AND key>? ORDER BY key LIMIT 1'
+                                  % table, (device_id, row[0])).fetchone()
+        return keys
+
     def keys_for(self, device_id):
         with self.lock:
-            a = self.db.execute('SELECT DISTINCT key FROM samples WHERE device=?', (device_id,)).fetchall()
-            b = self.db.execute('SELECT DISTINCT key FROM samples_hourly WHERE device=?',
-                                (device_id,)).fetchall()
-        return sorted({r['key'] for r in a} | {r['key'] for r in b})
+            a = self._distinct_keys('samples', device_id)
+            b = self._distinct_keys('samples_hourly', device_id)
+        return sorted(set(a) | set(b))
 
     def counter_span(self, device_id, key, since, until):
         """The first and last reading of a rising counter in a window - what a
         meter counted between two moments, whether or not anyone was watching
         at the time."""
-        with self.lock:
-            row = self.db.execute(
-                'SELECT (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts LIMIT 1),'
-                '       (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 1)',
-                (device_id, key, int(since), int(until), device_id, key, int(since), int(until))).fetchone()
-        if not row or row[0] is None or row[1] is None:
-            return None
-        return (float(row[0]), float(row[1]))
+        return self.counter_span_many([(device_id, key)], since, until).get((device_id, key))
 
     def counter_span_many(self, wanted, since, until):
         """counter_span for a whole list of (device, key) pairs, under one
@@ -5807,15 +5848,36 @@ class Storage(object):
         out = {}
         if not wanted:
             return out
-        sql = ('SELECT (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts LIMIT 1),'
-               '       (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 1)')
+        # (5.44) The readings are kept for a fortnight, so a month (or a
+        # month gone) began before the first of them: "this month" from the
+        # 15th on was the last fourteen days, and last month the end of it
+        # or nothing. Where the readings start later than the window, it
+        # starts from the hourly table - the lowest of a rising counter's
+        # hour is where it stood when the hour began - and a window with no
+        # readings left at all ends there too, at the highest of its last.
+        raw = ('SELECT (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts LIMIT 1),'
+               '       (SELECT value FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 1),'
+               '       (SELECT ts FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? ORDER BY ts LIMIT 1)')
+        hourly = ('SELECT (SELECT COALESCE(min, avg) FROM samples_hourly WHERE device=? AND key=? AND ts>=? AND ts<? '
+                  'ORDER BY ts LIMIT 1),'
+                  '       (SELECT ts FROM samples_hourly WHERE device=? AND key=? AND ts>=? AND ts<? '
+                  'ORDER BY ts LIMIT 1),'
+                  '       (SELECT COALESCE(max, avg) FROM samples_hourly WHERE device=? AND key=? AND ts>=? AND ts<? '
+                  'ORDER BY ts DESC LIMIT 1)')
         since, until = int(since), int(until)
         with self.lock:
             for device_id, key in wanted:
-                row = self.db.execute(
-                    sql, (device_id, key, since, until, device_id, key, since, until)).fetchone()
-                if row and row[0] is not None and row[1] is not None:
-                    out[(device_id, key)] = (float(row[0]), float(row[1]))
+                one = (device_id, key, since, until)
+                row = self.db.execute(raw, one * 3).fetchone()
+                first, last, first_ts = (row[0], row[1], row[2]) if row else (None, None, None)
+                if first_ts is None or first_ts - since > 3600:
+                    h = self.db.execute(hourly, one * 3).fetchone()
+                    if h and h[0] is not None and (first_ts is None or h[1] + 3600 <= first_ts):
+                        first = h[0]
+                        if last is None:
+                            last = h[2]
+                if first is not None and last is not None:
+                    out[(device_id, key)] = (float(first), float(last))
         return out
 
     def history(self, device_id, keys, seconds, points=600):
@@ -6820,6 +6882,16 @@ class Storage(object):
                   " OR device IN (SELECT id FROM devices WHERE name LIKE ? ESCAPE '\\'"
                   " OR alias LIKE ? ESCAPE '\\'))")
 
+    @staticmethod
+    def _level_term(level):
+        """The level filter (5.44). A level other than info is asked as
+        itself, with the condition of the partial index spelled out where
+        SQLite can see it; COALESCE(level, ...) could not use any index, and
+        a missing level counts as info."""
+        if str(level) == 'info':
+            return "COALESCE(level,'info')=?"
+        return "level=? AND level != 'info'"
+
     def events(self, limit=100, device=None, text=None, kind=None, level=None):
         """The newest events, and - when text is given - the newest ones that
         contain it, searched over the whole table rather than over whatever
@@ -6833,7 +6905,7 @@ class Storage(object):
             where.append('kind=?')
             args.append(kind)
         if level:
-            where.append("COALESCE(level,'info')=?")
+            where.append(self._level_term(level))
             args.append(level)
         for word in [w for w in str(text or '').split() if w][:4]:
             # every word must appear somewhere in the row, in any order
@@ -6849,16 +6921,21 @@ class Storage(object):
             rows = self.db.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
-    def events_count(self, text=None, kind=None, level=None):
+    def events_count(self, text=None, kind=None, level=None, device=None):
         """How many rows a search matches in the whole table - so the page can
         say "852 of 8 956" rather than "852 of what happened to be loaded".
-        Counted in the database rather than by fetching the rows."""
+        Counted in the database rather than by fetching the rows. (5.44) Of
+        one device, when the rows were asked for one: the count was of every
+        device's, beside a list of only that one's."""
         where, args = [], []
+        if device:
+            where.append('device=?')
+            args.append(device)
         if kind:
             where.append('kind=?')
             args.append(kind)
         if level:
-            where.append("COALESCE(level,'info')=?")
+            where.append(self._level_term(level))
             args.append(level)
         for word in [w for w in str(text or '').split() if w][:4]:
             where.append(self.EVENT_WORD)
@@ -6923,13 +7000,49 @@ class Storage(object):
         self._latency_cache = (time.time(), result)
         return result
 
+    def _reader(self, timeout=15):
+        """A connection of its own that only reads the file (5.44), for the
+        long reads that need no lock: in WAL a reader sees the last commit
+        and neither waits for the writer nor holds it up. None where one
+        cannot be opened."""
+        try:
+            return sqlite3.connect('file:%s?mode=ro' % quote(str(self.path)), uri=True, timeout=timeout)
+        except sqlite3.Error:
+            return None
+
     def integrity_check(self):
-        with self.lock:
-            rows = self.db.execute('PRAGMA integrity_check').fetchall()
-            fk = self.db.execute('PRAGMA foreign_key_check').fetchall()
+        # (5.44) on a reader of its own: under the lock, the check of a
+        # year-old 690 MB file held every reader and the writer for 8.9 s
+        reader = self._reader()
+        if reader is not None:
+            try:
+                rows = reader.execute('PRAGMA integrity_check').fetchall()
+                fk = reader.execute('PRAGMA foreign_key_check').fetchall()
+            except sqlite3.Error:
+                rows = None
+            finally:
+                reader.close()
+        else:
+            rows = None
+        if rows is None:
+            with self.lock:
+                rows = self.db.execute('PRAGMA integrity_check').fetchall()
+                fk = self.db.execute('PRAGMA foreign_key_check').fetchall()
         lines = [r[0] for r in rows]
         ok = lines == ['ok'] and not fk
         return {'ok': ok, 'lines': lines[:20], 'foreign_key_problems': len(fk)}
+
+    def _distinct_devices(self, table, most=100000):
+        """Every device a table has rows of, by seeking its index from one to
+        the next (5.44) rather than reading every row."""
+        out = []
+        row = self.db.execute('SELECT device FROM %s WHERE device IS NOT NULL ORDER BY device LIMIT 1'
+                              % table).fetchone()
+        while row is not None and len(out) < most:
+            out.append(row[0])
+            row = self.db.execute('SELECT device FROM %s WHERE device>? ORDER BY device LIMIT 1' % table,
+                                  (row[0],)).fetchone()
+        return out
 
     def stale_data(self):
         """What is recorded for devices the dashboard no longer shows: ones
@@ -6939,14 +7052,19 @@ class Storage(object):
             known = {r['id']: dict(r) for r in
                      self.db.execute('SELECT id, name, alias, removed, last_seen FROM devices')}
             counts = {}
+            # (5.44) which devices a table has, a seek of its index per device,
+            # and only the stale ones counted: GROUP BY device counted every
+            # row of every table to throw nearly all the counts away - 412 ms
+            # under the lock on a year of a 65-device house
             for table in ('samples', 'samples_hourly', 'events', 'snapshots'):
-                for r in self.db.execute(
-                        'SELECT device, COUNT(*) n FROM %s WHERE device IS NOT NULL GROUP BY device' % table):
-                    if r['device'] in known and not known[r['device']]['removed']:
+                for device in self._distinct_devices(table):
+                    if device in known and not known[device]['removed']:
                         continue
-                    entry = counts.setdefault(r['device'], {'device': r['device'], 'rows': 0})
-                    entry[table] = r['n']
-                    entry['rows'] += r['n']
+                    n = self.db.execute('SELECT COUNT(*) FROM %s WHERE device=?' % table,
+                                        (device,)).fetchone()[0]
+                    entry = counts.setdefault(device, {'device': device, 'rows': 0})
+                    entry[table] = n
+                    entry['rows'] += n
         out = []
         for device_id, entry in counts.items():
             row = known.get(device_id)
@@ -7078,6 +7196,24 @@ class Storage(object):
         the daemon keeps writing."""
         import sqlite3
         self.flush()
+        # (5.44) read through a connection of its own, in one step (one read
+        # transaction: one consistent moment, whatever the writer does
+        # meanwhile). Through the shared connection it held the lock for the
+        # whole copy - 1.1 s on a year of a 65-device house, every night.
+        reader = self._reader()
+        if reader is not None:
+            try:
+                dest = sqlite3.connect(str(target))
+                try:
+                    reader.backup(dest)
+                finally:
+                    dest.close()
+                return target.stat().st_size
+            except sqlite3.Error as e:
+                log('the backup through a reader of its own failed (%s); taken through the '
+                    'shared connection' % e, 'warn')
+            finally:
+                reader.close()
         with self.lock:
             dest = sqlite3.connect(str(target))
             try:
@@ -7193,6 +7329,14 @@ class Storage(object):
                 rows = self.db.execute('SELECT ts, avg AS value FROM samples_hourly WHERE device=? AND key=? '
                                        'AND ts BETWEEN ? AND ? ORDER BY ts',
                                        (device_id, key, int(t0), int(t1))).fetchall()
+            elif rows[0]['ts'] - int(t0) > 3600:
+                # (5.44) the readings are kept for a fortnight: a month or a
+                # year asked of them was the last fourteen days of it (the
+                # year's figure on the energy card was two weeks). The hours
+                # before the first reading come from the hourly table.
+                rows = self.db.execute('SELECT ts, avg AS value FROM samples_hourly WHERE device=? AND key=? '
+                                       'AND ts BETWEEN ? AND ? ORDER BY ts',
+                                       (device_id, key, int(t0), rows[0]['ts'] - 3600)).fetchall() + rows
         total = 0.0
         previous = None
         for row in rows:
@@ -7496,40 +7640,101 @@ class Storage(object):
         return data
 
     # -- housekeeping ---------------------------------------------------------
+    def _series_after(self, after):
+        """The next (device, key) of the readings after `after`, or None - one
+        seek of the table's own key rather than a walk of every row (5.44)."""
+        if after is None:
+            return self.db.execute('SELECT device, key FROM samples ORDER BY device, key LIMIT 1').fetchone()
+        # two seeks, not "(device, key) > (?, ?)": SQLite walks from the
+        # device's first row for that one (313 ms for the house, not 2)
+        row = self.db.execute('SELECT device, key FROM samples WHERE device=? AND key>? '
+                              'ORDER BY key LIMIT 1', after).fetchone()
+        if row is None:
+            row = self.db.execute('SELECT device, key FROM samples WHERE device>? '
+                                  'ORDER BY device, key LIMIT 1', (after[0],)).fetchone()
+        return row
+
+    AGGREGATE_CHUNK = 5000       # rows a retention delete takes under one turn of the lock (5.44)
+
+    def _drop_older(self, table, before):
+        """DELETE FROM table WHERE ts < before, a few thousand rows at a time
+        with the lock let go in between (5.44): a retention shortened in
+        Settings (two years of events down to one month) went in one
+        statement under the lock, every reader and the writer behind it for
+        as long as half a million rows took."""
+        gone = 0
+        while True:
+            with self.lock:
+                n = self.db.execute('DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE ts<? LIMIT ?)'
+                                    % (table, table), (before, self.AGGREGATE_CHUNK)).rowcount or 0
+            gone += max(0, n)
+            if n < self.AGGREGATE_CHUNK:
+                return gone
+
     def aggregate(self):
-        """Roll full-resolution rows older than two hours into hourly buckets."""
+        """Roll full-resolution rows older than two hours into hourly buckets.
+
+        (5.44) Series by series, each in a transaction of its own, found by
+        the table's own key. It was one statement over the whole of
+        `samples` - keyed (device, key, ts), so "ts >= the last fold" was a
+        walk of every row there is - and a second walk to drop the old ones,
+        both in one transaction under the lock, every hour: 378 ms on a
+        65-device house with a fortnight of readings, every reader and the
+        writer waiting behind it. Now the longest the lock is held is one
+        series' hour (well under a millisecond)."""
         now = int(time.time())
         cutoff = (now // 3600) * 3600 - 7200
         done = 0
         with self.lock:
             r = self.db.execute("SELECT value FROM meta WHERE key='aggregated_to'").fetchone()
-            start = int(r['value']) if r else 0
-            if start >= cutoff:
-                return 0
+        start = int(r['value']) if r else 0
+        if start >= cutoff:
+            return 0
+        full_days = int(CONFIG.get('retain_full_days', 14))
+        hourly_days = int(CONFIG.get('retain_hourly_days', 730))
+        event_days = int(CONFIG.get('retain_events_days', 730))
+        # on an hour (5.44): the fold of a series and the dropping of its old
+        # readings are now one series at a time, and a fold interrupted part
+        # way is done again from the start - an hour half dropped would then
+        # be folded again from its second half and replace the whole hour
+        drop_before = ((now - full_days * 86400) // 3600) * 3600
+        series = None
+        while True:
+            with self.lock:
+                series = self._series_after(series)
+                if series is None:
+                    break
+                series = (series[0], series[1])
+                self.db.execute('BEGIN')
+                try:
+                    cur = self.db.execute(
+                        'INSERT OR REPLACE INTO samples_hourly (ts,device,key,n,avg,min,max) '
+                        'SELECT (ts/3600)*3600, device, key, COUNT(*), AVG(value), MIN(value), MAX(value) '
+                        'FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? GROUP BY ts/3600',
+                        series + (start, cutoff))
+                    done += max(0, cur.rowcount or 0)
+                    self.db.execute('DELETE FROM samples WHERE device=? AND key=? AND ts<?',
+                                    series + (drop_before,))
+                    self.db.execute('COMMIT')
+                except Exception:
+                    self.db.execute('ROLLBACK')
+                    raise
+        self._drop_older('samples_hourly', now - hourly_days * 86400)
+        self._drop_older('events', now - event_days * 86400)
+        # The two that came with the one-tap roads. Nothing trimmed
+        # them: a link open to the internet writes a line for every
+        # press and every refusal, and a year of that is a table
+        # nobody asked for and a database that only grows.
+        press_days = int(CONFIG.get('retain_presses_days', 180))
+        self._drop_older('taps_log', now - press_days * 86400)
+        self._drop_older('block_events', now - press_days * 86400)
+        self._drop_older('blocked_log', now - press_days * 86400)
+        with self.lock:
             self.db.execute('BEGIN')
             try:
-                cur = self.db.execute(
-                    'INSERT OR REPLACE INTO samples_hourly (ts,device,key,n,avg,min,max) '
-                    'SELECT (ts/3600)*3600, device, key, COUNT(*), AVG(value), MIN(value), MAX(value) '
-                    'FROM samples WHERE ts>=? AND ts<? GROUP BY device, key, ts/3600',
-                    (start, cutoff))
-                done = cur.rowcount if cur.rowcount is not None else 0
                 self.db.execute("INSERT OR REPLACE INTO meta (key,value) VALUES ('aggregated_to',?)",
                                 (str(cutoff),))
                 self._meta_raw['aggregated_to'] = str(cutoff)   # see _warm_meta
-                full_days = int(CONFIG.get('retain_full_days', 14))
-                hourly_days = int(CONFIG.get('retain_hourly_days', 730))
-                event_days = int(CONFIG.get('retain_events_days', 730))
-                self.db.execute('DELETE FROM samples WHERE ts<?', (now - full_days * 86400,))
-                self.db.execute('DELETE FROM samples_hourly WHERE ts<?', (now - hourly_days * 86400,))
-                self.db.execute('DELETE FROM events WHERE ts<?', (now - event_days * 86400,))
-                # The two that came with the one-tap roads. Nothing trimmed
-                # them: a link open to the internet writes a line for every
-                # press and every refusal, and a year of that is a table
-                # nobody asked for and a database that only grows.
-                press_days = int(CONFIG.get('retain_presses_days', 180))
-                self.db.execute('DELETE FROM taps_log WHERE ts<?', (now - press_days * 86400,))
-                self.db.execute('DELETE FROM block_events WHERE ts<?', (now - press_days * 86400,))
                 # What was kept ABOUT an address - which list knew it, what
                 # Suricata said - is two rows apiece, written for every alert
                 # and not only for a block, and nothing ever took them away.
@@ -7556,7 +7761,6 @@ class Storage(object):
                         self._meta_raw[key] = None      # gone, and known to be gone: see _warm_meta
                     log('%d thing(s) kept about addresses nobody remembers, forgotten' % len(stale),
                         'debug')
-                self.db.execute('DELETE FROM blocked_log WHERE ts<?', (now - press_days * 86400,))
                 self.db.execute('COMMIT')
             except Exception:
                 self.db.execute('ROLLBACK')
@@ -22662,6 +22866,11 @@ class Daemon(object):
             # than anything the house can draw today
             metered = sorted('plug:' + p.name for p in list(self.plugs.values()))
             marks = ','.join('?' * len(metered))
+            # (5.44) the readings only from where the fold has got to: the
+            # hours before it are in the hourly table already, and asking the
+            # readings for the whole week read every socket's every reading
+            # of it - 176 ms under the lock, once a minute, on 20 sockets
+            folded = int(numeric(self.store.get_meta('aggregated_to')) or 0)
             try:
                 for span, which in ((86400, 'day'), (7 * 86400, 'week')):
                     if not metered:
@@ -22684,7 +22893,7 @@ class Daemon(object):
                             'SUM(top) AS total FROM (SELECT device, ts, MAX(value) AS top FROM samples '
                             'WHERE device IN (%s) AND key = ? AND ts > ? '
                             'GROUP BY device, CAST(ts / 3600 AS INTEGER)) GROUP BY hour)' % marks,
-                            tuple(metered) + ('switch.apower', now - span)).fetchone()
+                            tuple(metered) + ('switch.apower', max(now - span, folded - 1))).fetchone()
                     seen = [x[0] for x in (row, fresh) if x and x[0] is not None]
                     value = round(max(seen), 1) if seen else None
                     if which == 'day':
@@ -40837,6 +41046,7 @@ class Daemon(object):
         while not self._stop.is_set():
             self._stop.wait(30)
             ensure_log_current()
+            self.store.checkpoint()          # off the store's lock (5.44)
             now = time.time()
             if now - self.last_aggregate_at >= int(CONFIG.get('aggregate_interval') or 3600):
                 self.last_aggregate_at = now
@@ -42820,7 +43030,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 kind = (q.get('kind') or '').strip()[:32] or None
                 level = (q.get('level') or '').strip()[:8] or None
                 rows = d.store.events(limit, device_id, text=text or None, kind=kind, level=level)
-                matched = d.store.events_count(text or None, kind, level) if (text or kind or level) else None
+                matched = (d.store.events_count(text or None, kind, level, device_id)
+                           if (text or kind or level) else None)
                 names = {x['id']: x['name'] for x in d.store.devices(include_removed=True)}
                 for r in rows:
                     r['device_name'] = names.get(r['device']) if r['device'] else None
