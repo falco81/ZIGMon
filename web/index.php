@@ -9755,6 +9755,7 @@ function devicesSorted(list) {
 function deviceCategory(d) {
   if (!d) return 'sensor';
   if (d.source === 'sms') return 'modem';
+  if (d.source === 'proxy') return 'sslproxy';
   if (d.source === 'group') return 'sgroup';
   if (d.source === 'plug') return plugRoleKind(d.name);
   var v = d.values || {};
@@ -9940,6 +9941,7 @@ function overviewAvailableOptions(st) {
   (st.plugs || []).forEach(function (p) { out.push([p.id, withIcon(plugRoleKind(p), p.name)]); });
   st.devices.forEach(function (d) {
     if (d.source === 'plug') return;
+    if (d.id === PROXY_TILE_ID) return;      // (5.46) offered once, as its own card, below
     out.push([d.id, deviceIcon(d) + ' ' + d.name]);
   });
   // (5.45) the server in front, while its integration is set up and on
@@ -10015,8 +10017,8 @@ var PROXY_TILE_ID = 'proxy:front';
 var PROXY_TILE = {data: null, sig: '', at: 0, busy: false};
 function proxyTileOn(st) { return !!(st && st.proxy_tile && st.proxy_tile.on); }
 function proxyTileName() {
-  var t = PROXY_TILE.data;
-  return (t && t.on && t.name) || 'SSLProxy';
+  var t = PROXY_TILE.data, dev = deviceById(PROXY_TILE_ID);
+  return (dev && dev.name) || (t && t.on && t.name) || 'SSLProxy';
 }
 function proxyTileShown(st) { return proxyTileOn(st) && overviewLayoutIds(st).indexOf(PROXY_TILE_ID) >= 0; }
 function loadProxyTile(force) {
@@ -10074,12 +10076,26 @@ function buildProxyTileCard(t) {
   var icon = el('span', 'pt-icon');
   icon.innerHTML = iconMarkup('sslproxy', 17);          // the page's own drawing, nothing of the remote's
   name.appendChild(icon);
-  name.appendChild(document.createTextNode(t.name || 'SSLProxy'));
+  // (5.46) a device like the others: its name as given under Devices, its
+  // object, and the way to its charts
+  var dev = deviceById(PROXY_TILE_ID);
+  var shown = (dev && dev.name) || t.name || 'SSLProxy';
+  name.appendChild(document.createTextNode(shown));
+  if (dev) name.appendChild(objMark(devRef(dev), shown));
   nm.appendChild(name);
   nm.appendChild(el('div', 'model', ['SSLProxy \u00b7 nginx \u00b7 Suricata', t.host || ''].filter(Boolean).join(' \u00b7 ')));
   head.appendChild(nm);
   head.appendChild(el('span', 'spacer'));
   head.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  if (dev && linkAllowed(dev)) {
+    var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
+    hist.title = 'History and charts of ' + shown;
+    hist.onclick = function (e) {
+      e.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return;
+      STATE.hDevice = PROXY_TILE_ID; showTab('history');
+    };
+    head.appendChild(hist);
+  }
   card.appendChild(head);
   // a row for the machine, one for nginx, one for Suricata - the SMS card's look
   var readings = el('div', 'readings');
@@ -10118,7 +10134,7 @@ function buildProxyTileCard(t) {
 function openProxyTileDetail() {
   var t = PROXY_TILE.data || {};
   var ngx = t.nginx || {}, sur = t.suricata || {};
-  zmodal((t.name || 'SSLProxy') + ' \u2014 the server in front', function (body) {
+  zmodal(proxyTileName() + ' \u2014 the server in front', function (body) {
     body.classList.add('pt-detail');
     var section = function (title, rows) {
       body.appendChild(el('h4', '', title));
@@ -10162,6 +10178,15 @@ function openProxyTileDetail() {
       }))
       .concat((sur.sources || []).map(function (a) { return ['alerted on most', a.ip + ' \u00d7 ' + a.n]; })));
     if (!t.admin) body.appendChild(el('p', 'muted small', 'The addresses and the signatures are shown to an administrator.'));
+    // (5.46) every look is a reading of the device: its charts are a click away
+    if (deviceById(PROXY_TILE_ID)) {
+      var bar = el('div', 'btnrow');
+      var charts = cmdButton('History and charts', 'chart', 'small');
+      charts.classList.remove('needs-unlock');
+      charts.onclick = function () { closeZModal(); STATE.hDevice = PROXY_TILE_ID; showTab('history'); };
+      bar.appendChild(charts);
+      body.appendChild(bar);
+    }
   });
 }
 function renderOverviewCustom(st) {
@@ -10184,11 +10209,13 @@ function renderOverviewCustom(st) {
     // the minute, so they are left out of the signature (minute is in)
     if (isPlug) sig = JSON.stringify([1, plugById[id], minute, unlocked, REARRANGE, LINKS], function (k, v) { return k === 'age' ? undefined : (k === 'retry_in' && v ? Math.ceil(v / 10) : v); });
     else if (id === PROXY_TILE_ID) {
-      // (5.45) not a device: there while the integration is on, and gone -
-      // not an empty card - when it is switched off
+      // (5.45) there while the integration is on, and gone - not an empty
+      // card - when it is switched off; (5.46) a device as well, named and
+      // charted under Devices, drawn here as its own card
       if (!proxyTileOn(st)) return;
       if (!PROXY_TILE.data) setTimeout(function () { loadProxyTile(); }, 0);
-      sig = JSON.stringify([2, PROXY_TILE.sig, minute, unlocked, REARRANGE]);
+      var pdev = deviceById(PROXY_TILE_ID);
+      sig = JSON.stringify([2, PROXY_TILE.sig, minute, unlocked, REARRANGE, pdev ? pdev.name : '', LINKS]);
     } else {
       d = deviceById(id);
       if (!d) return;                  // gone (removed, disabled) - skip quietly
@@ -10325,6 +10352,9 @@ function renderHistoryControls(fromTick) {
   sel.onchange = function () { STATE.hDevice = sel.value; loadHistory(); };
   rangeButtons($('h-ranges'), ['6h', '24h', '7d', '30d', '1y'], STATE.hRange, function (r) { STATE.hRange = r; renderHistoryControls(); loadHistory(); });
 }
+var PROXY_CHART_ORDER = ['px_requests_h', 'px_refused_h', 'px_closed_h', 'px_errors_h', 'px_weighed_h',
+  'px_alerts_24h', 'px_alert_prio', 'px_packets', 'px_drops', 'px_load_1', 'px_load_5', 'px_load_15',
+  'px_mem_used', 'px_mem_free_mb', 'px_disk_used', 'px_disk_free_gb', 'px_uptime_h'];
 function loadHistory() {
   var id = STATE.hDevice, host = $('h-charts');
   if (!id) { host.innerHTML = '<div class="card center full">No device selected</div>'; return; }
@@ -10343,6 +10373,12 @@ function loadHistory() {
     if (!stillWanted()) return;
     var keys = (info.keys || []).filter(function (k) { return k !== 'linkquality'; });
     if (info.keys && info.keys.indexOf('linkquality') >= 0) keys.push('linkquality');
+    // (5.46) the server in front reads best in the order its card does: the
+    // traffic, then what Suricata said, then the machine - not A to Z
+    if (id === PROXY_TILE_ID) {
+      var rank = function (k) { var i = PROXY_CHART_ORDER.indexOf(k); return i < 0 ? 99 : i; };
+      keys.sort(function (a, b) { return rank(a) - rank(b) || (a < b ? -1 : 1); });
+    }
     if (!keys.length) { host.innerHTML = '<div class="card center full">Nothing numeric recorded for this device yet</div>'; $('h-note').textContent = ''; return; }
     return api('history&device=' + encodeURIComponent(id) + '&keys=' + keys.join(',') + '&range=' + STATE.hRange + '&points=700').then(function (r) {
       if (!stillWanted()) return;
@@ -13392,6 +13428,13 @@ function factCatalogue() {
       ['sms_network', 'the network it has', 'LTE'],
       ['sms_sent_today', 'messages sent in the last day', '3'],
       ['sms_received_today', 'messages received in the last day', '1']]],
+    ['The server in front (SSLProxy)', [
+      ['proxy_state', 'whether it answered in the last three minutes', 'online'],
+      ['proxy_nginx', 'nginx there, as systemd says', 'active'],
+      ['proxy_suricata', 'Suricata there, as systemd says', 'active'],
+      ['proxy_requests_hour', 'requests it answered in the last hour', '214'],
+      ['proxy_alerts_day', 'Suricata alerts in the last day', '37'],
+      ['proxy_uptime', 'how long it has been up', '12 d 3 h']]],
     ['Doors, windows and batteries', [
       ['open_now', 'what is open, by name', 'Dvere-Balkon'],
       ['open_count', 'how many are open', '0'],

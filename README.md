@@ -2116,11 +2116,23 @@ Current version: **5.46.0**
   (`/api/proxy/requests`). The same line twice is two requests; the same file
   read again is kept once.
 
+* The server in front is a **device** like the others (`proxy:front`): every
+  look of the SSLProxy card is a reading - on Devices, renamed there like any
+  device that is not Zigbee, its history drawn under History (requests,
+  refused, 444s, 5xx, Suricata's alerts and worst priority, packets and drops,
+  load, memory, disk, uptime), its object (its readings, `rename()`, `look()`)
+  and its facts (`{Edge.px_requests_h}`, and `{proxy_state}`, `{proxy_nginx}`,
+  `{proxy_suricata}`, `{proxy_requests_hour}`, `{proxy_alerts_day}`,
+  `{proxy_uptime}`). The card carries its object mark and the way to its
+  charts, and its detail a *History and charts* button. Read once a minute
+  whenever the integration is on, card or no card - a graph with holes
+  wherever nobody had the Overview open draws nothing.
+
 Copy the two front configs to the server in front again to have the new
 fields; until then the house masks what the old ones write.
 
-`test/review546_fullmask.py` (real nginx and Chromium where they are installed);
-these checks fail on 5.45.0.
+`test/review546_fullmask.py` (real nginx and Chromium where they are installed),
+`test/review546_proxydevice.py`; these checks fail on 5.45.0.
 
 5.45.0 — a tile for the proxy in front, and sharper blocking from its logs.
 

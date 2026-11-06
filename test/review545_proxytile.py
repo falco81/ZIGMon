@@ -249,7 +249,8 @@ threads = [threading.Thread(target=lambda: [zigmon.proxy_tile_state(d) for _ in 
 wait_runs(2)
 SLOW[0] = 0.0
 check(len(CALLS) == 2, 'a minute later, 200 askings ran %d SSH commands, not one' % len(CALLS))
-check(zigmon.proxy_tile_wanted(d) is False, 'the clock would look for a card not on the Overview')
+# (5.46) a device with a history: read whenever it is set up, card or no card
+check(zigmon.proxy_tile_wanted(d) is True, 'the clock would not read the server in front without its card')
 
 print('  offline when SSH fails')
 FAIL[0] = True

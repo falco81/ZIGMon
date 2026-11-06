@@ -1080,6 +1080,26 @@ KEY_INFO = {
     'data_today_mb': ('Data today', 'MB'),
     'sent_today':    ('Sent today', ''),
     'received_today': ('Received today', ''),
+    # (5.46) the server in front, as a device of its own (proxy:front)
+    'px_uptime_h':   ('Up for', 'h'),
+    'px_load_1':     ('Load, 1 min', ''),
+    'px_load_5':     ('Load, 5 min', ''),
+    'px_load_15':    ('Load, 15 min', ''),
+    'px_mem_used':   ('Memory used', '%'),
+    'px_mem_free_mb': ('Memory free', 'MB'),
+    'px_disk_used':  ('Disk used', '%'),
+    'px_disk_free_gb': ('Disk free', 'GB'),
+    'px_nginx':      ('nginx', ''),
+    'px_suricata':   ('Suricata', ''),
+    'px_requests_h': ('Requests, 1 h', ''),
+    'px_closed_h':   ('Closed (444), 1 h', ''),
+    'px_refused_h':  ('Refused (4xx), 1 h', ''),
+    'px_errors_h':   ('Server errors (5xx), 1 h', ''),
+    'px_alerts_24h': ('Suricata alerts, 24 h', ''),
+    'px_alert_prio': ('Worst alert priority, 24 h', ''),
+    'px_packets':    ('Packets seen', ''),
+    'px_drops':      ('Packets dropped', ''),
+    'px_weighed_h':  ('Lines weighed here, 1 h', ''),
     'credit':        ('Credit left', ''),
     'credit_bonus':  ('Bonus credit', ''),
     'credit_total':  ('Credit and bonus', ''),
@@ -3687,6 +3707,9 @@ PULSE_MS_DEFAULT = 5000
 SELFTEST_NAME = 'zigmon-selftest'   # the probe uses a real /set topic, on a device that does not exist
 PULSE_MS_MIN, PULSE_MS_MAX = 100, 3600000
 PLUG_HEADLINE = ['switch.apower', 'switch.aenergy.total', 'switch.output', 'switch.voltage']
+# (5.46) what the server in front's card on Devices leads with
+PROXY_HEADLINE = ['px_nginx', 'px_suricata', 'px_requests_h', 'px_alerts_24h', 'px_load_1', 'px_mem_used',
+                  'px_disk_used', 'px_uptime_h']
 
 
 # ---------------------------------------------------------------------------
@@ -35252,6 +35275,14 @@ class Daemon(object):
         if kind == 'mikrotik' and member == 'sync':
             said = self.mikrotik_sync('from %s' % origin)
             return str(said or 'the router has the blocked list')[:200]
+        if kind == 'device' and oid == PROXY_TILE_ID and member == 'look':
+            if not proxy_tile_on(self):
+                raise ValueError('the server in front is not set up, or its reading is off')
+            self.__dict__.pop('_proxy_tile_started', None)
+            look = dict(self.__dict__.get('_proxy_tile_look') or {})
+            self._proxy_tile_look = dict(look, at=0, tried=0)
+            proxy_tile_look(self)
+            return 'the server in front is being read now'
         if kind == 'device' and oid == 'sms:gateway' and member in ('poll', 'flush'):
             if member == 'poll':
                 self.sms_poll(force=True)
@@ -36247,6 +36278,8 @@ class Daemon(object):
             prop('alerts', ((self.notify_settings().get('devices') or {}).get(oid) or 'default') if values else None,
                  settable=True, doc='what is said about it: default, %s or custom:crit,offline' % ', '.join(NOTIFY_PRESETS))
             proc('rename', '%s.rename(NEW)' % name, 'call it something else', direct=True, takes='value')
+            if oid == PROXY_TILE_ID:
+                proc('look', '%s.look()' % name, 'read the server in front now, not in a minute', direct=True)
             if oid == 'sms:gateway':
                 func('outbox', len(self.sms_outbox()) if values else None, vtype='number',
                      doc='messages waiting to go out')
@@ -37250,6 +37283,18 @@ class Daemon(object):
                 numeric(self.latest_value('sms:gateway', 'sent_today'))),
             'sms_received_today': (lambda v: int(v) if v is not None else '')(
                 numeric(self.latest_value('sms:gateway', 'received_today'))),
+            # (5.46) the server in front, as its device last read it
+            'proxy_state': ('online' if (self.store.device('proxy:front') or {}).get('last_seen', 0)
+                            > time.time() - 180 else 'offline') if self.store.device('proxy:front') else '',
+            'proxy_nginx': str(((self.live.get('proxy:front') or {}).get('payload') or {}).get('px_nginx') or ''),
+            'proxy_suricata': str(((self.live.get('proxy:front') or {}).get('payload') or {})
+                                  .get('px_suricata') or ''),
+            'proxy_requests_hour': (lambda v: int(v) if v is not None else '')(
+                numeric(self.latest_value('proxy:front', 'px_requests_h'))),
+            'proxy_alerts_day': (lambda v: int(v) if v is not None else '')(
+                numeric(self.latest_value('proxy:front', 'px_alerts_24h'))),
+            'proxy_uptime': (lambda v: human_age(v * 3600) if v is not None else '')(
+                numeric(self.latest_value('proxy:front', 'px_uptime_h'))),
             # how much of everything there is
             'devices_total': len(self.store.devices()),
             'plugs_total': len(self.plugs),
@@ -41640,6 +41685,8 @@ class Daemon(object):
         for key, entry in values.items():
             if dev['source'] == 'plug':
                 rank = PLUG_HEADLINE.index(key) if key in PLUG_HEADLINE else None
+            elif dev['source'] == 'proxy':
+                rank = PROXY_HEADLINE.index(key) if key in PROXY_HEADLINE else None
             else:
                 rank = headline_rank(key)
             if dev.get('kind') == 'Router' and key in ('state', 'led_state'):
@@ -41654,7 +41701,7 @@ class Daemon(object):
             if rank is not None and not key.endswith('.tF'):
                 ranked.append((rank, key, entry))
         ranked.sort()
-        keep = 8 if dev.get('source') in ('sms', 'weather') else 4
+        keep = 8 if dev.get('source') in ('sms', 'weather', 'proxy') else 4
         headline = [dict(entry, key=key) for _, key, entry in ranked[:keep]]
         if 'current_heating_setpoint' in values or 'occupied_heating_setpoint' in values:
             for entry in headline:      # on a radiator head "position" is how far it is open
@@ -50438,7 +50485,74 @@ def proxy_tile_read(d):
     except Exception:                                   # noqa: BLE001 - a number on a card
         got['weighed_hour'] = None
     now = int(time.time())
+    try:
+        proxy_device_record(d, got)
+    except Exception as e:                              # noqa: BLE001 - the card still shows
+        log('the server in front as a device: %s' % e, 'warn')
     return dict(got, ok=True, at=now, tried=now)
+
+
+def proxy_device_values(got):
+    """(5.46) One look as the readings of a device: what the graphs draw,
+    what the object view and the facts ({SSLProxy.px_requests_h}) read.
+    Numbers only where the look had them; the two services as their word."""
+    ngx, sur = got.get('nginx') or {}, got.get('suricata') or {}
+    vals = {}
+
+    def put(key, value, digits=None):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            vals[key] = round(value, digits) if digits is not None else value
+    if got.get('uptime_s') is not None:
+        put('px_uptime_h', got['uptime_s'] / 3600.0, 1)
+    load = got.get('load') or []
+    if len(load) == 3:
+        put('px_load_1', load[0], 2)
+        put('px_load_5', load[1], 2)
+        put('px_load_15', load[2], 2)
+    total, avail = got.get('mem_total_kb'), got.get('mem_avail_kb')
+    if total and avail is not None:
+        put('px_mem_used', 100.0 * (total - avail) / total, 1)
+        put('px_mem_free_mb', avail / 1024.0, 0)
+    dt, da = got.get('disk_total_kb'), got.get('disk_avail_kb')
+    if dt and da is not None:
+        put('px_disk_used', 100.0 * (dt - da) / dt, 1)
+        put('px_disk_free_gb', da / 1048576.0, 2)
+    for key, word in (('px_nginx', ngx.get('state')), ('px_suricata', sur.get('state'))):
+        if word and word != 'unknown':
+            vals[key] = str(word)
+    put('px_requests_h', ngx.get('hour'))
+    put('px_closed_h', ngx.get('closed'))
+    put('px_refused_h', ngx.get('refused'))
+    put('px_errors_h', ngx.get('server_errors'))
+    put('px_alerts_24h', sur.get('alerts'))
+    put('px_alert_prio', sur.get('worst'))
+    put('px_packets', sur.get('packets'))
+    put('px_drops', sur.get('drops'))
+    put('px_weighed_h', got.get('weighed_hour'))
+    return vals
+
+
+def proxy_device_name(d):
+    """The name the house gave it (Devices -> rename), else its own."""
+    try:
+        row = d.store.device(PROXY_TILE_ID) or {}
+    except Exception:                                    # noqa: BLE001
+        row = {}
+    return str(row.get('alias') or row.get('name') or 'SSLProxy')
+
+
+def proxy_device_record(d, got):
+    """The server in front is a device like the others: on Devices, renamed
+    there, its history drawn, its object and its facts - every look of the
+    card written as a reading."""
+    vals = proxy_device_values(got)
+    if not vals:
+        return
+    own = got.get('hostname') or 'SSLProxy'
+    d.store.upsert_device({'id': PROXY_TILE_ID, 'name': own, 'source': 'proxy', 'kind': 'SSL proxy',
+                           'vendor': 'nginx + Suricata', 'model': 'the server in front',
+                           'last_seen': int(time.time())})
+    d.record(PROXY_TILE_ID, proxy_device_name(d), vals)
 
 
 def proxy_tile_look(d):
@@ -50471,12 +50585,11 @@ def proxy_tile_look(d):
 
 
 def proxy_tile_wanted(d):
-    """The clock looks only while the card is on the Overview: nobody would
-    see a look made for no card."""
-    try:
-        return PROXY_TILE_ID in (d.overview_layout() or [])
-    except Exception:                                    # noqa: BLE001
-        return False
+    """(5.46) The clock looks whenever the server in front is set up and
+    read, card or no card: it is a device with a history now, and a graph
+    with a hole wherever nobody had the Overview open draws nothing. One SSH
+    command a minute, beside the half-minute reading of the logs."""
+    return proxy_tile_on(d)
 
 
 def proxy_tile_state(d, admin=False):
@@ -50501,7 +50614,8 @@ def proxy_tile_state(d, admin=False):
     sur = dict(look.get('suricata') or {})
     out = {'on': True, 'id': PROXY_TILE_ID, 'state': state, 'at': at, 'tried': tried,
            'looking': bool(look.get('looking')), 'every': PROXY_TILE_S,
-           'name': look.get('hostname') or 'SSLProxy',
+           'name': proxy_device_name(d) if look.get('at') else (look.get('hostname') or 'SSLProxy'),
+           'device': bool(d.store.device(PROXY_TILE_ID)),
            'uptime_s': look.get('uptime_s'), 'load': look.get('load'),
            'mem_total_kb': look.get('mem_total_kb'), 'mem_avail_kb': look.get('mem_avail_kb'),
            'disk_total_kb': look.get('disk_total_kb'), 'disk_avail_kb': look.get('disk_avail_kb'),
