@@ -365,20 +365,20 @@ try:
     d.notices_tick()
     check('upgrade-cli' not in {x['key'] for x in d.notices_view()}, 'the notice stayed after the package was forgotten')
     # -- found on the web: the notes beside it, signed
-    notes44 = json.dumps({'format': 1, 'version': '5.44.0', 'needs_cli': True, 'why': WHY}).encode()
+    notes44 = json.dumps({'format': 1, 'version': '9.1.0', 'needs_cli': True, 'why': WHY}).encode()
     nf = W / 'n44.json'
     nf.write_bytes(notes44)
     for k, out in ((key, W / 'n44.sig'), (stranger, W / 'n45.sig')):
         sh(['openssl', 'pkeyutl', '-sign', '-inkey', str(k), '-rawin', '-in', str(nf), '-out', str(out)])
     PAGES = {'https://example.test/rel/': (
-        '<a href="zigmon-5.45.0.tar.gz">x</a><a href="zigmon-5.45.0.release.json">x</a>'
-        '<a href="zigmon-5.45.0.release.json.sig">x</a><a href="zigmon-5.44.0.tar.gz">x</a>'
-        '<a href="zigmon-5.44.0.release.json">x</a><a href="zigmon-5.44.0.release.json.sig">x</a>'
-        '<a href="zigmon-5.43.9.tar.gz">x</a>').encode(),
-        'https://example.test/rel/zigmon-5.44.0.release.json': notes44,
-        'https://example.test/rel/zigmon-5.44.0.release.json.sig': (W / 'n44.sig').read_bytes(),
-        'https://example.test/rel/zigmon-5.45.0.release.json': notes44.replace(b'5.44.0', b'5.45.0'),
-        'https://example.test/rel/zigmon-5.45.0.release.json.sig': (W / 'n45.sig').read_bytes()}
+        '<a href="zigmon-9.2.0.tar.gz">x</a><a href="zigmon-9.2.0.release.json">x</a>'
+        '<a href="zigmon-9.2.0.release.json.sig">x</a><a href="zigmon-9.1.0.tar.gz">x</a>'
+        '<a href="zigmon-9.1.0.release.json">x</a><a href="zigmon-9.1.0.release.json.sig">x</a>'
+        '<a href="zigmon-9.0.9.tar.gz">x</a>').encode(),
+        'https://example.test/rel/zigmon-9.1.0.release.json': notes44,
+        'https://example.test/rel/zigmon-9.1.0.release.json.sig': (W / 'n44.sig').read_bytes(),
+        'https://example.test/rel/zigmon-9.2.0.release.json': notes44.replace(b"9.1.0", b"9.2.0"),
+        'https://example.test/rel/zigmon-9.2.0.release.json.sig': (W / 'n45.sig').read_bytes()}
 
     def fake_get(url, limit=0, accept='', timeout=0, into=None):
         if url not in PAGES:
@@ -387,14 +387,14 @@ try:
     zigmon._online_get = fake_get
     row = d.online_look('admin')
     nl = {x['version']: x for x in d.online_view()['online'].get('newer_list') or []}
-    check(set(nl) == {'5.45.0', '5.44.0', '5.43.9'}, 'the versions found are %r (%s)' % (sorted(nl), row.get('error')))
-    check((nl.get('5.44.0') or {}).get('cli') and WHY in nl['5.44.0']['cli']['why']
-          and 'curl -fLO' in nl['5.44.0']['cli']['command'],
-          'a version with signed notes needing the command line is not marked: %r' % nl.get('5.44.0'))
-    check(not (nl.get('5.45.0') or {}).get('cli') and not (nl.get('5.43.9') or {}).get('cli'),
+    check(set(nl) == {'9.2.0', '9.1.0', '9.0.9'}, 'the versions found are %r (%s)' % (sorted(nl), row.get('error')))
+    check((nl.get('9.1.0') or {}).get('cli') and WHY in nl['9.1.0']['cli']['why']
+          and 'curl -fLO' in nl['9.1.0']['cli']['command'],
+          'a version with signed notes needing the command line is not marked: %r' % nl.get('9.1.0'))
+    check(not (nl.get('9.2.0') or {}).get('cli') and not (nl.get('9.0.9') or {}).get('cli'),
           'notes signed by a stranger, or none, were believed: %r' % nl)
     n = {x['key']: x for x in d.notices_view()}
-    check('upgrade-cli' in n and '5.44.0' in n['upgrade-cli']['why'], 'the look raised no notice: %r' % n.get('upgrade-cli'))
+    check('upgrade-cli' in n and '9.1.0' in n['upgrade-cli']['why'], 'the look raised no notice: %r' % n.get('upgrade-cli'))
     # -- the parts root installs
     os.environ['ZIGMON_ROOT_PARTS_CHECK'] = '1'
     part = UNITS / 'zigmon-upgrade.path'
@@ -460,9 +460,9 @@ NOTICES = [
      'command': './install.sh --upgrade', 'link': '#control/sys-upgrade',
      'foot': 'This band goes by itself within ten minutes once it is right.', 'at': int(time.time()) - 60},
     {'key': 'upgrade-cli', 'level': 'warn', 'title': 'Update needs the command line',
-     'why': 'zigmon 5.45.0 must be put in from the command line - %s (fetched and waiting).' % WHY,
+     'why': 'zigmon 9.2.0 must be put in from the command line - %s (fetched and waiting).' % WHY,
      'action': 'Put it in on the machine, as root, in the unpacked folder of the package',
-     'command': 'cd /root && tar xzf /var/lib/zigmon/upgrade/zigmon-5.45.0.tar.gz && cd zigmon-5.45.0 && sudo ./install.sh --upgrade',
+     'command': 'cd /root && tar xzf /var/lib/zigmon/upgrade/zigmon-9.2.0.tar.gz && cd zigmon-9.2.0 && sudo ./install.sh --upgrade',
      'link': '#control/sys-upgrade', 'at': int(time.time()) - 30},
     {'key': 'db-integrity', 'level': 'crit', 'title': 'The database fails its integrity check',
      'why': 'SQLite says: row 12 missing from index.', 'link': '#control/sys-data', 'at': int(time.time())}]
@@ -502,11 +502,11 @@ out = said(zigmon.cmd_notices, B(), pal) if hasattr(zigmon, 'cmd_notices') else 
 check(('/api/notices', 'POST', {'action': 'done', 'key': 'root-parts'}) in posted and 'marked done' in out,
       'zigmon --notice-done did not mark it done: %r %r' % (posted, out))
 check('--notice-done' in (HERE / 'zigmon.py').read_text(), 'there is no --notice-done')
-cli45 = {'needed': True, 'version': '5.45.0', 'why': WHY, 'command': 'cd /root && curl -fLO https://x/zigmon-5.45.0.tar.gz && sudo ./install.sh --upgrade',
-         'words': 'zigmon 5.45.0 must be put in from the command line - %s' % WHY}
-web_row = {'url': 'https://x/', 'at': 1, 'newer': True, 'newest': {'version': '5.45.0', 'url': 'https://x/zigmon-5.45.0.tar.gz'},
-           'packages': [{'name': 'zigmon-5.45.0.tar.gz', 'version': '5.45.0', 'url': 'https://x/zigmon-5.45.0.tar.gz'}],
-           'newer_list': [{'version': '5.45.0', 'url': 'https://x/zigmon-5.45.0.tar.gz', 'cli': cli45}]}
+cli45 = {'needed': True, 'version': '9.2.0', 'why': WHY, 'command': 'cd /root && curl -fLO https://x/zigmon-9.2.0.tar.gz && sudo ./install.sh --upgrade',
+         'words': 'zigmon 9.2.0 must be put in from the command line - %s' % WHY}
+web_row = {'url': 'https://x/', 'at': 1, 'newer': True, 'newest': {'version': '9.2.0', 'url': 'https://x/zigmon-9.2.0.tar.gz'},
+           'packages': [{'name': 'zigmon-9.2.0.tar.gz', 'version': '9.2.0', 'url': 'https://x/zigmon-9.2.0.tar.gz'}],
+           'newer_list': [{'version': '9.2.0', 'url': 'https://x/zigmon-9.2.0.tar.gz', 'cli': cli45}]}
 asked = []
 zigmon._upgrade_ask = lambda pal, body=None, timeout=0: (asked.append(body), {'web': {'online': web_row}})[1]
 out = said(zigmon.cmd_upgrade_check, A(), pal)
@@ -576,13 +576,13 @@ const up = {ok: true, version: '5.43.4', node: 'zigmon', helper: true, path_unit
   status: {}, running: false, asked: false, maintenance: m, log: ['done'], cli: CLI45,
   nodes: [{name: 'zigmon', me: true, alive: true, version: '5.43.4', at: now - 4, since: now - 3600, maintenance: m}],
   web: {check: true, url: url, online: {at: now - 360, here: '5.43.4', url: url, newer: true,
-    newest: {version: '5.45.0', url: url + '/zigmon-5.45.0.tar.gz'}, newest_cli: CLI45,
-    newer_list: [{version: '5.45.0', url: url + '/zigmon-5.45.0.tar.gz', cli: CLI45},
-                 {version: '5.44.0', url: url + '/zigmon-5.44.0.tar.gz', cli: null}],
+    newest: {version: '9.2.0', url: url + '/zigmon-9.2.0.tar.gz'}, newest_cli: CLI45,
+    newer_list: [{version: '9.2.0', url: url + '/zigmon-9.2.0.tar.gz', cli: CLI45},
+                 {version: '9.1.0', url: url + '/zigmon-9.1.0.tar.gz', cli: null}],
     older_list: [{version: '5.41.0', url: url + '/zigmon-5.41.0.tar.gz', ok: true, why: '', cli: Object.assign({}, CLI40, {version: '5.41.0'})},
                  {version: '5.42.0', url: url + '/zigmon-5.42.0.tar.gz', ok: true, why: '', cli: null}]}},
-  package: {file: 'zigmon-5.45.0.tar.gz', version: '5.45.0', signed_by: 'zigmon-release-test', bytes: 1843200, by: 'admin',
-            at: now - 300, newer: true, older: false, cli: CLI45, changelog: '5.45.0 - a test'},
+  package: {file: 'zigmon-9.2.0.tar.gz', version: '9.2.0', signed_by: 'zigmon-release-test', bytes: 1843200, by: 'admin',
+            at: now - 300, newer: true, older: false, cli: CLI45, changelog: '9.2.0 - a test'},
   back: {on: true, high: '5.43.4', floor: '5.19.1', busy: '', epochs: [], ready: false,
          package: {file: 'zigmon-5.40.0.tar.gz', version: '5.40.0', signed_by: 'zigmon-release-test', older: true,
                    back: {ok: true}, cli: CLI40, by: 'admin', at: now - 100}}};
@@ -790,10 +790,10 @@ else:
           'the Needs attention list does not say it')
     check((r.get('after') or {}) == {'sec': 'sys-upgrade', 'closed': True}, 'its item does not lead to the pane: %r' % r.get('after'))
     w = a.get('web') or {}
-    check('zigmon 5.45.0 must be put in from the command line' in w.get('band', '') and 'install.sh --upgrade' in w.get('cmd', '')
+    check('zigmon 9.2.0 must be put in from the command line' in w.get('band', '') and 'install.sh --upgrade' in w.get('cmd', '')
           and w.get('upDisabled') is True and 'command line' in w.get('upTitle', '') and w.get('fetch'),
           'From the web does not draw the band and disable Upgrade: %r' % w)
-    check('zigmon 5.45.0 (the newest) (command line)' in (w.get('opts') or []) and 'zigmon 5.44.0' in (w.get('opts') or []),
+    check('zigmon 9.2.0 (the newest) (command line)' in (w.get('opts') or []) and 'zigmon 9.1.0' in (w.get('opts') or []),
           'the versions in the list are not marked: %r' % w.get('opts'))
     pk = a.get('pkg') or {}
     check('must be put in from the command line' in pk.get('band', '') and pk.get('start') is False,

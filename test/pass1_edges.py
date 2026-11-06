@@ -222,10 +222,12 @@ p = plug(mqtt=True, mqtt_name='light-edge')
 p.output = None                                   # not heard from yet
 t0 = time.time()
 ok, msg = d.toggle_plug(p)
-check(ok, 'a toggle over the broker of a socket not heard from yet failed: %s' % msg)
+# not heard from yet: said, not guessed - no HTTP, and no Switch.Toggle over the
+# broker either (test/review528.py: one carried twice undoes itself)
+check(not ok and 'not said yet' in msg, 'a toggle of a socket not heard from yet was not said: %r %s' % (ok, msg))
 check(not http_calls(t0), 'a toggle with MQTT only went over HTTP (state not known): %r'
       % [c[1] for c in http_calls(t0)])
-check([m['method'] for m in rpc_published(t0)] == ['Switch.Toggle'],
+check([m['method'] for m in rpc_published(t0)] == [],
       'the toggle over the broker was %r' % [m['method'] for m in rpc_published(t0)])
 settle()
 d.connected = False

@@ -22142,17 +22142,16 @@ class Daemon(object):
             return self.set_plug_output(p, not bool(base), origin)
         if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
             # (5.44) "MQTT only" is MQTT only: the HTTP toggle below went out
-            # whenever the broker was down or the socket's state not known yet
-            p.cmd_seq = getattr(p, 'cmd_seq', 0) + 1
-            if not self.connected or not self.mqtt_command(
-                    p, 'Switch.Toggle', {'id': int(p.cfg.get('switch_id') or 0)}):
-                message = '%s is set to MQTT only, and the broker is not carrying its commands' % p.name
-                self.store.add_event('plug', message, 'warn', p.device_id)
-                return False, message
-            # which way it went is the box's to say: its own report over the
-            # broker, or the read that follows
-            threading.Thread(target=self._confirm_poll, args=(p,), name='confirm', daemon=True).start()
-            return True, '%s toggled' % p.name
+            # whenever the broker was down or the socket's state not known yet.
+            # Nor a Switch.Toggle over the broker (5.28: one carried twice
+            # undoes itself) - with no state known yet there is nothing to set
+            # it against, so it is said, until the box's first report
+            message = ('%s is set to MQTT only, and the broker is not carrying its commands' % p.name
+                       if not self.connected else
+                       '%s has not said yet whether it is on - switch it on or off, or wait for its '
+                       'first report over the broker' % p.name)
+            self.store.add_event('plug', message, 'warn', p.device_id)
+            return False, message
         try:
             reply = p.rpc().toggle_output() or {}
         except PlugError as e:

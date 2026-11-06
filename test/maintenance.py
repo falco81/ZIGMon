@@ -397,6 +397,9 @@ else:
     check(r.get('title') == 'Upgrades and maintenance' and r.get('menu') == 'Upgrades',
           'the pane is called %r, its entry in the menu %r' % (r.get('title'), r.get('menu')))
     cards = r.get('cards') or []
+    # (5.44) To be done by hand comes first, before the nodes
+    if cards[:1] == ['To be done by hand']:
+        cards = cards[1:]
     check(cards[:3] == ['The nodes', 'From the web', 'A new version'], 'the cards are %r' % cards)
     check(r.get('heads') == ['NODE', 'VERSION', 'HEARD FROM', 'STATE'], 'the nodes table says %r' % r.get('heads'))
     check(r.get('tags') == ['THIS PAGE', 'IN SERVICE'], 'the row\'s tags are %r' % r.get('tags'))
