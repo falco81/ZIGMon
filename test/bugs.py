@@ -112,15 +112,15 @@ finally:
 print('a presence trigger that marks somebody home is done after the Wi-Fi lock is let go')
 
 # -- a list switched off keeps nobody out ------------------------------------------
-(_lo, _fam), (_hi, _f) = zigmon.pack_address('198.51.100.0'), zigmon.pack_address('198.51.100.255')
+(_lo, _fam), (_hi, _f) = zigmon.pack_address('89.24.100.0'), zigmon.pack_address('89.24.100.255')
 d.store.put_feed('firehol3', [(_lo, _hi, _fam)])
-check(d.store.feeds_with('198.51.100.7') == ['firehol3'], 'the test list was not written: %r'
-      % d.store.feeds_with('198.51.100.7'))
+check(d.store.feeds_with('89.24.100.7') == ['firehol3'], 'the test list was not written: %r'
+      % d.store.feeds_with('89.24.100.7'))
 zigmon.CONFIG['feeds'] = 'firehol3'
-check(d.feed_says('198.51.100.7') == 'firehol3', 'a list switched on does not answer')
+check(d.feed_says('89.24.100.7') == 'firehol3', 'a list switched on does not answer')
 zigmon.CONFIG['feeds'] = 'firehol1'
-check(d.feed_says('198.51.100.7') is None, 'a list switched off still decided about an address')
-check(d.feeds_for('198.51.100.7') == [], 'a list switched off is still named for an address')
+check(d.feed_says('89.24.100.7') is None, 'a list switched off still decided about an address')
+check(d.feeds_for('89.24.100.7') == [], 'a list switched off is still named for an address')
 zigmon.CONFIG['feeds'] = ''
 print('a block list switched off keeps nobody out and is named for nobody')
 
