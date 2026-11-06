@@ -1888,7 +1888,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .stripgroup-body .card.socket.compact:hover{background:rgba(88,166,255,.07);box-shadow:inset 3px 0 0 var(--info)}
   .dev.crit{border-color:rgba(248,81,73,.45)} .dev.warn{border-color:rgba(210,153,34,.4)}
   .dev .head{display:flex;align-items:flex-start;gap:10px}
-  .dev .name{font-weight:650;font-size:16px;line-height:1.25}
+  /* (5.43.3) a name with no space in it - Living_room_sensor_by_the_window -
+     is broken where it must be: whole, it made the card, and the phone's page, wider than the screen */
+  .dev .name{font-weight:650;font-size:16px;line-height:1.25;overflow-wrap:anywhere}
   .dev .model{color:var(--tx-dim);font-size:12.5px}
   .dev .readings{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
   .dev .reading .v{font-size:28px;font-weight:680;letter-spacing:-.5px;line-height:1.05}
@@ -2359,7 +2361,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .creset:hover{color:var(--info);border-color:var(--info);opacity:1}
   .creset svg{width:10px;height:10px}
   .creset[hidden]{display:none}
-  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--tx-dim);margin-top:6px}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--tx-dim);margin-top:6px;
+    overflow-wrap:anywhere}  /* (5.43.3) and so is a long name under a graph */
   .legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
 
   /* the socket panel: state on the left, live figures on the right */
@@ -3531,6 +3534,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .sms-road{color:var(--tx-mut);font-size:10.5px;margin-left:5px;opacity:.65;cursor:help}
   .sms-road:hover{opacity:1}
   .sms-tail{display:flex;align-items:center;gap:6px;white-space:nowrap}
+  /* (5.43.3) a phone: who, the text and what became of it one under another - side
+     by side, "sent · no answer from the gateway" and its two buttons ran off the screen */
+  @media (max-width:640px){.sms-line{grid-template-columns:minmax(0,1fr);gap:6px}
+    .sms-tail{white-space:normal;flex-wrap:wrap}}
   .findbox{width:min(560px,94vw);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;
     box-shadow:0 24px 60px rgba(0,0,0,.6);margin-top:8vh;align-self:flex-start}
   #findinput{width:100%;box-sizing:border-box;font:inherit;font-size:16px;background:var(--panel2);color:var(--tx);
@@ -7527,6 +7534,9 @@ function renderApprovals() {
   // somebody else while this is open
   APPROVALS.timer = setInterval(function () {
     if (STATE.tab !== 'approvals') { clearInterval(APPROVALS.timer); return; }
+    // (5.43.3) not while the page is out of sight: it went on asking every five
+    // seconds behind another tab or a locked phone; showing it again draws it at once
+    if (document.hidden) return;
     if (userHolding()) return;          // a list is open, or text is being copied
     paintApprovals();
     if (APPROVALS.waiting.length || Date.now() - APPROVALS.at > 5000) loadApprovals(true, true);
@@ -8942,7 +8952,9 @@ function thermostatControls(d, st) {
   hint.style.flexBasis = '100%';
   wrap.appendChild(hint);
   function send(target, value) {
-    withPin('Set ' + target.name, 'Sets it to ' + value + '. It takes effect when the valve next talks to the mesh.', function (pin) {
+    // (5.43.3) the words of the PIN box are HTML: a preset is the device's own
+    // word, from the list its converter sends, and is escaped like any other
+    withPin('Set ' + target.name, 'Sets it to ' + esc(value) + '. It takes effect when the valve next talks to the mesh.', function (pin) {
       return post('target-set', {target: target.value, do: 'set:' + value, pin: pin}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'the valve did not take it');
         return r.message || 'Set';
@@ -9599,6 +9611,21 @@ function makeOverviewReorderable(node, host, id) {
     saveOverviewLayout(keys);
   });
 }
+// (5.43.3) Made out here, not inside renderOverviewCustom: a function made in
+// there holds the whole of that drawing's scope - the cards kept from the one
+// before it among them - and a card that outlives a drawing kept that alive,
+// which kept the one before... An administrator's Overview held every card it
+// had ever drawn: two thousand elements more a minute in a house that reports.
+function overviewRemover(id) {
+  return function (e) {
+    e.stopPropagation();
+    // the list as it is now, not as it was when this card was drawn: a
+    // card kept from an earlier drawing held the old list, and taking a
+    // second card off put the first one back
+    saveOverviewLayout(overviewLayoutIds(STATE.status).filter(function (x) { return x !== id; }));
+    renderOverviewCustom(STATE.status);
+  };
+}
 function renderOverviewCustom(st) {
   var host = $('overview-custom');
   if (ORDER.drag || Date.now() - ORDER.justDropped < 800) return;   // never redraw under a drag
@@ -9633,14 +9660,7 @@ function renderOverviewCustom(st) {
     if (isUnlocked()) {
       var rm = el('button', 'ov-remove'); rm.type = 'button'; rm.title = 'Remove from Overview';
       rm.innerHTML = iconMarkup('close', 13);
-      rm.onclick = function (e) {
-        e.stopPropagation();
-        // the list as it is now, not as it was when this card was drawn: a
-        // card kept from an earlier drawing held the old list, and taking a
-        // second card off put the first one back
-        saveOverviewLayout(overviewLayoutIds(STATE.status).filter(function (x) { return x !== id; }));
-        renderOverviewCustom(STATE.status);
-      };
+      rm.onclick = overviewRemover(id);
       card.style.position = 'relative';
       card.appendChild(rm);
     }
@@ -23939,7 +23959,14 @@ function renderSmsLog(st, force) {
     // The mark is only written when an answer comes, so the next tick asks
     // again; and an unhandled refusal is caught here rather than thrown into
     // the console.
-  }, function () { SMSLOG.asking = null; SMSLOG.mark = null; });
+  }, function (e) {
+    SMSLOG.asking = null;
+    // (5.43.3) refused (403: the log is an administrator's): asked again only
+    // when the log or the sign-in moves, both in the mark. Forgetting the mark
+    // asked again - and was refused again - with every tick, a viewer's or an
+    // operator's page once a second in a busy house.
+    SMSLOG.mark = e && e.status === 403 ? mark : null;
+  });
   var tools = $('sms-log-tools');
   if (tools && !tools.children.length) {
     var wipe = cmdButton('Forget them all', 'trash', 'small danger');
@@ -28168,8 +28195,16 @@ function zmodalEl() {
     + '<div class="body" id="zmodal-body"></div><div class="foot" id="zmodal-foot"></div></div></div>';
   document.body.appendChild(w.firstChild);
   $('zmodal-x').onclick = closeZModal;
+  // (5.43.3) Escape closes the box on top only. A box asked for over the popup -
+  // the PIN, a name to type (renaming a passkey), a longer explanation - is
+  // closed by its own Escape before this one hears it, so whether one was open
+  // is looked at as the key goes down (the capture), and the popup under it,
+  // and all that was typed into it, stays.
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && $('zmodal') && !$('zmodal').hidden) closeZModal();
+    if (e.key === 'Escape') ZM.over = Array.prototype.some.call(document.querySelectorAll('.backdrop'), function (b) { return !b.hidden; });
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !ZM.over && $('zmodal') && !$('zmodal').hidden) closeZModal();
   });
   return $('zmodal');
 }
@@ -33560,7 +33595,8 @@ var wantedSec = wanted.split('/')[1] || '';
 wanted = wanted.split('/')[0];
 if (wantedSec && (CONTROL_SECTIONS[wantedSec] || CONTROL_ALIAS[wantedSec])) CONTROL_SEC = controlSecOf(wantedSec);
 showControlSection(CONTROL_SEC);
-showTab(['overview', 'plugs', 'sensors', 'buttons', 'heating', 'history', 'devices', 'wifi', 'events', 'approvals', 'control', 'all'].indexOf(wanted) >= 0 ? wanted : 'overview');
+// (5.43.3) the SMS tab too: #sms came back as the Overview after a reload
+showTab(['overview', 'plugs', 'sensors', 'buttons', 'heating', 'history', 'devices', 'sms', 'wifi', 'events', 'approvals', 'control', 'all'].indexOf(wanted) >= 0 ? wanted : 'overview');
 // Asked for once at the start: what it brings - the verbs the script box
 // offers, and the names a command or a link may point at - is wanted by
 // editors drawn before anything else would think to ask.
