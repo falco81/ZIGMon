@@ -1417,14 +1417,32 @@ def sun_minutes(lat, lon, when=None, sunset=False):
     return int(local * 60)
 
 
+def fault_where(e):
+    """(5.44.1) Where an exception was raised, as the log says it: the
+    innermost line of this file and the line that called it. A status that
+    answered 500 "dictionary changed size during iteration" said only that,
+    and with no line nobody could tell which of a hundred walks it was."""
+    import traceback
+    try:
+        frames = [f for f in traceback.extract_tb(e.__traceback__)
+                  if os.path.basename(f.filename) == os.path.basename(__file__)]
+    except Exception:                                   # noqa: BLE001 - only ever words for the log
+        return ''
+    if not frames:
+        return ''
+    return ' (at %s)' % ' < '.join('%s:%d' % (f.name, f.lineno) for f in reversed(frames[-2:]))
+
+
 def scrub_nan(obj):
     """The same answer with every infinity and NaN taken out of it."""
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
+    # (5.44.1) over a copy of each (one step each, C-level): what is scrubbed
+    # is the status, whose parts other threads go on writing meanwhile
     if isinstance(obj, dict):
-        return {k: scrub_nan(v) for k, v in obj.items()}
+        return {k: scrub_nan(v) for k, v in dict(obj).items()}
     if isinstance(obj, (list, tuple)):
-        return [scrub_nan(v) for v in obj]
+        return [scrub_nan(v) for v in list(obj)]
     return obj
 
 
@@ -5550,7 +5568,16 @@ class Storage(object):
     def devices(self, include_removed=False):
         """The whole list, in memory. The dashboard rebuilds its status from
         this on every refresh, so it must not queue behind a long write."""
-        if self._dev_list is None:
+        # (5.44.1) the list in hand, read once: a rename or a device leaving
+        # on another thread sets self._dev_list to None, and read a second
+        # time it was None between the two - "'NoneType' object is not
+        # iterable" and a status that answered 500
+        listed = self._dev_list
+        if listed is None:
+            # ...and what was read is kept only if nothing was forgotten
+            # meanwhile (as _warm_devices): kept after a forget, it put the
+            # row from before the change back until the next one
+            before = self.__dict__.get('_dev_forgets', 0)
             with self.lock:
                 rows = self.db.execute(
                     'SELECT * FROM devices ORDER BY name COLLATE NOCASE').fetchall()
@@ -5562,9 +5589,11 @@ class Storage(object):
                 except ValueError:
                     d['exposes'] = {}
                 listed.append(d)
-                self._dev_cache[d['id']] = d
-            self._dev_list = listed
-        return [dict(d) for d in self._dev_list
+            if self.__dict__.get('_dev_forgets', 0) == before:
+                for d in listed:
+                    self._dev_cache[d['id']] = d
+                self._dev_list = listed
+        return [dict(d) for d in listed
                 if include_removed or not d.get('removed')]
 
     def device(self, device_id):
@@ -9409,7 +9438,13 @@ class Daemon(object):
                 sent[mid] = time.monotonic()
                 if len(sent) > 2000:
                     cut = time.monotonic() - 60
-                    for k in [k for k, v in sent.items() if v < cut]:
+                    # (5.44.1) a copy walked: every thread that switches
+                    # something says it through here, and one adding its
+                    # command while this one tidied raised "dictionary
+                    # changed size during iteration" out of say() - for a
+                    # command already on its way, which its caller then took
+                    # as not sent
+                    for k in [k for k, v in dict(sent).items() if v < cut]:
                         sent.pop(k, None)
         elif qos and '_cmd_mids' in self.__dict__:
             # (5.44.1) paho counts its message ids round from 1 to 65535: an
@@ -10749,11 +10784,17 @@ class Daemon(object):
                 # ...and a box that pushes is a box that is there: a command
                 # no longer waits it out as "known to be down"
                 p.failures = 0
+            # (5.44.1) written beside the old one and put in its place, never
+            # into it: p.flat is the socket's payload in the house's memory
+            # too (_record_plug puts the one dict in both), and the status
+            # walks it - describe() over its items, the poll over its keys -
+            # on other threads. A push with a key the poll leaves out (the
+            # minute's figures, after every poll) changed its size under
+            # them: /api/status answered 500 "dictionary changed size during
+            # iteration", and the socket's poll failed the same way.
             if p.flat:
-                for k, v in flatten(value).items():
-                    if k in ('id', 'source'):
-                        continue
-                    p.flat['switch.' + k] = v
+                self._plug_flat_put(p, {'switch.' + k: v for k, v in flatten(value).items()
+                                        if k not in ('id', 'source')})
                 p.generated = now
             entry = self.live.get(p.device_id)
             if entry:
@@ -21003,8 +21044,12 @@ class Daemon(object):
             'plug_waits': waits,
             'switches': [{'name': n, 'ms': ms, 'at': int(when)}
                          for when, n, ms in self._switch_times[-8:]],
+            # (5.44.1) a copy walked: a box's first "too many requests" adds
+            # its host on that box's own thread, and the walk of the table
+            # itself raised "dictionary changed size during iteration" - the
+            # whole of /api/status answered 500
             'rate_limited': {host: {'at': int(when), 'times': times}
-                             for host, (when, times) in ShellyRPC._rate_limited.items()
+                             for host, (when, times) in dict(ShellyRPC._rate_limited).items()
                              if time.time() - when < 3600},
             'threads': threading.active_count(),
         }
@@ -21173,7 +21218,10 @@ class Daemon(object):
             self.watch_plug_errors(p, (self.live.get(p.device_id) or {}).get('payload') or {}, flat)
         except Exception as e:
             log('%s: watching its errors: %s' % (p.name, e), 'warn')
-        self.live[p.device_id] = {'payload': flat, 'ts': int(now), 'availability': 'online',
+        # (5.44.1) p.flat, not flat: a push from the box since p.flat was set
+        # above has put a newer one in its place (handle_plug_push), and the
+        # house's memory takes that - one dict in both, as before
+        self.live[p.device_id] = {'payload': p.flat, 'ts': int(now), 'availability': 'online',
                                   'rev': ((self.live.get(p.device_id) or {}).get('rev') or 0) + 1}
         if changed:
             self.bump()                       # the relay's state is news
@@ -21370,14 +21418,27 @@ class Daemon(object):
             return False, '%s is monitor-only: watched, recorded, never switched from here' % p.name
         return True, ''
 
+    def _plug_flat_put(self, p, changes):
+        """(5.44.1) Fields of a socket's reading changed the only way that is
+        safe while the status walks it on another thread: a new dict put in
+        place of the old one - in the house's memory as well, when that is the
+        same dict (see handle_plug_push). No lock: one copy of a few dozen
+        keys, on the road a switching takes."""
+        old = p.flat
+        if old is None:
+            return
+        p.flat = dict(old, **changes)
+        entry = self.live.get(p.device_id)
+        if entry and entry.get('payload') is old:
+            entry['payload'] = p.flat
+
     def _plug_switched(self, p, on, origin):
         """The relay just obeyed: show it at once, confirm the numbers later.
         The dashboard repaints on this bump; the power/energy figures follow
         from a background poll a moment later, without anyone waiting for it."""
         p.output = 1 if on else 0           # so the confirming poll does not log it again
         p.output_at = time.time()
-        if p.flat is not None:
-            p.flat['switch.output'] = bool(on)
+        self._plug_flat_put(p, {'switch.output': bool(on)})
         entry = self.live.get(p.device_id)
         if entry:
             entry['ts'] = int(time.time())
@@ -22102,8 +22163,7 @@ class Daemon(object):
                         on = bool((params or {}).get('on'))
                         p.output = 1 if on else 0
                         p.output_at = time.time()
-                        if p.flat is not None:
-                            p.flat['switch.output'] = on
+                        self._plug_flat_put(p, {'switch.output': on})
                         p.generated = int(time.time())
                         self.bump()
                     else:
@@ -36549,7 +36609,10 @@ class Daemon(object):
                 return text
             self._msg_last[key] = time.time()
             if len(self._msg_last) > 500:
-                self._msg_last = {k: v for k, v in self._msg_last.items() if time.time() - v < 86400}
+                # (5.44.1) a copy walked: another rule's message written down
+                # meanwhile raised "dictionary changed size during iteration",
+                # and the message being sent was not
+                self._msg_last = {k: v for k, v in dict(self._msg_last).items() if time.time() - v < 86400}
         self.notify(text, message['level'],
                     sms=(message.get('sms', True) is not False) and only in ('', 'sms'),
                     ntfy=(message.get('ntfy', True) is not False) and only in ('', 'ntfy'),
@@ -40722,15 +40785,19 @@ class Daemon(object):
         now = time.time()
         # what Detect learned about each gateway, so a device it extends can
         # show its firmware the way the coordinator does
-        self._gw_info = {}
+        # (5.44.1) made beside the one in use and put in its place: emptied in
+        # place, a status built on another thread meanwhile (two pages, the
+        # watch) found no gateway at all for that moment
+        gw_info = {}
         for g in self.gateway_configs():
             described = ' \u00b7 '.join(x for x in (g.get('model'), g.get('fw')) if x)
             if not described:
                 continue
             target = self.gateway_device_id(g)
             if target:
-                self._gw_info[target] = {'model': g.get('model') or '', 'fw': g.get('fw') or '',
-                                         'text': described}
+                gw_info[target] = {'model': g.get('model') or '', 'fw': g.get('fw') or '',
+                                   'text': described}
+        self._gw_info = gw_info
         devices = [self.describe(d, self.live.get(d['id'])) for d in self.store.devices()]
         order = {'ok': 0, 'warn': 1, 'crit': 2}
         level = 'ok'
@@ -44263,7 +44330,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # what went wrong is for the log, not for whoever asked: SQLite's
             # words and file paths went out to any client
             ref = secrets.token_hex(3)
-            log('api %s [%s]: %s: %s' % (path, ref, type(e).__name__, e), 'error')
+            log('api %s [%s]: %s: %s%s' % (path, ref, type(e).__name__, e, fault_where(e)), 'error')
             return self._error(500, 'internal error (%s in the daemon log)' % ref)
 
     def _sms_incoming(self, d, body, q):
@@ -46248,7 +46315,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             # what went wrong is for the log, not for whoever asked: SQLite's
             # words and file paths went out to any client
             ref = secrets.token_hex(3)
-            log('api %s [%s]: %s: %s' % (path, ref, type(e).__name__, e), 'error')
+            log('api %s [%s]: %s: %s%s' % (path, ref, type(e).__name__, e, fault_where(e)), 'error')
             return self._error(500, 'internal error (%s in the daemon log)' % ref)
 
 
