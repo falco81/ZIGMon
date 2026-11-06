@@ -21017,7 +21017,9 @@ class Daemon(object):
         box here and separate boxes to the round - so each read "its part of
         the whole box" from the other's answer, and one of them unplugged went
         on showing the other's reading, online, with no "lost contact" ever."""
-        return str(p.cfg.get('host') or '').strip().lower()
+        host = str(p.cfg.get('host') or '').strip().lower()
+        # ...but `ip` and `ip:80` are the one box: HTTP's own port says nothing
+        return host[:-3] if host.endswith(':80') else host
 
     def _box_mates(self, p):
         """Every socket that lives on the same box as this one."""

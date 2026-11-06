@@ -337,6 +337,15 @@ try:
     d.upgrade_forget()
     check(not (up / 'zigmon-9.9.9.tar.gz').exists(), 'the package was not forgotten once nothing waited for it')
     print('6. a package waiting for root is not forgotten from under it')
+
+    # 7. (5.44.1) one box written as `ip` on one socket and `ip:80` on another
+    class _P:
+        def __init__(self, h):
+            self.cfg = {'host': h}
+    check(zigmon.Daemon._box_of(_P('10.0.0.5')) == zigmon.Daemon._box_of(_P('10.0.0.5:80'))
+          and zigmon.Daemon._box_of(_P('10.0.0.5')) != zigmon.Daemon._box_of(_P('10.0.0.5:8080')),
+          'a box written with and without its HTTP port was two boxes, or two ports one')
+    print('7. a box is its address and port, the HTTP port said or not')
 finally:
     server.shutdown()
     server.server_close()
