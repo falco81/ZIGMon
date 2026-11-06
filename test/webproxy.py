@@ -497,7 +497,13 @@ print('Complete!')
     d.root_call = spy
     zigmon.osup_check_ask(d, 'owner')
     end = time.time() + 30
-    while time.time() < end and not (DNF_SAW.exists() and json.loads(DNF_SAW.read_text())):
+    def _saw_now():
+        # read while the fake dnf may be writing it: half a file is not yet (5.43.4)
+        try:
+            return json.loads(DNF_SAW.read_text()) if DNF_SAW.exists() else None
+        except ValueError:
+            return None
+    while time.time() < end and not _saw_now():
         time.sleep(0.1)
     time.sleep(1.0)
     full = zigmon.webproxy_full('os')
