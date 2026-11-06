@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.44.1"
+VERSION="5.44.2"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -241,10 +241,16 @@ preflight() {
     step "Checking the machine"
     [[ $EUID -eq 0 ]] || fail "run this as root (sudo ./install.sh)"
     if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        case "${ID:-}" in
-            almalinux|rocky|rhel|centos) good "$PRETTY_NAME" ;;
-            *) warn "written for AlmaLinux 9; this is ${PRETTY_NAME:-unknown}. Continuing anyway." ;;
+        # Read in a subshell (5.44.2): /etc/os-release has a VERSION of its own
+        # ("9.8 (Olive Jaguar)"), and sourced here it took the place of this
+        # installer's - /etc/zigmon-system.json then said the root parts were
+        # zigmon 9.8's, and the dashboard that they were from before it
+        local os_id os_pretty
+        os_id="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")"
+        os_pretty="$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")"
+        case "$os_id" in
+            almalinux|rocky|rhel|centos) good "$os_pretty" ;;
+            *) warn "written for AlmaLinux 9; this is ${os_pretty:-unknown}. Continuing anyway." ;;
         esac
     fi
     local f

@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.44.1**
+Current version: **5.44.2**
+
+5.44.2 — install.sh kept its own version.
+
+* `install.sh` read `/etc/os-release` into its own variables, and that file
+  has a `VERSION` of its own (`9.8 (Olive Jaguar)` on AlmaLinux 9.8): it took
+  the place of the installer's, so `/etc/zigmon-system.json` said the root
+  parts were "zigmon 9.8 (Olive Jaguar)"'s - and *To be done by hand* said,
+  after every `install.sh --upgrade`, that they were from before the version
+  running. It is read in a subshell now. The next upgrade - from the web or
+  the command line - writes the stamp right, and the item goes by itself.
+
+`test/review5442.py` (the installer's machine check run against this machine's
+own /etc/os-release); it fails on 5.44.1.
 
 5.44.1 — the second pass: the first press after a quiet spell, what the first pass broke, a whole house lived for five days, the panes root works behind, staying up.
 
