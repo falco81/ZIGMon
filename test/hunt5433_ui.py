@@ -28,7 +28,11 @@
     nothing left to save while a change made on another settings card was
     still on the screen, and the next drawing threw that change away;
   * an iPad: the buttons of the Zigbee bindings table showed on a hover only,
-    so they were there to be tapped and could not be seen.
+    so they were there to be tapped and could not be seen;
+  * an iPad upright (834) or a phone: the schedules, sequences, sensor groups
+    and people editors are a grid with a floor under every column (950 px
+    for a schedule), and a row took the whole page past the screen; a long
+    name did the same in the batteries' list and in All values.
 
 Ports 19562 (the daemon) and 19563 (php -S).
 """
@@ -112,6 +116,15 @@ d.handle_zigbee('bridge/devices', json.dumps(devs).encode())
 d.devices_settled(10)
 for n in NAMES:
     d.handle_zigbee(n, json.dumps({'temperature': 21.5, 'humidity': 44}).encode())
+# the editors an iPad upright could not hold: a schedule, a sequence, a sensor group, a person
+d.store.set_meta('scenes', json.dumps([{'id': 'sc1', 'name': 'Evening', 'enabled': True, 'actions': []}]))
+d.store.set_meta('sequences', json.dumps([{'id': 'sq1', 'name': 'Lamp steps', 'enabled': True, 'steps': [{'scene': 'sc1'}]}]))
+d.store.set_meta('schedules', json.dumps([{'id': 's1', 'target': 'scene:sc1', 'do': 'on', 'at': '07:00', 'days': [0, 1, 2],
+                                           'enabled': True}]))
+d.store.set_meta('sensor_groups', json.dumps([{'id': 'g1', 'name': 'Downstairs', 'key': 'temperature', 'mode': 'any',
+                                               'members': ['0x0000000000000001']}]))
+d.store.set_meta('people', json.dumps([{'id': 'p1', 'name': 'Jana', 'enabled': True, 'number': '+420777123456',
+                                        'macs': ['aa:bb:cc:dd:ee:01']}]))
 d.sms_note('in', '+420777123456', 'Is the heating on?')
 d.sms_note('out', '+420777123456', 'It is, 21.5 in the hall', ok=None)
 with d._sms_lock():                    # a quarter of an hour ago: "no answer from the gateway"
@@ -215,8 +228,8 @@ function counting(p) {
       const opts = Object.assign({}, devices['iPhone 13'], {viewport: {width: 420, height: 900}, screen: {width: 420, height: 900}});
       const [ctx, p] = await open(b, 'owner', opts);
       out.phone = {};
-      for (const t of ['overview', 'sensors', 'sms']) {
-        await p.evaluate(t => showTab(t), t);
+      for (const t of ['overview', 'sensors', 'sms', 'control/sys-values']) {
+        await p.evaluate(t => { showTab(t.split('/')[0]); if (t.indexOf('/') > 0) showControlSection(t.split('/')[1]); }, t);
         await wait(2000);
         out.phone[t] = await p.evaluate(() => ({iw: innerWidth, sw: document.documentElement.scrollWidth,
           lines: document.querySelectorAll('#sms-log .sms-line').length}));
@@ -340,6 +353,19 @@ function counting(p) {
       });
       await ctx.close();
     }
+    // (10) an iPad upright (834): the editors with a floor under every column
+    {
+      const opts = Object.assign({}, devices['iPad Pro 11'], {viewport: {width: 834, height: 1194}, screen: {width: 834, height: 1194}});
+      const [ctx, p] = await open(b, 'owner', opts);
+      out.upright = {};
+      for (const s of ['auto-scenes', 'auto-groups', 'presence', 'dev-health']) {
+        await p.evaluate(s => { showTab('control'); showControlSection(s); }, s);
+        await wait(1500);
+        out.upright[s] = await p.evaluate(() => ({iw: innerWidth, sw: document.documentElement.scrollWidth,
+          rows: document.querySelectorAll('#schedules-list .sched-row, #sgroups-list .sgroup-row, #people-list .person-row, #battery-list .acl-row').length}));
+      }
+      await ctx.close();
+    }
     // (7) a valve's preset with markup in it, chosen by somebody not signed in
     {
       const [ctx, p] = await open(b, null);
@@ -397,7 +423,7 @@ for t, m in sorted((o.get('phone') or {}).items()):
           'a phone, %s: the page is %s wide on a 420 screen (laid out %s wide) - a long name or the '
           'SMS log not broken to fit' % (t, m.get('sw'), m.get('iw')))
 check(((o.get('phone') or {}).get('sms') or {}).get('lines', 0) >= 2, 'the SMS log was not drawn on the phone')
-check(len(o.get('phone') or {}) == 3, 'not every tab was measured on the phone')
+check(len(o.get('phone') or {}) == 4, 'not every tab was measured on the phone')
 print('a phone: a long name, the SMS log')
 
 v = o.get('viewerSms') or {}
@@ -431,6 +457,13 @@ check(tv.get('open'), 'the PIN box did not open for a valve\'s preset: %r' % tv)
 check(not tv.get('img') and not tv.get('xss'),
       'a valve\'s preset went into the PIN box as HTML: %r' % tv)
 print('a valve\'s preset in the PIN box')
+
+for s_, m in sorted((o.get('upright') or {}).items()):
+    check(m.get('iw') == 834 and m.get('sw', 0) <= 835,
+          'an iPad upright, Settings - %s: the page is %s wide on an 834 screen - an editor\'s rows ran past it' % (s_, m.get('sw')))
+check(len(o.get('upright') or {}) == 4 and all(m.get('rows') for m in (o.get('upright') or {}).values()),
+      'not every editor was drawn on the upright iPad: %r' % o.get('upright'))
+print('an iPad upright: the editors')
 
 pb = o.get('putBack') or {}
 check((pb.get('withOther') or {}).get('dirty') and (pb.get('withOther') or {}).get('note') == 'Unsaved changes',

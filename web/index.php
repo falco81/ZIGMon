@@ -2561,6 +2561,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .seq-status b{color:var(--info)}
   .sched-row{display:grid;grid-template-columns:36px minmax(130px,1.1fr) minmax(190px,1.5fr) minmax(230px,1.1fr) minmax(150px,1.2fr) minmax(105px,.8fr) 104px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(38,44,55,.5)}
   .sched-row input[type=text],.sched-row .whenbox input{min-width:0;width:100%}
+  /* (5.43.3) these editors' rows are a grid with a floor under every column
+     (about 950 px for a schedule): under a desk's width - an iPad upright, a
+     phone - a row ran past the screen and took the whole page with it. The
+     list scrolls sideways in its card instead; on a desk nothing changes. */
+  @media (max-width:1100px){
+    #schedules-list, #sequences-list, #sgroups-list, #agroups-list, #people-list, #bindings-list,
+    #binding-list{overflow-x:auto}}
   .sched-row select,.sched-row input{font:inherit;font-size:13.5px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:7px 10px;height:34px;box-sizing:border-box;min-width:0}
   .sched-days{display:flex;gap:3px;flex-wrap:nowrap;min-width:0}
   .sched-day{display:inline-flex;align-items:center;justify-content:center;flex:1 1 26px;min-width:26px;max-width:34px;height:34px;border-radius:9px;
@@ -3574,7 +3581,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      the styles are read, not only where the more particular rule wins */
   .tap-storytools[hidden]{display:none}
   .msg-preview .sms-bubble{margin-top:4px}
-  .acl-row{display:flex;align-items:baseline;gap:9px;padding:5px 0;border-bottom:1px solid rgba(38,44,55,.5);font-size:13px;flex-wrap:wrap}
+  .acl-row{display:flex;align-items:baseline;gap:9px;padding:5px 0;border-bottom:1px solid rgba(38,44,55,.5);font-size:13px;flex-wrap:wrap;
+    overflow-wrap:anywhere}  /* (5.43.3) a long name (the batteries' list) is broken, not pushed past the screen */
   .acl-row .mark{width:14px} .acl-row .who{color:var(--tx-dim)} .acl-row .top{font-family:ui-monospace,Menlo,monospace;color:var(--tx)}
   .acl-row .why{color:var(--tx-mut);font-size:12px;margin-left:auto}
   .acl-row.bad .top{color:var(--warn)}
@@ -3790,6 +3798,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #tab-control .grid.charts > .card{min-width:0}
   #tab-control .grid.charts > .card > h2{display:flex;align-items:center;gap:10px;font-size:15px;
       font-weight:650;letter-spacing:0;text-transform:none;color:var(--tx);margin:0 0 6px}
+  /* (5.43.3) All values: a card's title is the device's name, broken where it must be */
+  #all-values > .card > h2{overflow-wrap:anywhere}
   #tab-control .grid.charts > .card > h2 .card-info{margin-left:auto;font-size:12px;color:var(--tx-dim);
       padding:4px 10px 4px 8px}
   #tab-control .card-lede{color:var(--tx-dim);font-size:13px;margin:0 0 14px;max-width:900px}
