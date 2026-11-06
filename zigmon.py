@@ -25580,7 +25580,44 @@ class Daemon(object):
                       # sixty-four, less one - which is what a length looks
                       # like when somebody is trying to make the thing reading
                       # it count backwards. No client writes that by accident.
-                      'proxy-bad-length': 5}
+                      'proxy-bad-length': 5,
+                      # (5.45) Suricata's reputation rules - ET DROP (Spamhaus),
+                      # DShield, CINS - firing on an address: somebody else's
+                      # list, read off the wire. Light on its own, because
+                      # those rules fire on the very first packet, before the
+                      # server has answered anything, and the source of a
+                      # first packet is whatever whoever sent it wrote there.
+                      # What it does is make the address LISTED for a week
+                      # (weigh_recent): the same as being on one of the
+                      # fetched lists, so the first real thing it does here
+                      # weighs three times over. In the front server's logs of
+                      # 27 October - 6 November 2026, 242 such alerts named
+                      # 239 addresses. Two thirds of them sent nothing but the
+                      # packet and are still not weighed past a note; the
+                      # rest went on to ask for the machine by its address
+                      # once or twice (4 apiece) on top of the alert (4), and
+                      # of those 64 only 18 were ever kept out. Now 64 are.
+                      'ids-listed': 2,
+                      # (5.45) The same unmistakable thing - one path, .env or
+                      # xmlrpc.php - asked for by three or more addresses
+                      # within ten minutes: one tool working from many
+                      # addresses, each of which asks once so that no single
+                      # one of them is ever worth a block. On 3 November 2026
+                      # six addresses in six different networks asked for
+                      # /wp-login.php and /xmlrpc.php in twenty-seven seconds,
+                      # with one user agent between them, and five more did
+                      # it again eight hours later. Written on every one of
+                      # them, the earlier ones too, so the round is one thing.
+                      'proxy-swarm': 8,
+                      # (5.45) One of the unmistakable things asked for at this
+                      # house's own name rather than at an address being
+                      # walked: whoever did it knows which machine it is
+                      # looking at. Nothing links to .env, so nothing arrives
+                      # there by following a link - and the one-tap name is
+                      # written down nowhere but the house's own phones. Seven,
+                      # so that with the eight of the thing itself the first
+                      # one is a block at the standing bar.
+                      'proxy-aimed': 7}
     ANOMALY_WINDOW = 600
     # The things nobody does by accident. Each weighs half the standing bar,
     # so one on its own is not a block; and they are remembered for a day
@@ -25613,7 +25650,11 @@ class Daemon(object):
                     # whoever sends one comes back tomorrow, and a scanner
                     # that sends eight in one second is sending eight things
                     # rather than the same thing eight times.
-                    'proxy-multipart', 'proxy-bad-length')
+                    'proxy-multipart', 'proxy-bad-length',
+                    # (5.45) ...and a round done from many addresses at once:
+                    # each of them comes back as surely as one that asked
+                    # twice by itself
+                    'proxy-swarm')
     # The kinds above are not folded when they come twice in a breath - but a
     # round that is working out what a machine is asks for the same page twice
     # as readily as a browser does, and forty-five of one page should weigh as
@@ -25701,6 +25742,7 @@ class Daemon(object):
         # exactly how a flood stopped being noticed.
         now = float(at) if at else time.time()
         window = max(60, int(CONFIG.get('block_window_min') or 10) * 60)
+        swarm = []
         with self._anomaly_lock:
             seen = self._anomaly.setdefault(ip, [])
             # The very same thing again within a breath is one thing tried
@@ -25729,6 +25771,7 @@ class Daemon(object):
                     for gone in sorted(self._strong_near, key=lambda k: self._strong_near[k][-1][0]
                                        if self._strong_near[k] else 0)[:500]:
                         self._strong_near.pop(gone, None)
+                swarm = self._swarm_join(ip, kind, detail, now)
             if kind in self.SLOW_KINDS:
                 slow = self._slow_seen.setdefault(ip, [])
                 slow.append(now)
@@ -25769,7 +25812,14 @@ class Daemon(object):
                     self._anomaly_from.pop(gone, None)
                     if hasattr(self, '_blocked_times'):
                         self._blocked_times.pop(gone, None)
-        return self.maybe_block(ip, self.weigh_recent(ip, recent, now), recent)
+        answer = self.maybe_block(ip, self.weigh_recent(ip, recent, now), recent)
+        # (5.45) A round from many addresses: each of them is told, outside
+        # the lock, as one more thing it did - this one included.
+        for other, said in swarm:
+            got = self.note_anomaly(other, 'proxy-swarm', said, source=source, at=now)
+            if other == ip and got is not None:
+                answer = got
+        return answer
 
     def weigh_recent(self, ip, recent, now=None):
         """What a run of tries from one address is worth. THE one place.
@@ -25799,7 +25849,10 @@ class Daemon(object):
         # the first thing it does weighs as much as several, because the
         # benefit of the doubt was used up elsewhere.
         score += self.strong_earlier(ip, recent, now)[1]
-        if self.feed_says(ip):
+        # (5.45) ...or one of the lists Suricata carries named it this week.
+        # The same three times as a fetched list, and never both: one address
+        # on two lists has still used up the one benefit of the doubt.
+        if self.feed_says(ip) or self.ids_listed(ip, now):
             score *= max(1, int(CONFIG.get('feeds_weight') or 3))
         return score
 
@@ -25825,6 +25878,61 @@ class Daemon(object):
                 earlier.append((t, k))
         earlier = sorted(earlier)[-2:]
         return len(earlier), sum(self.ANOMALY_WEIGHT.get(k, 1) for _t, k in earlier)
+
+    # (5.45) How many different addresses asking for the one same unmistakable
+    # path inside NEAR_WITHIN make a round from many addresses. Three, not
+    # two: two scanners asking for /.env in the same ten minutes is the
+    # internet on an ordinary afternoon; three with one path between them was,
+    # in these logs, always one tool - the WordPress round of 3 November 2026
+    # came from six addresses at once, twice in a day.
+    SWARM_BAR = 3
+    SWARM_KINDS = ('proxy-secret-hunt', 'proxy-exploit', 'proxy-payload')
+
+    def _swarm_join(self, ip, kind, detail, now):
+        """Count this address in with the others that asked for the same
+        unmistakable path lately; when that makes a round from many addresses,
+        say which of them have not been told yet. Called under the counting's
+        lock, so it only works out the answer - note_anomaly writes it down."""
+        if kind not in self.SWARM_KINDS:
+            return []
+        path = str(detail or '').split(' ', 1)[-1].strip().lower()[:80]
+        if not path or path == '/':
+            return []
+        rounds = self.__dict__.setdefault('_swarm', {})
+        told = self.__dict__.setdefault('_swarm_told', {})
+        key = (kind, path)
+        members = rounds.setdefault(key, [])
+        members.append((now, str(ip)))
+        members[:] = [x for x in members if x[0] > now - self.NEAR_WITHIN][-40:]
+        if len(rounds) > 2000:            # a ceiling, keyed by something strangers choose
+            for gone in sorted(rounds, key=lambda k: rounds[k][-1][0] if rounds[k] else 0)[:500]:
+                rounds.pop(gone, None)
+        addresses = []
+        for _t, one in members:
+            if one not in addresses:
+                addresses.append(one)
+        if len(addresses) < self.SWARM_BAR:
+            return []
+        out = []
+        for one in addresses:
+            if now - told.get(one, 0) < 3600:
+                continue
+            told[one] = now
+            out.append((one, '%d addresses asked for %s within %d min'
+                        % (len(addresses), path[:40], self.NEAR_WITHIN // 60)))
+        if len(told) > 3000:
+            for gone in [k for k, t in list(told.items()) if now - t > 3600]:
+                told.pop(gone, None)
+        return out
+
+    def ids_listed(self, ip, now=None):
+        """(5.45) Which of Suricata's reputation lists named this address in
+        the last week, if any - read off the wire, kept in memory."""
+        now = now or time.time()
+        got = (self.__dict__.get('_ids_listed') or {}).get(str(ip))
+        if got and now - got[0] < self.STRONG_MEMORY:
+            return got[1]
+        return ''
 
     @staticmethod
     def neighbourhood(ip):
@@ -25858,11 +25966,17 @@ class Daemon(object):
                 self._strong_near.clear()
                 self._slow_seen.clear()
                 self.__dict__.get('_slow_said', {}).clear()
+                # (5.45) and the rounds and lists it was counted into
+                self.__dict__.get('_swarm', {}).clear()
+                self.__dict__.get('_swarm_told', {}).clear()
+                self.__dict__.get('_ids_listed', {}).clear()
             else:
                 gone = 1 if self._anomaly.pop(str(ip), None) else 0
                 self._strong_seen.pop(str(ip), None)
                 self._slow_seen.pop(str(ip), None)
                 self.__dict__.get('_slow_said', {}).pop(str(ip), None)
+                self.__dict__.get('_swarm_told', {}).pop(str(ip), None)
+                self.__dict__.get('_ids_listed', {}).pop(str(ip), None)
                 for near in self._strong_near.values():
                     near[:] = [x for x in near if x[1] != str(ip)]
         return gone
@@ -25964,6 +26078,9 @@ class Daemon(object):
         # the shape PHP's own parser is broken by, and a length that is not
         # one: both are somebody working at a lock rather than a crawler
         'proxy-multipart': 'serious', 'proxy-bad-length': 'serious',
+        # (5.45) being on somebody's list is not working at a lock; a round
+        # from many addresses and a probe aimed at the house's own name are
+        'ids-listed': 'ordinary', 'proxy-swarm': 'serious', 'proxy-aimed': 'serious',
     }
 
     @staticmethod
@@ -26391,6 +26508,14 @@ class Daemon(object):
         address in that street, and an entry for one of its houses stays on
         the list to be seen and does nothing at all.
         """
+        # (5.45) The server in front, and every proxy whose X-Forwarded-For is
+        # believed, is never kept out and never asked about: a press that
+        # arrives without the header, or a reading that names the proxy as
+        # the caller, weighed the one machine every press of the house comes
+        # through - and keeping it out shuts every link for everybody, which
+        # is the thing the whole of trusted_proxies is there to prevent.
+        if self._front_itself(ip):
+            return str(ip)
         ready = self.spare_list()
         if not ready:
             return ''
@@ -26413,6 +26538,36 @@ class Daemon(object):
             if number is not None and version == family and low <= number <= high:
                 return written
         return ''
+
+    def _front_itself(self, ip):
+        """(5.45) Is this the server in front, or a proxy named as trusted?"""
+        text = str(ip or '').strip()
+        if not text:
+            return False
+        host = str(CONFIG.get('proxy_host') or '').strip()
+        if host and host == text:
+            return True
+        if host:
+            try:
+                if ipaddress.ip_address(host) == ipaddress.ip_address(text):
+                    return True
+            except ValueError:
+                pass
+        # Named one by one, or as a range no wider than a street: a /8 written
+        # there by mistake is a different problem, and sparing sixteen million
+        # strangers for it would make it worse.
+        try:
+            asked = ipaddress.ip_address(text)
+        except ValueError:
+            return False
+        for one in [x for x in re.split(r'[,;\s]+', str(CONFIG.get('trusted_proxies') or '')) if x]:
+            try:
+                net = ipaddress.ip_network(one, strict=False)
+            except ValueError:
+                continue
+            if net.version == asked.version and asked in net and net.num_addresses <= 256:
+                return True
+        return False
 
     def spare_list(self):
         """What is written under "never kept out", read once.
@@ -26523,11 +26678,15 @@ class Daemon(object):
         'ids-noted': 'Suricata thought it worth writing down',
         'ids-same-tool': 'the same tool, by its TLS fingerprint, coming from many addresses',
         'ids-many-faces': 'one address wearing a different TLS fingerprint on every connection',
-        'proxy-leak-check': 'a credential checker (TruffleHog) trying names it found published somewhere',
+        'proxy-leak-check': 'a credential checker (TruffleHog, Kingfisher) trying names it found published '
+                            'somewhere',
         'proxy-slow-walk': 'a round done slowly - a dozen light things in a day, never many at once',
         'proxy-multipart': 'a multipart body, which nothing here ever sends - the one shape PHP '
                            'itself is broken by',
         'proxy-bad-length': 'a content-length that cannot be a length',
+        'ids-listed': 'on a reputation list Suricata carries (Spamhaus DROP, DShield, CINS)',
+        'proxy-swarm': 'one of several addresses asking for the same unmistakable thing within minutes',
+        'proxy-aimed': 'asked for at this house\'s own name, not at an address being walked',
     }
 
     def anomaly_words(self, recent):
@@ -27511,6 +27670,25 @@ class Daemon(object):
     IDS_HARMLESS = ('not-suspicious', 'unknown', 'network-scan', 'protocol-command-decode',
                     'misc-activity', 'unusual-client-port-connection')
 
+    # (5.45) The rules that are somebody's list of addresses rather than a
+    # shape Suricata recognises: Emerging Threats writes them as ET DROP
+    # (Spamhaus DROP), ET DROP Dshield, ET CINS and ET COMPROMISED, and the
+    # signature says which. Anchored at the front: it is the rule's own name.
+    IDS_LISTS = re.compile(r'^(?:ET|GPL) (?:DROP|CINS|COMPROMISED|3CORESec)\b')
+
+    @classmethod
+    def _ids_list_name(cls, signature):
+        """Which list a reputation rule is, in a word, or '' for every other rule."""
+        text = str(signature or '')[:200]
+        if not cls.IDS_LISTS.match(text):
+            return ''
+        low = text.lower()
+        for word, name in (('dshield', 'DShield'), ('spamhaus', 'Spamhaus DROP'), ('cins', 'CINS'),
+                           ('compromised', 'ET Compromised'), ('3coresec', '3CORESec')):
+            if word in low:
+                return name
+        return 'ET DROP'
+
     @staticmethod
     def _eve_moment(one, now):
         """When an eve line says it happened, or now when it does not say."""
@@ -27861,9 +28039,31 @@ class Daemon(object):
             # either way, so the real ones are untouched.
             if any(harmless in what for harmless in self.IDS_HARMLESS):
                 continue
+            # (5.45) A packet the server never answered proves nothing about
+            # who sent it: the source of a first SYN is whatever was written
+            # there. Against a stranger it is still weighed as Suricata says;
+            # against an address that pressed a link or signed in at the
+            # notification server lately it is not, so nobody can put the
+            # house out by sending packets in its name.
+            flow = one.get('flow') if isinstance(one.get('flow'), dict) else {}
+            unanswered = 'pkts_toclient' in flow and not int(flow.get('pkts_toclient') or 0)
+            if unanswered and self._was_let_in(ip):
+                continue
             kind = ('ids-serious' if how_sure <= 1 else
                     'ids-likely' if how_sure == 2 else 'ids-noted')
             says = str(alert.get('signature') or 'something it knows')[:60]
+            # (5.45) The reputation rules are a list, not an attack: the
+            # address is remembered as listed for a week and weighs lightly
+            # itself (see ANOMALY_WEIGHT), so that it takes something done
+            # here - over a connection that was answered - to keep it out.
+            listed = self._ids_list_name(alert.get('signature'))
+            if listed:
+                kind = 'ids-listed'
+                held = self.__dict__.setdefault('_ids_listed', {})
+                held[ip] = (self._iso_moment(one.get('timestamp')) or time.time(), listed)
+                if len(held) > 5000:
+                    for gone in sorted(held, key=lambda k: held[k][0])[:1000]:
+                        held.pop(gone, None)
             where = ''
             if one.get('dest_port'):
                 where = ' to port %s' % str(one.get('dest_port'))[:6]
@@ -28013,6 +28213,29 @@ class Daemon(object):
         """One request, as a dict of the shape the full log writes."""
         return self.full_weigh([json.dumps(one)])
 
+    def _friends_from(self, lines):
+        """(5.45) The house, as the full logs show it: a press answered 200
+        that carried a secret, or the notification server answering 200 to a
+        name it took. Looked for by two plain words before any JSON is read,
+        so the scanners' lines - nearly all of them - cost a substring test."""
+        for line in lines or ():
+            if '200' not in line or ('sent' not in line and 'ntfy' not in line):
+                continue
+            try:
+                one = json.loads(line.strip())
+            except Exception:
+                continue
+            if self._leak_checker(one.get('ua')):
+                continue                  # a found password that works is not the house
+            ntfy = str(one.get('which') or '') == 'ntfy'
+            if ntfy:
+                ok = str(one.get('auth') or 'none') not in ('', 'none', '-')
+            else:
+                ok = (str(one.get('m') or '') == 'POST' and str(one.get('secret') or '') == 'sent'
+                      and str(one.get('u') or '').split('?')[0] in ('/tap', '/api/tap'))
+            if ok and str(one.get('s')) == '200':
+                self._friend_seen(one.get('ip'), self._iso_moment(one.get('t')))
+
     def full_weigh(self, lines):
         """The full log: one line of JSON per request, with the body and the
         headers, weighed for the things only a whole request shows.
@@ -28024,6 +28247,7 @@ class Daemon(object):
         sending.
         """
         seen, checks = {}, {}
+        self._friends_from(lines)
         for line in lines:
             line = line.strip()
             if not line.startswith('{'):
@@ -28123,6 +28347,13 @@ class Daemon(object):
                     found.append(('proxy-payload', '%s %s' % (method, where)))
                 elif status >= 400 and self._asking_what_it_is(where):
                     found.append(('proxy-fingerprint', '%s %s' % (method, where)))
+                # (5.45) This log is the notification server's name and
+                # nothing else, so whatever above was not closed with a 444
+                # was asked for at the house's own name. Five addresses asked
+                # it for /.git/config one at a time on 27 October 2026, once
+                # each, and none of them was ever worth a block.
+                if status not in (400, 444) and found and found[-1][0] in self.SWARM_KINDS:
+                    found.append(('proxy-aimed', found[-1][1]))
             elif where.startswith('/tap') or where.startswith('/api/tap'):
                 # the one road there is, and what it takes. Both names for it:
                 # the front server calls it /tap and hands it to the daemon as
@@ -28140,7 +28371,14 @@ class Daemon(object):
                     length = 0
                 if method == 'POST' and length > 4096:
                     found.append(('tap-odd-body', 'a body of %d bytes' % length))
-            if not found and status in (400, 405) and method not in ('GET', 'POST', 'HEAD'):
+            # (5.45) Only a method that was written at all. The empty one is
+            # what nginx writes for bytes that were no request - which the
+            # access log's reader weighs already, as junk - so every RDP or
+            # MQTT handshake at the web port counted twice, 5 + 4: 293 such
+            # lines in these logs, from 82 addresses. The rule this file keeps
+            # for the scanner's user agent (one request counts once), kept
+            # for this too.
+            if not found and status in (400, 405) and method and method not in ('GET', 'POST', 'HEAD'):
                 found.append(('proxy-odd-method', '%s %s' % (method, where[:40])))
             for kind, detail in found:
                 seen[ip] = seen.get(ip, 0) + 1
@@ -28154,7 +28392,9 @@ class Daemon(object):
     # seven times in one second on 19 September 2026, each time with a
     # different name and password, which it can only have found written down
     # next to this server's address.
-    LEAK_CHECKERS = ('trufflehog',)
+    # (5.45) Kingfisher is the same kind of tool, and asked the notification
+    # server for one of the house's own topic names on 2 November 2026.
+    LEAK_CHECKERS = ('trufflehog', 'kingfisher')
 
     # Tools that say what they are. Every one of these was in this house's own
     # logs of 17-26 September 2026, and none of them was ever kept out: zgrab
@@ -28180,7 +28420,15 @@ class Daemon(object):
         # what sent the eight multipart bodies here on the day the PHP holes
         # were published.
         'websiphon', 'assetnote', 'infrawatch', 'webatlabot', 'netcraftsurveyagent',
-        'forestengine', 'defaults.exposed', 'onlyscans', 'cloudanchor', 'ruhr-uni-bochum')
+        'forestengine', 'defaults.exposed', 'onlyscans', 'cloudanchor', 'ruhr-uni-bochum',
+        # (5.45) ...and what the logs of 27 October - 6 November 2026 added:
+        # TernCrawler asked 242 times by address, ipbase 47, GenomeCrawler 32,
+        # Apcosys 20, InternetData 16, RootEvidence 13, and a university's
+        # research scanner, a "SQLSpider" and Go's fasthttp a few times each -
+        # all of them at names or addresses nothing links to.
+        'terncrawler', 'ipbase-scanner', 'genomecrawlerd', 'apcosysbot', 'internetdata.io',
+        'rootevidence', 'research-scanner', 'sqlspider', 'flowiqlabsbot', 'webfixstudio',
+        'fasthttp')
 
     # How long somebody who pressed a link and was let in is treated as the
     # house rather than as a stranger. The owner's own watch, on the mobile
@@ -28197,6 +28445,15 @@ class Daemon(object):
         ip = str(ip or '').strip()
         if not ip:
             return False
+        # (5.45) ...or was seen at the server in front doing what only the
+        # house does: a press answered 200 carrying a secret, a request the
+        # notification server answered 200 with a name it took. Held in memory
+        # from the full logs - the house's phones move between addresses all
+        # day (the mobile network, Private Relay) and the press list at home
+        # only ever sees the one that pressed.
+        fresh = (self.__dict__.get('_seen_friends') or {}).get(ip)
+        if fresh and time.time() - fresh < self.FRIEND_MEMORY:
+            return True
         got = getattr(self, '_friends', None)
         if got is None:
             got = self._friends = {}
@@ -28217,6 +28474,37 @@ class Daemon(object):
             got.clear()
         got[ip] = (time.time(), ok)
         return ok
+
+    def _friend_seen(self, ip, at=None):
+        """(5.45) Remember an address the front server saw doing what only
+        the house does. In memory, bounded: nothing of it is written down."""
+        try:
+            ip = str(ipaddress.ip_address(str(ip or '').strip()))
+        except ValueError:
+            return
+        held = self.__dict__.setdefault('_seen_friends', {})
+        held[ip] = max(float(at or time.time()), held.get(ip, 0))
+        if len(held) > 500:
+            for gone in sorted(held, key=held.get)[:100]:
+                held.pop(gone, None)
+
+    # (5.45) What a messenger sends when somebody pastes a link into it: the
+    # preview is fetched at once, by the app rather than by the person, and
+    # it asks for the page, the favicon and the touch icons - three times
+    # over, from Apple's. The house's own iPhone was kept out of the one-tap
+    # road on 27 October 2026 for exactly this: a link sent in iMessage, a
+    # preview made of it, twelve requests for /, /favicon.ico and the two
+    # touch icons in twenty-six seconds, every one of them "knocking". The
+    # Mac Safari 10_11_1 agent with facebookexternalhit in it, and iOS's
+    # NetworkingExtension, are what Apple's preview says it is.
+    LINK_PREVIEWS = ('facebookexternalhit', 'facebot', 'twitterbot', 'networkingextension/',
+                     'whatsapp/', 'telegrambot', 'slackbot-linkexpanding', 'discordbot',
+                     'skypeuripreview', 'viber', 'linkedinbot')
+
+    @classmethod
+    def _link_preview(cls, agent):
+        low = str(agent or '').strip().lower()[:300]
+        return bool(low) and any(word in low for word in cls.LINK_PREVIEWS)
 
     @classmethod
     def _scanning_tool(cls, agent):
@@ -28249,12 +28537,12 @@ class Daemon(object):
         for (ip, host), row in checks.items():
             where = host or 'this server'
             if row['worked']:
-                words = ('A credential checker (TruffleHog) at %s tried %d name(s) on %s and at least '
+                words = ('A credential checker (TruffleHog or the like) at %s tried %d name(s) on %s and at least '
                          'one of them WORKED. A password or token for it is published somewhere - '
                          'change it now, then find where it was written down.' % (ip, row['n'], where))
                 level = 'crit'
             else:
-                words = ('A credential checker (TruffleHog) at %s tried %d name(s) on %s; none of '
+                words = ('A credential checker (TruffleHog or the like) at %s tried %d name(s) on %s; none of '
                          'them worked. It only does that with credentials it found published next '
                          'to this address - a repository, a paste, a shared file. Worth finding '
                          'where, and changing anything that is still in use.' % (ip, row['n'], where))
@@ -29872,13 +30160,27 @@ class Daemon(object):
                 self.note_anomaly(ip, 'proxy-hammering', '%d request(s) in %d s'
                                   % (many, int(self.BURST_WINDOW)), source='proxy', at=when_now)
             kind = None
+            agent = self._line_agent(line)
+            # (5.45) A request line that names another protocol - "OPTIONS /
+            # RTSP/1.0", "REQMOD icap://... ICAP/1.0" - is a camera or a
+            # content filter being looked for, and nginx answers it 400 like
+            # any other request. It is the bytes-that-are-not-a-request kind,
+            # not a page that is not there: ten of these came in these logs,
+            # each weighed as one "knock".
+            if status == 400:
+                whole = self.PROXY_JUNK.match(line)
+                words = whole.group('raw').split() if whole else []
+                if len(words) == 3 and not words[2].upper().startswith('HTTP/'):
+                    kind = 'proxy-junk'
             # What was asked for is read before how the front server answered,
             # because it says more. A request for ".env" or a Fortinet login
             # page is that whatever came back - and one of these arrived at a
             # name this machine does not carry, so it was closed with a 444
             # and written down as somebody walking addresses. It was not: it
             # was eight tries at a VPN login in two minutes.
-            if self._after_secrets(path):
+            if kind:
+                pass                           # (5.45) not HTTP at all, as above
+            elif self._after_secrets(path):
                 # ".env", ".git/config", a private key by name. Nothing links
                 # to these, so nothing finds them by following links: asking
                 # is the intent, whatever the answer was.
@@ -29895,6 +30197,15 @@ class Daemon(object):
                 # place most requests are ever seen. Read before the 444, for
                 # the reason the two above are: asking is the intent.
                 kind = 'proxy-payload'
+            elif path.startswith('/.well-known/acme-challenge/'):
+                # (5.45) A certificate being proved: the CA's validators ask
+                # for this from wherever they are, and so does the house's
+                # own check before it asks them - 73 times in these logs, from
+                # the house's own network, at a name this server does not
+                # carry, every one a 444 and every one weighed as walking
+                # addresses until the house was kept out of its own front
+                # server. Nothing is weighed here unless it climbs, above.
+                continue
             elif status >= 400 and self._asking_what_it_is(path):
                 # Not a break-in: a name only one product answers to, asked
                 # for to find out what this machine is. Read before the 444,
@@ -29904,7 +30215,7 @@ class Daemon(object):
                 # are softer names, and one this house actually serves - and
                 # answers - belongs to whoever asked for it.
                 kind = 'proxy-fingerprint'
-            elif self._scanning_tool(self._line_agent(line)):
+            elif self._scanning_tool(agent):
                 # A tool that says what it is: zgrab, masscan, l9scan, Censys,
                 # Odin, leakix. Read before the 444, because what it is says
                 # more than how the front server answered - five requests from
@@ -29919,7 +30230,7 @@ class Daemon(object):
                 # types the name, a watch has the name in its link. It is
                 # somebody walking addresses to see what answers.
                 kind = 'proxy-wrong-name'
-            elif self._leak_checker(self._line_agent(line)) and not (
+            elif self._leak_checker(agent) and not (
                     int(CONFIG.get('proxy_full_watch') or 0)
                     and str(CONFIG.get('proxy_full_log') or '').strip()):
                 # the full log says this too, with more; read here only when
@@ -29942,6 +30253,10 @@ class Daemon(object):
                 # link secrets, which is the one thing this house has that is
                 # worth guessing
                 kind = 'proxy-guessing'
+            elif status in (400, 404, 501) and self._plain_visit(path) and self._link_preview(agent):
+                # (5.45) a messenger making a preview of a link somebody sent:
+                # the page and its icons, asked for by the app, not a person
+                continue
             elif status == 405 or (status in (400, 404, 501) and self._plain_visit(path)):
                 # The wrong method on the one road there is, or a path a
                 # browser asks for before anybody tells it to. Once or twice
@@ -29969,6 +30284,12 @@ class Daemon(object):
             when = self._log_moment(found.group('when')) or time.time()
             kept.append((when, 'tap', ip, method, path[:200], status, kind))
             self.note_anomaly(ip, kind, '%s %s' % (method, path), source='proxy', at=when)
+            if kind in self.SWARM_KINDS and status not in (400, 444):
+                # (5.45) Not closed with a 444, so it was asked for at the
+                # house's own name; a 400 is left out because nginx writes
+                # that one for a malformed request before it has picked a
+                # server at all.
+                self.note_anomaly(ip, 'proxy-aimed', '%s %s' % (method, path), source='proxy', at=when)
         self.store.keep_proxy_lines(kept)
         self.look_for_sweeps({ip for ip in seen})
         return seen
@@ -29976,6 +30297,18 @@ class Daemon(object):
     def proxy_sweep(self, whole=False):
         """One reading, weighed, said in a sentence."""
         lines = self.proxy_read(whole=whole)
+        # (5.45) The full logs are read first and weighed in their turn below:
+        # what they say about the house - a press let through, a phone signed
+        # in at the notification server - has to be known before the access
+        # log's light knocks from the same phone are counted, not after.
+        whole_lines = []
+        if int(CONFIG.get('proxy_full_watch') or 0):
+            if whole:
+                self.store.set_meta('proxy_full_at', '0')
+                self.store.set_meta('ntfy_full_at', '0')
+            whole_lines = self.proxy_read_named('proxy_full_log', 'proxy_full_at')
+            whole_lines += self.proxy_read_named('ntfy_full_log', 'ntfy_full_at')
+            self._friends_from(whole_lines)
         weighed = self.proxy_weigh(lines)
         # ...and the error log, where one is named: what nginx says about the
         # callers it could not even get a request from
@@ -30004,12 +30337,6 @@ class Daemon(object):
         # ...the full log, where one is named and switched on: one line of
         # JSON per request, with the body and the headers.
         if int(CONFIG.get('proxy_full_watch') or 0):
-            if whole:
-                self.store.set_meta('proxy_full_at', '0')
-            whole_lines = self.proxy_read_named('proxy_full_log', 'proxy_full_at')
-            if whole:
-                self.store.set_meta('ntfy_full_at', '0')
-            whole_lines += self.proxy_read_named('ntfy_full_log', 'ntfy_full_at')
             if whole_lines:
                 log('the full log(s): %d line(s) read' % len(whole_lines), 'debug')
             elif not str(CONFIG.get('proxy_full_log') or '').strip():
