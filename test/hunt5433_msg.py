@@ -219,6 +219,26 @@ d._sms_poll_now()
 check(len(acted) == 1, 'a message the modem did not really delete was acted on %d times' % len(acted))
 del d._rest, d.sms_handle
 
+# 11. the daily digest counts the whole day, not the newest thousand events
+for i in range(1200):
+    d.store.add_event('rule', 'rule "hall" fired', 'info')
+d.store.flush(10.0)
+told = []
+d.notify = lambda text, *a, **k: told.append(text)
+text = d.daily_digest(force=True) or ''
+check('1200 rule(s) fired' in text, 'the daily digest counted the newest thousand events only: %r'
+      % text.split('\n')[-1][:80])
+d.notify = real_notify
+
+# 12. the Events log can be narrowed to the messages' own kinds
+import re                                               # noqa: E402
+page = (HERE / 'web' / 'index.php').read_text(encoding='utf-8')
+kinds = re.search(r"mk\('evf-kind', \[([^\]]*)\]", page)
+listed = re.findall(r"'([a-z]+)'", kinds.group(1)) if kinds else []
+for kind in ('sms', 'alert', 'notify'):
+    check(kind in listed, 'the Events log\'s kind filter has no "%s", so texts and alerts could not be picked out'
+          % kind)
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 os._exit(1 if bad else 0)

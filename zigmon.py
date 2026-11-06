@@ -35290,17 +35290,24 @@ class Daemon(object):
             lines.append('This month: %.1f kWh%s%s' % (money['month_kwh'],
                          (' = %.0f %s' % (money['month_cost'], money['currency'])) if money.get('price_per_kwh') else '',
                          (' - most of it %s' % top) if top else ''))
-        # what the automation did
-        events = self.store.events(1000)
-        recent = [e for e in events if (e.get('ts') or 0) >= since]
-        fired = sum(1 for e in recent if e.get('kind') == 'rule')
-        switched = sum(1 for e in recent if e.get('kind') == 'plug' and 'switched' in (e.get('detail') or ''))
-        warned = [e for e in recent if e.get('level') in ('warn', 'crit')]
-        lines.append('%d rule(s) fired, %d switch(es), %d warning(s)' % (fired, switched, len(warned)))
+        # what the automation did - (5.43.3) counted in the table: the
+        # newest thousand events were all a busy day kept in view, and a house
+        # that writes two thousand a day was told it fired half its rules
+        with self.store.lock:
+            row = self.store.db.execute(
+                "SELECT SUM(kind='rule'), SUM(kind='plug' AND detail LIKE '%switched%'), "
+                "SUM(level IN ('warn','crit')) FROM events WHERE ts>=?", (int(since),)).fetchone()
+            worst = self.store.db.execute(
+                "SELECT detail FROM events WHERE ts>=? AND level IN ('warn','crit') "
+                "ORDER BY ts DESC, id DESC LIMIT 1", (int(since),)).fetchone()
+        fired, switched, warned = (int(x or 0) for x in (row or (0, 0, 0)))
+        lines.append('%d rule(s) fired, %d switch(es), %d warning(s)' % (fired, switched, warned))
         # what has gone quiet, and what is sinking
         quiet = []
         for dev in self.store.devices():
-            if dev.get('source') in ('plug', 'wifi', 'group'):
+            # (5.43.3) the sources the watchdog leaves out, left out here too:
+            # the forecast and the modem are fetched, not heard from
+            if dev.get('source') in ('plug', 'wifi', 'weather', 'sms', 'group', 'gateway'):
                 continue
             seen = dev.get('last_seen') or 0
             # the same patience the watchdog uses, so a button that rightly
@@ -35328,8 +35335,8 @@ class Daemon(object):
                 int(chk.get('count') or 0),
                 ', %d of them security' % int(chk['security']) if chk.get('security') else '',
                 '; a restart needed' if osup_reboot_needed(self, chk) else ''))
-        if warned:
-            lines.append('Worst of the day: ' + (warned[0].get('detail') or '')[:90])
+        if warned and worst:
+            lines.append('Worst of the day: ' + (worst[0] or '')[:90])
         text = '\n'.join(lines)
         self.notify(text, 'info', dedup='digest', title='Today at home', about='digest')
         self.store.add_event('summary', 'the daily digest went out (%d line(s))' % len(lines), 'info')
