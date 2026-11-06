@@ -3608,6 +3608,30 @@ def cli_key_path():
     return token_path().parent / 'cli-key'
 
 
+def upload_piece(part, of, data_b64):
+    """(5.44) One piece of an upload, checked before anything is written: a
+    part number that is not a whole number (a list, infinity) or a piece that
+    is not text was a 500, and a piece that was not BASE64 failed after the
+    file it was meant for had been opened for it."""
+    import base64
+    import binascii
+    try:
+        if isinstance(part, bool) or isinstance(of, bool):
+            raise TypeError
+        part, of = int(part), int(of)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError('bad part numbers')
+    if part < 1 or of < 1 or part > of or of > 4000:
+        raise ValueError('bad part numbers')
+    if data_b64 is not None and not isinstance(data_b64, str):
+        raise ValueError('the piece is not BASE64 text')
+    try:
+        piece = base64.b64decode(data_b64 or '')
+    except (binascii.Error, ValueError):
+        raise ValueError('the piece is not BASE64')
+    return part, of, piece
+
+
 def read_cli_key():
     try:
         return cli_key_path().read_text().strip()
@@ -11558,6 +11582,12 @@ class Daemon(object):
         # One at a time, with a breath between: the gateway serialises anyway,
         # and asking it three things at once is what made the second and third
         # wait past our patience.
+        # (5.44) With no gateway there is nothing to wait for: the answer below
+        # is the same, but it came after the gap between two sends - five
+        # seconds a number, a whole page's "send" held for a word it could have
+        # had at once - and it set that gap going for the next one as well
+        if not self.sms_ready():
+            return False, 'no SMS gateway is set up'
         with self._sms_send_lock:
             raw_gap = CONFIG.get('sms_send_gap_s')
             gap = 5.0 if raw_gap in (None, '') else float(raw_gap)
@@ -16175,11 +16205,9 @@ class Daemon(object):
         directory = self.backup_dir()
         directory.mkdir(exist_ok=True)
         tmp = directory / ('.upload-%s.part' % uid)
-        part, of = int(part), int(of)
-        if part < 1 or of < 1 or part > of or of > 4000:
-            raise ValueError('bad part numbers')
+        part, of, piece = upload_piece(part, of, data_b64)
         with open(tmp, 'ab' if part > 1 else 'wb') as fh:
-            fh.write(base64.b64decode(data_b64 or ''))
+            fh.write(piece)
         if tmp.stat().st_size > 2 * 1024 ** 3:
             tmp.unlink()
             raise ValueError('too large')
@@ -17432,13 +17460,11 @@ class Daemon(object):
         uid = re.sub(r'[^0-9A-Za-z]', '', str(upload_id or ''))[:32]
         if not uid:
             raise ValueError('missing upload id')
-        part, of = int(part), int(of)
-        if part < 1 or of < 1 or part > of or of > 4000:
-            raise ValueError('bad part numbers')
+        part, of, piece = upload_piece(part, of, data_b64)
         self.root_folders()
         tmp = self.upgrade_dir('.upload-%s.part' % uid)
         with open(str(tmp), 'ab' if part > 1 else 'wb') as fh:
-            fh.write(base64.b64decode(data_b64 or ''))
+            fh.write(piece)
         if tmp.stat().st_size > 64 * 1024 * 1024:
             tmp.unlink()
             raise ValueError('bigger than any version of zigmon')
@@ -18115,13 +18141,11 @@ class Daemon(object):
         uid = re.sub(r'[^0-9A-Za-z]', '', str(upload_id or ''))[:32]
         if not uid:
             raise ValueError('missing upload id')
-        part, of = int(part), int(of)
-        if part < 1 or of < 1 or part > of or of > 4000:
-            raise ValueError('bad part numbers')
+        part, of, piece = upload_piece(part, of, data_b64)
         self.root_folders()
         tmp = self.root_dir('in', '.upload-%s.part' % uid)
         with open(str(tmp), 'ab' if part > 1 else 'wb') as fh:
-            fh.write(base64.b64decode(data_b64 or ''))
+            fh.write(piece)
         if tmp.stat().st_size > 4 * 1024 ** 3:
             tmp.unlink()
             raise ValueError('bigger than any backup of this house can be')
@@ -19685,14 +19709,20 @@ class Daemon(object):
             if now - last_ping >= 15:
                 last_ping = now
                 self.ping_broker()
+            # (5.44) each step on its own: one that raised - a way back whose
+            # plug went away, a window over a rule saved half-way - skipped
+            # every step after it in the same try, the schedules and the rules
+            # waiting to act among them, on every beat for as long as it kept
+            # raising; and it wrote a line of the log four times a second
+            for name, step in (('the clock', self.clock_watch),
+                               ('the ways back', self.check_for_backs),   # "on for ten minutes"
+                               ('the timers kept', self.timers_keep)):
+                self._beat_step(name, step)
+            if time.time() - last_windows >= 10:
+                last_windows = time.time()
+                self._beat_step('the rule windows', self.check_rule_windows)
+                self._beat_step('the GIL switch', apply_gil_switch)   # a setting saved since
             try:
-                self.clock_watch()           # a step of the clock moves every wait with it
-                self.check_for_backs()       # "on for ten minutes", the way back
-                self.timers_keep()
-                if time.time() - last_windows >= 10:
-                    last_windows = time.time()
-                    self.check_rule_windows()
-                    apply_gil_switch()        # a setting saved since takes effect here
                 # a gated "for N s" rule may ask the Wi-Fi first; that wait
                 # belongs on the presence worker, not on the clock.
                 # Skipped whenever that queue had anything in it at all, the
@@ -19719,9 +19749,12 @@ class Daemon(object):
                     # median of 751 ms and as much as 3,300 ms.
                     self._rule_queue.append(('__for__', None, None))
                     self._rule_kick.set()
-                self.check_schedules()
-                # the rules whose action was put off for a while
-                self.check_rule_waiting()
+            except Exception as e:
+                self._beat_said('the rules held for a while', e)
+            self._beat_step('the schedules', self.check_schedules)
+            # the rules whose action was put off for a while
+            self._beat_step('the rules waiting', self.check_rule_waiting)
+            try:
                 if time.time() - getattr(self, '_heat_at', 0) >= 30 \
                         and not getattr(self, '_chores_busy', False):
                     self._heat_at = time.time()
@@ -19778,8 +19811,29 @@ class Daemon(object):
                     threading.Thread(target=self._sms_status_thread, name='sms-status',
                                      daemon=True).start()
             except Exception as e:
-                log('timers: %s' % e, 'error')
+                self._beat_said('timers', e)
             nap = self._next_beat(0.25)
+
+    def _beat_step(self, name, step):
+        """One step of the clock's beat, on its own (5.44): what it raises is
+        said, and the steps after it still run."""
+        try:
+            step()
+        except Exception as e:                          # noqa: BLE001
+            self._beat_said(name, e)
+
+    def _beat_said(self, name, e):
+        """An error of the beat in the log once a minute per step and words,
+        not four times a second for as long as it lasts (5.44)."""
+        said = self.__dict__.setdefault('_beat_errors', {})
+        key = (name, str(e)[:120])
+        now = time.monotonic()
+        if now - said.get(key, -1e9) < 60:
+            return
+        if len(said) > 200:
+            said.clear()
+        said[key] = now
+        log('timers: %s: %s' % (name, e), 'error')
 
     def _next_beat(self, longest):
         """How long the clock may sleep: a quarter second, or less when a
@@ -19800,12 +19854,14 @@ class Daemon(object):
 
     def _half_minute(self):
         """What the clock does every thirty seconds, off the quarter-second beat."""
+        # (5.44) each on its own: the heating raising once skipped the digest,
+        # the watchdogs, root's chores and everything below them, every half
+        # minute for as long as it kept raising
+        for name, step in (('the heating', self.heating_apply), ('the monthly summary', self.monthly_summary),
+                           ('the daily digest', self.daily_digest), ('the watchdogs', self.check_watchdogs),
+                           ("root's chores", self.root_chores)):
+            self._beat_step(name, step)
         try:
-            self.heating_apply()
-            self.monthly_summary()
-            self.daily_digest()
-            self.check_watchdogs()
-            self.root_chores()
             try:
                 self.check_system_alerts()
             except Exception as e:
@@ -23229,9 +23285,18 @@ class Daemon(object):
             time.sleep(0.5)
         last = {}
         while not self._stop.wait(5):
-            interval = int(CONFIG.get('gateway_poll_interval') or 30)
+            # (5.44) the list and the interval inside the guard: a gateway
+            # list that could not be read (a database busy, a row saved by an
+            # older version) ended this thread, and no gateway was polled
+            # again until the daemon was restarted
+            try:
+                interval = int(CONFIG.get('gateway_poll_interval') or 30)
+                configs = list(self.gateway_configs())
+            except Exception as e:                      # noqa: BLE001
+                log('the gateways: %s' % e, 'warn')
+                continue
             now = time.time()
-            for g in self.gateway_configs():
+            for g in configs:
                 if now - last.get(g['name'], 0) < interval:
                     continue
                 last[g['name']] = now
@@ -38421,8 +38486,17 @@ class Daemon(object):
         second person walking in behind the first should not wait a full
         round."""
         while not self._stop.is_set():
-            cfg = self.wifi_config()
-            wait = max(3, int(cfg.get('poll_s') or WIFI_POLL_S))
+            # (5.44) the settings read inside a guard: one that raised (a
+            # database busy, a value no int() takes) ended this thread, and
+            # who is home was not followed again until a restart
+            try:
+                cfg = self.wifi_config()
+                wait = max(3, int(numeric(cfg.get('poll_s')) or WIFI_POLL_S))
+            except Exception as e:                      # noqa: BLE001
+                log('wifi presence: the settings: %s' % e, 'warn')
+                self._wifi_kick.wait(30)
+                self._wifi_kick.clear()
+                continue
             if time.time() - getattr(self, '_presence_moved_at', 0) < 60:
                 wait = min(wait, 5)
             if cfg.get('enabled') and cfg.get('host'):
@@ -43335,6 +43409,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
+                if body.get('groups') is not None and not isinstance(body.get('groups'), list):
+                    return self._error(400, 'groups is a list of names')       # (5.44) not a 500
                 return self._send(200, {'ok': True, 'groups': d.save_editor_groups(body.get('editor'), body.get('groups'))})
             if path == '/api/rooms':
                 err = d.check_pin(body.get('pin'), body.get('session'))
@@ -43695,6 +43771,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                     for one in fired:
                         d._fire_target(one, act, 'the dashboard')
                     return self._send(200, {'ok': True, 'message': '%s %s' % (d.target_label(target), act)})
+                plug = d.plug_by_name(target) if ':' not in target else None
+                if plug is not None:
+                    # (5.44) a socket by its name, which `zigmon --targets` lists
+                    # first and `zigmon --switch Light-Chodba on` is the help's own
+                    # example of: _valid_target takes it, and this answered
+                    # "unknown target" to every one of them
+                    act = str(body.get('do') or 'toggle').strip().lower()
+                    if act == 'pulse':
+                        ok, message = d.pulse_plug(plug, body.get('ms'))
+                    elif act == 'toggle':
+                        ok, message = d.toggle_plug(plug)
+                    elif act in ('on', 'off'):
+                        ok, message = d.set_plug_output(plug, act == 'on')
+                    else:
+                        return self._error(400, 'a socket takes on, off, toggle or pulse')
+                    return self._send(200 if ok else 502, {'ok': ok, 'message' if ok else 'error': message,
+                                                            'plug': d.plug_snapshot(plug)})
                 if not (target.startswith('zb:') or target.startswith('heat:')):
                     return self._error(404, 'unknown target')
                 do = valid_action(body.get('do'))
@@ -43728,6 +43821,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
+                # (5.44) a list where a list belongs: a number or a word was a 500
+                for _k in ('plugs', 'devices', 'sensors', 'buttons'):
+                    if body.get(_k) is not None and not isinstance(body.get(_k), list):
+                        return self._error(400, '%s is a list' % _k)
+                if body.get('groups') is not None and not isinstance(body.get('groups'), (dict, list)):
+                    return self._error(400, 'groups is an object of lists')
+                if isinstance(body.get('groups'), dict) and any(
+                        v is not None and not isinstance(v, list) for v in body['groups'].values()):
+                    return self._error(400, 'groups is an object of lists')
+                if body.get('rooms') and not isinstance(body.get('rooms'), list):
+                    return self._error(400, 'rooms is a list')
                 saved = d.save_overview_order(body.get('plugs'), body.get('devices'), body.get('groups'),
                                               body.get('sensors'), body.get('buttons'))
                 if body.get('rooms'):
@@ -44224,8 +44328,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
+                if not isinstance(body.get('rule') or {}, dict):
+                    return self._error(400, 'rule is an object')                 # (5.44) not a 500
                 try:
-                    result = d.dryrun_rule(body.get('rule') or {}, int(numeric(body.get('days')) or 7))
+                    # (5.44) a week, as the page asks, and never more than a
+                    # month: the samples are read under the database's lock
+                    result = d.dryrun_rule(body.get('rule') or {},
+                                           min(31, max(1, int(numeric(body.get('days')) or 7))))
                 except ValueError as e:
                     return self._error(400, str(e))
                 return self._send(200, dict(result, ok=True))
@@ -44329,6 +44438,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
+                if not isinstance(body.get('order') or [], list):
+                    return self._error(400, 'order is a list')                  # (5.44) not a 500
                 ids = [str(x)[:80] for x in (body.get('order') or [])][:200]
                 d.store.set_meta('wifi_order', json.dumps(ids))
                 d.bump()
@@ -44833,8 +44944,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 host = str(body.get('host') or '').strip()
                 if not host:
                     return self._error(400, 'no address')
+                if not re.match(r'^[A-Za-z0-9._:\[\]-]{1,255}$', host):
+                    # (5.44) a space or a control character went into the URL
+                    # and came back as a 500 rather than as what it is
+                    return self._error(400, 'that is not an address')
                 try:
-                    return self._send(200, d.test_device(host, body.get('password') or ''))
+                    return self._send(200, d.test_device(host, str(body.get('password') or '')))
                 except PlugError as e:
                     return self._error(502, str(e))
             if path == '/api/managed/discover':
@@ -44849,7 +44964,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 scope = str(body.get('scope') or 'history')
                 if scope not in ('all', 'history', 'events', 'device'):
                     return self._error(400, 'scope must be all, history, events or device')
-                target = body.get('device')
+                # (5.44) a name is a string: a number here erased the history
+                # and then failed on the line that says so (a 500, no event)
+                target = str(body.get('device')).strip() if body.get('device') not in (None, '') else None
                 before = d.store.stats().get('bytes') or 0
                 log('erasing %s%s (%s); the file is compacted afterwards'
                     % (scope, ' ' + str(target) if target else '', human_size(before)))
