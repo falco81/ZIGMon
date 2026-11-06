@@ -39,6 +39,13 @@ PHP_PATCH="36"              # release of it with the php2shell fix (8.3.36)
 KEEP_PYTHON=""              # --keep-python: leave the daemon on the Python it runs on
 NO_PYTHON_BUILD=""          # --no-python-build: only the repositories' Pythons, none built here
 ZIGMON_PY="/usr/bin/python3"   # the Python the daemon and the command run on (ensure_python)
+# (5.44) the "system level" of what this install.sh puts in besides the program
+# (packages, Python, PHP, units, helpers, sudoers). Raised by a release whose
+# system parts must be put in again on the command line; the same number as
+# SYSTEM_LEVEL in zigmon.py (tools/make-release.sh checks). Written to
+# SYSTEM_STAMP when it is done; no stamp counts as level 1.
+SYSTEM_LEVEL=1
+SYSTEM_STAMP="/etc/zigmon-system.json"
 
 MQTT_HOST="127.0.0.1"
 MQTT_PORT=""
@@ -1352,11 +1359,70 @@ deploy_live_path() {
     esac
 }
 
+# ---- (5.44) a release that must be put in on the command line ---------------
+# release.json in the package (signed with the rest of it, see
+# deploy/zigmon_upgrade.py) may say the release must be put in by a person on
+# the command line, or the release may need a higher system level than this
+# machine's stamp. Asked of the package's own zigmon_upgrade.py. Started from
+# the dashboard (ZIGMON_UPGRADE_FROM_PAGES, set by root's upgrade service) such
+# a release stops here, before anything is changed - also when the root helper
+# that started it is an older one that does not know of release.json. On the
+# command line it is said and goes on.
+cli_gate() {
+    [[ -f "$SOURCE_DIR/deploy/zigmon_upgrade.py" ]] || return 0
+    local said rc=0
+    said="$(ZIGMON_LIB="$LIB_DIR" python3 -I "$SOURCE_DIR/deploy/zigmon_upgrade.py" --needs-cli "$SOURCE_DIR" 2>&1)" || rc=$?
+    [[ $rc -eq 3 ]] || return 0
+    if [[ -n "${ZIGMON_UPGRADE_FROM_PAGES:-}" ]]; then
+        fail "refused from the dashboard: $said"
+    fi
+    step "This version is put in on the command line"
+    warn "$said"
+    good "this is the command line: going on"
+}
+
+write_system_stamp() {
+    local by="the command line"
+    [[ -z "${ZIGMON_UPGRADE_FROM_PAGES:-}" ]] || by="the dashboard"
+    if [[ -n "$DRY_RUN" ]]; then
+        note "[would write] $SYSTEM_STAMP (system level $SYSTEM_LEVEL, zigmon $VERSION, by $by)"
+        return 0
+    fi
+    # what root's parts are as this install.sh left them, each with its hash:
+    # the daemon says so on every page when they drift from it, or when the
+    # program runs a version this stamp was not written for
+    local parts=("$LIB_DIR/zigmon_root.py" "$LIB_DIR/zigmon_upgrade.py" "$UNIT_FILE"
+                 /etc/systemd/system/zigmon-root.path /etc/systemd/system/zigmon-root.service
+                 /etc/systemd/system/zigmon-upgrade.path /etc/systemd/system/zigmon-upgrade.service
+                 "$LOGROTATE_FILE" /etc/profile.d/zz-zigmon-console.sh)
+    if python3 -I - "$SYSTEM_STAMP.new" "$SYSTEM_LEVEL" "$VERSION" "$by" "${parts[@]}" <<'STAMP'
+import hashlib, json, os, sys, time
+out, level, version, by = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+parts = {}
+for p in sys.argv[5:]:
+    if os.path.isfile(p):
+        with open(p, 'rb') as f:
+            parts[p] = hashlib.sha256(f.read()).hexdigest()
+with open(out, 'w') as f:
+    json.dump({'system_level': level, 'version': version, 'by': by, 'at': int(time.time()),
+               'parts': parts}, f, indent=1)
+STAMP
+    then
+        chmod 644 "$SYSTEM_STAMP.new" && mv -f "$SYSTEM_STAMP.new" "$SYSTEM_STAMP" \
+            && good "$SYSTEM_STAMP: system level $SYSTEM_LEVEL, root's parts as zigmon $VERSION puts them"
+    else
+        rm -f "$SYSTEM_STAMP.new"
+        warn "could not write $SYSTEM_STAMP"
+    fi
+}
+# ---- (5.44) end -------------------------------------------------------------
+
 do_upgrade() {
     local had=""
     if [[ -f "$LIB_DIR/zigmon.py" ]]; then
         had="$(sed -n "s/^__version__ = '\(.*\)'/\1/p" "$LIB_DIR/zigmon.py" | head -n 1)"
     fi
+    cli_gate                 # 5.44: before anything is changed
     preflight
     install_program
     ensure_python            # 5.31: the newest python3.X of the repositories
@@ -1548,6 +1614,7 @@ MPATCH
         harden_php                       # 5.15: php2shell, and the version that mends it
         systemctl restart php-fpm >/dev/null 2>&1 || true
     fi
+    write_system_stamp       # 5.44: before zigmon starts and looks at it
     start_service
     verify
     report_deploy_changes "$had"
@@ -1562,6 +1629,7 @@ do_uninstall() {
         /etc/systemd/system/zigmon-upgrade.path /etc/systemd/system/zigmon-upgrade.service
     run rm -f /etc/sudoers.d/zigmon
     run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login "$CONSOLE_SYSCTL"
+    run rm -f "$SYSTEM_STAMP"
     run rm -f "$UNIT_FILE" "$LOGROTATE_FILE" "$BIN_LINK"
     run rm -rf "$LIB_DIR" "$WEB_DIR"
     if [[ -f "$NGINX_CONF" ]]; then
@@ -1598,6 +1666,7 @@ main() {
     configure_nginx
     configure_selinux
     configure_firewall
+    write_system_stamp       # 5.44: before zigmon starts and looks at it
     start_service
     verify
     summary

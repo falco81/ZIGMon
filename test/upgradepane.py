@@ -236,7 +236,8 @@ else:
     if os.environ.get('DBG'):
         print('DBG', json.dumps(r, indent=1))
     check(not r.get('errs'), 'the page threw: %r' % r.get('errs'))
-    check(r.get('cards') == ['The nodes', 'From the web', 'A new version', 'What root said last zigmon',
+    # (5.44) To be done by hand: always first, for an administrator
+    check(r.get('cards') == ['To be done by hand', 'The nodes', 'From the web', 'A new version', 'What root said last zigmon',
                              'On the command line', ''],
           'the cards are %r' % r.get('cards'))
     check(r.get('logFolded'), 'what root said is not folded under a bar')
