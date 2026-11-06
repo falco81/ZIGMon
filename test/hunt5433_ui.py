@@ -23,7 +23,12 @@
     scope, the cards before among them, a chain back to the first drawing -
     thousands of elements more every minute in a house that reports;
   * a valve's preset - a word the device's own converter sends - written into
-    the PIN box's HTML unescaped.
+    the PIN box's HTML unescaped;
+  * "Put them back" on the Upgrades (or the backups') bar said there was
+    nothing left to save while a change made on another settings card was
+    still on the screen, and the next drawing threw that change away;
+  * an iPad: the buttons of the Zigbee bindings table showed on a hover only,
+    so they were there to be tapped and could not be seen.
 
 Ports 19562 (the daemon) and 19563 (php -S).
 """
@@ -292,6 +297,49 @@ function counting(p) {
       out.leak = {before: a, after: z, cards: out.cards};
       await ctx.close();
     }
+    // (8) "Put them back" on the Upgrades bar, with a change made on another card
+    {
+      const [ctx, p] = await open(b, 'owner');
+      await p.evaluate(() => { showTab('control'); showControlSection('dev-health'); });
+      await wait(800);
+      const bump = () => p.evaluate(() => {
+        const boxes = saveBarBoxes(SAVE_BARS[0]);
+        const b0 = boxes.filter(b => b.tagName === 'SELECT')[0] || boxes[0];
+        if (b0.dataset.bool) b0.checked = !b0.checked;
+        else if (b0.tagName === 'SELECT') b0.selectedIndex = (b0.selectedIndex + 1) % b0.options.length;
+        else b0.value = b0.value + '1';
+        b0.dispatchEvent(new Event('change', {bubbles: true}));
+        document.getElementById('up-reset').click();
+        return {dirty: SETTINGS.dirty, note: document.getElementById('settings-note').textContent};
+      });
+      out.putBack = {};
+      out.putBack.other = await p.evaluate(() => {
+        const box = settingsQuery('[data-k="battery_warn"]');
+        box.value = String(+box.value + 5); box.dispatchEvent(new Event('input', {bubbles: true}));
+        return box.value;
+      });
+      await p.evaluate(() => showControlSection('sys-upgrade'));
+      await wait(800);
+      out.putBack.withOther = await bump();
+      // and with nothing else changed: back to nothing to save
+      await p.evaluate(() => { const box = settingsQuery('[data-k="battery_warn"]'); box.value = String(+box.value - 5);
+                               box.dispatchEvent(new Event('input', {bubbles: true})); });
+      out.putBack.alone = await bump();
+      await ctx.close();
+    }
+    // (9) an iPad: the buttons of the Zigbee bindings table are seen without a hover
+    {
+      const opts = Object.assign({}, devices['iPad Pro 11'], {viewport: {width: 1194, height: 834}, screen: {width: 1194, height: 834}});
+      const [ctx, p] = await open(b, 'owner', opts);
+      out.touch = await p.evaluate(() => {
+        const t = document.createElement('table'); t.innerHTML = '<tbody><tr class="bindrow"><td class="bindacts"><button>x</button></td></tr></tbody>';
+        document.body.appendChild(t);
+        const o = getComputedStyle(t.querySelector('.bindacts')).opacity;
+        t.remove();
+        return {opacity: o, hoverNone: matchMedia('(hover:none)').matches};
+      });
+      await ctx.close();
+    }
     // (7) a valve's preset with markup in it, chosen by somebody not signed in
     {
       const [ctx, p] = await open(b, null);
@@ -383,6 +431,19 @@ check(tv.get('open'), 'the PIN box did not open for a valve\'s preset: %r' % tv)
 check(not tv.get('img') and not tv.get('xss'),
       'a valve\'s preset went into the PIN box as HTML: %r' % tv)
 print('a valve\'s preset in the PIN box')
+
+pb = o.get('putBack') or {}
+check((pb.get('withOther') or {}).get('dirty') and (pb.get('withOther') or {}).get('note') == 'Unsaved changes',
+      '"Put them back" on the Upgrades bar said nothing was left to save with a change made on another card '
+      'still on the screen - the next drawing threw it away: %r' % pb)
+check(pb.get('alone') == {'dirty': False, 'note': ''},
+      '"Put them back" with nothing else changed does not end with nothing to save: %r' % pb.get('alone'))
+print('"Put them back" on a bar')
+
+tc = o.get('touch') or {}
+check(tc.get('hoverNone') and tc.get('opacity') == '1',
+      'an iPad: the buttons of the Zigbee bindings table (Forget among them) are invisible without a hover: %r' % tc)
+print('an iPad: the bindings table\'s buttons')
 
 check(not o.get('errors'), 'errors on the page: %r' % (o.get('errors') or [])[:5])
 finish()

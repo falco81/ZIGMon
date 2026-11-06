@@ -3364,6 +3364,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .bindmark{width:20px;text-align:center;opacity:.75}
   .bindacts{white-space:nowrap;text-align:right;opacity:0;transition:opacity .12s}
   .bindrow:hover .bindacts,.bindrow:focus-within .bindacts{opacity:1}
+  /* (5.43.3) a finger has no hover: on an iPad the three buttons were there to
+     be tapped and could not be seen - Forget among them, at the row's end */
+  @media (hover:none){.bindacts{opacity:1}}
   .bindacts .btn{margin-left:4px}
   .binddetail td{background:var(--panel2);border-top:0}
   .binddetail-in{display:flex;flex-direction:column;gap:3px;padding:4px 2px 8px 30px;font-size:12.5px}
@@ -22132,6 +22135,9 @@ function renderSettings(st) {
   });
   applySettingsWhen();
   setSettingsNote('');
+  // (5.43.3) what every box held as drawn, so "Put them back" on a bar can tell
+  // whether something elsewhere is still changed (settingsChangedElsewhere)
+  settingsQueryAll('input[data-k], select[data-k], textarea[data-k]').forEach(function (b) { b.dataset.drawn = upBoxValue(b); });
   // what the save bars of Upgrades and of the backups measure a change against
   (typeof SAVE_BARS === 'undefined' ? [] : SAVE_BARS).forEach(function (bar) {
     saveBarBoxes(bar).forEach(function (b) { b.dataset.was = upBoxValue(b); });
@@ -33390,12 +33396,21 @@ SAVE_BARS.forEach(function (sb) {
       if (b.dataset.was === undefined) return;
       if (b.dataset.bool) b.checked = b.dataset.was === '1'; else b.value = b.dataset.was;
     });
-    SETTINGS.dirty = false;
-    setSettingsNote('');
+    // (5.43.3) only this bar's boxes are put back. A change made on another
+    // card is still on the screen and still to be saved: "nothing changed"
+    // here let the next drawing throw it away without a word.
+    var left = settingsChangedElsewhere();
+    SETTINGS.dirty = left;
+    setSettingsNote(left ? 'Unsaved changes' : '');
     applySettingsWhen();
     mark();
   };
 });
+function settingsChangedElsewhere() {
+  return settingsQueryAll('input[data-k], select[data-k], textarea[data-k]').some(function (b) {
+    return b.dataset.drawn !== undefined && upBoxValue(b) !== b.dataset.drawn;
+  });
+}
 // Every Save on a settings card saves every setting, wherever it is drawn -
 // the same one Save it always was.
 Array.prototype.forEach.call(document.querySelectorAll('.set-save-alt'), function (b) {
