@@ -2470,7 +2470,9 @@ def pk_cose_pem(cose):
 def pk_signed_ok(pem, signature, data):
     """Whether `signature` is the key's over `data` (SHA-256; ES256 sends a
     DER ECDSA signature, RS256 PKCS#1 v1.5 - openssl dgst takes both)."""
-    if not signature or len(signature) > 1024:
+    # bytes, or no signature (5.43.3): a text in a self attestation's "sig"
+    # reached bytes() below as a str, and the TypeError was a 500
+    if not isinstance(signature, (bytes, bytearray)) or not signature or len(signature) > 1024:
         return False
     with tempfile.TemporaryDirectory(prefix='zigmon-pk-') as folder:
         key, sig = os.path.join(folder, 'key.pem'), os.path.join(folder, 'sig.bin')
@@ -28613,7 +28615,7 @@ class Daemon(object):
         return '%s %s' % (action_words(found.get('do') or ''),
                           self.target_label(found.get('target') or ''))
 
-    def tap_start_duo(self, found, who=''):
+    def tap_start_duo(self, found, who='', carried=None):
         """Start the asking and hand back a ticket to wait on."""
         if not self.duo_ready():
             self.say_event('control', 'the link "%s" wanted Duo, which is not set up'
@@ -28653,11 +28655,11 @@ class Daemon(object):
         self.note_tap(found, who, 'header', 'waiting', 'waiting for somebody to approve it',
                       ticket=ticket)
         threading.Thread(target=self._duo_then_tap, args=(ticket, found['id'], what, who),
-                         name='duo', daemon=True).start()
+                         kwargs={'carried': dict(carried or {})}, name='duo', daemon=True).start()
         return True, {'state': 'waiting', 'ticket': ticket,
                       'message': 'approve it on your phone or watch'}
 
-    def _duo_then_tap(self, ticket, tap_id, what, who):
+    def _duo_then_tap(self, ticket, tap_id, what, who, carried=None):
         try:
             allowed, said = self.duo_push(what, who)
         except Exception as e:
@@ -28679,7 +28681,7 @@ class Daemon(object):
             return
         # approved: from here it is an ordinary press, and it is written down
         # as one
-        ok, answer = self.tap_do(found, who=who, way='header', note=False)
+        ok, answer = self.tap_do(found, who=who, way='header', note=False, carried=carried)
         message = answer.get('message') if isinstance(answer, dict) else str(answer)
         self._waiting_done(ticket, 'done' if ok else 'refused', message or 'done')
         self.bump()
@@ -29130,8 +29132,11 @@ class Daemon(object):
             # and comes straight back with a ticket; the asking, the waiting
             # and the acting all happen on a thread of the daemon's own, so
             # what was pressed happens whether or not the watch is still
-            # listening when the answer comes.
-            return self.tap_start_duo(found, who)
+            # listening when the answer comes. What the press carried goes
+            # with it (5.43.3): it was dropped here, so a link that bans
+            # {ip}, or a script that takes a room, approved on the phone did
+            # its thing with nothing filled in
+            return self.tap_start_duo(found, who, carried=carried)
         if found is not None and self.tap_code_wanted() and way == 'header' and not ask:
             # Past the secret, so there is nothing left to give away: the
             # answer may say plainly what is wrong with the code, and it has
@@ -29192,6 +29197,21 @@ class Daemon(object):
             if where and where in carried and one['name'] not in carried:
                 carried[one['name']] = carried[where]
             carried.setdefault(one['name'], '')
+        # Asked is asked (5.43.3): a link that runs a script or keeps an
+        # address out has no state to tell, and these two ran whatever ?ask
+        # said - and ?ask is let past the code and past Duo, as it changes
+        # nothing. A secret read out of a log, with "?ask" on the end, ran the
+        # script and banned or let in the address on a house that asks for a
+        # second factor precisely so that the secret alone would not.
+        if ask and (str(found.get('target') or '').startswith('script:')
+                    or found.get('do') in ('ban', 'unban')):
+            does = (('runs %s' % self.target_label(found.get('target') or ''))
+                    if str(found.get('target') or '').startswith('script:')
+                    else ('keeps an address out' if found.get('do') == 'ban' else 'lets an address back in'))
+            said = 'this link %s when it is pressed - asking changes nothing' % does
+            if note:
+                self.note_tap(found, who, way, 'asked', said[:160], ask=True)
+            return True, {'state': '', 'message': said, 'asked': True}
         if str(found.get('target') or '').startswith('script:'):
             script = self.script_by_id(str(found.get('target'))[7:])
             if not script:
@@ -39354,14 +39374,26 @@ class Daemon(object):
         return True
 
     # ---- accounts ---------------------------------------------------------------
+    @staticmethod
+    def _signin_live(r, now, idle):
+        """Whether a sign-in in memory still lets anybody in (5.43.3): one run
+        out or left idle stays in the dict until somebody shows its token
+        again, which a browser closed for good never does."""
+        return not (r['expires'] < now or (idle and now - r['last'] > idle))
+
     def account_public(self, a):
+        now, idle = time.time(), int(CONFIG.get('session_idle_min') or 0) * 60
         return {'name': a['name'], 'role': a['role'], 'role_name': ROLE_NAMES.get(a['role'], a['role']),
                 'kind': a.get('kind') or 'password',
                 'disabled': bool(a.get('disabled')), 'must_change': bool(a.get('must_change')),
                 'note': a.get('note') or '', 'created': a.get('created'), 'last_in': a.get('last_in'),
                 'last_from': a.get('last_from') or '',
+                # the live ones, as the list of sign-ins counts them: every
+                # sign-in that had run out was counted here for good, and the
+                # account read "signed in 7x" beside a list of two (5.43.3)
                 'signed_in': sum(1 for r in list(self.signins.values())
-                                 if str(r['name']).lower() == a['name'].lower()),
+                                 if str(r['name']).lower() == a['name'].lower()
+                                 and self._signin_live(r, now, idle)),
                 'passkeys': sum(1 for r in list(getattr(self, 'passkeys', {}).values())
                                 if str(r['name']).lower() == a['name'].lower())}
 
@@ -39941,7 +39973,10 @@ class Daemon(object):
             raise ValueError('the challenge was given for another name than the one this page is on')
         if name is not None and got['name'].lower() != str(name).lower():
             raise ValueError('the challenge was given to another account')
-        if said.get('origin') not in origins:
+        # a string, or it is not one of them (5.43.3): a list or an object
+        # here asked a set whether it held something unhashable, and the
+        # TypeError went out as a 500 rather than as a refused passkey
+        if not isinstance(said.get('origin'), str) or said.get('origin') not in origins:
             raise ValueError('the passkey was used on another page (%s), not on this one'
                              % re.sub(r'[^\x20-\x7e]', '?', str(said.get('origin')))[:80])
         if said.get('crossOrigin') is True:
@@ -42830,9 +42865,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
-                d.say_event('audit', 'the hidden values were shown from the command line', 'warn',
+                # said by who asked (5.43.3): the page asks this too (the
+                # forwarding address of the SIM gateway), and an administrator
+                # reading every password on the dashboard was written down as
+                # the command line having done it
+                me = d.session_get(body.get('session')) or {}
+                by = ('%s on the dashboard' % me['name']) if me.get('name') else 'the command line'
+                d.say_event('audit', 'the hidden values were shown to %s' % by, 'warn',
                             about='secrets_out', title='The hidden values were shown')
-                log('the hidden values were handed over (--secret)', 'warn')
+                log('the hidden values were handed over to %s' % by, 'warn')
                 groups = d.secrets()
                 # what each looks like when it is shown short, so the command
                 # line can put the whole thing in its place rather than

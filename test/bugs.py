@@ -402,7 +402,7 @@ print('a section of buttons: renamed, its targets follow; toggled, it moves as o
 d.store.set_meta('taps', json.dumps([{'id': 't-off', 'name': 'OffTap', 'target': 'Plug-New', 'do': 'on',
                                       'enabled': False, 'token': 'tok-off'}]))
 _asked = []
-d.tap_start_duo = lambda found, who: _asked.append(found) or (True, {'ticket': 'x'})
+d.tap_start_duo = lambda found, who, carried=None: _asked.append(found) or (True, {'ticket': 'x'})
 d.tap_code_wanted = lambda: True
 d.tap_factor = lambda: 'duo'
 _ok, _said = d.tap('t-off', who='a test', way='header', code='000000')
