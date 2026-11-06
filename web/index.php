@@ -632,6 +632,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/perf' . ($ask ? '?' . implode('&', $ask) : ''), 'GET', null, 10.0);
         exit;
     }
+    if ($what === 'proxy-tile' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.45) the SSLProxy card: whoever may see the dashboard - the
+        // daemon leaves the addresses and signatures to an administrator
+        zigmon_relay('/api/proxy-tile', 'GET', null, 10.0);
+        exit;
+    }
     if ($what === 'osup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // the updates of the system (5.34): what dnf has waiting and the
         // update going on - an administrator's, behind the sign-in in the daemon
@@ -1921,6 +1927,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .dev .foot .reason{color:var(--warn)}
   .dev.crit .foot .reason{color:var(--crit)}
   .dev.stale .reading .v{color:var(--tx-dim)}
+  /* (5.45) the SSLProxy card: the server in front, its nginx and Suricata */
+  .dev.proxy-tile{cursor:pointer}
+  .dev.proxy-tile .name .pt-icon{display:inline-flex;vertical-align:-3px;margin-right:6px;color:var(--info)}
+  .dev.proxy-tile .reading .v.pt-on{color:var(--ok)} .dev.proxy-tile .reading .v.pt-off{color:var(--crit)}
+  .dev.proxy-tile .reading .v.pt-unk{color:var(--tx-dim)}
+  .dev.proxy-tile .pt-facts{font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
+  .pt-detail h4{margin:14px 0 4px;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut)}
+  .pt-detail .kv .v{overflow-wrap:anywhere;max-width:65%}
 
   .bar{height:6px;border-radius:99px;background:var(--panel2);overflow:hidden;flex:1;min-width:60px}
   .bar span{display:block;height:100%;border-radius:99px;transition:width .4s ease}
@@ -8909,7 +8923,8 @@ function renderTab(name, st) {
   if (interacting()) { TAB_STALE[name] = true; return; }   // wait until they are done
   // cards show "x min ago" texts: repaint at least once a minute even if nothing else moved
   var minute = Math.floor(Date.now() / 60000), unlocked = isUnlocked();
-  var cardsSig = [st.devices, st.plugs, st.order, st.overview_layout, minute, unlocked, REARRANGE, LINKS, st.thresholds];
+  var cardsSig = [st.devices, st.plugs, st.order, st.overview_layout, minute, unlocked, REARRANGE, LINKS, st.thresholds,
+                  st.proxy_tile, PROXY_TILE.sig];
   // The sensor and button grids draw devices and nothing else - no socket
   // appears on either - but they shared the signature above, so the two
   // dozen sockets reporting their wattage several times a second rebuilt all
@@ -9437,7 +9452,10 @@ var ICON = { plug: '\ud83d\udd0c', light: '\ud83d\udca1', all: '\ud83d\udd0c', z
              // the opposite of shut: the valve wide open, heating flat out
              max: '\ud83d\udd25',
              valve: '\u2668\ufe0f', knob: '\ud83c\udf9b\ufe0f', motion: '\ud83d\udeb6', contact: '\ud83d\udeaa', thermo: '\ud83c\udf21\ufe0f',
-             button: '\ud83d\udd18', sensor: '\ud83d\udce6', router: '\ud83d\udce1', coordinator: '\ud83d\udce1', gateway: '\ud83d\udce1' };
+             button: '\ud83d\udd18', sensor: '\ud83d\udce6', router: '\ud83d\udce1', coordinator: '\ud83d\udce1', gateway: '\ud83d\udce1',
+             // (5.45) the server in front, in a list that can only hold a
+             // letter: the shield (its card draws the shield with the lock)
+             sslproxy: '\ud83d\udee1\ufe0f' };
 function targetKind(spec) {
   spec = spec || '';
   if (spec === '*') return 'all';
@@ -9464,7 +9482,7 @@ function plugRoleKind(nameOrPlug) {
 // the rest by kind. Inside a kind the sort is by name.
 var KIND_ORDER = ['agroup', 'sgroup', 'person', 'plug', 'all', 'light', 'valve', 'zb', 'heat', 'scene', 'seq', 'seqreset',
                   'bell', 'autoswitch', 'thermo', 'motion', 'contact', 'knob', 'button', 'sensor',
-                  'modem', 'ap', 'router', 'coordinator', 'gateway'];
+                  'modem', 'ap', 'router', 'coordinator', 'gateway', 'sslproxy'];
 function kindRankOfLabel(label) {
   label = String(label || '');
   for (var i = 0; i < KIND_ORDER.length; i++) { var ic = ICON[KIND_ORDER[i]]; if (ic && label.indexOf(ic) === 0) return i; }
@@ -9740,6 +9758,8 @@ function overviewAvailableOptions(st) {
     if (d.source === 'plug') return;
     out.push([d.id, deviceIcon(d) + ' ' + d.name]);
   });
+  // (5.45) the server in front, while its integration is set up and on
+  if (proxyTileOn(st)) out.push([PROXY_TILE_ID, ICON.sslproxy + ' ' + proxyTileName()]);
   // (5.44) asked with every status an administrator's Overview draws: the same
   // list is not sorted again (sixty-five names, by kind and by name, a tick)
   var sig = JSON.stringify(out), memo = overviewAvailableOptions.memo;
@@ -9801,6 +9821,165 @@ function overviewRemover(id) {
     renderOverviewCustom(STATE.status);
   };
 }
+// ---- the SSLProxy card (5.45): the server in front, its nginx and Suricata -----------
+// Not a device: the daemon offers it (status.proxy_tile.on) while the server
+// in front is set up and its reading is switched on, and what it shows comes
+// from its own road, answered from the daemon's last look - one SSH a minute
+// at most, however many pages ask. Everything on it that came from that
+// machine is put in as text, never as markup.
+var PROXY_TILE_ID = 'proxy:front';
+var PROXY_TILE = {data: null, sig: '', at: 0, busy: false};
+function proxyTileOn(st) { return !!(st && st.proxy_tile && st.proxy_tile.on); }
+function proxyTileName() {
+  var t = PROXY_TILE.data;
+  return (t && t.on && t.name) || 'SSLProxy';
+}
+function proxyTileShown(st) { return proxyTileOn(st) && overviewLayoutIds(st).indexOf(PROXY_TILE_ID) >= 0; }
+function loadProxyTile(force) {
+  var st = STATE.status;
+  if (PROXY_TILE.busy || !proxyTileOn(st)) return;
+  if (!force && Date.now() - PROXY_TILE.at < 20000) return;
+  PROXY_TILE.busy = true; PROXY_TILE.at = Date.now();
+  api('proxy-tile').then(function (t) {
+    PROXY_TILE.busy = false;
+    // a look under way: asked again in a few seconds rather than in twenty
+    if (t && (t.looking || t.state === 'waiting')) PROXY_TILE.at = Date.now() - 16000;
+    var sig = JSON.stringify(t);
+    if (sig === PROXY_TILE.sig) return;
+    PROXY_TILE.data = t; PROXY_TILE.sig = sig;
+    if (STATE.tab === 'overview' && STATE.status) { renderOverviewCustom(STATE.status); renderOverviewAddControl(STATE.status); }
+  }, function () { PROXY_TILE.busy = false; });
+}
+setInterval(function () {
+  if (document.hidden || STATE.tab !== 'overview') return;
+  var st = STATE.status;
+  // the card on the Overview, or the picker that names it by its name
+  if (proxyTileShown(st) || (isUnlocked() && proxyTileOn(st) && !PROXY_TILE.data)) loadProxyTile();
+}, 4000);
+function proxyUptimeText(s) {
+  if (!isNum(s)) return '\u2013';
+  var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return d + ' d ' + h + ' h';
+  if (h) return h + ' h ' + m + ' min';
+  return m + ' min';
+}
+function proxyKB(kb) {
+  if (!isNum(kb)) return '\u2013';
+  if (kb >= 1048576) return fmt(kb / 1048576, 1) + ' GB';
+  return fmt(kb / 1024, 0) + ' MB';
+}
+function proxyCount(v) { return isNum(v) ? String(v) : '\u2013'; }
+function proxyStateWords(state) {
+  return {online: 'online', offline: 'offline', stale: 'stale', waiting: 'waiting'}[state] || 'waiting';
+}
+function proxyUnitReading(state, label) {
+  var word = state || 'unknown';
+  var box = reading(word, '', label, true);
+  box.querySelector('.v').classList.add(word === 'active' ? 'pt-on' : (word === 'unknown' ? 'pt-unk' : 'pt-off'));
+  return box;
+}
+function buildProxyTileCard(t) {
+  t = t || {};
+  var ngx = t.nginx || {}, sur = t.suricata || {};
+  var state = t.state || 'waiting';
+  var level = state === 'offline' ? 'crit' : (state === 'online' ? 'ok' : 'warn');
+  var card = el('div', 'card dev proxy-tile ' + level + (state === 'online' ? '' : ' stale'));
+  card.dataset.tile = PROXY_TILE_ID;
+  var head = el('div', 'head'), nm = el('div');
+  var name = el('div', 'name');
+  var icon = el('span', 'pt-icon');
+  icon.innerHTML = iconMarkup('sslproxy', 17);          // the page's own drawing, nothing of the remote's
+  name.appendChild(icon);
+  name.appendChild(document.createTextNode(t.name || 'SSLProxy'));
+  nm.appendChild(name);
+  nm.appendChild(el('div', 'model', ['SSLProxy \u00b7 nginx \u00b7 Suricata', t.host || ''].filter(Boolean).join(' \u00b7 ')));
+  head.appendChild(nm);
+  head.appendChild(el('span', 'spacer'));
+  head.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  card.appendChild(head);
+  // a row for the machine, one for nginx, one for Suricata - the SMS card's look
+  var readings = el('div', 'readings');
+  readings.appendChild(reading(proxyUptimeText(t.uptime_s), '', 'uptime'));
+  readings.appendChild(reading(t.load && isNum(t.load[0]) ? fmt(t.load[0], 2) : '\u2013', '', 'load'));
+  card.appendChild(readings);
+  var web = el('div', 'readings');
+  web.appendChild(proxyUnitReading(ngx.state, 'nginx'));
+  web.appendChild(reading(proxyCount(ngx.hour), '', 'requests, 1 h', true));
+  web.appendChild(reading(proxyCount(ngx.refused), '', 'refused, 1 h', true));
+  card.appendChild(web);
+  var ids = el('div', 'readings');
+  ids.appendChild(proxyUnitReading(sur.state, 'suricata'));
+  ids.appendChild(reading(proxyCount(sur.alerts), '', 'alerts, 24 h', true));
+  if (isNum(sur.worst)) ids.appendChild(reading(sur.worst, '', 'worst priority', true));
+  card.appendChild(ids);
+  var facts = [];
+  if (t.load && t.load.length === 3) facts.push('load ' + t.load.map(function (x) { return fmt(x, 2); }).join(' '));
+  if (isNum(t.mem_avail_kb)) facts.push(proxyKB(t.mem_avail_kb) + ' free of ' + proxyKB(t.mem_total_kb));
+  if (isNum(t.disk_avail_kb)) facts.push('disk ' + proxyKB(t.disk_avail_kb) + ' free');
+  if (isNum(sur.packets)) facts.push(sur.packets + ' packets' + (isNum(sur.drops) ? ', ' + sur.drops + ' dropped' : ''));
+  if (isNum(t.weighed_hour)) facts.push(t.weighed_hour + ' weighed here, 1 h');
+  if (facts.length) card.appendChild(el('div', 'pt-facts', facts.join(' \u00b7 ')));
+  var foot = el('div', 'foot');
+  foot.appendChild(el('span', '', t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet')));
+  if (t.error) foot.appendChild(el('span', 'reason', t.error));
+  card.appendChild(foot);
+  card.title = 'The server in front \u2014 click for more';
+  card.addEventListener('click', function (e) {
+    if (Date.now() - ORDER.justDropped < 500) return;
+    if (e.target.closest && e.target.closest('button')) return;
+    openProxyTileDetail();
+  });
+  return card;
+}
+function openProxyTileDetail() {
+  var t = PROXY_TILE.data || {};
+  var ngx = t.nginx || {}, sur = t.suricata || {};
+  zmodal((t.name || 'SSLProxy') + ' \u2014 the server in front', function (body) {
+    body.classList.add('pt-detail');
+    var section = function (title, rows) {
+      body.appendChild(el('h4', '', title));
+      var list = el('div', 'kv-list');
+      rows.forEach(function (r) {
+        if (!r) return;
+        var kv = el('div', 'kv');
+        kv.appendChild(el('span', 'k', r[0]));
+        kv.appendChild(el('span', 'v', r[1] === null || r[1] === undefined ? '\u2013' : String(r[1])));
+        list.appendChild(kv);
+      });
+      body.appendChild(list);
+    };
+    section('The server', [
+      ['state', proxyStateWords(t.state)],
+      t.host ? ['address', t.host] : null,
+      ['uptime', proxyUptimeText(t.uptime_s)],
+      ['load over 1, 5 and 15 minutes', t.load ? t.load.map(function (x) { return fmt(x, 2); }).join('  ') : null],
+      ['memory free', isNum(t.mem_avail_kb) ? proxyKB(t.mem_avail_kb) + ' of ' + proxyKB(t.mem_total_kb) : null],
+      ['disk free (/)', isNum(t.disk_avail_kb) ? proxyKB(t.disk_avail_kb) + ' of ' + proxyKB(t.disk_total_kb) : null],
+      ['last look', t.at ? stamp(t.at) + ' \u00b7 ' + ago(t.at) : 'not yet'],
+      ['looked at', 'once a minute at most, over SSH'],
+      t.error ? ['said', t.error] : null]);
+    section('nginx', [
+      ['service', ngx.state || 'unknown'],
+      ['requests in the last hour', proxyCount(ngx.hour)],
+      ['refused (4xx)', proxyCount(ngx.refused)],
+      ['of them closed without an answer (444)', proxyCount(ngx.closed)],
+      ['server errors (5xx)', proxyCount(ngx.server_errors)],
+      ['weighed here in the last hour', proxyCount(t.weighed_hour)]]
+      .concat((ngx.top || []).map(function (a) { return ['refused most', a.ip + ' \u00d7 ' + a.n]; })));
+    section('Suricata', [
+      ['service', sur.state || 'unknown'],
+      ['alerts in the last 24 hours', proxyCount(sur.alerts)],
+      ['worst priority (1 is the worst)', isNum(sur.worst) ? sur.worst : null],
+      ['packets seen', proxyCount(sur.packets)],
+      ['packets dropped', proxyCount(sur.drops)],
+      ['running for', proxyUptimeText(sur.uptime_s)]]
+      .concat((sur.top || []).map(function (s) {
+        return ['priority ' + (isNum(s.priority) ? s.priority : '?') + ' \u00d7 ' + s.n, s.msg || '(no message)'];
+      }))
+      .concat((sur.sources || []).map(function (a) { return ['alerted on most', a.ip + ' \u00d7 ' + a.n]; })));
+    if (!t.admin) body.appendChild(el('p', 'muted small', 'The addresses and the signatures are shown to an administrator.'));
+  });
+}
 function renderOverviewCustom(st) {
   var host = $('overview-custom');
   if (ORDER.drag || Date.now() - ORDER.justDropped < 800) return;   // never redraw under a drag
@@ -9820,7 +9999,13 @@ function renderOverviewCustom(st) {
     // ages tick every second on every device; the card only shows them to
     // the minute, so they are left out of the signature (minute is in)
     if (isPlug) sig = JSON.stringify([1, plugById[id], minute, unlocked, REARRANGE, LINKS], function (k, v) { return k === 'age' ? undefined : (k === 'retry_in' && v ? Math.ceil(v / 10) : v); });
-    else {
+    else if (id === PROXY_TILE_ID) {
+      // (5.45) not a device: there while the integration is on, and gone -
+      // not an empty card - when it is switched off
+      if (!proxyTileOn(st)) return;
+      if (!PROXY_TILE.data) setTimeout(function () { loadProxyTile(); }, 0);
+      sig = JSON.stringify([2, PROXY_TILE.sig, minute, unlocked, REARRANGE]);
+    } else {
       d = deviceById(id);
       if (!d) return;                  // gone (removed, disabled) - skip quietly
       sig = JSON.stringify([0, d, minute, unlocked, REARRANGE, LINKS, d.via && d.via.name], function (k, v) { return k === 'age_s' ? undefined : v; });
@@ -9829,6 +10014,8 @@ function renderOverviewCustom(st) {
     if (isPlug) {
       card = buildPlugCard(plugById[id], false);
       card.style.gridColumn = '1/-1';
+    } else if (id === PROXY_TILE_ID) {
+      card = buildProxyTileCard(PROXY_TILE.data);
     } else {
       card = buildDeviceCard(d, st);
     }
@@ -9858,6 +10045,8 @@ function renderOverviewAddControl(st) {
   var row = $('ov-add-row'); row.hidden = !isUnlocked();
   if (!isUnlocked() || editorBusy('ov-add-row')) return;
   var have = {}; overviewLayoutIds(st).forEach(function (id) { have[id] = true; });
+  // (5.45) the server in front is named in the list by its own name
+  if (proxyTileOn(st) && !PROXY_TILE.data && !have[PROXY_TILE_ID]) setTimeout(function () { loadProxyTile(); }, 0);
   var options = overviewAvailableOptions(st).filter(function (o) { return !have[o[0]]; });
   var sel = $('ov-add-select');
   fillSelect(sel, options.length ? options : [['', '— everything is already on Overview —']], sel.value);
@@ -17787,7 +17976,9 @@ var ICONS = {
   wall: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.3h18M3 14.7h18"/><path d="M9 4v5.3M15 9.3v5.4M9 14.7V20"/>',
   // (5.44) a triangle with a mark: a notice that wants doing
   alert: '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5"/><path d="M12 17.2h.01"/>',
-  flag: '<path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/>'
+  flag: '<path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/>',
+  // (5.45) the server in front: a shield with a padlock in it - SSLProxy
+  sslproxy: '<path d="M12 2.8l7.5 2.8v5.6c0 4.8-3.2 8.1-7.5 9.9-4.3-1.8-7.5-5.1-7.5-9.9V5.6z"/><rect x="8.8" y="11" width="6.4" height="4.8" rx="1"/><path d="M10.3 11V9.6a1.7 1.7 0 0 1 3.4 0V11"/>'
 };
 function iconMarkup(key, size) {
   return '<svg viewBox="0 0 24 24" width="' + (size || 17) + '" height="' + (size || 17)
@@ -19424,6 +19615,7 @@ function optionGroup(value, label) {
   if (v.indexOf('seq') === 0) return 'Sequences';
   if (v.indexOf('notify') === 0) return 'Notifications';
   if (v.indexOf('who:') === 0) return 'Somebody coming or going';
+  if (v === 'proxy:front') return 'SSLProxy';                 // (5.45) the server in front
   if (/^(rule:|sched:|bindgroup:|sgroup:|agroup:)/.test(v)) return 'Automation on and off';
   // "all sockets" belongs among the sockets and "all lights" among the
   // lights, the way one would look for them - not in a heading of their own

@@ -21173,6 +21173,10 @@ class Daemon(object):
                         self._lists_busy = False
 
                 threading.Thread(target=lists_now, name='lists', daemon=True).start()
+            # (5.45) the SSLProxy card's look, a minute apart, while the card
+            # is on the Overview - on its own thread, never the reader's
+            if proxy_tile_on(self) and proxy_tile_wanted(self):
+                proxy_tile_look(self)
             if self.proxy_ready() and int(CONFIG.get('proxy_watch') or 0):
                 span = max(60, int(float(CONFIG.get('proxy_every') or 2) * 60))
                 if time.time() - getattr(self, '_proxy_at_clock', 0) > span:
@@ -24511,6 +24515,9 @@ class Daemon(object):
 
     def save_overview_layout(self, items):
         valid_ids = {d['id'] for d in self.store.devices()}
+        # (5.45) the SSLProxy card is no device; it keeps its place while the
+        # integration is off, and is drawn again there when it is back on
+        valid_ids.add(PROXY_TILE_ID)
         out = []
         for x in items or []:
             x = str(x)[:80]
@@ -41356,6 +41363,9 @@ class Daemon(object):
             'duo_ready': self.duo_ready(),
             'duo_devices': self.duo_devices(),
             'overview_layout': self.overview_layout(),
+            # (5.45) whether the SSLProxy card may be offered; what it shows is
+            # its own road (/api/proxy-tile), an administrator's details apart
+            'proxy_tile': {'on': proxy_tile_on(self), 'id': PROXY_TILE_ID},
             'gateways': self.gateways_for_ui(),
             'db': {'bytes': (db_path().stat().st_size if db_path().exists() else 0),
                    'last_aggregate': self.store.get_meta('last_aggregate_ts')},
@@ -44135,6 +44145,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 admin = REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')
                 return self._send(200, dict(perf_for(perf_api(detail=q.get('detail') == '1',
                                                               history=q.get('history') == '1'), admin), ok=True))
+            if path == '/api/proxy-tile':
+                # (5.45) the SSLProxy card: whoever may see the dashboard (the
+                # view's own rule just above, as /api/status) - the counts and
+                # the states; the addresses, the signatures and what went
+                # wrong an administrator's only. Answered from the last look,
+                # which this starts again when it is a minute old.
+                admin = REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')
+                return self._send(200, dict(proxy_tile_state(d, admin=admin), ok=True))
             if path == '/api/secret_hints':
                 # ALWAYS_LOCKED let only an administrator this far; asked
                 # again here, so a road moved out of that list one day does
@@ -49376,6 +49394,291 @@ def cert_info_pem(d, text):
     info['key'] = '%s %s' % (kind, bits.group(1)) if bits else kind
     info['self_signed'] = info['subject'] == info['issuer']
     return info
+
+
+# ---- the SSLProxy tile (5.45) --------------------------------------------------
+# A card on the Overview for the server in front: its own state and uptime,
+# nginx and Suricata there, in a few numbers. One small batched command over
+# the same SSH as the log reader, at most once a minute however many pages
+# ask, on a thread of its own at the background priority; the page is
+# answered from what the last look found and never waits on the network.
+# Nothing here is on the way from a sensor to a rule to a plug, and nothing
+# of the blocking or the log reader is touched: their offsets are not read
+# or moved, and the one thing borrowed is the count of lines the reader has
+# already weighed, out of its own table.
+PROXY_TILE_S = 60                 # the least time between two looks
+PROXY_TILE_FRESH_S = 3 * PROXY_TILE_S   # a look older than this is stale
+PROXY_TILE_OUT = 65536            # what is read back, at most
+PROXY_TILE_ID = 'proxy:front'
+PROXY_TILE_LOCK = threading.Lock()
+PROXY_TILE_UNITS = ('active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading')
+
+_PROXY_TILE_SH = r'''{
+s() { echo "@M@ $1"; }
+s up; head -c 100 /proc/uptime; echo
+s load; head -c 100 /proc/loadavg; echo
+s mem; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
+s disk; df -Pk / | tail -n 1
+s host; hostname | head -c 64; echo
+s svc; for u in nginx suricata; do echo "$u $(systemctl is-active $u 2>/dev/null | head -n 1)"; done
+s nginx; n=$(LC_ALL=C date '+%d/%b/%Y:%H'); c=$(LC_ALL=C date -d '1 hour ago' '+%d/%b/%Y:%H:%M:%S'); p=${c%:*:*}
+tail -c 2000000 @LOG@ | LC_ALL=C awk -v n="$n" -v c="$c" -v p="$p" '{t=substr($4,2,20); h=substr(t,1,14); if (h==n || (h==p && t>=c)) {a++; s=""; if (match($0, /" [0-9][0-9][0-9] /)) s=substr($0,RSTART+2,3); if (s=="444") z++; else if (s ~ /^4/) f++; else if (s ~ /^5/) e++; if (s ~ /^4/) r[$1]++}} END {printf "N %d %d %d %d\n", a, z, f, e; for (i=0;i<3;i++) {m=0; k=""; for (x in r) {if (r[x]>m) {m=r[x]; k=x}}; if (k=="") break; printf "A %d %s\n", m, substr(k,1,64); delete r[k]}}'
+s fast; td=$(LC_ALL=C date '+%m/%d/%Y'); c=$(LC_ALL=C date -d '1 day ago' '+%m/%d/%Y-%H:%M:%S'); y=${c%%-*}
+tail -c 3000000 @SDIR@/fast.log | LC_ALL=C awk -v td="$td" -v c="$c" -v y="$y" '{d=substr($1,1,10); if (d==td || (d==y && substr($1,1,19)>=c)) {n++; m=$0; if (match(m, /\[[0-9]+:[0-9]+:[0-9]+\] /)) m=substr(m,RSTART+RLENGTH); i=index(m, " [**]"); if (i) m=substr(m,1,i-1); pr=""; if (match($0, /\[Priority: [0-9]+\]/)) pr=substr($0,RSTART+11,RLENGTH-12); if (pr!="" && (b=="" || pr+0<b+0)) b=pr; g[pr "|" substr(m,1,160)]++; if (match($0, /\} [^ ]+ ->/)) {ip=substr($0,RSTART+2,RLENGTH-5); sub(/:[0-9]+$/,"",ip); q[ip]++}}} END {printf "N %d %s\n", n, b; for (i=0;i<3;i++) {m=0; k=""; for (x in g) {if (g[x]>m) {m=g[x]; k=x}}; if (k=="") break; printf "S %d %s\n", m, k; delete g[k]}; for (i=0;i<3;i++) {m=0; k=""; for (x in q) {if (q[x]>m) {m=q[x]; k=x}}; if (k=="") break; printf "A %d %s\n", m, substr(k,1,64); delete q[k]}}'
+s stats; tail -n 400 @SDIR@/stats.log | grep -E '^(Date: |capture\.kernel_(packets|drops)|decoder\.pkts)' | tail -n 12
+s end
+} 2>/dev/null | head -c @OUT@; true'''
+
+
+def proxy_tile_on(d):
+    """(5.45) The tile is there while the server in front is set up and its
+    reading is switched on - and not otherwise, not even as an empty card."""
+    try:
+        return bool(d.proxy_ready()) and bool(int(CONFIG.get('proxy_watch') or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def _proxy_tile_sdir():
+    """Where Suricata writes: beside its eve.json, or where it does by default."""
+    eve = str(CONFIG.get('suricata_log') or '').strip()
+    base = os.path.dirname(eve) if eve.startswith('/') else ''
+    if not re.match(r'^/[A-Za-z0-9_./-]{1,120}$', base) or '..' in base:
+        base = '/var/log/suricata'
+    return base
+
+
+def proxy_tile_command(d, marker):
+    """The one command a look runs there: /proc, df, hostname, systemctl, the
+    last hour of the access log counted where it lies (2 MB of its end at
+    most) and the last day of fast.log (3 MB), stats.log's last lines - and
+    only the counts come back, 64 kB at most."""
+    log_path = d.proxy_path('proxy_log')
+    if '..' in log_path:
+        raise ValueError('that is not a path to a log file')
+    return (_PROXY_TILE_SH.replace('@M@', marker).replace('@LOG@', log_path)
+            .replace('@SDIR@', _proxy_tile_sdir()).replace('@OUT@', str(PROXY_TILE_OUT)))
+
+
+def _tile_int(text, most=10 ** 15):
+    try:
+        v = int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+    return v if 0 <= v <= most else None
+
+
+def _tile_ip(text):
+    try:
+        return str(ipaddress.ip_address(str(text).strip().strip('[]')))
+    except ValueError:
+        return None
+
+
+def _tile_words(text, most=160):
+    """A remote string as plain text: no control characters, bounded."""
+    out = ''.join(ch for ch in str(text or '') if ch.isprintable())
+    return out.strip()[:most]
+
+
+def _tile_span(text):
+    """Suricata's "0d, 05h 12m 03s" as seconds."""
+    m = re.search(r'(\d{1,5})d,\s*(\d{1,2})h\s*(\d{1,2})m\s*(\d{1,2})s', str(text or ''))
+    if not m:
+        return None
+    dd, hh, mm, ss = (int(x) for x in m.groups())
+    return dd * 86400 + hh * 3600 + mm * 60 + ss
+
+
+def proxy_tile_parse(text, marker):
+    """What came back, read defensively: it is the remote machine's text.
+    Nothing is evaluated; every number is checked for its shape and range,
+    every word cut down, every address parsed as an address or dropped."""
+    parts, cur = {}, None
+    for line in str(text or '')[:PROXY_TILE_OUT].splitlines()[:600]:
+        line = line[:400]
+        if line.startswith(marker + ' '):
+            cur = line[len(marker) + 1:].strip()[:16]
+            parts.setdefault(cur, [])
+            continue
+        if cur is not None and len(parts[cur]) < 40:
+            parts[cur].append(line)
+    out = {'complete': 'end' in parts}
+    up = (parts.get('up') or [''])[0].split()
+    try:
+        secs = float(up[0]) if up else None
+        out['uptime_s'] = int(secs) if secs is not None and 0 <= secs < 10 ** 10 else None
+    except ValueError:
+        out['uptime_s'] = None
+    load = (parts.get('load') or [''])[0].split()[:3]
+    try:
+        vals = [float(x) for x in load]
+        out['load'] = ([round(v, 2) for v in vals]
+                       if len(vals) == 3 and all(0 <= v < 10 ** 5 for v in vals) else None)
+    except ValueError:
+        out['load'] = None
+    mem = {}
+    for line in parts.get('mem') or []:
+        m = re.match(r'^(MemTotal|MemAvailable):\s+(\d{1,15})\s*kB', line)
+        if m:
+            mem[m.group(1)] = int(m.group(2))
+    out['mem_total_kb'], out['mem_avail_kb'] = mem.get('MemTotal'), mem.get('MemAvailable')
+    disk = (parts.get('disk') or [''])[0].split()
+    out['disk_total_kb'] = _tile_int(disk[1]) if len(disk) >= 6 else None
+    out['disk_avail_kb'] = _tile_int(disk[3]) if len(disk) >= 6 else None
+    host = (parts.get('host') or [''])[0].strip()
+    # a name, never an address: whoever sees the card is not told where it is
+    out['hostname'] = (host if re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$', host)
+                       and not _tile_ip(host) else '')
+    units = {}
+    for line in parts.get('svc') or []:
+        bits = line.split()
+        if bits and bits[0] in ('nginx', 'suricata'):
+            word = bits[1] if len(bits) > 1 else ''
+            units[bits[0]] = word if word in PROXY_TILE_UNITS else 'unknown'
+    ngx = {'state': units.get('nginx', 'unknown'), 'hour': None, 'closed': None, 'refused': None,
+           'server_errors': None, 'top': []}
+    for line in parts.get('nginx') or []:
+        bits = line.split()
+        if len(bits) == 5 and bits[0] == 'N':
+            a, z, f, e = (_tile_int(x) for x in bits[1:])
+            ngx.update(hour=a, closed=z, server_errors=e,
+                       refused=(z or 0) + (f or 0) if z is not None or f is not None else None)
+        elif len(bits) == 3 and bits[0] == 'A' and len(ngx['top']) < 3:
+            n, ip = _tile_int(bits[1]), _tile_ip(bits[2])
+            if n is not None and ip:
+                ngx['top'].append({'n': n, 'ip': ip})
+    sur = {'state': units.get('suricata', 'unknown'), 'alerts': None, 'worst': None, 'top': [],
+           'sources': [], 'packets': None, 'drops': None, 'uptime_s': None}
+    for line in parts.get('fast') or []:
+        bits = line.split(' ', 2)
+        if bits[0] == 'N' and len(bits) >= 2:
+            sur['alerts'] = _tile_int(bits[1])
+            worst = _tile_int(bits[2] if len(bits) > 2 else '', 255)
+            sur['worst'] = worst if worst else None
+        elif bits[0] == 'S' and len(bits) == 3 and len(sur['top']) < 3:
+            n = _tile_int(bits[1])
+            prio, _, msg = bits[2].partition('|')
+            if n is not None:
+                sur['top'].append({'n': n, 'priority': _tile_int(prio, 255), 'msg': _tile_words(msg)})
+        elif bits[0] == 'A' and len(bits) == 3 and len(sur['sources']) < 3:
+            n, ip = _tile_int(bits[1]), _tile_ip(bits[2])
+            if n is not None and ip:
+                sur['sources'].append({'n': n, 'ip': ip})
+    for line in parts.get('stats') or []:
+        if line.startswith('Date: '):
+            sur['uptime_s'] = _tile_span(line)
+            continue
+        bits = [x.strip() for x in line.split('|')]
+        if len(bits) == 3:
+            v = _tile_int(bits[2])
+            if bits[0] in ('capture.kernel_packets', 'decoder.pkts') and v is not None:
+                if bits[0] == 'capture.kernel_packets' or sur['packets'] is None:
+                    sur['packets'] = v
+            elif bits[0] == 'capture.kernel_drops' and v is not None:
+                sur['drops'] = v
+    out['nginx'], out['suricata'] = ngx, sur
+    return out
+
+
+def proxy_tile_read(d):
+    """One look: the command, run once, its answer read."""
+    marker = 'ZTILE-%s' % secrets.token_hex(4)
+    text = d.proxy_run(proxy_tile_command(d, marker))
+    got = proxy_tile_parse(text, marker)
+    if got['uptime_s'] is None and not got['complete']:
+        raise RuntimeError('the server in front answered, but not with what was asked')
+    # the lines the log reader has weighed in the last hour, out of its own
+    # table - counted here, nothing of the reader's moved
+    try:
+        with d.store.lock:
+            row = d.store.db.execute('SELECT COUNT(*) FROM proxy_lines WHERE ts > ?',
+                                     (time.time() - 3600,)).fetchone()
+        got['weighed_hour'] = int(row[0] or 0)
+    except Exception:                                   # noqa: BLE001 - a number on a card
+        got['weighed_hour'] = None
+    now = int(time.time())
+    return dict(got, ok=True, at=now, tried=now)
+
+
+def proxy_tile_look(d):
+    """The last look, and a new one on a background thread when it is a
+    minute old - whoever asks, a page or the clock. The lock and the age make
+    it one SSH a minute at most, however many pages are open."""
+    if not proxy_tile_on(d):
+        return {}
+    look = d.__dict__.get('_proxy_tile_look') or {}
+    with PROXY_TILE_LOCK:
+        last = max(float(look.get('at') or 0), float(look.get('tried') or 0),
+                   float(d.__dict__.get('_proxy_tile_started') or 0))
+        due = time.time() - last >= PROXY_TILE_S and not d.__dict__.get('_proxy_tile_looking')
+        if due:
+            d._proxy_tile_looking = True
+            d._proxy_tile_started = time.time()
+    if due:
+        def go():
+            background_thread()
+            try:
+                d._proxy_tile_look = proxy_tile_read(d)
+            except Exception as e:                       # noqa: BLE001 - said on the card
+                was = d.__dict__.get('_proxy_tile_look') or {}
+                d._proxy_tile_look = dict(was, ok=False, error=str(e)[:200], tried=int(time.time()))
+            finally:
+                d._proxy_tile_runs = int(d.__dict__.get('_proxy_tile_runs') or 0) + 1
+                d._proxy_tile_looking = False
+        threading.Thread(target=go, name='proxy-tile', daemon=True).start()
+    return dict(look, looking=bool(d.__dict__.get('_proxy_tile_looking')))
+
+
+def proxy_tile_wanted(d):
+    """The clock looks only while the card is on the Overview: nobody would
+    see a look made for no card."""
+    try:
+        return PROXY_TILE_ID in (d.overview_layout() or [])
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+def proxy_tile_state(d, admin=False):
+    """What the card shows. Everybody who may see the dashboard is answered
+    the counts and the states; an administrator also the address of the
+    server, the addresses that were refused or alerted on, the signatures
+    and what went wrong - the performance meter's rule (5.43.1)."""
+    if not proxy_tile_on(d):
+        return {'on': False}
+    look = proxy_tile_look(d)
+    now = time.time()
+    at, tried = int(look.get('at') or 0), int(look.get('tried') or 0)
+    if look.get('ok') is False:
+        state = 'offline'
+    elif not at:
+        state = 'waiting'
+    elif now - at > PROXY_TILE_FRESH_S:
+        state = 'stale'
+    else:
+        state = 'online'
+    ngx = dict(look.get('nginx') or {})
+    sur = dict(look.get('suricata') or {})
+    out = {'on': True, 'id': PROXY_TILE_ID, 'state': state, 'at': at, 'tried': tried,
+           'looking': bool(look.get('looking')), 'every': PROXY_TILE_S,
+           'name': look.get('hostname') or 'SSLProxy',
+           'uptime_s': look.get('uptime_s'), 'load': look.get('load'),
+           'mem_total_kb': look.get('mem_total_kb'), 'mem_avail_kb': look.get('mem_avail_kb'),
+           'disk_total_kb': look.get('disk_total_kb'), 'disk_avail_kb': look.get('disk_avail_kb'),
+           'weighed_hour': look.get('weighed_hour'),
+           'nginx': {k: ngx.get(k) for k in ('state', 'hour', 'closed', 'refused', 'server_errors')},
+           'suricata': {k: sur.get(k) for k in ('state', 'alerts', 'worst', 'packets', 'drops', 'uptime_s')},
+           'admin': bool(admin)}
+    if state == 'offline':
+        out['error'] = 'the server in front did not answer'
+    if admin:
+        out['host'] = str(CONFIG.get('proxy_host') or '')
+        out['nginx']['top'] = list(ngx.get('top') or [])
+        out['suricata']['top'] = list(sur.get('top') or [])
+        out['suricata']['sources'] = list(sur.get('sources') or [])
+        if look.get('error') and state == 'offline':
+            out['error'] = str(look.get('error'))[:200]
+    return out
 
 
 def proxy_tls_on():
