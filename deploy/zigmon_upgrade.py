@@ -32,6 +32,9 @@ replaced is put back and started again, and the dashboard is told why.
   zigmon_upgrade.py --run FILE      check and put in a package by hand (root)
   zigmon_upgrade.py --run FILE --downgrade
                                     go back to an older version by hand (root)
+  zigmon_upgrade.py --needs-cli DIR whether the unpacked package in DIR must be
+                                    put in on the command line here (5.44;
+                                    install.sh asks, exit 3 when it must)
 """
 import grp
 import hashlib
@@ -207,6 +210,154 @@ def put_away(away, say):
                 say('taken away: %s (%s)' % (path, one['what']))
 
 
+# ---- a release that must be put in on the command line (5.44) -----------------------
+# Some releases cannot be put in from the dashboard: they change what only
+# install.sh run by a person on the machine should change (system packages, a
+# Python or PHP move that wants watching, a unit the upgrade service itself
+# runs under). Such a release says so in release.json at the top of the
+# package - one of the files MANIFEST lists, so it is covered by the signature
+# like every other: nobody can strip it, and a package claiming it without a
+# good signature is refused like any tampered one.
+#
+#   {"format": 1, "version": "5.44.0", "needs_cli": true,
+#    "why": "PHP moves to 8.4 and php-fpm must be watched while it does",
+#    "command": "sudo ./install.sh --upgrade",
+#    "only_from_below": "5.44.0",     <- optional: the CLI only when coming
+#                                        from a version older than this
+#    "system_level": 2}               <- optional, as SYSTEM_LEVEL below
+#
+# The other half: install.sh writes SYSTEM_STAMP when it has put the parts of
+# the system in ("system level" N). A version whose zigmon.py says
+# SYSTEM_LEVEL = M > N needs them put in again by install.sh on the command
+# line. No stamp (installed before 5.44) counts as level 1, which is what every
+# version up to 5.43.4 had. Packages without release.json and at level 1
+# behave exactly as before.
+#
+# make-release.sh also lays the same release.json beside the package with a
+# signature of its own (zigmon-X.Y.Z.release.json, .release.json.sig), so the
+# dashboard can say before fetching anything that a version found on the web
+# needs the command line.
+SYSTEM_STAMP = os.environ.get('ZIGMON_SYSTEM_STAMP', '/etc/zigmon-system.json')
+BASE_SYSTEM_LEVEL = 1
+CLI_COMMAND = 'sudo ./install.sh --upgrade'
+_VER_RE = re.compile(r'^[0-9]+(\.[0-9]+){2,3}$')
+
+
+def system_level_here():
+    """(level, stamp) of what install.sh last put in; (1, {}) with no stamp."""
+    try:
+        with open(FS_ROOT + SYSTEM_STAMP, encoding='utf-8') as f:
+            got = json.loads(f.read(65536))
+        level = int(got.get('system_level'))
+        return (level if level >= 0 else BASE_SYSTEM_LEVEL), got
+    except (OSError, ValueError, TypeError, AttributeError):
+        return BASE_SYSTEM_LEVEL, {}
+
+
+def _plain(text, most):
+    return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(text or '')).strip()[:most]
+
+
+def notes_from(raw):
+    """release.json read and cut to what is understood. Refused when it does
+    not read - it was signed, so a release that ships a broken one is broken."""
+    try:
+        got = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise Refused('release.json does not read: %s' % e)
+    if not isinstance(got, dict):
+        raise Refused('release.json is not an object')
+    out = {'format': 1, 'needs_cli': got.get('needs_cli') is True,
+           'why': _plain(got.get('why'), 500), 'command': _plain(got.get('command'), 200) or CLI_COMMAND}
+    for k in ('version', 'only_from_below'):
+        v = str(got.get(k) or '').strip()
+        if v and _VER_RE.match(v):
+            out[k] = v
+    try:
+        if got.get('system_level') is not None:
+            out['system_level'] = max(0, int(got['system_level']))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def cli_need(version, notes=None, system_level=None, installed=None, stamp_level=None):
+    """Whether putting `version` in here must be done on the command line, and
+    why: {'needed', 'why', 'command', 'level', 'here_level'}."""
+    notes = notes or {}
+    installed = installed_version() if installed is None else installed
+    if stamp_level is None:
+        stamp_level = system_level_here()[0]
+    level = system_level if system_level is not None else notes.get('system_level')
+    level = int(level) if level is not None else BASE_SYSTEM_LEVEL
+    why = []
+    if notes.get('needs_cli'):
+        below = notes.get('only_from_below')
+        if not below or not installed or version_tuple(installed) < version_tuple(below):
+            why.append(notes.get('why') or 'the release says so')
+    if level > stamp_level:
+        why.append('the parts of the system install.sh puts in are at level %d here and zigmon %s '
+                   'needs level %d' % (stamp_level, version, level))
+    return {'needed': bool(why), 'why': '; '.join(why), 'command': notes.get('command') or CLI_COMMAND,
+            'level': level, 'here_level': stamp_level}
+
+
+def cli_words(version, need):
+    return ('zigmon %s must be put in from the command line - %s. Unpack the package on the '
+            'machine and run in its folder: %s' % (version, need.get('why') or '?',
+                                                   need.get('command') or CLI_COMMAND))
+
+
+def notes_signed(data, sig):
+    """A release.json laid beside a package on the web, with its own
+    signature: its notes when one of the trusted keys signed it, else None -
+    then nothing is known before the package itself is fetched and checked."""
+    if not data or not sig or len(data) > 65536 or len(sig) > 4096:
+        return None
+    work = tempfile.mkdtemp(prefix='zigmon-notes-')
+    try:
+        a, b = os.path.join(work, 'release.json'), os.path.join(work, 'release.json.sig')
+        with open(a, 'wb') as f:
+            f.write(data)
+        with open(b, 'wb') as f:
+            f.write(sig)
+        try:
+            if not signed_by(a, b):
+                return None
+            return notes_from(data)
+        except Refused:
+            return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def needs_cli_of_folder(src):
+    """For install.sh: the unpacked package at `src`, against this machine.
+    Exit 3 with the words when it must be put in on the command line."""
+    notes = {}
+    try:
+        with open(os.path.join(src, 'release.json'), 'rb') as f:
+            notes = notes_from(f.read(65536))
+    except FileNotFoundError:
+        pass
+    version, level = '', None
+    try:
+        with open(os.path.join(src, 'zigmon.py'), encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        m = re.search(r"^__version__ = '([0-9.]+)'", text, re.M)
+        version = m.group(1) if m else ''
+        m = re.search(r'^SYSTEM_LEVEL = ([0-9]+)', text, re.M)
+        level = int(m.group(1)) if m else None
+    except OSError:
+        pass
+    need = cli_need(version or notes.get('version') or '?', notes, level)
+    if need['needed']:
+        print(cli_words(version or '?', need))
+        return 3
+    return 0
+# ---- (5.44) end ------------------------------------------------------------------------
+
+
 def trusted_keys():
     try:
         names = sorted(n for n in os.listdir(KEYS_DIR) if n.endswith('.pub'))
@@ -320,9 +471,10 @@ def inspect(path, extract_to=None):
                     (' - missing: ' + ', '.join(missing)) if missing else ''))
             changelog = ''
             zig_version = ''
+            zig_level, notes_raw = None, None              # (5.44)
             for rel in sorted(have):
                 h = hashlib.sha256()
-                keep = rel in ('README.md', 'zigmon.py')
+                keep = rel in ('README.md', 'zigmon.py', 'release.json')
                 body = []
                 with tar.extractfile(files[rel]) as src:
                     while True:
@@ -337,6 +489,10 @@ def inspect(path, extract_to=None):
                 if rel == 'zigmon.py':
                     mm = re.search(rb"^__version__ = '([0-9.]+)'", b''.join(body), re.M)
                     zig_version = mm.group(1).decode() if mm else ''
+                    mm = re.search(rb'^SYSTEM_LEVEL = ([0-9]+)', b''.join(body), re.M)
+                    zig_level = int(mm.group(1)) if mm else None        # (5.44)
+                if rel == 'release.json':
+                    notes_raw = b''.join(body)[:65536]                    # (5.44)
                 if rel == 'README.md':
                     text = b''.join(body).decode('utf-8', 'replace')
                     mm = re.search(r'^%s\s+—.*?(?=^\d+\.\d+\.\d+\s+—|\Z)' % re.escape(version),
@@ -364,6 +520,14 @@ def inspect(path, extract_to=None):
     if out['older']:
         # whether going back to it is safe, said before anybody asks
         out['back'] = downgrade_check(version, have_v, db_version_high())
+    # (5.44) what the release says of itself (signed: it is in MANIFEST), and
+    # whether it must be put in on the command line here
+    notes = notes_from(notes_raw) if notes_raw is not None else {}
+    if notes.get('version') and notes['version'] != version:
+        raise Refused('release.json says %s and the folder %s' % (notes['version'], version))
+    out['release'] = notes or None
+    out['system_level'] = zig_level if zig_level is not None else BASE_SYSTEM_LEVEL
+    out['cli'] = cli_need(version, notes, zig_level, have_v)
     return out
 
 
@@ -418,6 +582,9 @@ def keep_program(work):
             p = os.path.join(UNITS, u)
             if os.path.isfile(p):
                 tar.add(p, arcname=p.lstrip('/'))
+        # (5.44) and install.sh's stamp, which says what the program put back had
+        if os.path.isfile(FS_ROOT + SYSTEM_STAMP):
+            tar.add(FS_ROOT + SYSTEM_STAMP, arcname=(FS_ROOT + SYSTEM_STAMP).lstrip('/'))
     return out
 
 
@@ -435,7 +602,7 @@ def put_program_back(saved, say):
                 continue
             dest = '/' + m.name
             if not (any(dest == d or dest.startswith(d + '/') for d in PROGRAM) or
-                    os.path.dirname(dest) == UNITS):
+                    os.path.dirname(dest) == UNITS or dest == FS_ROOT + SYSTEM_STAMP):
                 continue
             if m.isdir():
                 os.makedirs(dest, mode=0o755, exist_ok=True)
@@ -446,6 +613,11 @@ def put_program_back(saved, say):
                     shutil.copyfileobj(src, out)
                 os.chmod(dest + '.zigmon-back', m.mode & 0o755)
                 os.replace(dest + '.zigmon-back', dest)
+    # (5.44) no stamp before the upgrade: none after it was taken back either
+    with tarfile.open(saved) as tar:
+        had_stamp = (FS_ROOT + SYSTEM_STAMP).lstrip('/') in tar.getnames()
+    if not had_stamp and os.path.isfile(FS_ROOT + SYSTEM_STAMP):
+        os.unlink(FS_ROOT + SYSTEM_STAMP)
     say('the program put back as it was before the upgrade')
     if not NO_SERVICES:
         subprocess.run(['systemctl', 'daemon-reload'], capture_output=True)
@@ -563,6 +735,11 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         os.makedirs(unpacked, mode=0o700)
         info = inspect(copy, extract_to=unpacked)
         back = None
+        # (5.44) a release that must be put in on the command line is not put
+        # in from here - whatever the dashboard said; install.sh --upgrade,
+        # run by a person in the unpacked folder, does it
+        if (info.get('cli') or {}).get('needed'):
+            raise Refused(cli_words(info['version'], info['cli']))
         if info['older'] and not downgrade:
             raise Refused('%s is older than %s, which is installed: that is going back, asked for '
                           'as such (Upgrades - Going back, or --downgrade)'
@@ -720,6 +897,8 @@ def main(argv):
         except Refused as e:
             print(json.dumps({'ok': False, 'said': str(e)}))
         return 0
+    if len(argv) >= 2 and argv[0] == '--needs-cli':           # (5.44) for install.sh
+        return needs_cli_of_folder(argv[1])
     if len(argv) >= 2 and argv[0] == '--run':
         try:
             rc, info, _ = put_in(os.path.abspath(argv[1]), log_to=print,

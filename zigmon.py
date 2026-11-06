@@ -32,6 +32,11 @@ command line for testing:
 
 # Bumped by hand with every change to this file.
 __version__ = '5.43.4'
+# (5.44) the level of the system parts this version needs install.sh to have
+# put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
+# /etc/zigmon-system.json. Raised by a release whose system parts must be put
+# in again on the command line (deploy/zigmon_upgrade.py, release.json).
+SYSTEM_LEVEL = 1
 
 import argparse
 import base64
@@ -8486,6 +8491,9 @@ def webproxy_view():
 # what the package is believed on.
 # ---------------------------------------------------------------------------
 ONLINE_PKG_RE = re.compile(r'(?:^|/)(zigmon-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)')
+# (5.44) what a release says of itself, beside its package with a signature of
+# its own (tools/make-release.sh): whether it must be put in on the command line
+ONLINE_SIDE_RE = re.compile(r'(?:^|/)zigmon-(\d+\.\d+\.\d+)\.release\.json(\.sig)?(?:\?|#|$)')
 ONLINE_EVERY_S = 86400
 # One look and one fetch at a time, whichever of the chores, the page or the
 # command line asked for it.
@@ -8561,8 +8569,13 @@ def online_list(url):
     if not url.startswith('https://'):
         raise ValueError('only https:// addresses are asked: %s' % url[:200])
     found = {}
+    side = {}                                    # (5.44) version -> {'json': url, 'sig': url}
 
     def add(name, link, size=None):
+        sm = ONLINE_SIDE_RE.search('/' + str(name))
+        if sm and str(link).startswith('https://'):
+            side.setdefault(sm.group(1), {})['sig' if sm.group(2) else 'json'] = str(link)
+            return
         m = ONLINE_PKG_RE.search('/' + str(name))
         if not m or not str(link).startswith('https://'):
             return
@@ -8595,7 +8608,7 @@ def online_list(url):
             base = 'https://raw.githubusercontent.com/%s/%s/%s/%s' % (
                 owner, repo, ref or 'HEAD', (folder + '/') if folder else '')
             items = [{'type': 'file', 'name': n, 'download_url': base + n}
-                     for n in sorted(set(re.findall(r'zigmon-\d+\.\d+\.\d+\.tar\.gz',
+                     for n in sorted(set(re.findall(r'zigmon-\d+\.\d+\.\d+(?:\.tar\.gz|\.release\.json(?:\.sig)?)',
                                                     data.decode('utf-8', 'replace'))))]
         if isinstance(items, dict):
             items = [items]
@@ -8620,6 +8633,18 @@ def online_list(url):
                 m = ONLINE_PKG_RE.search(urllib.parse.urlparse(link).path)
                 if m:
                     add(m.group(1), link)
+                elif ONLINE_SIDE_RE.search(urllib.parse.urlparse(link).path):
+                    add(urllib.parse.urlparse(link).path, link)          # (5.44)
+    for x in found.values():                                              # (5.44)
+        got = side.get(x['version']) or {}
+        if one and not got:
+            # one package's own address: its notes, if any, are beside it
+            base = x['url'].split('?')[0].split('#')[0]
+            if base.endswith('.tar.gz'):
+                got = {'json': base[:-7] + '.release.json', 'sig': base[:-7] + '.release.json.sig',
+                       'guess': True}
+        if got.get('json') and got.get('sig'):
+            x['notes_at'] = got
     return sorted(found.values(), key=lambda x: _online_ver(x['version']), reverse=True)
 
 
@@ -15228,6 +15253,12 @@ class Daemon(object):
          'so many things in hand that new ones were dropped', 'System', 'level'),
         ('started', 'zigmon started',
          'after a restart, an update or a power cut: the version, and how long it was away', 'System', 'off'),
+        # (5.44) a notice for an administrator raised (once, when it is new):
+        # an update that must be put in on the command line, the system parts
+        # out of date, backups failing
+        ('notice', 'Something for an administrator',
+         'a notice raised for an administrator - an update that must be put in on the command line, '
+         'the system parts older than this version needs, the nightly backup failing', 'System', ''),
     ]
     # the kinds a caller names that are not on the card: a device's own
     # settings, a written message (governed by "Your own alerts"), a test
@@ -16320,6 +16351,7 @@ class Daemon(object):
                         self._backup_failed_told = False
                         self.notify('The nightly backup works again.', 'info', dedup='backup-back', about='backup')
                     self._backup_failed = False
+                    self.notice_clear('backup-failed')           # (5.44)
             except Exception as e:
                 log('backup: %s' % e, 'warn')
                 self.store.add_event('control', 'the nightly backup failed: %s' % str(e)[:160], 'warn')
@@ -16329,6 +16361,21 @@ class Daemon(object):
                 self._backup_failed_told = True
                 self.notify('The nightly backup failed: %s' % str(e)[:160], 'warn',
                             dedup='backup-failed', about='backup')
+                # (5.44) and a notice for an administrator until one works
+                # again; a problem (crit, never hidden) once it has failed for
+                # three days
+                try:
+                    since = int((self.notices_all().get('backup-failed') or {}).get('at') or time.time())
+                    days = (time.time() - since) / 86400.0
+                    self.notice_raise('backup-failed', 'crit' if days >= 3 else 'warn',
+                                      'The nightly backup fails',
+                                      'The nightly backup has failed%s: %s' % (
+                                          ' for %d days' % days if days >= 1 else '', str(e)[:200]),
+                                      action='See Settings - Data and database, and the log', link='#control/sys-data',
+                                      foot='This band goes by itself once a nightly backup works again.',
+                                      stamp='3d' if days >= 3 else '')
+                except Exception as e2:                   # noqa: BLE001
+                    log('notices: %s' % e2, 'debug')
 
     # ======================================================================
     # What root does for the dashboard (5.18): the certificate, who may reach
@@ -17496,11 +17543,17 @@ class Daemon(object):
                'bytes': info.get('bytes'), 'changelog': info.get('changelog') or '',
                'sha': digest.hexdigest(), 'at': int(time.time()), 'by': who or 'the dashboard',
                'newer': info.get('newer'), 'older': bool(info.get('older')),
-               'back': info.get('back') or None}
+               'back': info.get('back') or None,
+               # (5.44) release.json and the system level, signed in the package
+               'release': info.get('release') or None, 'system_level': info.get('system_level')}
         if source:
             pkg['source'] = str(source)[:300]
         with open(str(self.upgrade_dir('package.json')), 'w') as f:
             json.dump(pkg, f)
+        try:
+            self.notices_tick()                          # (5.44) said at once, not in half a minute
+        except Exception as e:                           # noqa: BLE001
+            log('notices: %s' % e, 'debug')
         if back:
             self.say_event('control', 'zigmon %s %s, signed by %s - ready to go back to' % (
                 info['version'], ('fetched from %s' % str(source)[:200]) if source else 'sent to the dashboard',
@@ -17547,6 +17600,7 @@ class Daemon(object):
         try:
             got = online_list(url)
             row['packages'] = got[:10]
+            self.online_notes(row)                       # (5.44) which must be put in on the command line
             row['newest'] = got[0] if got else None
             row['newer'] = bool(got and _online_ver(got[0]['version']) > _online_ver(__version__))
         except Exception as e:                           # noqa: BLE001 - said on the card instead
@@ -17557,6 +17611,10 @@ class Daemon(object):
                            % (row['newest']['version'], url[:200]), 'info', about='upgrade',
                            title='A new version', dedup='upgrade-online-%s' % row['newest']['version'])
         self.store.set_meta('upgrade_online', json.dumps(row, default=str))
+        try:
+            self.notices_tick()                          # (5.44)
+        except Exception as e:                           # noqa: BLE001
+            log('notices: %s' % e, 'debug')
         return row
 
     def online_tick(self):
@@ -17597,9 +17655,14 @@ class Daemon(object):
             # every version there newer than this one, newest first: with more
             # than one the page lets somebody choose which to go to - a step at
             # a time, or past one they would rather not run
-            row['newer_list'] = [{'version': x.get('version'), 'url': x.get('url'), 'bytes': x.get('bytes')}
+            row['newer_list'] = [{'version': x.get('version'), 'url': x.get('url'), 'bytes': x.get('bytes'),
+                                  # (5.44) must it be put in on the command line?
+                                  'cli': self.cli_view(x.get('version'), x.get('notes'), url=x.get('url'))
+                                  if x.get('notes') else None}
                                  for x in (row.get('packages') or [])
                                  if _online_ver(x.get('version')) > _online_ver(__version__)]
+            if newest and row['newer_list']:
+                row['newest_cli'] = row['newer_list'][0].get('cli')
             # ...and the older ones, each with whether going back to it is safe
             # - only when going back is switched on at all
             older = []
@@ -17610,7 +17673,9 @@ class Daemon(object):
                     except Exception as e:              # noqa: BLE001
                         chk = {'ok': False, 'why': str(e)[:200]}
                     older.append({'version': x.get('version'), 'url': x.get('url'),
-                                  'ok': bool(chk.get('ok')), 'why': chk.get('why') or ''})
+                                  'ok': bool(chk.get('ok')), 'why': chk.get('why') or '',
+                                  'cli': self.cli_view(x.get('version'), x.get('notes'), url=x.get('url'))
+                                  if x.get('notes') else None})          # (5.44)
             row['older_list'] = older
         return {'online': row, 'url': self.online_url(), 'check': self.online_on(),
                 'busy': bool(ONLINE_WORK['busy'] or ONLINE_WORK['fetching'])}
@@ -17687,13 +17752,20 @@ class Daemon(object):
         # retry, as otp and root's zigmon_upgrade.py have it - not a reason
         # to refuse, and nothing to say in red under a package that is fine.
         running = st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800
+        # (5.44) a release that must be put in on the command line: not ready
+        # here - the page shows why and what to run instead of the button
+        cli = self.cli_view(pkg['version'], pkg.get('release'), pkg.get('system_level'), pkg=pkg) \
+            if pkg and pkg.get('version') else None
+        if pkg:
+            pkg['cli'] = cli
         try:
             with open(str(self.upgrade_dir('last.log')), errors='replace') as f:
                 lines = f.read()[-60000:].splitlines()[-300:]
         except OSError:
             lines = []
         return {'ok': True, 'version': __version__, 'package': pkg, 'ready': bool(pkg) and not not_ready
-                and helper and not running, 'not_ready': not_ready, 'helper': helper,
+                and helper and not running and not cli, 'not_ready': not_ready, 'helper': helper,
+                'cli': cli, 'system_level': SYSTEM_LEVEL,
                 'path_unit': helper, 'status': st, 'running': running,
                 'asked': self.upgrade_asked(), 'web': self.online_view(),
                 'back': self.downgrade_view(pkg, running),
@@ -17736,6 +17808,8 @@ class Daemon(object):
                              '(install.sh --upgrade), which puts it in.')
         if st['not_ready']:
             raise ValueError(st['not_ready'][0])
+        if st.get('cli'):                                # (5.44) root would refuse it too
+            raise ValueError('%s. Run on the machine: %s' % (st['cli']['words'], st['cli']['command']))
         ident = secrets.token_hex(8)
         req = {'id': ident, 'file': pkg['file'], 'version': pkg['version'], 'sha': pkg['sha'],
                'by': who or 'the dashboard'}
@@ -17997,7 +18071,10 @@ class Daemon(object):
         out['floor'] = max(floors, key=_online_ver) if floors else ''
         if pkg and pkg.get('older'):
             out['package'] = pkg
-            out['ready'] = bool((pkg.get('back') or {}).get('ok')) and not running and not out['busy']
+            if 'cli' not in pkg:                         # (5.44)
+                pkg['cli'] = self.cli_view(pkg['version'], pkg.get('release'), pkg.get('system_level'), pkg=pkg)
+            out['ready'] = bool((pkg.get('back') or {}).get('ok')) and not running and not out['busy'] \
+                and not pkg.get('cli')
         return out
 
     def downgrade_start(self, who=''):
@@ -18014,6 +18091,8 @@ class Daemon(object):
         back = self.downgrade_check(pkg['version'])
         if not back.get('ok'):
             raise ValueError('not safe to go back to %s: %s' % (pkg['version'], back.get('why')))
+        if st.get('cli'):                                # (5.44)
+            raise ValueError('%s. Run on the machine: %s' % (st['cli']['words'], st['cli']['command']))
         if not st['helper']:
             raise ValueError('this machine cannot put a version in by itself yet: zigmon-upgrade.path '
                              'is not installed')
@@ -18070,6 +18149,341 @@ class Daemon(object):
             self.say_event('control', 'the upgrade to zigmon %s did not go in: %s'
                            % (asked.get('version'), st.get('said') or 'see Control - Upgrades'),
                            'warn', about='upgrade', title='An upgrade failed')
+
+    # ==== (5.44) notices for an administrator ======================================
+    # One small registry of the things an administrator must do something about
+    # and could otherwise miss - an update that must be put in on the command
+    # line first of all. The code that knows the condition raises the notice
+    # and clears it; raising it again with the same words changes nothing, so
+    # it can be raised every half minute. Kept in meta ('notices'), so a restart
+    # finds them. Each one:
+    #
+    #   key       one per condition ('upgrade-cli', 'system-level', ...)
+    #   level     info, warn or crit
+    #   title     a few words: the header's pill says it
+    #   why       a sentence
+    #   action    what to do, in words (optional)
+    #   command   a command to copy (optional)
+    #   link      the pane that deals with it, '#control/sys-upgrade' (optional)
+    #   until     gone by itself after this time (optional)
+    #   foot      a closing line, small (optional)
+    #   checkable the code that raised it clears it once it is so (default);
+    #             False: it waits for Done (notice_done, by hand)
+    #   stamp     what the condition is about (a version, say): a notice hidden
+    #             for a while comes back when its stamp changes
+    #
+    # The page draws them in the card "To be done by hand" at the top of the
+    # pane of Settings they link to (always there in Upgrades), a badge on
+    # that pane in the rail, and an item each in Needs attention; the console
+    # and zigmon --status and --notices list them. Done by hand (notice_done:
+    # the button, zigmon --notice-done KEY) or gone by itself, each is written
+    # down in "done lately" (meta 'notices_done'). A new one is told once
+    # through the alerts, as the kind 'notice'. Only an administrator (or
+    # root's command line) sees them - /api/status carries them for nobody
+    # else. notice_hide keeps one out of sight for a while (not a crit one).
+    NOTICE_LEVELS = ('info', 'warn', 'crit')
+    NOTICE_HIDE_MOST_H = 24 * 30
+
+    def notices_all(self):
+        try:
+            got = json.loads(self.store.get_meta('notices') or '{}')
+        except (ValueError, TypeError):
+            got = {}
+        return got if isinstance(got, dict) else {}
+
+    def _notices_lock(self):
+        return self.__dict__.setdefault('_notices_guard', threading.RLock())
+
+    def notice_raise(self, key, level, title, why, action=None, command=None, link=None,
+                     until=None, stamp=None, foot=None, checkable=True):
+        """Raise (or keep) the notice `key`; True when it is new or changed in
+        what it is about (and was told)."""
+        key = re.sub(r'[^A-Za-z0-9_.:-]', '', str(key or ''))[:60]
+        if not key:
+            raise ValueError('a notice needs a key')
+        level = level if level in self.NOTICE_LEVELS else 'warn'
+        one = {'key': key, 'level': level, 'title': str(title or key)[:120], 'why': str(why or '')[:600],
+               'action': str(action or '')[:300], 'command': str(command or '')[:600],
+               'link': str(link or '')[:80] if str(link or '').startswith('#') else '',
+               'until': int(until) if until else 0, 'stamp': str(stamp or '')[:80],
+               'foot': str(foot or '')[:200], 'checkable': bool(checkable)}
+        with self._notices_lock():
+            rows = self.notices_all()
+            was = rows.get(key) or {}
+            same = all(was.get(k) == one[k] for k in one)
+            if same:
+                return False
+            news = not was or was.get('stamp') != one['stamp'] or \
+                self.NOTICE_LEVELS.index(level) > self.NOTICE_LEVELS.index(was.get('level') or 'info')
+            one['at'] = int(was.get('at') or time.time()) if not news else int(time.time())
+            if not news and was.get('hidden_until'):
+                one['hidden_until'], one['hidden_by'] = was['hidden_until'], was.get('hidden_by', '')
+            rows[key] = one
+            self.store.set_meta('notices', json.dumps(rows))
+        if news:
+            try:
+                self.say_event('control', '%s: %s' % (one['title'], one['why']), level, about='notice',
+                               title=one['title'], dedup='notice|%s|%s' % (key, one['stamp']))
+            except Exception as e:                       # noqa: BLE001 - the notice stands
+                log('telling a notice: %s' % e, 'debug')
+        return news
+
+    def notice_clear(self, key, how='went by itself', who=''):
+        """Gone: by itself (the code that raised it found it right), taken
+        back (what it was about went away), or done by hand (notice_done).
+        Written down in 'done lately'."""
+        with self._notices_lock():
+            rows = self.notices_all()
+            if key not in rows:
+                return False
+            one = rows.pop(key)
+            self.store.set_meta('notices', json.dumps(rows))
+            try:
+                done = json.loads(self.store.get_meta('notices_done') or '[]')
+            except (ValueError, TypeError):
+                done = []
+            done = [x for x in done if isinstance(x, dict)][-(self.NOTICE_DONE_KEEP - 1):]
+            done.append({'key': key, 'title': one.get('title') or key, 'how': how, 'who': str(who or '')[:60],
+                         'at': int(time.time()), 'link': one.get('link') or ''})
+            self.store.set_meta('notices_done', json.dumps(done))
+        return True
+
+    NOTICE_DONE_KEEP = 20
+
+    def notice_done(self, key, who=''):
+        """Marked done by hand by an administrator (or root's command line).
+        One the code can check comes back by itself if it is not so after all."""
+        if not self.notice_clear(key, 'done', who or 'the command line'):
+            raise ValueError('there is no notice %s' % str(key or '')[:60])
+        self.store.add_event('control', 'marked done by %s: %s' % (who or 'the command line', key), 'info')
+        return True
+
+    def notices_done_view(self, link=None):
+        try:
+            done = json.loads(self.store.get_meta('notices_done') or '[]')
+        except (ValueError, TypeError):
+            done = []
+        done = [x for x in done if isinstance(x, dict) and (link is None or x.get('link') == link)]
+        return list(reversed(done))[:10]
+
+    def notice_hide(self, key, hours=24, who=''):
+        """Hidden for a while by an administrator; back when that is over, or
+        when what it is about changes. A crit notice is never hidden."""
+        with self._notices_lock():
+            rows = self.notices_all()
+            one = rows.get(key)
+            if not one:
+                raise ValueError('there is no notice %s' % str(key)[:60])
+            if one.get('level') == 'crit':
+                raise ValueError('a notice of a problem is not hidden: deal with it')
+            hours = max(0.0, min(float(hours or 0), self.NOTICE_HIDE_MOST_H))
+            if hours:
+                one['hidden_until'], one['hidden_by'] = int(time.time() + hours * 3600), str(who or '')[:60]
+            else:
+                one.pop('hidden_until', None)
+                one.pop('hidden_by', None)
+            self.store.set_meta('notices', json.dumps(rows))
+        return one
+
+    def notices_view(self):
+        """The notices as the page and the command line get them: the most
+        severe first, each saying whether it is hidden now."""
+        now = time.time()
+        out, gone = [], []
+        for key, one in self.notices_all().items():
+            if not isinstance(one, dict):
+                continue
+            if one.get('until') and one['until'] < now:
+                gone.append(key)
+                continue
+            row = dict(one)
+            row['hidden'] = bool(one.get('hidden_until') and one['hidden_until'] > now
+                                 and one.get('level') != 'crit')
+            out.append(row)
+        for key in gone:
+            self.notice_clear(key, 'went by itself')
+        order = {'crit': 0, 'warn': 1, 'info': 2}
+        out.sort(key=lambda r: (order.get(r.get('level'), 3), -(r.get('at') or 0)))
+        return out
+
+    def status_with_notices(self, body):
+        """/api/status as an administrator gets it: the shared body with the
+        notices added at its end. Nobody else's has them."""
+        try:
+            rows = self.notices_view()
+        except Exception as e:                           # noqa: BLE001 - the status still goes
+            log('notices: %s' % e, 'debug')
+            return body
+        if not body.endswith(b'}'):
+            return body
+        return (body[:-1] + b', "notices": ' + json.dumps(rows, ensure_ascii=False).encode('utf-8')
+                + b', "notices_done": ' + json.dumps(self.notices_done_view(), ensure_ascii=False).encode('utf-8')
+                + b'}')
+
+    # -- the conditions that raise them ---------------------------------------
+    def cli_need(self, version, notes=None, system_level=None):
+        """Whether `version` must be put in on the command line here (root's
+        own rule, read from the helper as DB_EPOCHS is); None when the helper
+        cannot say."""
+        mod = self.upgrade_helper()
+        if mod is None or not hasattr(mod, 'cli_need'):
+            return None
+        try:
+            return mod.cli_need(str(version), notes or {}, system_level, __version__)
+        except Exception as e:                           # noqa: BLE001
+            log('cli_need %s: %s' % (version, e), 'debug')
+            return None
+
+    def cli_command(self, version, need, pkg=None, url=None):
+        """The whole command to copy: the package unpacked and its install.sh run."""
+        tail = (need or {}).get('command') or 'sudo ./install.sh --upgrade'
+        top = 'zigmon-%s' % version
+        if pkg and pkg.get('file'):
+            return 'cd /root && tar xzf %s && cd %s && %s' % (
+                shlex.quote(str(self.upgrade_dir(pkg['file']))), top, tail)
+        if url:
+            return 'cd /root && curl -fLO %s && tar xzf %s.tar.gz && cd %s && %s' % (
+                shlex.quote(str(url)), top, top, tail)
+        return 'cd zigmon-%s && %s' % (version, tail)
+
+    def cli_view(self, version, notes=None, system_level=None, pkg=None, url=None):
+        need = self.cli_need(version, notes, system_level)
+        if not need or not need.get('needed'):
+            return None
+        return {'needed': True, 'why': need.get('why') or '', 'version': str(version),
+                'command': self.cli_command(version, need, pkg, url),
+                'words': 'zigmon %s must be put in from the command line - %s' % (version, need.get('why') or '?')}
+
+    def online_notes(self, row):
+        """The notes beside each package found (make-release.sh's
+        zigmon-X.Y.Z.release.json and its signature), checked against the
+        release keys here; one that does not check is as none."""
+        mod = self.upgrade_helper()
+        if mod is None or not hasattr(mod, 'notes_signed'):
+            return
+        for x in (row.get('packages') or [])[:10]:
+            at = x.pop('notes_at', None) or {}
+            if not at.get('json') or not at.get('sig'):
+                continue
+            try:
+                data, _c, _f = _online_get(at['json'], limit=65536)
+                sig, _c, _f = _online_get(at['sig'], limit=4096)
+                notes = mod.notes_signed(data, sig)
+            except Exception as e:                       # noqa: BLE001 - not there is not known
+                if not at.get('guess'):
+                    log('the notes of %s: %s' % (x.get('version'), e), 'debug')
+                continue
+            if notes and notes.get('version') in (None, x.get('version')):
+                x['notes'] = notes
+            elif not at.get('guess'):
+                x['notes_refused'] = True
+
+    def notices_tick(self):
+        """From the half-minute chores: the conditions wired to a notice,
+        raised or cleared."""
+        # an update that must be put in on the command line, found or waiting
+        need, where = None, ''
+        pkg = self.upgrade_package()
+        if pkg and (pkg.get('newer') or pkg.get('older')):
+            need = self.cli_view(pkg['version'], pkg.get('release'), pkg.get('system_level'), pkg=pkg)
+            where = 'fetched and waiting' if pkg.get('source') else 'sent to the dashboard and waiting'
+        if not need:
+            for x in self.online_view()['online'].get('newer_list') or []:
+                if x.get('cli'):
+                    need, where = x['cli'], 'found at the address new versions are looked for at'
+                    break
+        if need:
+            self.notice_raise('upgrade-cli', 'warn', 'Update needs the command line',
+                              '%s (%s).' % (need['words'], where),
+                              action='As root, on the server:', command=need['command'], link='#control/sys-upgrade',
+                              foot='This band goes by itself once zigmon %s is in, or the package is forgotten.'
+                              % need['version'], stamp=need['version'])
+        else:
+            self.notice_clear('upgrade-cli', 'taken back')
+        # the parts root installs older than this version (5.44): checked at
+        # most every five minutes, and not in the first five after a start or
+        # while an upgrade goes on - install.sh restarts zigmon before it ends
+        if time.time() - float(self.__dict__.get('_parts_at') or 0) >= self.ROOT_PARTS_EVERY_S:
+            self._parts_at = time.time()
+            got = None
+            if time.time() - float(getattr(self, 'started', 0) or 0) >= self.ROOT_PARTS_SETTLE_S \
+                    and not self.upgrade_state_light():
+                got = self.root_parts_check()
+            if got and got.get('stale'):
+                self.notice_raise(
+                    'root-parts', 'warn', 'zigmon %s is running, but the parts root installs are from before it'
+                    % __version__, got['why'],
+                    action='As root, in the folder the zigmon-%s package was unpacked in:' % __version__,
+                    command='./install.sh --upgrade', link='#control/sys-upgrade',
+                    foot='This band goes by itself within ten minutes once it is right.',
+                    stamp=got.get('stamp') or __version__)
+            elif got is not None:
+                self.notice_clear('root-parts')
+
+    # What install.sh puts in for root and records in the stamp with its hash
+    # (write_system_stamp): the helpers, the units, logrotate, the console at
+    # login. nginx's files are not among them - install.sh never writes over a
+    # site config somebody has edited, so they are not "as this version ships".
+    ROOT_PARTS_EVERY_S = float(os.environ.get('ZIGMON_ROOT_PARTS_EVERY_S') or 300)
+    ROOT_PARTS_SETTLE_S = float(os.environ.get('ZIGMON_ROOT_PARTS_SETTLE_S') or 300)
+
+    def upgrade_state_light(self):
+        """An upgrade going on, read from its status alone."""
+        st = self.upgrade_status()
+        return st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800
+
+    def root_parts_check(self):
+        """Whether the parts root installs are as install.sh of this version
+        left them: {'stale', 'why', 'parts', 'stamp'}; None when it cannot be
+        said (not an installed zigmon, or no helper to read the stamp)."""
+        mod = self.upgrade_helper()
+        if mod is None or not hasattr(mod, 'system_level_here'):
+            return None
+        installed = os.path.realpath(__file__).startswith('/usr/local/lib/zigmon/') or \
+            bool(os.environ.get('ZIGMON_ROOT_PARTS_CHECK'))
+        if not installed:
+            return None
+        level, stamp = mod.system_level_here()
+        root = getattr(mod, 'FS_ROOT', '') or ''
+        parts = stamp.get('parts') if isinstance(stamp.get('parts'), dict) else {}
+        off = []
+        for path, want in sorted(parts.items()):
+            try:
+                with open(root + str(path), 'rb') as f:
+                    have = hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                have = None
+            if have != want:
+                off.append(os.path.basename(str(path)) + ('' if have else ' (missing)'))
+        names = [os.path.basename(str(p)) for p in sorted(parts)]
+        reasons = []
+        if not stamp:
+            reasons.append('there is no record of install.sh having run for it (%s)' % mod.SYSTEM_STAMP)
+        elif stamp.get('version') != __version__:
+            reasons.append('install.sh last ran for zigmon %s' % (stamp.get('version') or '?'))
+        if SYSTEM_LEVEL > level:
+            reasons.append('this version needs them at level %d and they are at level %d' % (SYSTEM_LEVEL, level))
+        if off:
+            reasons.append('not as install.sh left them: %s' % self._some_names(off))
+        if not reasons:
+            return {'stale': False, 'parts': names}
+        listed = off or names
+        why = ('%s%s. What needs root - upgrades from the dashboard, the firewall and TLS from the pages, '
+               'the network, the clock, the backups of the whole installation, logrotate - may not work until '
+               './install.sh --upgrade is run once as root. An upgrade from the dashboard runs it by itself; a '
+               'package copied over by hand, or an install.sh that stopped half way, does not.' % (
+                   ('Not as this version ships them: %s - ' % self._some_names(listed)) if listed else '',
+                   '; '.join(reasons)))
+        return {'stale': True, 'why': why, 'parts': off,
+                'stamp': '%s|%s|%d' % (__version__, stamp.get('version') or '', level)}
+
+    @staticmethod
+    def _some_names(names, most=6):
+        names = list(names)
+        if len(names) <= most:
+            return ', '.join(names)
+        return '%s and %d more' % (', '.join(names[:most]), len(names) - most)
+    # ==== (5.44) end =================================================================
 
     # ---- a backup of the whole installation -----------------------------------
     FULL_NAME = re.compile(r'^zigmon-full-[A-Za-z0-9._-]{1,100}\.tar\.gz$')
@@ -18182,6 +18596,7 @@ class Daemon(object):
         for name, job in (('drift', self.root_drift), ('certificate', self.check_certificate),
                           ('upgrade', self.upgrade_told), ('tidy', self.full_tidy),
                           ('new version', self.online_tick),
+                          ('notices', self.notices_tick),           # (5.44)
                           ('backups to other machines', lambda: rb_tick(self)),
                           # at most once an hour a look; the ordering in a
                           # thread of its own (5.30)
@@ -41749,6 +42164,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # pages, a new version, the backups of the whole house:
                      # how the house is guarded and how it is put back
                      '/api/firewall', '/api/tls', '/api/upgrade', '/api/fullbackup',
+                     # what an administrator is asked to do something about (5.44)
+                     '/api/notices',
                      # the machine itself (5.21): its network, its clock,
                      # restarting it
                      '/api/net', '/api/ntp', '/api/power', '/api/about',
@@ -41920,6 +42337,25 @@ class ApiHandler(BaseHTTPRequestHandler):
             if act == 'retry':
                 d.root_apply()
                 return {'message': 'asked root again'}
+        if path == '/api/notices':
+            # (5.44) a notice hidden for a while, or shown again
+            if act == 'hide':
+                me = d.session_get(body.get('session')) or {}
+                d.notice_hide(str(body.get('key') or ''), body.get('hours', 24), me.get('name') or who)
+                return {'notices': d.notices_view(), 'message': 'hidden for %s h' % body.get('hours', 24)
+                        if body.get('hours', 24) else 'shown again'}
+            if act == 'done':
+                me = d.session_get(body.get('session')) or {}
+                d.notice_done(str(body.get('key') or ''), me.get('name') or (
+                    'the command line' if getattr(REQUEST_CALLER, 'cli', False) else who))
+                return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'marked done'}
+            if act == 'look':
+                d._parts_at = 0                          # the parts root installs looked at now
+                d.notices_tick()
+                return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'looked again'}
+            if act in ('', 'list'):
+                return {'notices': d.notices_view(), 'done': d.notices_done_view()}
+            raise ValueError('what with the notice? (done, look, hide, list)')
         if path == '/api/upgrade':
             # maintenance (otp 1.0.37): this server in or out of it, by hand
             if act == 'maintenance':
@@ -42257,8 +42693,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                         and not d.session_valid(self.headers.get('X-Zigmon-Session') or ''):
                     return self._error(403, 'view locked - sign in to see the house')
                 body = d.status_body()
-                if not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin'):
+                boss = d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')
+                if not boss:
                     body = d.status_for_viewer(body)
+                if boss or REQUEST_CALLER.cli:
+                    # (5.44) an administrator's (and root's command line's) only
+                    body = d.status_with_notices(body)
                 return self._send_body(200, body)
             if path == '/api/auth/whoami':
                 # who this page is signed in as - asked by every page, so
@@ -42881,6 +43321,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return self._send(200, d.tls_state(fresh=bool(q.get('fresh'))))
             if path == '/api/upgrade':
                 return self._send(200, d.upgrade_state())
+            if path == '/api/notices':                          # (5.44)
+                return self._send(200, {'ok': True, 'notices': d.notices_view(), 'done': d.notices_done_view()})
             if path == '/api/net':
                 return self._send(200, d.net_view())
             if path == '/api/ntp':
@@ -44257,6 +44699,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                 log('integrity check finished in %.1fs: %s'
                     % (time.time() - started, 'ok' if outcome.get('ok') else '; '.join(outcome.get('lines') or [])),
                     'info' if outcome.get('ok') else 'error')
+                # (5.44) a database that fails its check is a notice until one passes
+                try:
+                    if outcome.get('ok'):
+                        d.notice_clear('db-integrity')
+                    else:
+                        d.notice_raise('db-integrity', 'crit', 'The database fails its integrity check',
+                                       'SQLite says: %s%s.' % ('; '.join(outcome.get('lines') or [])[:300],
+                                                               (' - and %d foreign key problem(s)'
+                                                                % outcome['foreign_key_problems'])
+                                                               if outcome.get('foreign_key_problems') else ''),
+                                       action='Put a backup of the database back, or check it again once mended',
+                                       foot='This band goes by itself once a check of the database passes.',
+                                       link='#control/sys-data')
+                except Exception as e:                   # noqa: BLE001
+                    log('notices: %s' % e, 'debug')
                 return self._send(200, dict(outcome, ok=True))
             if path == '/api/mqtt/ghosts':
                 err = d.check_pin(body.get('pin'), body.get('session'))
@@ -44589,7 +45046,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             # ---- what root does for the dashboard (5.18) -------------------
             if path in ('/api/firewall', '/api/tls', '/api/upgrade', '/api/upgrade/upload',
                         '/api/fullbackup', '/api/fullbackup/upload',
-                        '/api/net', '/api/ntp', '/api/power', '/api/change', '/api/about'):
+                        '/api/net', '/api/ntp', '/api/power', '/api/change', '/api/about',
+                        '/api/notices'):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
@@ -45000,6 +45458,7 @@ def cmd_status(args, pal):
         pal.warn('PERMIT JOIN OPEN') if b.get('permit_join') else ''))
     print(pal.bold('Overall   ') + pal.level(data['level'], data['level']))
     print()
+    _print_notices(pal, data.get('notices'))           # (5.44) root's command line is an administrator
     devices = data['devices']
     if not devices:
         print(pal.dim('no devices recorded yet'))
@@ -53692,6 +54151,10 @@ HELP_LINES = [
     ('sudo zigmon --maintenance on --why "the disk"', 'this server in maintenance: the house goes on, '
      'the alerts about the machine are held; off: back in service; status'),
     ('sudo zigmon --upgrade-check', 'look at upgrade_url now: is there a newer zigmon?'),
+    # (5.44)
+    ('sudo zigmon --notices', 'what is to be done by hand: an update that needs the command line, root’s '
+     'parts older than the program, ... - each with its command'),
+    ('sudo zigmon --notice-done KEY', 'mark one done by hand (one that is checked comes back if it is not so)'),
     ('sudo zigmon --upgrade-online --yes',
      'fetch the newest (or a VERSION), check its signature, put it in and follow it'),
     ('sudo zigmon --downgrade-check', 'which older versions it may go back to, and why not the rest'),
@@ -53962,6 +54425,13 @@ def build_parser():
                         'the house goes on as ever, the alerts about the machine and devices going '
                         'quiet are held, /api/healthz says 503; status says which')
     a.add_argument('--why', metavar='TEXT', help='with --maintenance on: why, for the events')
+    a.add_argument('--notices', action='store_true',
+                   help='(root) what an administrator is asked to do something about (5.44): an update '
+                        'that must be put in on the command line, root\u2019s parts older than the program, '
+                        'the nightly backup failing - each with its command')
+    a.add_argument('--notice-done', metavar='KEY',
+                   help='(root) mark a notice done by hand (zigmon --notices lists them with their keys); one '
+                        'that can be checked comes back by itself if it is not so')
     a.add_argument('--upgrade-check', action='store_true',
                    help='(root) look at upgrade_url now for a newer zigmon (as Control, Upgrades, Look now)')
     a.add_argument('--upgrade-online', nargs='?', const='newest', metavar='VERSION',
@@ -54251,6 +54721,60 @@ def cmd_maintenance(args, pal):
     return 0
 
 
+# ---- (5.44) the notices for an administrator, on the command line -------------------
+def _print_notices(pal, rows, head=True):
+    """The notices as the console and --status say them: the most severe
+    first, each with what to run. Hidden ones are said as hidden."""
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not rows:
+        return 0
+    if head:
+        print(pal.bold('Notices   ') + pal.warn('%d for an administrator' % len(rows)))
+    for r in rows:
+        lvl = r.get('level') or 'warn'
+        mark = {'crit': pal.crit('!!'), 'warn': pal.warn(' !'), 'info': pal.dim(' i')}.get(lvl, ' !')
+        print('  %s %s%s  %s' % (mark, pal.bold(str(r.get('title') or r.get('key'))),
+                                pal.dim('  (hidden for now)') if r.get('hidden') else '',
+                                pal.dim('[%s]' % r.get('key'))))
+        if r.get('why'):
+            for line in _textwrap.wrap(str(r['why']), 96):
+                print('     ' + line)
+        if r.get('command'):
+            if r.get('action'):
+                print(pal.dim('     ' + str(r['action'])))
+            print('     ' + pal.ok('$ ' + str(r['command'])))
+        if r.get('foot'):
+            print(pal.dim('     ' + str(r['foot'])))
+    print(pal.dim('  done by hand: zigmon --notice-done KEY'))
+    print()
+    return len(rows)
+
+
+def cmd_notices(args, pal):
+    """zigmon --notices: what an administrator is asked to do something about;
+    --notice-done KEY marks one done by hand."""
+    if getattr(args, 'notice_done', None):
+        code, data = api_call('/api/notices', 'POST', {'action': 'done', 'key': args.notice_done})
+        if code != 200:
+            print(pal.crit('not marked done: %s' % ((data or {}).get('error') or code)))
+            return 1
+        print(pal.ok('%s marked done' % args.notice_done))
+        return 0
+    code, data = api_call('/api/notices')
+    if code != 200:
+        print(pal.crit('daemon not reachable: %s' % (data.get('error') or code)))
+        return 2
+    rows = data.get('notices') or []
+    if getattr(args, 'json', False):
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    if not rows:
+        print(pal.ok('no notices: nothing waits for an administrator'))
+        return 0
+    _print_notices(pal, rows)
+    return 1 if any(r.get('level') == 'crit' for r in rows) else 0
+
+
 def cmd_upgrade_check(args, pal):
     """Look at upgrade_url now, as Control - Upgrades - Look now does."""
     out = _upgrade_ask(pal, {'action': 'online_look'}, timeout=90.0)
@@ -54264,9 +54788,15 @@ def cmd_upgrade_check(args, pal):
     if row.get('error'):
         print(pal.crit('  ' + row['error']))
         return 1
+    clis = {x.get('version'): x.get('cli') for x in ((out.get('web') or {}).get('online') or {}).get('newer_list') or []}
     for pk in row.get('packages') or []:
         mark = pal.ok('newer') if _online_ver(pk['version']) > _online_ver(__version__) else pal.dim('not newer')
-        print('  %-26s %-10s %s' % (pk['name'], mark, pal.dim(pk['url'])))
+        cli = clis.get(pk['version'])
+        print('  %-26s %-10s %s%s' % (pk['name'], mark, pal.dim(pk['url']),
+                                      pal.warn('  (command line)') if cli else ''))
+        if cli:                                          # (5.44)
+            print(pal.warn('      %s' % cli['words']))
+            print('      ' + pal.ok('$ ' + cli['command']))
     newest = row.get('newest')
     if not newest:
         print(pal.warn('  no zigmon package there'))
@@ -54299,6 +54829,12 @@ def cmd_upgrade_online(args, pal):
     if _online_ver(pk['version']) <= _online_ver(__version__):
         print(pal.ok('nothing newer than %s at %s' % (__version__, row.get('url'))))
         return 0
+    cli = next((x.get('cli') for x in row.get('newer_list') or [] if x.get('version') == pk['version']), None)
+    if cli:                                              # (5.44) root would refuse it
+        print(pal.crit(cli['words']))
+        print('  on this machine, as root:')
+        print('  ' + pal.ok('$ ' + cli['command']))
+        return 1
     print(pal.title('zigmon %s -> %s' % (__version__, pk['version'])) + pal.dim('  from %s' % pk['url']))
     print('  a backup of the whole installation first; then it is put in and zigmon restarts -')
     print('  the house stops following its sensors for a minute or so. If the new version does')
@@ -56542,6 +57078,12 @@ def cmd_updates(args, pal):
         print(json.dumps(v, indent=2, ensure_ascii=False))
         return 0
     chk, run, sc = v.get('check') or {}, v.get('run') or {}, v.get('schedule') or {}
+    # (5.44) first what must be done on the command line - an update of zigmon
+    # that the dashboard may not put in, root's parts older than the program
+    ncode, nv = api_call('/api/notices', timeout=10.0)
+    if ncode == 200 and isinstance(nv, dict):
+        _print_notices(pal, [r for r in nv.get('notices') or []
+                             if r.get('key') in ('upgrade-cli', 'root-parts')])
     print(pal.title('the system\u2019s updates on %s%s' % (
         v.get('node') or 'this machine', '' if v.get('helper') else
         ' - root has not been given this yet (install.sh --upgrade)')))
@@ -57061,6 +57603,20 @@ class Console(object):
             y += 1
         if (st.get('bridge') or {}).get('permit_join'):
             self._put(y, 1, 'the Zigbee network is open: new devices may join', A['warn'])
+            y += 1
+        # (5.44) the notices for an administrator, the most severe first: its
+        # title, and the command of the first one to copy (Status > Notices
+        # lists them whole - zigmon --notices)
+        shown = [n for n in (st.get('notices') or []) if isinstance(n, dict) and not n.get('hidden')]
+        for n, one in enumerate(shown[:max(0, min(3, h - 14))]):
+            self._put(y, 1, '%s %s' % ('!!' if one.get('level') == 'crit' else '! ', one.get('title') or ''),
+                      A['bad'] if one.get('level') in ('crit', 'warn') else A['key'])
+            y += 1
+            if n == 0 and one.get('command') and h > 18:
+                self._put(y, 4, '$ ' + str(one['command']), A['dim'])
+                y += 1
+        if len(shown) > 3:
+            self._put(y, 1, '  and %d more notice(s): zigmon --notices' % (len(shown) - 3), A['dim'])
             y += 1
         for one in (st.get('alerts') or [])[:max(0, min(4, h - 12))]:
             text = one.get('text') if isinstance(one, dict) else one
@@ -58201,6 +58757,8 @@ class Console(object):
             ('Events', events),
             ('Diagnostics (settings, API latency, database size)', lambda: self.act('--diag')),
             ('What root last did for the dashboard', lambda: self.act('--root-status')),
+            # (5.44) what an administrator is asked to do, with its commands
+            ('Notices for an administrator', lambda: self.act('--notices')),
         ], 'status')
 
     # ---- 2 live log ---------------------------------------------------------------
@@ -59021,6 +59579,8 @@ def _dispatch(args, pal):
         return cmd_backup(args, pal)
     if getattr(args, 'maintenance', None):
         return cmd_maintenance(args, pal)
+    if getattr(args, 'notices', False) or getattr(args, 'notice_done', None):
+        return cmd_notices(args, pal)
     if getattr(args, 'upgrade_check', False):
         return cmd_upgrade_check(args, pal)
     if getattr(args, 'upgrade_online', None):

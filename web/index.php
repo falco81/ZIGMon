@@ -953,7 +953,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do',
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do',
                        'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
@@ -1001,6 +1001,7 @@ if (isset($_GET['api'])) {
                   'alerts-clear' => '/api/alerts/clear', 'hold-release' => '/api/hold/release', 'db-backup' => '/api/db/backup', 'db-restore' => '/api/db/restore',
                   'db-backup-delete' => '/api/db/backup/delete', 'db-backup-upload' => '/api/db/backup/upload',
                   'firewall-do' => '/api/firewall', 'tls-do' => '/api/tls', 'upgrade-do' => '/api/upgrade',
+                  'notices-do' => '/api/notices',   /* (5.44) a notice hidden for a while */
                   'upgrade-upload' => '/api/upgrade/upload', 'fullbackup-do' => '/api/fullbackup',
                   'fullbackup-upload' => '/api/fullbackup/upload',
                   'net-do' => '/api/net', 'ntp-do' => '/api/ntp', 'power-do' => '/api/power',
@@ -2888,6 +2889,56 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .maint-band[hidden]{display:none}
   .maint-band:not([hidden]){margin-bottom:14px}
   .maint-band .change-words b{color:var(--warn)}
+  /* (5.44) the notices for an administrator, as upsmon draws them: a card "To
+     be done by hand" at the top of the pane they belong to, a band each -
+     tinted in its level's colour, a coloured left edge, an icon, a bold
+     title, the words in dim, the command in a dark mono box with Copy, the
+     hint and the time; Done / Look again at its right; "Done lately" under
+     them. Also what the Upgrades pane draws for a version that must be put in
+     on the command line (.nband.inline). The rail: a round badge. */
+  .todo-card.has-crit{border-color:color-mix(in srgb, var(--crit) 45%, var(--line))}
+  .todo-card > p.note{max-width:1000px}
+  .nbands{display:flex;flex-direction:column;gap:10px}
+  .nband{--lv:var(--warn);display:flex;gap:14px;align-items:flex-start;padding:14px 16px 14px 18px;border-radius:10px;
+    border:1px solid color-mix(in srgb, var(--lv) 55%, transparent);border-left:4px solid var(--lv);
+    background:color-mix(in srgb, var(--lv) 12%, var(--panel));color:var(--tx);min-width:0}
+  .nband.crit{--lv:var(--crit)}
+  .nband.info{--lv:var(--info)}
+  .nband .nb-icon{flex:0 0 auto;color:var(--lv);margin-top:1px;line-height:0}
+  .nband .nb-main{flex:1 1 auto;min-width:0}
+  .nband .nb-title{font-weight:700;font-size:15px;line-height:1.4;overflow-wrap:anywhere}
+  .nband .nb-why{color:var(--tx-dim);font-size:13.5px;line-height:1.55;margin-top:3px;overflow-wrap:anywhere}
+  .nband .nb-act{color:var(--tx-dim);font-size:12.5px;margin-top:10px}
+  .nband .nb-cmd{display:flex;align-items:center;gap:10px;margin-top:6px;max-width:760px;padding:8px 8px 8px 14px;
+    background:var(--bg);border:1px solid var(--line);border-radius:8px}
+  .nband .nb-cmd code{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:none;border:0;padding:0;color:var(--tx);overflow-wrap:anywhere;white-space:pre-wrap}
+  .nband .nb-cmd .btn{flex:0 0 auto}
+  .nband .nb-foot, .nband .nb-when{color:var(--tx-dim);font-size:12.5px;margin-top:10px}
+  .nband .nb-when{margin-top:8px;color:var(--tx-mut)}
+  .nband .nb-tools{flex:0 0 auto;display:flex;flex-direction:column;gap:8px;align-items:stretch}
+  .nband.inline{margin:12px 0}
+  .todo-done{margin-top:16px}
+  .todo-none{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:10px;color:var(--ok);font-size:14px;
+    background:color-mix(in srgb, var(--ok) 12%, var(--panel));border:1px solid color-mix(in srgb, var(--ok) 45%, transparent)}
+  .todo-done-h{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-dim);margin:0 0 6px}
+  .todo-done-t{width:100%}
+  .todo-done-t th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);text-align:left}
+  .ctl-nav button .nav-nmark{position:absolute;left:21px;top:-1px;min-width:17px;height:17px;padding:0 4px;box-sizing:border-box;
+    border-radius:9px;font-size:10.5px;font-weight:700;line-height:17px;text-align:center;color:#fff;background:var(--crit);
+    box-shadow:0 0 0 2px var(--panel);pointer-events:none}
+  .ctl-nav button .nav-nmark.warn{background:var(--warn);color:#0d1117}
+  .ctl-nav button .nav-nmark.info{background:var(--info);color:#0d1117}
+  /* the rail shut hides the words of its buttons; never the badge */
+  .ctl-nav button[data-sec] span.nav-nmark{opacity:1 !important;width:auto !important;overflow:visible !important}
+  @media (max-width:640px){
+    .nband{flex-wrap:wrap;gap:10px;padding:12px 12px 12px 14px}
+    .nband .nb-main{flex-basis:calc(100% - 40px)}
+    .nband .nb-tools{flex-direction:row;flex-wrap:wrap;width:100%}
+    .nband .nb-cmd{flex-wrap:wrap}
+    .todo-done-t{display:block;overflow-x:auto}
+  }
+  /* (5.44) end */
   /* what a setting does, under it (otp's three of Upgrades and maintenance) */
   :is(#settings-grid, .set-host) .set-item > .set-says{grid-row:3;grid-column:1/-1;font-size:12px;line-height:1.45;
     color:var(--tx-mut);flex-basis:100%;width:100%}
@@ -6096,6 +6147,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
          Drawn as otp draws it (5.35.1): its cards in its order, its sizes
          (.card.up), the output of root folded, and the settings saved by the
          save bar at the end of the pane. -->
+    <!-- (5.44) what is to be done by hand: always there for an administrator (renderNoticeBands) -->
+    <div class="card full todo-card" data-sec="sys-upgrade" id="todo-sys-upgrade" hidden></div>
     <div class="card full ot up" data-sec="sys-upgrade" id="up-card">
       <h2>The nodes</h2>
       <p class="note" id="up-nodes-note">A server in maintenance is being worked on: the alerts about the machine itself and about devices going quiet or offline are held &ndash; kept in the events &ndash; while it is, and for 10 min after, and its /healthz says 503. The house goes on as ever: sensors, rules, sockets, schedules, the broker and these pages.</p>
@@ -6901,6 +6954,12 @@ window.addEventListener('resize', function () {
 // ---- what needs attention, in one place: click the pill or the metric card ---------
 function attentionItems(st) {
   var items = [];
+  // (5.44) the notices for an administrator, each an item of its own
+  noticeRows(st).forEach(function (n) {
+    items.push({level: n.level === 'crit' ? 'crit' : (n.level === 'info' ? 'info' : 'warn'), who: n.title || n.key,
+      why: esc(n.why || '') + (n.command ? '<br><code>' + esc(n.command) + '</code>' : ''), link: n.link, notice: n.key,
+      when: n.at ? 'since ' + ago(n.at) : ''});
+  });
   if (!st.connected) items.push({level: 'crit', who: 'MQTT broker', why: 'The daemon is not connected to ' + esc(st.broker || 'the broker') + (st.last_error ? ' — ' + esc(st.last_error) : '') + '. Nothing from Zigbee2MQTT reaches the dashboard until it is back.'});
   var b = st.bridge || {};
   if (st.connected && b.state !== 'online') items.push({level: 'crit', who: 'Zigbee2MQTT', why: 'The bridge reports ' + esc(b.state || 'no state') + ' — the Zigbee network is not being served.'});
@@ -6944,6 +7003,9 @@ function showDetail(title, items, empty, wide) {
     if (it.id) {
       who.title = 'Open in History';
       who.onclick = function () { $('attnback').hidden = true; STATE.hDevice = it.id; showTab('history'); };
+    } else if (it.link) {                         // (5.44) a notice: to the pane that deals with it
+      who.title = 'Open it';
+      who.onclick = function () { $('attnback').hidden = true; noticeGo(it.link); };
     }
     right.appendChild(who);
     var why = el('div', 'why'); why.innerHTML = it.why; right.appendChild(why);
@@ -17645,7 +17707,10 @@ var ICONS = {
   router: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 16.5h.01M11 16.5h.01"/><path d="M8 7l3 3 5-6"/>',
   // the web, and the proxy standing in front of it (5.35, otp's own)
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z"/>',
-  wall: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.3h18M3 14.7h18"/><path d="M9 4v5.3M15 9.3v5.4M9 14.7V20"/>'
+  wall: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.3h18M3 14.7h18"/><path d="M9 4v5.3M15 9.3v5.4M9 14.7V20"/>',
+  // (5.44) a triangle with a mark: a notice that wants doing
+  alert: '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5"/><path d="M12 17.2h.01"/>',
+  flag: '<path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/>'
 };
 function iconMarkup(key, size) {
   return '<svg viewBox="0 0 24 24" width="' + (size || 17) + '" height="' + (size || 17)
@@ -28185,6 +28250,7 @@ function applyStatus(st) {
   if (st.server_now) CHG.skew = st.server_now - Date.now() / 1000;
   if (sigChanged('changes', [st.changes, isAdmin()])) renderChanges(st);
   if (sigChanged('maintband', [st.maintenance, isAdmin()])) renderMaintBand(st);
+  if (sigChanged('nbands', [st.notices, isAdmin()])) renderNoticeBands(st);   // (5.44)
   applyRuntimeFlags(st);                     // before any card is built this tick
   STATE.status = st;
   secretHintsAsk(st);                        // an administrator's: which secret is set
@@ -30936,9 +31002,28 @@ function drawUpWeb(d) {
     // more than one version newer than this one: which of them is chosen
     // here, the newest first; with one, nothing is asked and nothing changes
     var many = (o.newer_list || []).filter(function (x) { return x && x.version; });
+    // (5.44) a version that must be put in on the command line: the band says
+    // why and what to run, and Upgrade is not offered for it
+    var cliOf = function (ver) {
+      var x = many.filter(function (y) { return y.version === ver; })[0];
+      return (x && x.cli) || (ver === String(o.newest.version) ? o.newest_cli : null) || null;
+    };
+    var cliSlot = el('div', 'up-cli-slot');
+    var only = cmdButton('Only fetch it', 'download', '');
+    var cliSet = function () {
+      var cli = cliOf(v);
+      cliSlot.innerHTML = '';
+      if (cli) cliSlot.appendChild(cliBand(cli));
+      up.disabled = !!cli;
+      up.classList.toggle('primary', !cli);
+      up.classList.toggle('up-cli-off', !!cli);
+      up.title = cli ? cli.words + ' - the dashboard does not put it in.' : '';
+      explain(only, cli ? 'Fetched and checked, and left in the upgrade folder for the command line: the command in the band unpacks it from there.'
+        : 'Fetched and checked, and left ready below — put in when Upgrade is pressed.');
+    };
     if (many.length > 1) {
       var pick = zSelect(many.map(function (x, i) {
-        return [x.version, 'zigmon ' + x.version + (i === 0 ? ' (the newest)' : '')];
+        return [x.version, 'zigmon ' + x.version + (i === 0 ? ' (the newest)' : '') + (x.cli ? ' (command line)' : '')];
       }), v);
       pick.className = 'up-pick';
       pick.title = 'More than one newer version is there: the one to go to';
@@ -30947,6 +31032,7 @@ function drawUpWeb(d) {
         v = pick.value;
         vurl = String((many.filter(function (x) { return x.version === v; })[0] || {}).url || w.url || '');
         setButtonIcon(up, 'play', 'Upgrade to ' + v + ' now');
+        cliSet();
       };
       // (5.43.4) as isemon has it: a line of its own over the buttons, the
       // words and then the list, as wide as its words
@@ -30967,8 +31053,8 @@ function drawUpWeb(d) {
         }, false);
     };
     row.appendChild(up);
-    var only = cmdButton('Only fetch it', 'download', '');
-    explain(only, 'Fetched and checked, and left ready below — put in when Upgrade is pressed.');
+    host.appendChild(cliSlot);                   // (5.44) over the buttons
+    cliSet();
     only.onclick = function () {
       zbusy(only, true);
       rootPost('upgrade-do', {action: 'online_get', version: v}).then(function (x) {
@@ -31051,6 +31137,7 @@ function drawUpgrade(d) {
   }, 'plain'));
   drawUpWeb(d);
   drawUpBack(d);
+  try { renderNoticeBands(STATE.status || {}); } catch (e) {}     // (5.44) the card is there at once
   var pk = $('up-pkg');
   pk.innerHTML = '';
   if (d.package) {
@@ -31067,9 +31154,14 @@ function drawUpgrade(d) {
       det.appendChild(el('pre', 'zlines', p.changelog));
       pk.appendChild(det);
     }
+    // (5.44) one that must be put in on the command line: the band instead of
+    // the button (sent here or fetched; root refuses it from the dashboard)
+    if (p.cli && !p.older) pk.appendChild(cliBand(p.cli));
   }
   $('up-forget').hidden = !d.package || d.running;
   $('up-start').disabled = !d.package || !d.ready;
+  $('up-start').hidden = !!(d.package && d.package.cli && !d.package.older);      // (5.44)
+  $('up-start').title = (d.package && d.package.cli) ? d.package.cli.words : '';
   var rd = $('up-ready');
   rd.innerHTML = '';
   if (d.package && !d.ready && !d.running) (d.not_ready || []).forEach(function (w) { rd.appendChild(el('p', 'note bad', w)); });
@@ -31183,9 +31275,11 @@ function drawUpBack(d) {
     box.appendChild(el('div', 'small', 'signed by ' + (pkg.signed_by || '?') + ' · ' + (pkg.source ? 'fetched from ' + pkg.source : 'sent by ' + (pkg.by || '?'))
       + (pkg.at ? ' · ' + ago(pkg.at) : '') + (safe ? '' : ' · ' + ((pkg.back || {}).why || '?'))));
     host.appendChild(box);
+    if (pkg.cli) host.appendChild(cliBand(pkg.cli));      // (5.44)
     var row = el('div', 'btnrow');
     var now = cmdButton('Go back to ' + pkg.version, 'undo', 'danger');
-    now.disabled = !b.ready;
+    now.disabled = !b.ready || !!pkg.cli;
+    if (pkg.cli) now.title = pkg.cli.words;
     now.onclick = function () { go(pkg.version, false); };
     row.appendChild(now);
     var log0 = cmdButton('What changed', 'list', '');
@@ -31207,9 +31301,15 @@ function drawUpBack(d) {
       var tag = el('span', 'tag ' + (ok ? 'ok' : 'warn'), ok ? 'yes' : 'no');
       if (!ok && x.why) tag.title = x.why;
       left.appendChild(tag);
+      if (x.cli) {                                // (5.44) only on the command line
+        var ct = el('span', 'tag warn up-cli-tag', 'command line');
+        ct.title = x.cli.words + ' - ' + x.cli.command;
+        left.appendChild(ct);
+      }
       r.appendChild(left);
-      r.appendChild(acts(x.version, ok, true, b.busy || d.running || d.asked));
+      r.appendChild(acts(x.version, ok && !x.cli, true, b.busy || d.running || d.asked));
       list.appendChild(r);
+      if (x.cli && ok) list.appendChild(cliBand(x.cli));
     });
     return list;
   };
@@ -31873,6 +31973,182 @@ function renderMaintBand(st) {
   tools.appendChild(go);
   box.appendChild(tools);
 }
+/* ==== (5.44) notices for an administrator ========================================
+   The daemon's registry (notice_raise / notice_clear / notice_done) arrives in
+   /api/status as st.notices and st.notices_done - for an administrator only.
+   Drawn, as upsmon has it, in the pane of Settings each belongs to (its link,
+   '#control/sys-upgrade'): a card "To be done by hand" at the top of the pane,
+   a band per item (crit red with x, warn amber with a flag, info blue), the
+   command in a mono box with Copy, the hint and when it was raised; Done (by
+   hand, who is written down) and, for one the daemon checks itself, Look
+   again; under them what was done lately. The pane's button in the rail gets
+   a round badge with the count in the worst level's colour, and Needs
+   attention (the pill, the tile) an item each leading to the pane. Nothing is
+   drawn at the top of the page. Every word in a notice is put in as text,
+   never as markup. The Upgrades pane draws a version that must be put in on
+   the command line with the same band (cliBand). */
+var NOTICE_WORDS = 'What zigmon cannot do itself and somebody has to - a step a new version needs on the command line, '
+  + 'what the installer left to you, root’s parts older than the program. Kept here, counted beside the pane in the menu, '
+  + 'said in Needs attention and in the console until it is done. One that can be checked goes by itself once it is so.';
+function noticeRows(st) {
+  if (!isAdmin()) return [];
+  return ((st && st.notices) || []).filter(function (n) { return n && !n.hidden; });
+}
+function noticeSecOf(n) {
+  var m = /^#control\/([a-z0-9-]+)$/.exec(String((n && n.link) || ''));
+  return m ? m[1] : '';
+}
+function noticeGo(link) {
+  var m = /^#control\/([a-z0-9-]+)$/.exec(String(link || ''));
+  if (!m) return;
+  location.hash = link;
+  try { showTab('control'); showControlSection(m[1]); } catch (e) {}
+}
+function noticeCmdBox(command) {
+  var box = el('div', 'nb-cmd');
+  box.appendChild(el('code', '', command));
+  var cp = cmdButton('Copy', 'copy', 'small nb-copy');
+  cp.classList.remove('needs-unlock');
+  cp.onclick = function () { copyText(command); };
+  box.appendChild(cp);
+  return box;
+}
+function noticeAsk(btn, body) {
+  zbusy(btn, true);
+  rootPost('notices-do', body).then(function (r) {
+    toast(r.message || 'done', true);
+    if (STATE.status) {
+      STATE.status.notices = r.notices || [];
+      if (r.done) STATE.status.notices_done = r.done;
+      renderNoticeBands(STATE.status);
+    }
+    tick(true);
+  }, zoops).then(function () { zbusy(btn, false); });
+}
+function noticeBand(n, opts) {
+  opts = opts || {};
+  var lv = n.level === 'crit' ? 'crit' : (n.level === 'info' ? 'info' : 'warn');
+  var band = el('div', 'nband ' + lv + (opts.inline ? ' inline' : ''));
+  band.setAttribute('role', lv === 'crit' ? 'alert' : 'status');
+  if (n.key) band.dataset.key = n.key;
+  var ic = el('span', 'nb-icon');
+  ic.innerHTML = iconMarkup(lv === 'crit' ? 'close' : (lv === 'info' ? 'info' : 'flag'), 18);
+  band.appendChild(ic);
+  var main = el('div', 'nb-main');
+  main.appendChild(el('div', 'nb-title', n.title || n.key || ''));
+  if (n.why) main.appendChild(el('div', 'nb-why', n.why));
+  if (n.command) {
+    main.appendChild(el('div', 'nb-act', n.action || 'As root, on the server:'));
+    main.appendChild(noticeCmdBox(n.command));
+  } else if (n.action) main.appendChild(el('div', 'nb-act', n.action));
+  if (n.foot || !opts.inline) main.appendChild(el('div', 'nb-foot', n.foot || 'Once it is done, press Done.'));
+  if (n.at) main.appendChild(el('div', 'nb-when', sysStamp(n.at)));
+  band.appendChild(main);
+  if (!opts.inline && n.key) {
+    var tools = el('div', 'nb-tools');
+    if (n.checkable !== false) {        // the daemon checks it itself: it may be looked at again now
+      var again = cmdButton('Look again', 'refresh', 'small nb-again');
+      again.onclick = function () { noticeAsk(again, {action: 'look'}); };
+      tools.appendChild(again);
+    }
+    var done = cmdButton('Done', 'check', 'small nb-done');
+    done.title = 'Done by hand - written down with your name';
+    done.onclick = function () { noticeAsk(done, {action: 'done', key: n.key}); };
+    tools.appendChild(done);
+    band.appendChild(tools);
+  }
+  return band;
+}
+function noticeDoneTable(rows) {
+  var box = el('div', 'todo-done');
+  box.appendChild(el('div', 'todo-done-h', 'Done lately'));
+  var t = el('table', 'plain todo-done-t');
+  var hd = el('tr');
+  ['What', 'How', 'Who', 'When'].forEach(function (w) { hd.appendChild(el('th', '', w)); });
+  var thead = el('thead'); thead.appendChild(hd); t.appendChild(thead);
+  var tb = el('tbody');
+  rows.forEach(function (x) {
+    var tr = el('tr');
+    tr.appendChild(el('td', '', x.title || x.key || ''));
+    tr.appendChild(el('td', 'muted', x.how || ''));
+    tr.appendChild(el('td', '', x.who || '–'));
+    var when = el('td', 'mono');
+    var dt = new Date((x.at || 0) * 1000);
+    when.appendChild(el('span', 'muted', localDay(dt) + ' '));
+    when.appendChild(document.createTextNode(dt.toTimeString().slice(0, 8)));
+    tr.appendChild(when);
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  box.appendChild(t);
+  return box;
+}
+// the card "To be done by hand" at the top of each pane that has something
+function renderNoticeBands(st) {
+  var grid = document.querySelector('#tab-control .grid.charts');
+  if (!grid) return;
+  var by = {}, done = {};
+  noticeRows(st).forEach(function (n) {
+    var sec = noticeSecOf(n);
+    if (sec) (by[sec] = by[sec] || []).push(n);
+  });
+  if (isAdmin()) ((st && st.notices_done) || []).forEach(function (x) {
+    var sec = noticeSecOf(x);
+    if (sec) (done[sec] = done[sec] || []).push(x);
+  });
+  var cards = {};
+  Array.prototype.forEach.call(grid.querySelectorAll(':scope > .todo-card'), function (c) { cards[c.dataset.sec] = c; });
+  Object.keys(by).concat(Object.keys(done)).forEach(function (sec) {
+    if (cards[sec]) return;
+    var first = grid.querySelector(':scope > [data-sec="' + sec + '"]');
+    if (!first) return;
+    var card = el('div', 'card full todo-card');
+    card.dataset.sec = sec;
+    card.id = 'todo-' + sec;
+    grid.insertBefore(card, first);
+    cards[sec] = card;
+  });
+  Object.keys(cards).forEach(function (sec) {
+    var card = cards[sec], rows = by[sec] || [], past = done[sec] || [];
+    card.innerHTML = '';
+    // Upgrades has it always (for an administrator); another pane while it has something
+    card.hidden = !isAdmin() || (sec !== 'sys-upgrade' && !rows.length && !past.length);
+    card.classList.toggle('sec-off', sec !== CONTROL_SEC);
+    card.classList.toggle('has-crit', rows.some(function (n) { return n.level === 'crit'; }));
+    if (card.hidden) return;
+    card.appendChild(el('h2', '', 'To be done by hand'));
+    card.appendChild(el('p', 'note', NOTICE_WORDS));
+    var list = el('div', 'nbands');
+    rows.forEach(function (n) { list.appendChild(noticeBand(n)); });
+    if (!rows.length) {
+      var none = el('div', 'todo-none');
+      none.innerHTML = iconMarkup('check', 16);
+      none.appendChild(el('span', '', 'Nothing is to be done by hand.'));
+      list.appendChild(none);
+    }
+    card.appendChild(list);
+    if (past.length) card.appendChild(noticeDoneTable(past));
+  });
+  // the badges in the rail
+  Array.prototype.forEach.call(document.querySelectorAll('#control-nav button[data-sec]'), function (b) {
+    var rows = by[b.dataset.sec] || [];
+    var mark = b.querySelector('.nav-nmark');
+    if (!rows.length) { if (mark) mark.remove(); return; }
+    var worst = rows.some(function (n) { return n.level === 'crit'; }) ? 'crit'
+      : (rows.some(function (n) { return n.level === 'warn'; }) ? 'warn' : 'info');
+    if (!mark) { mark = el('span'); b.appendChild(mark); }
+    mark.className = 'nav-nmark ' + worst;
+    mark.textContent = String(rows.length);
+    mark.setAttribute('aria-label', rows.length + ' to be done by hand');
+  });
+}
+// a version that must be put in on the command line (the daemon's cli_view)
+function cliBand(cli) {
+  return noticeBand({level: 'warn', title: 'zigmon ' + cli.version + ' must be put in from the command line',
+    why: (cli.why || '') + ' - the dashboard does not put it in; root refuses it from here.',
+    action: 'As root, on the server:', command: cli.command}, {inline: true});
+}
+/* ==== (5.44) end ================================================================= */
 function tickChanges() {
   Array.prototype.forEach.call(document.querySelectorAll('.change-left'), function (n) {
     var left = Number(n.dataset.until) - (Date.now() / 1000 + CHG.skew);
