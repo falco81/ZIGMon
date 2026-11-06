@@ -356,6 +356,37 @@ try:
     status, got = post('/api/target/set', {'target': 'lamp', 'do': 'bogus'})
     check(status == 400, 'a socket asked to do "bogus" answered %d %s' % (status, got))
 
+    print('two settings saved at once are both kept')
+    (W / 'in').mkdir()
+    zigmon.CONFIG.update(db_file=str(W / 'in' / 'h.db'), token_file=str(W / 'in' / 'api-token'),
+                         state_dir=str(W / 'in' / 'state'), mqtt_host='', backup_dir=str(W / 'in' / 'b'),
+                         api_port=PORT + 1, weather=False, plugs=[], sensors=[])
+    me = zigmon.Daemon()
+    real_set = me.store.set_meta
+
+    def slow_set(key, value, *a, **k):
+        if key == 'config_overrides':
+            time.sleep(0.2)                 # the read, the change and the write, slowly
+        return real_set(key, value, *a, **k)
+
+    me.store.set_meta = slow_set
+    zigmon.log = lambda msg, level='info': None
+    try:
+        both = [threading.Thread(target=me.save_config_overrides, args=({'block_minutes': 77},)),
+                threading.Thread(target=me.save_config_overrides, args=({'sms_poll_s': 33},))]
+        for t in both:
+            t.start()
+            time.sleep(0.05)
+        for t in both:
+            t.join(10)
+    finally:
+        zigmon.log = real_log
+        me.store.set_meta = real_set
+    kept = me.config_overrides()
+    check(kept.get('block_minutes') == 77 and kept.get('sms_poll_s') == 33,
+          'two settings saved at the same moment: only %s was kept' % kept)
+    me._stop.set()
+
     log = (W / 'zigmon.log').read_text(errors='replace') if (W / 'zigmon.log').exists() else ''
     check(' error api ' not in log, 'the daemon wrote errors of the API: %s'
           % [l for l in log.splitlines() if ' error api ' in l][:3])

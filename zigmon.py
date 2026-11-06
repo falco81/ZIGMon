@@ -8768,6 +8768,7 @@ class Daemon(object):
         # one writer at a time of the lists kept whole in the database: a
         # scene switching three rules off from three threads lost one of them
         self._lists_lock = threading.RLock()
+        self._config_save_lock = threading.RLock()    # (5.44) see save_config_overrides
         self.file_config = dict(CONFIG)      # what config.json says, before overrides
         # ...and which keys it really names, rather than leaving to the default:
         # the page says which of the three a running value came from
@@ -10603,16 +10604,21 @@ class Daemon(object):
         # to leave the ones before it in force - not saved, gone at the next
         # start - while the page said the save had failed. What was running is
         # put back when any of them is refused.
-        before = {k: (k in CONFIG, CONFIG.get(k)) for k in self.TUNABLE if k in body}
-        try:
-            return self._save_config_overrides(body)
-        except Exception:
-            for k, (had, v) in before.items():
-                if had:
-                    CONFIG[k] = v
-                else:
-                    CONFIG.pop(k, None)
-            raise
+        # (5.44) one save at a time: each reads the kept overrides, changes
+        # its own and writes all of them back, so two pages (or a page and
+        # `zigmon --set`) saving two settings at once kept only one of them -
+        # and a refusal put back what it had read before the other's save
+        with self._config_save_lock:
+            before = {k: (k in CONFIG, CONFIG.get(k)) for k in self.TUNABLE if k in body}
+            try:
+                return self._save_config_overrides(body)
+            except Exception:
+                for k, (had, v) in before.items():
+                    if had:
+                        CONFIG[k] = v
+                    else:
+                        CONFIG.pop(k, None)
+                raise
 
     def _save_config_overrides(self, body):
         overrides = self.config_overrides()
