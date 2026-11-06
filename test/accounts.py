@@ -307,7 +307,14 @@ else:
                                 "const ZIGMON_TOKEN = '%s';" % (W / 'run' / 'api-token')))
     srv = subprocess.Popen([php, '-S', '127.0.0.1:18098', '-t', str(web)], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
-    time.sleep(1.0)
+    # until it answers, not one fixed second: a busy machine took longer (5.43.2)
+    import socket as _socket
+    for _ in range(100):
+        try:
+            _socket.create_connection(('127.0.0.1', 18098), 0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
     B = 'http://127.0.0.1:18098/index.php'
     jar = http.cookiejar.CookieJar()
     op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
