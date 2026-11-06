@@ -10245,6 +10245,9 @@ class Daemon(object):
             entry = self.live.get(p.device_id)
             if entry:
                 entry['ts'] = now
+                if 'output' in value and entry.get('availability') == 'offline':
+                    entry['availability'] = 'online'       # (5.43.3) it is talking: it is there
+                    entry['rev'] = (entry.get('rev') or 0) + 1
             # The rules must hear this too. They were told only by the reading
             # that comes round every fifteen seconds, so the box's own push -
             # the fast road, the one that says a wall button was pressed the
@@ -19471,6 +19474,23 @@ class Daemon(object):
                 continue
             self._rule_act(r, origin, facts, r['device'])
 
+    def _rule_holds_now(self, r):
+        """Whether a rule's whole condition is true by the last readings kept
+        (5.43.3) - every side of it, as fire_rules would put them together."""
+        first = self.latest_value(r['device'], r['key'])
+        if first is not None:
+            first = self._effective_reading(r, first)
+        holds = first is not None and self._rule_holds(r['op'], first, r['value'])
+        if r.get('device2') and r.get('key2'):
+            other = self.latest_value(r['device2'], r['key2'])
+            second = other is not None and self._rule_holds(r['op2'], other, r['value2'])
+            holds = (holds or second) if r.get('combine') == 'or' else (holds and second)
+        if r.get('device3') and r.get('key3'):
+            third = self.latest_value(r['device3'], r['key3'])
+            third_ok = third is not None and self._rule_holds(r['op3'], third, r['value3'])
+            holds = (holds or third_ok) if r.get('combine3') == 'or' else (holds and third_ok)
+        return bool(holds)
+
     def check_rule_windows(self):
         """Once a minute: notice windows opening and closing. Closing can put
         the plug into a safe state - a motion-driven light does not stay on
@@ -19490,6 +19510,17 @@ class Daemon(object):
             # minutes, 22:00-06:00" fired at 22:01 on a hallway quiet since
             # 21:59, ten minutes early, every evening
             rt.pop('since', None)
+            if active and int(r.get('for_s') or 0):
+                # (5.43.3) ...counting from NOW, when it holds now. Left at
+                # "not known" it waited for the sensor's next report to start
+                # counting at all: a PIR quiet since before 22:00 says nothing
+                # until it next sees somebody or sends its hourly heartbeat,
+                # and "no motion for ten minutes, 22:00-06:00" switched the
+                # light off an hour late, or not that night at all.
+                holds_now = self._rule_holds_now(r)
+                if holds_now:
+                    rt['holds'] = True
+                    rt['since'] = time.time()
             what = r.get('window_end') if not active else None
             self.store.add_event('rule', 'window %s: %s %s %g -> %s%s' % (
                 'opened' if active else 'closed', r['key'], r['op'], r['value'], r['plug'],
@@ -20131,6 +20162,14 @@ class Daemon(object):
             else:
                 self.store.add_event('plug', 'lost contact: %s' % e, 'warn', p.device_id)
             self.store.store_snapshot(p.device_id, int(now), {}, 'offline')
+            # (5.43.3) ...and in the house's memory, which is what the status
+            # is built from: only the database row was told, so a socket that
+            # had stopped answering stayed "online" and "ok" in the device
+            # list, the counts and {attention_list} - and an optional one
+            # was never shown as unplugged - until the daemon restarted
+            entry = self.live.setdefault(p.device_id, {'payload': {}, 'ts': None, 'availability': None})
+            entry['availability'] = 'offline'
+            entry['rev'] = (entry.get('rev') or 0) + 1
             self.bump()
         log('plug %s poll failed: %s' % (p.name, e),
             'warn' if p.failures <= 3 and not p.optional else 'debug')
@@ -22220,7 +22259,7 @@ class Daemon(object):
         if cached and time.time() - cached[0] < 10:
             return cached[1]
         devices = [x for x in self.store.devices() if not x.get('removed')]
-        batteries = [numeric(self.latest_value(x['id'], 'battery')) for x in devices]
+        batteries = [numeric(self.battery_value(x['id'])) for x in devices]
         signals = [numeric(self.latest_value(x['id'], 'linkquality')) for x in devices]
         out = {'devices': len(devices),
                'battery': min([b for b in batteries if b is not None], default=''),
@@ -22665,9 +22704,15 @@ class Daemon(object):
         again every minute while an energy group is open. Kept ten minutes,
         so a prune or a restore shows through rather than being remembered
         for ever."""
-        done = (t1 - t0) >= 86399
-        cache = self.__dict__.setdefault('_day_wh', {})
+        # (5.43.3) Ended is "it runs to a midnight", not "it is a day long":
+        # the night the clocks go back the day is 25 hours, so from 23:00 on
+        # that day "today" was already a day long, counted as over, and its
+        # figure was kept for ten minutes while the socket went on drawing -
+        # and the 23-hour day in spring was never kept at all.
         now = time.time()
+        end = time.localtime(t1)
+        done = t0 < t1 <= now and (end.tm_hour, end.tm_min, end.tm_sec) == (0, 0, 0)
+        cache = self.__dict__.setdefault('_day_wh', {})
         if done:
             had = cache.get((device_id, int(t0)))
             if had is not None and now - had[0] < 600:
@@ -23143,12 +23188,23 @@ class Daemon(object):
                 entry['id'] = secrets.token_hex(4)
             seen_ids.add(entry['id'])
             clean.append(entry)
+        before = {str(x.get('id')): x for x in self.schedules()}
         self.snapshot('schedules', 'saved from the dashboard')
         self.store.set_meta('schedules', json.dumps(clean))
         kept = {x['id'] for x in clean}
         for sid in list(self.schedule_runtime):
             if sid not in kept:
                 del self.schedule_runtime[sid]
+        # (5.43.3) A schedule moved to another time is a new moment: "fired
+        # today" belonged to the old one. Kept, the 22:00 "lights off" that
+        # had fired and was moved to 23:00 that same evening said nothing at
+        # 23:00 - the day was already marked done.
+        for x in clean:
+            old = before.get(x['id'])
+            if old is not None and str(old.get('at')) != x['at']:
+                self.schedule_runtime.pop(x['id'], None)
+                if self.store.get_meta('schedule_day_%s' % x['id']):
+                    self.store.set_meta('schedule_day_%s' % x['id'], '')
         self.store.add_event('control', '%d schedule(s) saved' % len(clean))
         self.bump()
         return clean
@@ -29124,8 +29180,8 @@ class Daemon(object):
         crit_at = numeric(CONFIG.get('battery_crit')) or 15
         # a battery at 0 % is the flattest there is: "or 100" read it as full
         flat = [d['name'] for d in self.store.devices()
-                if self.latest_value(d['id'], 'battery') is not None
-                and self.latest_value(d['id'], 'battery') <= crit_at]
+                if self.battery_value(d['id']) is not None
+                and self.battery_value(d['id']) <= crit_at]
         if flat:
             trouble.append('%s %s nearly flat' % (', '.join(flat[:3]), 'is' if len(flat) == 1 else 'are'))
         quiet = self.quiet_devices() if hasattr(self, 'quiet_devices') else []
@@ -29814,11 +29870,17 @@ class Daemon(object):
         if sq.get('enabled') is False:
             self.debug('sequence %s: reset ignored, it is switched off' % sq.get('name'))
             return False, 'sequence "%s" is switched off' % sq.get('name')
-        positions = self.sequence_positions()
-        positions[sid] = 0
+        # (5.43.3) under the same lock as a step, and written before the
+        # reset scene runs: read here and written back after it, a press of
+        # the sequence in between was overwritten with the copy read before
+        # it - every other sequence's place included - and the next press
+        # repeated a step
+        with self.__dict__.setdefault('_sequence_lock', threading.Lock()):
+            positions = self.sequence_positions()
+            positions[sid] = 0
+            self.store.set_meta('sequence_pos', json.dumps(positions), deferred=True)
         self._run_step(sq.get('reset_scene'), 'sequence "%s" reset' % sq['name'], sq['name'],
                        hold_by, deep)
-        self.store.set_meta('sequence_pos', json.dumps(positions))
         self.store.add_event('sequence', 'sequence "%s" reset to step 1 (%s)' % (sq['name'], origin))
         log('sequence %s: reset (%s)' % (sq['name'], origin))
         self.bump()
@@ -31263,8 +31325,14 @@ class Daemon(object):
                 if dev_ in (device_id, name) and key_ == key:
                     return value
                 return self.latest_value(dev_, key_)
-            holds = self._rule_holds(r['op'], reading(r['device'], r['key']), r['value']) \
-                if reading(r['device'], r['key']) is not None else False
+            # (5.43.3) through _effective_reading, as fire_rules does: a rule
+            # comparing against its own 24-hour average ("2 degrees above
+            # usual") was asked about the raw number, and "what if 23" said
+            # the rule would fire on every warm room, or never
+            first = reading(r['device'], r['key'])
+            if first is not None:
+                first = self._effective_reading(r, first)
+            holds = self._rule_holds(r['op'], first, r['value']) if first is not None else False
             for second, prefix in ((r.get('device2'), '2'), (r.get('device3'), '3')):
                 if not second or not r.get('key' + prefix):
                     continue
@@ -31272,7 +31340,8 @@ class Daemon(object):
                 other_holds = other is not None and self._rule_holds(r['op' + prefix], other, r['value' + prefix])
                 joiner = r.get('combine' if prefix == '2' else 'combine3') or 'and'
                 holds = (holds or other_holds) if joiner == 'or' else (holds and other_holds)
-            before = self._rule_holds(r['op'], was, r['value']) if was is not None else False
+            was_eff = self._effective_reading(r, was) if was is not None else None
+            before = self._rule_holds(r['op'], was_eff, r['value']) if was_eff is not None else False
             why = []
             if not holds:
                 why.append('its condition would not hold')
@@ -31367,6 +31436,22 @@ class Daemon(object):
         entry = self.live.get(device_id) or {}
         return numeric((entry.get('payload') or {}).get(key))
 
+    def battery_key(self, device_id):
+        """(5.43.3) The key a device says its battery under: "battery" from
+        Zigbee2MQTT, "battery.percent" from a Shelly on a battery (an H&T's
+        devicepower:0). The card and the low-battery warning read both; the
+        battery list, the lowest-battery figure, "nearly flat" and the
+        house's report read "battery" alone, so every Shelly H&T was missing
+        from all four, flat or not."""
+        payload = (self.live.get(device_id) or {}).get('payload') or {}
+        if numeric(payload.get('battery')) is None and numeric(payload.get('battery.percent')) is not None:
+            return 'battery.percent'
+        return 'battery'
+
+    def battery_value(self, device_id):
+        """The device's battery in per cent, under whichever key it uses."""
+        return self.latest_value(device_id, self.battery_key(device_id))
+
     def latest_text(self, device_id, key):
         """The same, in the words the device used - a mode, a preset."""
         value = ((self.live.get(device_id) or {}).get('payload') or {}).get(key)
@@ -31384,8 +31469,13 @@ class Daemon(object):
         def spec_minutes(spec):
             m = re.match(r'^(sunrise|sunset)([+-]\d{1,3})?$', spec)
             if m:
-                base = sun_minutes(float(CONFIG['latitude']), float(CONFIG['longitude']),
-                                   now, sunset=m.group(1) == 'sunset')
+                # (5.43.3) a place taken out of the settings after the rule
+                # was saved: float(None) raised on every reading, and every
+                # rule after this one in the list went unheard with it
+                lat, lon = numeric(CONFIG.get('latitude')), numeric(CONFIG.get('longitude'))
+                if lat is None or lon is None:
+                    return None
+                base = sun_minutes(lat, lon, now, sunset=m.group(1) == 'sunset')
                 if base is None:
                     return None
                 return (base + int(m.group(2) or 0)) % 1440
@@ -34664,7 +34754,7 @@ class Daemon(object):
         every = self.store.devices()
         contacts = [(d.get('name') or d['id']) for d in every
                     if self.latest_value(d['id'], 'contact') == 0]
-        batteries = [(d.get('name') or d['id'], self.latest_value(d['id'], 'battery')) for d in every]
+        batteries = [(d.get('name') or d['id'], self.battery_value(d['id'])) for d in every]
         humidities = [v for v in (self.latest_value(d['id'], 'humidity') for d in every) if v is not None]
         newest_event = (self.store.events(1) or [{}])[0]
         heat_rooms = heat.get('rooms') or []
@@ -35316,7 +35406,11 @@ class Daemon(object):
             return cached[1] if cached else None
         hourly = raw.get('hourly') or {}
         now = time.strftime('%Y-%m-%dT%H:00')
-        ahead = [{'at': w, 'c': c} for w, c in zip(hourly.get('time') or [], hourly.get('temperature_2m') or []) if w >= now]
+        # (5.43.3) an hour open-meteo has no figure for is null: min() over
+        # it raised behind the page, nothing was cached and no failure was
+        # stamped, so every status that followed fetched the forecast again
+        ahead = [{'at': w, 'c': c} for w, c in zip(hourly.get('time') or [], hourly.get('temperature_2m') or [])
+                 if w >= now and isinstance(c, (int, float))]
         now_ = raw.get('current') or {}
         daily = raw.get('daily') or {}
         out = {'now_c': now_.get('temperature_2m'),
@@ -35426,7 +35520,7 @@ class Daemon(object):
             lines.append('Quiet: ' + ', '.join(sorted(quiet)[:6]))
         low = []
         for dev in self.store.devices():
-            battery = self.latest_value(dev['id'], 'battery')
+            battery = self.battery_value(dev['id'])
             if battery is not None and battery <= 30:
                 low.append('%s %d%%' % (dev.get('name') or dev['id'], battery))
         if low:
@@ -35764,6 +35858,13 @@ class Daemon(object):
                 if key not in payload:
                     continue
                 value = payload[key]
+                if value is None:
+                    # (5.43.3) not known is not open: Zigbee2MQTT says null
+                    # for a contact it has not heard yet (a sensor just
+                    # paired, a bridge restarted without its cache), and
+                    # bool(None) shut the room's heating as if a window stood
+                    # open, until the sensor next spoke
+                    continue
                 # Only an open window answers here; a shut one goes on to the
                 # next sensor. Answering "shut" on the first sensor that had
                 # anything to say meant a bedroom with a balcony door and a
@@ -36279,11 +36380,12 @@ class Daemon(object):
             return cached[1]
         out = []
         for dev in self.store.devices():
-            now = self.latest_value(dev['id'], 'battery')
+            bkey = self.battery_key(dev['id'])          # (5.43.3) a Shelly says battery.percent
+            now = self.latest_value(dev['id'], bkey)
             if now is None:
                 continue
-            rows = self.store.history(dev['id'], ['battery'], 30 * 86400, points=200) or []
-            points = [(r['ts'], r['battery']) for r in rows if r.get('battery') is not None]
+            rows = self.store.history(dev['id'], [bkey], 30 * 86400, points=200) or []
+            points = [(r['ts'], r[bkey]) for r in rows if r.get(bkey) is not None]
             days_left, per_week = None, None
             if len(points) >= 4:
                 (t0, v0), (t1, v1) = points[0], points[-1]
@@ -36899,7 +37001,13 @@ class Daemon(object):
             name = dev.get('name') or member
             # a member that has gone quiet can be left out rather than
             # dragging an average down with a reading from last week
-            if fresh and (now - (dev.get('last_seen') or 0)) > fresh * 60:
+            # (5.43.3) ...but never the member speaking right now: its
+            # last_seen is written by the database's writer behind this, so a
+            # PIR quiet for longer than "fresh" that saw somebody was left out
+            # of its own movement - the group stayed at 0 and the light behind
+            # it did nothing at the first movement of the evening
+            if fresh and member not in (said or {}) and name not in (said or {}) \
+                    and (now - (dev.get('last_seen') or 0)) > fresh * 60:
                 skipped.append(name)
                 continue
             if want_room:
@@ -38241,6 +38349,14 @@ class Daemon(object):
                 other = self.latest_value(r['device2'], r['key2'])
                 second_ok = other is not None and self._rule_holds(r['op2'], other, r['value2'])
                 holds = (first_ok or second_ok) if r.get('combine') == 'or' else (first_ok and second_ok)
+            if r.get('device3') and r.get('key3'):
+                # (5.43.3) and the third side, which was left out: "A and B
+                # and C" with C false at the restart was primed as holding,
+                # so C turning true afterwards was no change and the rule
+                # stayed silent until all three had come and gone again
+                third = self.latest_value(r['device3'], r['key3'])
+                third_ok = third is not None and self._rule_holds(r['op3'], third, r['value3'])
+                holds = (holds or third_ok) if r.get('combine3') == 'or' else (holds and third_ok)
             rt = {'holds': holds, 'fired': 0.0, 'reading': first, 'first': first_ok, 'second': second_ok}
             if holds:
                 # held from now: a "for N s" rule counts its stretch again and
@@ -38391,7 +38507,15 @@ class Daemon(object):
             else:
                 holds = holds_first
             if r.get('device3') and r.get('key3'):
-                third = self.latest_value(r['device3'], r['key3'])
+                # (5.43.3) the third side's own report is read from what it
+                # said, as the second's is: the house's memory of it is written
+                # by the broker thread just AFTER this reading was handed over,
+                # so a rule woken by the third sensor read that sensor's OLD
+                # value - "hall empty AND door open AND no motion" never fired
+                # when the last of the three to change was the third.
+                third = values.get(r['key3']) if third_src else None
+                if third is None:
+                    third = self.latest_value(r['device3'], r['key3'])
                 holds_third = third is not None and self._rule_holds(r['op3'], third, r['value3'])
                 holds = (holds or holds_third) if r.get('combine3') == 'or' else (holds and holds_third)
             was = rt['holds']
@@ -38585,7 +38709,10 @@ class Daemon(object):
             key = '%s|%s' % (device_id, action)
             seen = self.__dict__.setdefault('_press_seen', {})
             when = seen.get(key, 0)
-            if time.time() - when < gap:
+            # (5.43.3) 0 <= ...: a clock stepped back (NTP, a date put right
+            # by hand) made every press of that button "a moment after the
+            # last one" for as long as the step, and all of them were dropped
+            if 0 <= time.time() - when < gap:
                 self.debug('%s %s again %.0f ms after the last one: the same press reported twice'
                            % (name, action, (time.time() - when) * 1000))
                 return
