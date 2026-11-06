@@ -117,6 +117,25 @@ try:
           'the backup of the whole installation is named before it is on the disk (no fsync before '
           'the rename): a power cut left a cut-off file under a backup\'s name')
 
+    print('an update\'s job and the look whether one is running')
+    import fcntl
+    import threading
+    zr.OSUP_LOCK = str(W / 'osup.lock')
+    held = os.open(zr.OSUP_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)            # osup_running() looking, for a moment
+
+    def let_go():
+        time.sleep(0.3)
+        fcntl.flock(held, fcntl.LOCK_UN)
+    threading.Thread(target=let_go, daemon=True).start()
+    take = getattr(zr, 'osup_lock_take', None)
+    got = take() if take else None
+    check(got is not None, 'the job of an update gave up at once when osup_running() held its lock '
+          'for a moment to look - the update asked for never ran')
+    if got is not None:
+        os.close(got)
+    os.close(held)
+
     print('two requests for root at once')
     rd = W / 'root'
     rd.mkdir()

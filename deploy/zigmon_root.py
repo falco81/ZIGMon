@@ -3784,15 +3784,31 @@ def reboot_now(env, say=None):
     return got.returncode == 1
 
 
+def osup_lock_take(wait=2.0):
+    """The job's lock, or None when another job holds it. Tried for a
+    moment (5.43.3): osup_running() takes the lock itself for an instant to
+    see whether it is free, and osup_launch asks it every 50 ms while the job
+    starts - a job that came to its lock in that instant gave up without a
+    word, and the update asked for never ran."""
+    import fcntl
+    fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    end = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.time() >= end:
+                os.close(fd)
+                return None
+            time.sleep(0.02)
+
+
 def osup_job(job, kind, security=False):
     """The work itself, as root, in a process of its own: a look for what dnf
     has waiting, or the update."""
-    import fcntl
-    fd = os.open(OSUP_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
+    fd = osup_lock_take()
+    if fd is None:
         return 1
     state = {'id': job, 'kind': kind, 'state': 'running', 'pct': 1, 'lines': [], 'n': 0,
              'began': time.time(), 'at': time.time(), 'packages': [], 'reboot': False,
