@@ -69,12 +69,16 @@ check(d.sms_parts(cut) <= 1, 'a Czech alert cut to one part is %d parts' % d.sms
 # 2. after an alert's send timed out, the next send is held off
 zigmon.CONFIG.update({'sms_send_gap_s': 0})
 d._sms_send_now = lambda number, text, why='alert', queue=True: (False, 'timed out')
+# a gateway that is set up (5.44: with none, sms_send says so at once and
+# never reaches the gateway it would have to hold off)
+d.sms_ready = lambda: True
 d._sms_hold_until = 0
 d.sms_send('+420777123456', 'x', why='alert')
 check(d._sms_hold_until > time.time(),
       'an alert that timed out did not hold the next send off the wedged gateway')
 d._sms_hold_until = 0
 del d._sms_send_now
+del d.sms_ready
 
 # 3. the agreed word never in the debug log of a push by GET
 said = []

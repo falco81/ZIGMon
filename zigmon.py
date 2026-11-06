@@ -15724,10 +15724,13 @@ class Daemon(object):
         # waiting out the whole wait again and again
         if since > self.seq:
             return self.seq
-        deadline = time.time() + max(0.5, min(30.0, timeout))
+        # (5.44) on the steady clock: the wall clock stepped back an hour (NTP
+        # at boot, by hand) held every page's wait - and its thread - for
+        # that hour in a quiet house, a new one parked behind it every 30 s
+        deadline = time.monotonic() + max(0.5, min(30.0, timeout))
         with self._change:
             while self.seq <= since and not self._stop.is_set():
-                remaining = deadline - time.time()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 self._change.wait(min(1.0, remaining))
@@ -29247,7 +29250,9 @@ class Daemon(object):
         dashboard uses for everything else.
         """
         ticket = str(ticket or '')
-        deadline = time.time() + max(1, min(int(seconds or 20), 60))
+        # (5.44) the wait on the steady clock, as /api/wait's: a step of the
+        # wall clock back held a watch's press (and a PHP worker) that long
+        deadline = time.monotonic() + max(1, min(int(seconds or 20), 60))
         with self._waiting_cond:
             while True:
                 entry = self._waiting.get(ticket)
@@ -29257,7 +29262,7 @@ class Daemon(object):
                     return entry['state'] == 'done', {'state': entry['state'], 'message': entry['message']}
                 if time.time() > (entry.get('deadline') or 0) + 5:
                     return False, {'state': 'expired', 'message': 'nobody answered in time'}
-                left = deadline - time.time()
+                left = deadline - time.monotonic()
                 if left <= 0:
                     return True, {'state': 'waiting', 'ticket': ticket, 'message': entry['message']}
                 self._waiting_cond.wait(left)
@@ -45538,6 +45543,12 @@ def cmd_sms(args, pal):
         ok = code == 200 and r.get('ok')
         print((pal.ok('\u2714') if ok else pal.crit('\u2718')) + '  ' + str(r.get('message') or r.get('error')))
         return 0 if ok else 1
+    if what not in ('status', 'gateway', 'state'):
+        # (5.44) a word it does not know was answered with the status and 0,
+        # so `zigmon --sms sned` looked like it had done something
+        print(pal.crit('--sms takes status, inbox, outbox, all, raw, waiting, flush, send or test, '
+                       'not %r' % what), file=sys.stderr)
+        return 2
     # status: what the modem says about itself
     data = _need_daemon(pal)
     if data is None:

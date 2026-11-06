@@ -259,6 +259,49 @@ try:
     check(len(made) == 2 and all(m.endswith('23:58') for m in made),
           'a nightly backup at 23:58, followed over two days, was made at %s' % (made or 'no time at all'))
 
+    print('a page\'s wait and a held press end on time when the clock is stepped back')
+    real_time = time.time
+    first = [None]
+
+    def stepped_back():
+        now = real_time()
+        if first[0] is None:
+            first[0] = now
+            return now
+        return now - 3600                  # an hour back, after the first look
+
+    f = fake(seq=5, _change=threading.Condition(), _stop=threading.Event())
+    done = []
+    t = threading.Thread(target=lambda: done.append(zigmon.Daemon.wait_for_change(f, 5, 1.0)), daemon=True)
+    time.time = stepped_back
+    try:
+        t.start()
+        t.join(4)
+    finally:
+        time.time = real_time
+    check(bool(done), "a page's wait of one second was still waiting after four once the clock "
+                      "stepped back an hour")
+    if not done:
+        f._stop.set()
+        t.join(3)
+    first[0] = None
+    entry = {'state': 'waiting', 'deadline': real_time() + 86400, 'message': 'waiting for you'}
+    f = fake(_waiting={'tk': entry}, _waiting_cond=threading.Condition())
+    done = []
+    t = threading.Thread(target=lambda: done.append(zigmon.Daemon.tap_waiting(f, 'tk', 1)), daemon=True)
+    time.time = stepped_back
+    try:
+        t.start()
+        t.join(4)
+    finally:
+        time.time = real_time
+    check(bool(done), 'a press held for one second was still held after four once the clock stepped back')
+    if not done:
+        with f._waiting_cond:
+            entry['state'] = 'done'
+            f._waiting_cond.notify_all()
+        t.join(3)
+
     print('no SMS gateway: said at once')
     f = fake(_sms_send_lock=threading.Lock(), sms_ready=lambda: False, _sms_sent_at=time.time(),
              _sms_sent_parts=1, sms_parts=zigmon.Daemon.sms_parts)
@@ -353,6 +396,11 @@ try:
     said = r.stdout + r.stderr
     check('unknown target' not in said and 'Lamp' in said,
           '`zigmon --switch Lamp on` with a socket called Lamp said: %s' % said.strip()[:200])
+    print('zigmon --sms with a word it does not know')
+    r = subprocess.run([sys.executable, str(HERE / 'zigmon.py'), '--sms', 'sned', '--no-color'],
+                       env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    check(r.returncode == 2 and 'sned' in r.stderr,
+          '`zigmon --sms sned` answered %d with %r' % (r.returncode, (r.stdout + r.stderr).strip()[:120]))
     status, got = post('/api/target/set', {'target': 'lamp', 'do': 'bogus'})
     check(status == 400, 'a socket asked to do "bogus" answered %d %s' % (status, got))
 
