@@ -2376,6 +2376,12 @@ def tls_proxy(raw, which='front'):
                 directive(files[p][s:e], 'ssl_trusted_certificate') for p, s, e in where)):
             put.append((trust, '644', paths['root']))
     dh_had = str(raw.get('dh_had') or '')
+    if pol and dh_had and not all(directive(files[p][s:e], 'ssl_dhparam') == paths['dh'] for p, s, e in where):
+        # made last time for blocks that named it (5.43.3): one that does not
+        # yet - another name chosen on the card, the certificate moved to
+        # another folder - had ssl_dhparam set to a file never put there, and
+        # nginx -t refused every putting-in until the DH choice was changed
+        dh_had = ''
     dh_pem = proxy_dh(pol['dh'], dh_had) if pol else None
     if dh_pem:
         put.append((dh_pem, '644', paths['dh']))

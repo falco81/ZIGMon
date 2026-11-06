@@ -29542,9 +29542,25 @@ function certUnzip(name, b) {
     return got;
   });
 }
+/* (5.43.3) a certificate in DER - the .cer a Windows CA, or a CA's ZIP, gives -
+   is one, not a PFX: it went as a PFX, and the whole upload was refused with
+   "the PFX file does not open with that password". Both are an ASN.1
+   SEQUENCE; a certificate's first part is a SEQUENCE again, a PFX's its
+   version (an INTEGER). */
+function certDerPem(b) {
+  if (b.length < 8 || b[0] !== 0x30) return '';
+  var at = (b[1] & 0x80) ? 2 + (b[1] & 0x7f) : 2;
+  if (at > 6 || b[at] !== 0x30) return '';
+  var bin = '';
+  for (var i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return '-----BEGIN CERTIFICATE-----\n' + btoa(bin).replace(/(.{64})/g, '$1\n').replace(/\n$/, '')
+    + '\n-----END CERTIFICATE-----\n';
+}
 function certFileOf(name, bytesArr) {
   var text = new TextDecoder().decode(bytesArr);
   if (/-----BEGIN /.test(text)) return {name: name, pem: text};
+  var der = certDerPem(bytesArr);
+  if (der) return {name: name, pem: der};
   var bin = '';
   for (var i = 0; i < bytesArr.length; i++) bin += String.fromCharCode(bytesArr[i]);
   return {name: name, pfx: btoa(bin)};
