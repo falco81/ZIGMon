@@ -250,6 +250,25 @@ try:
         c, text = page('?api=login', {'name': 'a' + 'é' * 40, 'password': 'whatever it is'})
         check(c == 401 and text.startswith('{'), 'a long name cut in the middle of a letter was a %s %r, '
               'not a refusal' % (c, text[:80]))
+    # ---- a save is all or nothing (5.43.3) ---------------------------------------------
+    print('a settings save refused part of the way through changes nothing')
+    keys = list(zigmon.Daemon.TUNABLE)
+    first = next(k for k in keys if k == 'battery_warn')
+    later = next(k for k in keys[keys.index(first) + 1:] if k == 'reboot_auto') \
+        if 'reboot_auto' in keys[keys.index(first) + 1:] else None
+    if later:
+        was = zigmon.CONFIG.get(first)
+        new_v = 41 if was != 41 else 42
+        try:
+            d.save_config_overrides({first: new_v, later: 'every full moon'})
+            refused = False
+        except ValueError:
+            refused = True
+        check(refused and zigmon.CONFIG.get(first) == was,
+              'a save refused for %s left %s at %r (it was %r) - in force, not saved'
+              % (later, first, zigmon.CONFIG.get(first), was))
+    else:
+        check(False, 'the test needs battery_warn before reboot_auto among the settings')
     # ---- the ntfy addresses in the status (5.43.3) ------------------------------------
     # whoever has one reads every notification, a token in it opens the server:
     # the status went to every page - a visitor's too, in the public view - whole

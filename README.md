@@ -2083,7 +2083,95 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.43.2**
+Current version: **5.43.3**
+
+5.43.3 — a bug hunt through the whole of it: 85 fixes.
+
+**Signing in and one-tap links**
+* `?ask` on a link that runs a script or bans an address did it - past the
+  code and Duo; asking changes nothing now. A press approved through Duo
+  lost the values it carried (a ban link banned nothing).
+* The relay cut a name or a password by bytes, not letters: a long Czech
+  passphrase could not sign in, or the answer was an empty 500.
+* A malformed passkey answer (an origin that is a list, a signature that is
+  text) was a 500, not a refusal. The hidden values read on the dashboard
+  were written down as the command line's doing. "Signed in N×" counted
+  sign-ins long gone.
+* **The ntfy addresses** - whoever has one reads every notification, and a
+  token in one opens the server - went whole into every page's status, a
+  visitor's too in the public view. Its token is kept from everybody now,
+  and the whole of it from anyone but an administrator.
+* A settings save refused part of the way through left the values before
+  the refused one in force: all or nothing now.
+
+**The house**
+* A rule of three sides woken by its third read that side's old value; after
+  a restart its third side was not primed. A sensor group left out the very
+  member reporting. A "must hold for" rule with a window waited for a report
+  after its window opened (a quiet PIR: an hour, or the whole night).
+* Shelly H&T missing from the batteries (`battery.percent`). A schedule moved
+  later the same day did not fire. A clock stepped back swallowed presses. A
+  contact of `null` read as an open window and shut the heating. What-if wrong
+  for rules on the 24-hour average. Today's energy frozen from 23:00 on the
+  25-hour day. A socket that stopped answering shown online and ok. A sequence
+  reset overwrote another sequence's step. Taking the house's location away
+  broke every sunset rule and the schedules. One empty hour lost the forecast.
+
+**Messages**
+* A cut alert ended in "…", which is not GSM: one part became three. No hold
+  after a text that timed out. The push secret logged under debug. A test SMS
+  with the webhook on read the inbox and acted on it again; a message the
+  gateway kept after its delete was acted on twice. One phone texted twice
+  for one alert. Texts held for the morning still held after sleep was
+  switched off. USSD over a text being sent. A stranger texted their own
+  words back. The digest counted only 1000 events. A private ntfy for
+  presence never connected and logged its token. The gap between texts
+  ignored their length. A login timeout at the gateway lost the alert.
+  Events: found by a device's name, sms/alert/notify among the kinds, "Save
+  as text" says how many of how many.
+
+**Certificates**
+* Root busy at a put-in changed the card anyway, and ACME stopped renewing
+  the certificate still there (this machine, the front, ntfy). Names over 64
+  characters and names under an internationalised top-level domain could
+  not be ordered. A server in front that was down was asked over SSH every
+  30 s. DH parameters not made for a newly chosen server block (nginx -t
+  refused every put-in). An order cut short left the ACME account's key in a
+  work folder. A DER `.cer` was sent as a PFX.
+
+**Addresses kept out**
+* A never-block address could be blocked by the API's own counting. IPv6
+  from Suricata written in full never matched the list. The house's own
+  addresses counted as listed (FireHOL's bogons) - three wrong secrets from a
+  stale shortcut blocked a phone. The house blocked for good at the end of
+  the ladder. The router let a lengthened block run out early. No country
+  for parts of wide db-ip ranges. Switching HTTP/HTTPS off with no rule of
+  your own for 443 was saved - and the dashboard stopped answering.
+  `trusted_proxies` separated by spaces trusted none. The meter's row written
+  back after it was switched off. `tools/snort-debug.py`: a fake User-Agent,
+  and Cloudflare tokens printed.
+
+**Keeping the machine**
+* A database restored from an older version kept missing the newer tables.
+  The nightly backup made again after every restart. Whole backups pruned by
+  name: after a rename of the machine the new ones went. A backup renamed
+  into place before it was on disk. Two requests to root at once: the first
+  lost. A system update that could silently never start. Maintenance called
+  a downgrade an upgrade. `zigmon --backup` printed None.
+  `zigmon --settings` said "not changed" for `true` over `1`.
+
+**The page**
+* The Overview kept every card it had drawn (2,000 nodes every 45 s for an
+  administrator). One Escape closed two dialogs. Reloading `#sms` opened the
+  Overview. The SMS tab asked twice a second for a log a viewer may not read;
+  the Public API tab polled behind a hidden tab. Long names widened the page
+  on a phone; editors ran past an upright iPad. "Put them back" threw away a
+  change on another card. The bindings' buttons invisible under a finger. A
+  valve's preset written into the PIN box as HTML.
+
+`test/hunt5433_auth.py`, `hunt5433_house.py`, `hunt5433_msg.py`,
+`hunt5433_tls.py`, `hunt5433_net.py`, `hunt5433_keep.py`, `hunt5433_ui.py`;
+every check in them fails on 5.43.2.
 
 5.43.2 — the performance meter in the row of Editing.
 

@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.43.2'
+__version__ = '5.43.3'
 
 import argparse
 import base64
@@ -10555,6 +10555,22 @@ class Daemon(object):
         log('a text from a number nobody knows: "%s" now reads as "%s"' % (was, now or 'written down only'))
 
     def save_config_overrides(self, body):
+        # All or nothing (5.43.3): a value refused part of the way through used
+        # to leave the ones before it in force - not saved, gone at the next
+        # start - while the page said the save had failed. What was running is
+        # put back when any of them is refused.
+        before = {k: (k in CONFIG, CONFIG.get(k)) for k in self.TUNABLE if k in body}
+        try:
+            return self._save_config_overrides(body)
+        except Exception:
+            for k, (had, v) in before.items():
+                if had:
+                    CONFIG[k] = v
+                else:
+                    CONFIG.pop(k, None)
+            raise
+
+    def _save_config_overrides(self, body):
         overrides = self.config_overrides()
         changed = []
         for key, spec in self.TUNABLE.items():
