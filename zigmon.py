@@ -321,6 +321,13 @@ DEFAULTS = {
     'plug_keepalive_s': 3,          # use a box's open connection again if it was used this recently (0 = never;
                                     # a box drops an idle one without saying so, and writing into that costs
                                     # a whole timeout, so this stays short - it is for a burst, not for the day)
+    'plug_warm_spare': 1,           # (5.44.1) connections kept ready to each box a rule, a binding or a
+                                    # scene switches (or that was switched in the last six hours), opened
+                                    # afresh before they age out: the first press after a quiet spell does
+                                    # not wait for a TCP handshake. Never more than the sockets of the box
+                                    # that are switched, nor than it may answer at once; 4 for a strip
+                                    # switched as one makes all four go at once. Costs a connect every
+                                    # couple of seconds per spare and no request; 0 = none
     # How many switch commands one box may be answering at once. A four-socket
     # strip is four relays: sent one at a time, the last of them switched a
     # second after the first (measured 1135, 843, 549, 252 ms), and when such a
@@ -889,6 +896,7 @@ def _log_write(lines):
 
 
 def _log_writer():
+    background_thread()                 # (5.44.1) a line can wait; a light cannot
     while True:
         _LOG_WAKE.wait()
         _LOG_WAKE.clear()
@@ -931,6 +939,33 @@ def log_drain(timeout=3.0):
     while (_LOG_Q or _LOG_STATE['busy']) and time.time() < deadline:
         time.sleep(0.005)
     return not _LOG_Q and not _LOG_STATE['busy']
+
+
+BACKGROUND_NICE = 10
+
+
+def background_thread(step=None):
+    """(5.44.1) This thread is housekeeping: let the scheduler put it behind.
+
+    The light path - paho's thread, the rule workers, the threads that send a
+    command - and the house's chores share four cores, and under load a
+    rule worker woken by a report waited for a core behind the database
+    writer, the log writer, a backup or VACUUM, the meter's /proc walk:
+    a few milliseconds now and then (pass 1's p99 of 5-24 ms). On Linux a
+    nice value is per thread, so the chores are given a higher one, here,
+    on their own threads, and everything they start inherits it. Raising a
+    nice value needs no privilege (lowering it back would, so only threads
+    that do nothing a person waits on call this). Quietly nothing where the
+    system says no."""
+    try:
+        tid = threading.get_native_id()
+        now = os.getpriority(os.PRIO_PROCESS, tid)
+        want = min(19, now + int(BACKGROUND_NICE if step is None else step))
+        if want > now:
+            os.setpriority(os.PRIO_PROCESS, tid, want)
+        return want
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def apply_gil_switch():
@@ -1658,6 +1693,99 @@ class ShellyRPC(object):
     _gates = {}                     # host -> [Condition, busy, waiting_commands]
     _gates_guard = threading.Lock()
     _cmd_at = {}                    # host -> when a switch command last went to it
+    # (5.44.1) A warm spare per box somebody switches: a connection opened a
+    # moment ago with nothing asked on it yet, so the first press after a
+    # quiet spell does not pay a TCP handshake across the Wi-Fi before the
+    # relay is even asked. Kept fresh by Daemon.plug_warmer, on its own
+    # thread; a command takes it, a poll never does.
+    _warm = {}                      # host -> [(connection, when opened, monotonic)], oldest first
+    _warm_wake = threading.Event()  # a spare was taken: the warmer opens the next one now
+    warm_counts = collections.Counter()   # opened / taken / aged / closed / failed (for the tests)
+
+    @staticmethod
+    def _sock_open(sock):
+        """(5.44.1) Whether a connection we hold is still open at the far end,
+        without a round trip: a box that closed it has sent its FIN, and a
+        peek that does not wait sees it. A box that went away silently still
+        looks open - that is what the age limit is for."""
+        if sock is None:
+            return False
+        try:
+            was = sock.gettimeout()
+            sock.settimeout(0)
+            try:
+                sock.recv(1, socket.MSG_PEEK)
+            finally:
+                sock.settimeout(was)
+        except (BlockingIOError, InterruptedError):
+            return True                 # nothing waiting: open, idle, as it should be
+        except (OSError, ValueError):
+            return False
+        return False                    # b'' (closed) or bytes nobody asked for: unusable
+
+    @staticmethod
+    def _close_quietly(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    @classmethod
+    def warm_put(cls, host, conn, keep=1):
+        """A spare just opened; beyond `keep` for this box the oldest go."""
+        with cls._conn_guard:
+            spares = cls._warm.setdefault(host, [])
+            spares.append((conn, time.monotonic()))
+            extra = spares[:-max(1, int(keep))]
+            del spares[:len(extra)]
+        cls.warm_counts['opened'] += 1
+        for one, _opened in extra:
+            cls.warm_counts['closed'] += 1
+            cls._close_quietly(one)
+
+    @classmethod
+    def warm_drop(cls, host, why='closed'):
+        with cls._conn_guard:
+            spares = cls._warm.pop(host, None) or []
+        for one, _opened in spares:
+            cls.warm_counts[why] += 1
+            cls._close_quietly(one)
+
+    @classmethod
+    def warm_state(cls, host):
+        """(spares held, age of the oldest in s) for a box; one the box has
+        closed meanwhile is let go here."""
+        with cls._conn_guard:
+            spares = cls._warm.get(host) or []
+            dead = [x for x in spares if not cls._sock_open(x[0].sock)]
+            spares[:] = [x for x in spares if x not in dead]
+        for one, _opened in dead:
+            cls.warm_counts['aged'] += 1
+            cls._close_quietly(one)
+        if not spares:
+            return 0, None
+        return len(spares), time.monotonic() - spares[0][1]
+
+    @classmethod
+    def _take_warm(cls, host, window):
+        """The freshest spare of a box that is still good, or None."""
+        conn, stale = None, []
+        with cls._conn_guard:
+            spares = cls._warm.get(host) or []
+            while spares and conn is None:
+                one, opened = spares.pop()
+                if time.monotonic() - opened >= window or not cls._sock_open(one.sock):
+                    stale.append(one)
+                else:
+                    conn = one
+        for one in stale:
+            cls.warm_counts['aged'] += 1
+            cls._close_quietly(one)
+        if conn is not None:
+            cls.warm_counts['taken'] += 1
+        if conn is not None or stale:
+            cls._warm_wake.set()
+        return conn
 
     @classmethod
     def commanding(cls, host, within):
@@ -2045,6 +2173,10 @@ class ShellyRPC(object):
                     one, used_at = pool.pop()
                     if window <= 0 or time.time() - used_at > window:
                         stale.append(one)
+                    elif not self._sock_open(one.sock):
+                        # (5.44.1) the box has closed it already, and said so:
+                        # asking on it would cost a failed request and a retry
+                        stale.append(one)
                     else:
                         conn = one
                 # whatever is older than the one taken is older still
@@ -2055,6 +2187,11 @@ class ShellyRPC(object):
                     one.close()
                 except Exception:
                     pass
+            if conn is None and attempt == 0 and window > 0 and getattr(self, '_priority', False):
+                # (5.44.1) nothing kept from a moment ago - the usual case, the
+                # first press after a quiet spell: the warm spare, connected
+                # already, instead of a handshake on the way of the command
+                conn = self._take_warm(self.host, window)
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -7641,6 +7778,7 @@ class Storage(object):
                 self._wq_cv.notify_all()
 
     def _writer_loop(self):
+        background_thread()                 # (5.44.1) the rules never wait on a write
         while True:
             self._wq_wake.wait(0.5)
             self._wq_wake.clear()
@@ -9398,7 +9536,77 @@ class Daemon(object):
             self.notify('The broker connection is back.', 'info', dedup='broker-back', about='broker')
         client.subscribe(self.topics() + [('zigmon/ping', 0), ('zigmon/rpc', 0)])
         log('connected; subscribed to %s' % ', '.join(t for t, _ in self.topics()))
+        if (getattr(self, '_connected_before', False) or self.last_disconnect) \
+                and time.monotonic() - getattr(self, '_reconnect_read_at', -1e9) >= 10:
+            # (5.44.1) off the broker's thread: it has the retained flood to
+            # take. Once in ten seconds at most, for a link that flaps.
+            self._reconnect_read_at = time.monotonic()
+            threading.Thread(target=self._after_reconnect, name='reconnect-read', daemon=True).start()
+        self._connected_before = True
         self.store.add_event('broker', 'connected to %s:%s' % (CONFIG['mqtt_host'], CONFIG['mqtt_port']))
+
+    RECONNECT_READ_GAP_S = 0.15         # between one box (or lamp) asked and the next
+
+    def _after_reconnect(self):
+        """(5.44.1) What changed while only our link to the broker was down.
+        A box's retained status is ignored at a reconnect once its state is
+        known (it is the broker's old copy, not news), so a socket switched at
+        the wall meanwhile showed its old state until the next poll, fifteen
+        seconds on - and a rule asking for it then was skipped as "already
+        so". Every box with an MQTT name is read at once, one box after
+        another, and each Zigbee light that a rule, a binding or a scene
+        switches is asked for its state (Zigbee2MQTT's /get), a little apart
+        so the mesh is not asked everything in one breath."""
+        if self._stop.wait(0.3):        # the subscriptions and the retained copies first
+            return
+        gap = self.RECONNECT_READ_GAP_S
+        groups = {}
+        with self._plug_lock:
+            boxes = list(self.plugs.values())
+        for p in boxes:
+            if str(p.cfg.get('mqtt_name') or '').strip() and str(p.cfg.get('host_state') or '') != 'disabled':
+                groups.setdefault(str(p.cfg.get('host') or p.name), []).append(p)
+        for members in groups.values():
+            if self._stop.is_set() or not self.connected:
+                return
+            try:
+                if len(members) > 1:
+                    self.poll_plug_group(members, force=True)
+                else:
+                    self.poll_plug(members[0], force=True)
+            except Exception as e:
+                log('%s: the read after the reconnect: %s' % (members[0].name, e), 'debug')
+            self._stop.wait(gap)
+        wanted = {}
+
+        def walk(x):
+            if isinstance(x, str):
+                if x.startswith('zb:') and x.count(':') >= 2:
+                    pieces = x.split(':')
+                    wanted.setdefault(':'.join(pieces[1:-1]), set()).add(pieces[-1])
+            elif isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        for key in ('rules', 'bindings', 'scenes', 'action_groups', 'sequences'):
+            try:
+                walk(self.store.meta_json(key))
+            except Exception:
+                pass
+        base = CONFIG['base_topic'].rstrip('/')
+        for device_id, keys in list(wanted.items())[:64]:
+            if self._stop.is_set() or not self.connected:
+                return
+            dev = self.store.device(device_id)
+            if not dev or not dev.get('name'):
+                continue
+            try:
+                self.say('%s/%s/get' % (base, dev['name']), json.dumps({k: '' for k in sorted(keys)}))
+            except Exception as e:
+                log('%s: the state asked after the reconnect: %s' % (dev['name'], e), 'debug')
+            self._stop.wait(gap)
 
     def _on_connect_fail(self, client, userdata, *rest):
         self.connect_failures += 1
@@ -9457,6 +9665,8 @@ class Daemon(object):
     # A command the broker has not acknowledged by the time the link comes
     # back is older than this: it is not sent again. (5.44)
     COMMAND_LATE_S = 2.0
+    # (5.44.1) a Zigbee /set has no HTTP to fall back on: kept this long
+    ZIGBEE_SET_LATE_S = 10.0
 
     def _drop_late_commands(self, client):
         """(5.44) paho keeps every QoS 1 message the broker has not
@@ -9469,6 +9679,15 @@ class Daemon(object):
         arriving late undid an "off" given since. A command is now or not at
         all; the house's rules and buttons say it again if it is still wanted.
         Called from on_connect, which paho calls before it sends them again."""
+        # (5.44.1) ...but a Zigbee light has no other road. A Shelly's command
+        # over the broker went over HTTP as well when its answer did not come,
+        # so its late copy is only a danger; a lamp's /set is the one and only
+        # way the press reaches it, and dropping it after two seconds meant a
+        # light pressed three seconds before the link came back never came on.
+        # A /set is kept for ZIGBEE_SET_LATE_S. Whatever its age, a command is
+        # never sent again once a newer one to the same topic, saying the same
+        # things (the same keys), has taken its place - the newer is what is
+        # wanted, and the older arriving first would flick the light.
         sent = self.__dict__.get('_cmd_mids') or {}
         queue = getattr(client, '_out_messages', None)
         lock = getattr(client, '_out_message_mutex', None)
@@ -9476,15 +9695,42 @@ class Daemon(object):
             return 0
         now = time.monotonic()
         dropped = []
+
+        def keys_of(m):
+            """What a command is about: the keys a /set says (state, brightness),
+            or the socket a box's RPC switches - two sockets of one strip told
+            together are two commands, not one taking the other's place. A body
+            not understood is about itself alone."""
+            try:
+                body = json.loads(m.payload.decode('utf-8') if isinstance(m.payload, bytes) else m.payload)
+            except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+                body = None
+            if not isinstance(body, dict):
+                return ('mid', getattr(m, 'mid', id(m)))
+            if 'method' in body:
+                params = body.get('params') if isinstance(body.get('params'), dict) else {}
+                return ('rpc', str(body.get('method')), str(params.get('id', 0)))
+            return frozenset(body)
         try:
             with lock:
+                newest = {}                     # (topic, keys) -> the latest mid saying it
+                for mid, m in list(queue.items()):
+                    if mid in sent:
+                        topic = str(getattr(m, 'topic', '') or '')
+                        newest[(topic, keys_of(m))] = mid
                 for mid, m in list(queue.items()):
                     at = sent.get(mid)
-                    if at is None or now - at < self.COMMAND_LATE_S:
+                    if at is None:
+                        continue
+                    topic = str(getattr(m, 'topic', '') or '')
+                    key = (topic, keys_of(m))
+                    limit = self.ZIGBEE_SET_LATE_S if topic.endswith('/set') else self.COMMAND_LATE_S
+                    superseded = newest.get(key) != mid
+                    if not superseded and now - at < limit:
                         continue
                     queue.pop(mid, None)
                     sent.pop(mid, None)
-                    dropped.append(str(getattr(m, 'topic', '') or ''))
+                    dropped.append(topic + (' (superseded)' if superseded else ''))
         except Exception as e:                          # noqa: BLE001 - paho's insides, best effort
             log('looking at what paho would send again: %s' % e, 'debug')
         if dropped:
@@ -10935,6 +11181,7 @@ class Daemon(object):
         # because the page posts every box it draws and this is one of them.
         'plug_command_overtakes_poll': (0, 1),
         'plug_keepalive_s': (0, 60),
+        'plug_warm_spare': (0, 4),
         'sample_interval': (0, 86400), 'networkmap_interval': (0, 86400), 'manual_hold_s': (0, 604800),
         'presence_look_s': (0.05, 10, True),
         'gil_switch_ms': (0.1, 5, True),
@@ -16862,6 +17109,7 @@ class Daemon(object):
             return 300.0
 
     def backup_loop(self):
+        background_thread()                 # (5.44.1) housekeeping
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
         while not self._stop.wait(self.backup_nap()):
@@ -20347,6 +20595,7 @@ class Daemon(object):
         """Every few seconds, on a thread of its own so that the clock thread
         that makes a lamp come on is never behind it: the network, a restart,
         the firewall on trial, the clock."""
+        background_thread()                 # (5.44.1) housekeeping
         try:
             self.maint_row()                    # read once here, never by the broker's thread
         except Exception:                       # noqa: BLE001
@@ -20385,6 +20634,7 @@ class Daemon(object):
         asking costs a subprocess and the clock thread is what makes a lamp
         come on when somebody walks past it.
         """
+        background_thread()                 # (5.44.1) housekeeping
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
         told = None
@@ -20809,6 +21059,7 @@ class Daemon(object):
 
     def _half_minute(self):
         """What the clock does every thirty seconds, off the quarter-second beat."""
+        background_thread()                 # (5.44.1) housekeeping
         # (5.44) each on its own: the heating raising once skipped the digest,
         # the watchdogs, root's chores and everything below them, every half
         # minute for as long as it kept raising
@@ -20917,7 +21168,147 @@ class Daemon(object):
         finally:
             self._chores_busy = False
 
+    # (5.44.1) The warm spares. A box is warmed when something a person
+    # sets off can switch it - a rule, a binding, a scene, a group, a
+    # sequence - or when it was switched in the last WARM_RECENT_S.
+    WARM_RECENT_S = 6 * 3600
+    WARM_LIST_S = 10.0              # how often that list is worked out again
+
+    def _warm_hosts(self):
+        """The boxes worth a spare: host -> how many of its sockets are."""
+        names = set()
+
+        def walk(x):
+            if isinstance(x, str):
+                if len(x) < 200:
+                    names.add(x)
+            elif isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        for key in ('rules', 'bindings', 'scenes', 'action_groups', 'sequences'):
+            try:
+                walk(self.store.meta_json(key))
+            except Exception:
+                pass
+        everything = '*' in names or '*lights' in names
+        lowered = {n.lower() for n in names}
+        recent = time.time() - self.WARM_RECENT_S
+        hosts = collections.Counter()
+        for p in list(self.plugs.values()):
+            host = str(p.cfg.get('host') or '')
+            if not host or p.cfg.get('monitor_only') or str(p.cfg.get('host_state') or '') == 'disabled':
+                continue
+            if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
+                continue                    # never asked over HTTP
+            if everything or p.name in names or p.name.lower() in lowered \
+                    or ShellyRPC._cmd_at.get(host, 0.0) > recent:
+                hosts[host] += 1
+        return hosts
+
+    def plug_warmer(self):
+        """(5.44.1) Keeps connections ready to every box worth them, on this
+        thread alone - never on the broker's or a rule's. How many a box gets
+        is plug_warm_spare (one by default), never more than the sockets of it
+        that are switched nor than it may answer at once: a strip whose four
+        sockets one scene switches may be given four, so none of the four
+        waits for a handshake. A spare is replaced before it ages past
+        plug_keepalive_s (a box may drop an idle one without a word, so a
+        command never takes one older than that), the boxes are opened one
+        after another a little apart, and a box that does not answer is left
+        alone for longer each time, up to five minutes, so a box that is off
+        makes no storm of connects. A spare is a connection and nothing asked
+        on it: no request, nothing the box counts against its requests a
+        second."""
+        backoff = {}                     # host -> (failures, not before)
+        hosts, listed = {}, -1e9
+        while not self._stop.is_set():
+            try:
+                hosts, listed = self._warm_round(backoff, hosts, listed)
+            except Exception as e:
+                log('the warm spares: %s' % e, 'warn')
+                self._stop.wait(5)
+        for host in list(ShellyRPC._warm):
+            ShellyRPC.warm_drop(host)
+
+    def _warm_round(self, backoff, hosts, listed):
+        import http.client
+        window = float(CONFIG.get('plug_keepalive_s') or 0)
+        try:
+            per_box = int(float(CONFIG.get('plug_warm_spare', 1) or 0))
+        except (TypeError, ValueError):
+            per_box = 1
+        if per_box <= 0 or window <= 0:
+            for host in list(ShellyRPC._warm):
+                ShellyRPC.warm_drop(host)
+            ShellyRPC._warm_wake.clear()
+            self._stop.wait(5)
+            return hosts, listed
+        if ShellyRPC._warm_wake.is_set():
+            # a command has just taken a spare: its request and the rest of a
+            # strip's are on the wire now - the next spare is opened a moment
+            # later, not into the middle of them
+            ShellyRPC._warm_wake.clear()
+            if self._stop.wait(0.1):
+                return hosts, listed
+        now = time.monotonic()
+        if now - listed >= self.WARM_LIST_S:
+            hosts, listed = self._warm_hosts(), now
+        for host in list(ShellyRPC._warm):
+            if host not in hosts:
+                ShellyRPC.warm_drop(host)
+        # replaced well inside the window: a command that takes one a moment
+        # before the next is due still has a good margin
+        renew = max(0.2, window * 0.7)
+        down = {str(p.cfg.get('host') or '') for p in list(self.plugs.values()) if p.known_down}
+        due, soonest = [], renew
+        for host, sockets in hosts.items():
+            if host in down:
+                ShellyRPC.warm_drop(host, 'aged')     # the poll notices it coming back
+                continue
+            _fails, not_before = backoff.get(host, (0, 0.0))
+            if now < not_before:
+                soonest = min(soonest, not_before - now)
+                continue
+            want = max(1, min(per_box, sockets, ShellyRPC.at_once(host)))
+            held, age = ShellyRPC.warm_state(host)
+            if held < want or (age is not None and age >= renew):
+                due.append((held - want, -(age or 0.0), host, want))
+                soonest = 0.02               # one a round for each box: the next may be due too
+            else:
+                soonest = min(soonest, renew - age)
+        due.sort()
+        for _short, _oldest, host, want in due:
+            if self._stop.is_set():
+                return hosts, listed
+            name, _, port = host.partition(':')
+            conn = http.client.HTTPConnection(ShellyRPC._box_address(name), int(port or 80),
+                                              timeout=min(1.5, float(CONFIG.get('plug_timeout') or 5.0)))
+            try:
+                conn.connect()                  # http.client sets TCP_NODELAY itself
+            except OSError:
+                ShellyRPC._close_quietly(conn)
+                ShellyRPC.warm_counts['failed'] += 1
+                fails = backoff.get(host, (0, 0.0))[0] + 1
+                backoff[host] = (fails, time.monotonic() + min(300.0, 5.0 * 2 ** (fails - 1)))
+                # the spares it would have joined are no better: the box is not there
+                ShellyRPC.warm_drop(host, 'aged')
+                continue
+            backoff.pop(host, None)
+            ShellyRPC.warm_put(host, conn, want)
+            # one box after another, not all in one breath
+            if self._stop.wait(0.02):
+                return hosts, listed
+        ShellyRPC._warm_wake.wait(max(0.02, min(soonest, renew)))
+        return hosts, listed
+
     def plug_loop(self):
+        # (5.44.1) the warm spares ride beside the poll, on a thread of their own
+        if not getattr(self, '_warm_thread', None):
+            self._warm_thread = threading.Thread(target=self.plug_warmer, name='plug-warmer', daemon=True)
+            self._warm_thread.start()
         last_map = time.time() - max(0, int(CONFIG.get('networkmap_interval') or 0)) + 45
         while not self._stop.is_set():
             try:
@@ -23917,6 +24308,7 @@ class Daemon(object):
 
     def _warm_caches(self):
         """Work out the slow answers before anybody asks for them."""
+        background_thread()                 # (5.44.1) housekeeping
         time.sleep(5)                     # let the first reports land first
         for what, fn in (('energy', self.energy_summary), ('battery', self.battery_health),
                          ('money', self.money), ('row counts', self.store.stats),
@@ -23939,6 +24331,7 @@ class Daemon(object):
         it first meant anyone asking during the recount found nothing and
         counted it themselves, which is the very wait this was to avoid.
         """
+        background_thread()                 # (5.44.1) housekeeping
         try:
             self.energy_summary(force=True)
         except Exception as e:
@@ -25855,6 +26248,7 @@ class Daemon(object):
 
     def intel_loop(self):
         """One question at a time, for as long as there is a queue."""
+        background_thread()                 # (5.44.1) housekeeping
         while True:
             if not self._intel_kick.wait(300):
                 # Nothing for five minutes: the thread goes. The queue is read
@@ -42595,6 +42989,7 @@ def perf_read():
 
 
 def _perf_watcher():
+    background_thread()                 # (5.44.1) the meter is not what it measures
     """The one thread of the meter (5.43.1): a reading every PERF_SAMPLE_S
     while pages ask, its newest kept as this node's one row; it ends by itself
     PERF_IDLE_S after the last ask, at once when the meter is switched off."""
