@@ -16329,10 +16329,28 @@ class Daemon(object):
         self.store.set_meta('backup:nightly_day', today)
         return True
 
+    def backup_nap(self, now=None):
+        """(5.44) How long the backup loop sleeps: five minutes, or until a
+        moment past the backup's time when that is sooner. A plain five
+        minutes stepped over a time in the last five minutes of the day - a
+        look at 23:56 and the next at 00:01, tomorrow, before its time again -
+        and a nightly backup set for 23:58 was never made."""
+        now = time.time() if now is None else now
+        try:
+            lt = time.localtime(now)
+            at = local_moment(lt.tm_year, lt.tm_mon, lt.tm_mday,
+                              hhmm_minutes(str(CONFIG.get('backup_time') or '03:30')))
+            if at <= now:
+                at = local_moment(lt.tm_year, lt.tm_mon, lt.tm_mday + 1,
+                                  hhmm_minutes(str(CONFIG.get('backup_time') or '03:30')))
+            return max(1.0, min(300.0, at - now + 1))
+        except (TypeError, ValueError, OverflowError):
+            return 300.0
+
     def backup_loop(self):
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
-        while not self._stop.wait(300):
+        while not self._stop.wait(self.backup_nap()):
             try:
                 if not int(CONFIG.get('backup_enabled') or 0):
                     continue

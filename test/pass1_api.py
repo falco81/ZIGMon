@@ -227,6 +227,38 @@ try:
     check(fired == [('Lamp', 'on'), ('Lamp', 'off')],
           'the hour the clocks skip: a 02:10 on and a 02:40 off fired as %s (the off is the last)' % fired)
 
+    print('a nightly backup set for 23:58 is made')
+    lt = time.localtime()
+    clock = [time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 23, 51, 30, 0, 0, -1))]
+    end = clock[0] + 2 * 86400
+    made = []
+
+    class ClockStop(object):
+        def wait(self, t=None):
+            clock[0] += float(t)
+            return clock[0] > end
+
+    meta = {}
+    f = fake(_stop=ClockStop(), store=types.SimpleNamespace(get_meta=lambda k, d=None: meta.get(k, d),
+                                                            set_meta=lambda k, v, **kw: meta.__setitem__(k, v),
+                                                            add_event=lambda *a, **k: None),
+             run_backup=lambda: made.append(time.strftime('%Y-%m-%d %H:%M', time.localtime(clock[0]))),
+             root_installed=lambda: False, notify=lambda *a, **k: None)
+    for name in ('backup_due', 'backup_nap'):
+        if hasattr(zigmon.Daemon, name):
+            setattr(f, name, types.MethodType(getattr(zigmon.Daemon, name), f))
+    saved_cfg = {k: zigmon.CONFIG.get(k) for k in ('backup_enabled', 'backup_time', 'full_backup_nightly')}
+    zigmon.CONFIG.update(backup_enabled=1, backup_time='23:58', full_backup_nightly=0)
+    real_time = time.time
+    time.time = lambda: clock[0]
+    try:
+        zigmon.Daemon.backup_loop(f)
+    finally:
+        time.time = real_time
+        zigmon.CONFIG.update(saved_cfg)
+    check(len(made) == 2 and all(m.endswith('23:58') for m in made),
+          'a nightly backup at 23:58, followed over two days, was made at %s' % (made or 'no time at all'))
+
     print('no SMS gateway: said at once')
     f = fake(_sms_send_lock=threading.Lock(), sms_ready=lambda: False, _sms_sent_at=time.time(),
              _sms_sent_parts=1, sms_parts=zigmon.Daemon.sms_parts)
