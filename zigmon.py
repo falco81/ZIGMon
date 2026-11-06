@@ -321,6 +321,13 @@ DEFAULTS = {
     'plug_keepalive_s': 3,          # use a box's open connection again if it was used this recently (0 = never;
                                     # a box drops an idle one without saying so, and writing into that costs
                                     # a whole timeout, so this stays short - it is for a burst, not for the day)
+    'plug_warm_spare': 1,           # (5.44.1) connections kept ready to each box a rule, a binding or a
+                                    # scene switches (or that was switched in the last six hours), opened
+                                    # afresh before they age out: the first press after a quiet spell does
+                                    # not wait for a TCP handshake. Never more than the sockets of the box
+                                    # that are switched, nor than it may answer at once; 4 for a strip
+                                    # switched as one makes all four go at once. Costs a connect every
+                                    # couple of seconds per spare and no request; 0 = none
     # How many switch commands one box may be answering at once. A four-socket
     # strip is four relays: sent one at a time, the last of them switched a
     # second after the first (measured 1135, 843, 549, 252 ms), and when such a
@@ -1640,6 +1647,99 @@ class ShellyRPC(object):
     _gates = {}                     # host -> [Condition, busy, waiting_commands]
     _gates_guard = threading.Lock()
     _cmd_at = {}                    # host -> when a switch command last went to it
+    # (5.44.1) A warm spare per box somebody switches: a connection opened a
+    # moment ago with nothing asked on it yet, so the first press after a
+    # quiet spell does not pay a TCP handshake across the Wi-Fi before the
+    # relay is even asked. Kept fresh by Daemon.plug_warmer, on its own
+    # thread; a command takes it, a poll never does.
+    _warm = {}                      # host -> [(connection, when opened, monotonic)], oldest first
+    _warm_wake = threading.Event()  # a spare was taken: the warmer opens the next one now
+    warm_counts = collections.Counter()   # opened / taken / aged / closed / failed (tests, /api/perf)
+
+    @staticmethod
+    def _sock_open(sock):
+        """(5.44.1) Whether a connection we hold is still open at the far end,
+        without a round trip: a box that closed it has sent its FIN, and a
+        peek that does not wait sees it. A box that went away silently still
+        looks open - that is what the age limit is for."""
+        if sock is None:
+            return False
+        try:
+            was = sock.gettimeout()
+            sock.settimeout(0)
+            try:
+                sock.recv(1, socket.MSG_PEEK)
+            finally:
+                sock.settimeout(was)
+        except (BlockingIOError, InterruptedError):
+            return True                 # nothing waiting: open, idle, as it should be
+        except (OSError, ValueError):
+            return False
+        return False                    # b'' (closed) or bytes nobody asked for: unusable
+
+    @staticmethod
+    def _close_quietly(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    @classmethod
+    def warm_put(cls, host, conn, keep=1):
+        """A spare just opened; beyond `keep` for this box the oldest go."""
+        with cls._conn_guard:
+            spares = cls._warm.setdefault(host, [])
+            spares.append((conn, time.monotonic()))
+            extra = spares[:-max(1, int(keep))]
+            del spares[:len(extra)]
+        cls.warm_counts['opened'] += 1
+        for one, _opened in extra:
+            cls.warm_counts['closed'] += 1
+            cls._close_quietly(one)
+
+    @classmethod
+    def warm_drop(cls, host, why='closed'):
+        with cls._conn_guard:
+            spares = cls._warm.pop(host, None) or []
+        for one, _opened in spares:
+            cls.warm_counts[why] += 1
+            cls._close_quietly(one)
+
+    @classmethod
+    def warm_state(cls, host):
+        """(spares held, age of the oldest in s) for a box; one the box has
+        closed meanwhile is let go here."""
+        with cls._conn_guard:
+            spares = cls._warm.get(host) or []
+            dead = [x for x in spares if not cls._sock_open(x[0].sock)]
+            spares[:] = [x for x in spares if x not in dead]
+        for one, _opened in dead:
+            cls.warm_counts['aged'] += 1
+            cls._close_quietly(one)
+        if not spares:
+            return 0, None
+        return len(spares), time.monotonic() - spares[0][1]
+
+    @classmethod
+    def _take_warm(cls, host, window):
+        """The freshest spare of a box that is still good, or None."""
+        conn, stale = None, []
+        with cls._conn_guard:
+            spares = cls._warm.get(host) or []
+            while spares and conn is None:
+                one, opened = spares.pop()
+                if time.monotonic() - opened >= window or not cls._sock_open(one.sock):
+                    stale.append(one)
+                else:
+                    conn = one
+        for one in stale:
+            cls.warm_counts['aged'] += 1
+            cls._close_quietly(one)
+        if conn is not None:
+            cls.warm_counts['taken'] += 1
+        if conn is not None or stale:
+            cls._warm_wake.set()
+        return conn
 
     @classmethod
     def commanding(cls, host, within):
@@ -2018,6 +2118,10 @@ class ShellyRPC(object):
                     one, used_at = pool.pop()
                     if window <= 0 or time.time() - used_at > window:
                         stale.append(one)
+                    elif not self._sock_open(one.sock):
+                        # (5.44.1) the box has closed it already, and said so:
+                        # asking on it would cost a failed request and a retry
+                        stale.append(one)
                     else:
                         conn = one
                 # whatever is older than the one taken is older still
@@ -2028,6 +2132,11 @@ class ShellyRPC(object):
                     one.close()
                 except Exception:
                     pass
+            if conn is None and attempt == 0 and window > 0 and getattr(self, '_priority', False):
+                # (5.44.1) nothing kept from a moment ago - the usual case, the
+                # first press after a quiet spell: the warm spare, connected
+                # already, instead of a handshake on the way of the command
+                conn = self._take_warm(self.host, window)
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -10791,6 +10900,7 @@ class Daemon(object):
         # because the page posts every box it draws and this is one of them.
         'plug_command_overtakes_poll': (0, 1),
         'plug_keepalive_s': (0, 60),
+        'plug_warm_spare': (0, 4),
         'sample_interval': (0, 86400), 'networkmap_interval': (0, 86400), 'manual_hold_s': (0, 604800),
         'presence_look_s': (0.05, 10, True),
         'gil_switch_ms': (0.1, 5, True),
@@ -20728,7 +20838,147 @@ class Daemon(object):
         finally:
             self._chores_busy = False
 
+    # (5.44.1) The warm spares. A box is warmed when something a person
+    # sets off can switch it - a rule, a binding, a scene, a group, a
+    # sequence - or when it was switched in the last WARM_RECENT_S.
+    WARM_RECENT_S = 6 * 3600
+    WARM_LIST_S = 10.0              # how often that list is worked out again
+
+    def _warm_hosts(self):
+        """The boxes worth a spare: host -> how many of its sockets are."""
+        names = set()
+
+        def walk(x):
+            if isinstance(x, str):
+                if len(x) < 200:
+                    names.add(x)
+            elif isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        for key in ('rules', 'bindings', 'scenes', 'action_groups', 'sequences'):
+            try:
+                walk(self.store.meta_json(key))
+            except Exception:
+                pass
+        everything = '*' in names or '*lights' in names
+        lowered = {n.lower() for n in names}
+        recent = time.time() - self.WARM_RECENT_S
+        hosts = collections.Counter()
+        for p in list(self.plugs.values()):
+            host = str(p.cfg.get('host') or '')
+            if not host or p.cfg.get('monitor_only') or str(p.cfg.get('host_state') or '') == 'disabled':
+                continue
+            if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
+                continue                    # never asked over HTTP
+            if everything or p.name in names or p.name.lower() in lowered \
+                    or ShellyRPC._cmd_at.get(host, 0.0) > recent:
+                hosts[host] += 1
+        return hosts
+
+    def plug_warmer(self):
+        """(5.44.1) Keeps connections ready to every box worth them, on this
+        thread alone - never on the broker's or a rule's. How many a box gets
+        is plug_warm_spare (one by default), never more than the sockets of it
+        that are switched nor than it may answer at once: a strip whose four
+        sockets one scene switches may be given four, so none of the four
+        waits for a handshake. A spare is replaced before it ages past
+        plug_keepalive_s (a box may drop an idle one without a word, so a
+        command never takes one older than that), the boxes are opened one
+        after another a little apart, and a box that does not answer is left
+        alone for longer each time, up to five minutes, so a box that is off
+        makes no storm of connects. A spare is a connection and nothing asked
+        on it: no request, nothing the box counts against its requests a
+        second."""
+        backoff = {}                     # host -> (failures, not before)
+        hosts, listed = {}, -1e9
+        while not self._stop.is_set():
+            try:
+                hosts, listed = self._warm_round(backoff, hosts, listed)
+            except Exception as e:
+                log('the warm spares: %s' % e, 'warn')
+                self._stop.wait(5)
+        for host in list(ShellyRPC._warm):
+            ShellyRPC.warm_drop(host)
+
+    def _warm_round(self, backoff, hosts, listed):
+        import http.client
+        window = float(CONFIG.get('plug_keepalive_s') or 0)
+        try:
+            per_box = int(float(CONFIG.get('plug_warm_spare', 1) or 0))
+        except (TypeError, ValueError):
+            per_box = 1
+        if per_box <= 0 or window <= 0:
+            for host in list(ShellyRPC._warm):
+                ShellyRPC.warm_drop(host)
+            ShellyRPC._warm_wake.clear()
+            self._stop.wait(5)
+            return hosts, listed
+        if ShellyRPC._warm_wake.is_set():
+            # a command has just taken a spare: its request and the rest of a
+            # strip's are on the wire now - the next spare is opened a moment
+            # later, not into the middle of them
+            ShellyRPC._warm_wake.clear()
+            if self._stop.wait(0.1):
+                return hosts, listed
+        now = time.monotonic()
+        if now - listed >= self.WARM_LIST_S:
+            hosts, listed = self._warm_hosts(), now
+        for host in list(ShellyRPC._warm):
+            if host not in hosts:
+                ShellyRPC.warm_drop(host)
+        # replaced well inside the window: a command that takes one a moment
+        # before the next is due still has a good margin
+        renew = max(0.2, window * 0.7)
+        down = {str(p.cfg.get('host') or '') for p in list(self.plugs.values()) if p.known_down}
+        due, soonest = [], renew
+        for host, sockets in hosts.items():
+            if host in down:
+                ShellyRPC.warm_drop(host, 'aged')     # the poll notices it coming back
+                continue
+            _fails, not_before = backoff.get(host, (0, 0.0))
+            if now < not_before:
+                soonest = min(soonest, not_before - now)
+                continue
+            want = max(1, min(per_box, sockets, ShellyRPC.at_once(host)))
+            held, age = ShellyRPC.warm_state(host)
+            if held < want or (age is not None and age >= renew):
+                due.append((held - want, -(age or 0.0), host, want))
+                soonest = 0.02               # one a round for each box: the next may be due too
+            else:
+                soonest = min(soonest, renew - age)
+        due.sort()
+        for _short, _oldest, host, want in due:
+            if self._stop.is_set():
+                return hosts, listed
+            name, _, port = host.partition(':')
+            conn = http.client.HTTPConnection(ShellyRPC._box_address(name), int(port or 80),
+                                              timeout=min(1.5, float(CONFIG.get('plug_timeout') or 5.0)))
+            try:
+                conn.connect()                  # http.client sets TCP_NODELAY itself
+            except OSError:
+                ShellyRPC._close_quietly(conn)
+                ShellyRPC.warm_counts['failed'] += 1
+                fails = backoff.get(host, (0, 0.0))[0] + 1
+                backoff[host] = (fails, time.monotonic() + min(300.0, 5.0 * 2 ** (fails - 1)))
+                # the spares it would have joined are no better: the box is not there
+                ShellyRPC.warm_drop(host, 'aged')
+                continue
+            backoff.pop(host, None)
+            ShellyRPC.warm_put(host, conn, want)
+            # one box after another, not all in one breath
+            if self._stop.wait(0.02):
+                return hosts, listed
+        ShellyRPC._warm_wake.wait(max(0.02, min(soonest, renew)))
+        return hosts, listed
+
     def plug_loop(self):
+        # (5.44.1) the warm spares ride beside the poll, on a thread of their own
+        if not getattr(self, '_warm_thread', None):
+            self._warm_thread = threading.Thread(target=self.plug_warmer, name='plug-warmer', daemon=True)
+            self._warm_thread.start()
         last_map = time.time() - max(0, int(CONFIG.get('networkmap_interval') or 0)) + 45
         while not self._stop.is_set():
             try:

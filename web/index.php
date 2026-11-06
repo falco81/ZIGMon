@@ -20602,6 +20602,8 @@ var SETTINGS_LAYOUT = [
     ['plug_command_gap', 'Gap before a switch command (s)'],
     ['plug_keepalive_s', 'Keep a connection open (s)',
      'Use a box\u2019s open connection again if it was used this recently (s; 0 never). A box drops an idle connection without saying so, and writing into that costs a whole timeout, so this is short on purpose \u2014 it is for the four commands of one scene, not for the day'],
+    ['plug_warm_spare', 'Connections kept ready',
+     'How many connections are kept ready to each box a rule, a binding or a scene switches, or that was switched in the last six hours (0 none). They are opened afresh every couple of seconds, so the first press after a quiet spell goes straight out instead of waiting for a new connection across the Wi-Fi. No request is made on them, a box nobody switches is left alone, and a box never gets more than the sockets of it that are switched. 4 lets a strip switched as one send all four at once'],
     ['plug_commands_at_once', 'Switch commands at once',
      'How many switch commands one box may answer at once. A four-socket strip is four relays and will answer four requests: sent one at a time the last socket switched a second after the first (measured 1014 ms against 267), and when such a box is off the air the four timeouts add up instead of overlapping. A box that answers “too many requests” is taken at its word and asked one thing at a time for the next two minutes, by itself. 1 turns it off'],
     ['plug_command_overtakes_poll', 'A press does not wait for a poll',
