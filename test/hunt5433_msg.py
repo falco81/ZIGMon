@@ -317,6 +317,29 @@ check(waited >= 1.0, 'after a message of two parts the next waited %.2f s, one g
 del d._sms_send_now
 zigmon.CONFIG.update({'sms_send_gap_s': 0})
 
+# 16. a login that timed out is not a send that timed out: the alert is kept
+import socket                                           # noqa: E402
+d.store.set_meta('sms_outbox', '[]')
+zigmon.CONFIG.update({'sms_queue': True, 'sms_daily_cap': 0})
+
+
+def slow_login():
+    raise socket.timeout('timed out')
+
+
+d._sms_tok = None
+d._sms_token = slow_login
+d._sms_hold_until = 0
+d._sms_sent_at = 0
+ok, words = d.sms_send('+420777123456', 'The boiler stopped', why='alert')
+kept = d.sms_outbox()
+check(not ok and len(kept) == 1, 'an alert whose login to the gateway timed out was not kept to try '
+      'again (%s; %d kept)' % (words, len(kept)))
+check(not kept or 'timed out' not in str(words).lower(),
+      'a failed login is worded as a send that timed out, and the flush throws it away: %s' % words)
+d.store.set_meta('sms_outbox', '[]')
+del d._sms_token
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 os._exit(1 if bad else 0)

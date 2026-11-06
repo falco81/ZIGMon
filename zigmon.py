@@ -1605,6 +1605,12 @@ class PlugError(Exception):
     pass
 
 
+class SmsLoginFailed(RuntimeError):
+    """The gateway's own API would not give us a token (5.43.3). Nothing was
+    handed over, so a text that meets this was certainly not sent - unlike a
+    send that timed out, which very likely was - and is kept to try again."""
+
+
 class ShellyRPC(object):
     """Minimal JSON-RPC client for a Shelly Gen2+ device, standard library only.
 
@@ -11626,7 +11632,8 @@ class Daemon(object):
             # a row leave the second and third waiting past our patience while
             # the messages themselves go out perfectly well. Saying "failed"
             # about a message that arrives is worse than saying nothing.
-            timed_out = isinstance(e, socket.timeout) or 'timed out' in str(e).lower()
+            timed_out = not isinstance(e, SmsLoginFailed) and \
+                (isinstance(e, socket.timeout) or 'timed out' in str(e).lower())
             if timed_out:
                 log('SMS to %s: no answer within %gs, it may still have gone out'
                     % (number, timeout), 'warn')
@@ -11723,7 +11730,18 @@ class Daemon(object):
 
     def _rest_once(self, path, method, payload, retry, timeout):
         import urllib.request
-        token = self._sms_token()
+        try:
+            token = self._sms_token()
+        except SmsLoginFailed:
+            raise
+        except Exception as e:
+            # (5.43.3) a login that timed out read as a SEND that timed out -
+            # "it may still have gone out" - so the alert was neither queued
+            # nor tried again, and the flush threw a kept one away. The words
+            # say what happened without the ones that mean "maybe sent".
+            why = 'no answer in time' if (isinstance(e, socket.timeout) or 'timed out' in str(e).lower()) \
+                else str(e)[:120]
+            raise SmsLoginFailed('could not log in to the gateway: %s' % why)
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(self._sms_url('/api' + path), data=data,
                                      headers={'Content-Type': 'application/json',
