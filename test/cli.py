@@ -34,6 +34,10 @@ json.dump({
     'mqtt_host': '', 'pin': '1234',
     'log_file': os.path.join(folder, 'zigmon.log'),
     'backup_dir': os.path.join(folder, 'backups'),
+    # (5.44) the token and root's key of its own: in /run/zigmon, beside a
+    # daemon of the machine's or another check's, the key one daemon wrote was
+    # read by the commands of the other, and every write was "not signed in"
+    'token_file': os.path.join(folder, 'api-token'),
 }, open(config, 'w'))
 
 env = dict(os.environ, ZIGMON_CONFIG=config, PYTHONPATH=str(HERE))
