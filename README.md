@@ -2083,7 +2083,70 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.43.4**
+Current version: **5.44.0**
+
+5.44.0 — the first of two passes through the whole of it, the time from a sensor to a light first; and what has to be done by hand, said where it is done.
+
+**To be done by hand** (Settings → Upgrades, first card; counted beside Upgrades
+in the menu, in Needs attention, the console and `zigmon --notices`): what
+zigmon cannot do itself - a version that must be put in from the command line
+(said by the release itself, signed: `release.json`, made with
+`tools/make-release.sh KEY --needs-cli "why"`; root refuses such a one from the
+pages, install.sh takes it), the parts root installs older than the program
+(install.sh now writes `/etc/zigmon-system.json`), a backup failing for days,
+the database's integrity check failing. Each with its command to copy, Look
+again and Done, and what was done lately; one that can be checked goes by
+itself. `zigmon --notice-done KEY`.
+
+**From a sensor to a light**
+* A strip's sockets in one scene: one kept connection per socket, not one per
+  box (49 new connections for 16 scenes became 4); no fixed 3 ms between them
+  (the fourth 10.7 ms after the first became 2.4); a scene starts its boxes
+  before its lamps; a rule switches before it writes its event. A scene of 8,
+  sensor to the last device: p50 14.7 → 5.2 ms, p99 34 → 10 ms idle.
+* A pulse and an MQTT-only toggle no longer went over HTTP. A toggle after a
+  lost MQTT answer no longer let the late "on" turn the light back on.
+  Commands left unacknowledged when the broker went away are dropped instead
+  of being sent 20-40 s late at the reconnect. The reconnect is tried every 5 s
+  at most (was up to 30). A box's retained state replayed at a reconnect no
+  longer overrides what is known. A motion light whose cooldown keeps it off
+  for whoever comes back is said in the rules' notes. A socket's tile goes
+  back to the truth after a refused switch or a dismissed sign-in.
+* The database never holds its lock long: the hourly fold, the integrity
+  check (8.9 s), the nightly copy (1.1 s), the stale-data check (412 ms), the
+  graph's keys, the peaks, the WAL checkpoints (now on their own every 30 s)
+  - all done in small steps or on a connection of their own.
+
+**Wrong figures**: the energy of a year was that of the last fortnight (raw
+readings are kept 14 days); a month from the 15th the same - the hours before
+come from the hourly table now. An event count of one device counted all.
+
+**Security**: passkey challenges flooded from one address no longer push out
+another's sign-in; `approvals/stop` with no ticket stopped every press; a
+link's secret could read another link's waiting press; the API token briefly
+readable by all at creation; `::ffff:` addresses escaped never-block and the
+house; security and audit events shown in the public view; a kept ntfy token
+sent to another server; `--set` printed a secret; acme push nonces filled by
+anybody; the meter's details read once per request; a ZIP bomb in the
+certificate upload; the meter's details kept after signing out.
+
+**API, CLI, loops**: one failing step stopped the quarter-second beat or the
+half-minute chores; a database error ended the gateway or Wi-Fi thread for
+good; an SMS with no gateway waited 5 s; wrong types answered 500; schedules
+after a clock step of hours all fired at once and out of order; a backup at
+23:58 never made; two saves at once kept one; a clock stepped back held pages
+and presses for an hour; `zigmon --switch SOCKET on` (the help's own example)
+answered "unknown target".
+
+**The page**: the rules editor held 11,000 options (Rules opened in 1 s at
+4× CPU; now about a third); a new message's "by text to" threw; the meter
+froze after one slow ask; heating sliders stayed where dragged after a
+refusal; Enter in Your account signed you out; a rename in Devices stuck
+after Escape; the Overview sorted the house on every status.
+
+`test/pass1_realtime.py`, `pass1_edges.py`, `pass1_storage.py`,
+`pass1_ui.py`, `pass1_sec.py`, `pass1_api.py`, `review544_cli.py`; each
+fails on 5.43.4.
 
 5.43.4 — Upgrades from the web as in the other apps; Your account; the meter smooth and at once.
 
