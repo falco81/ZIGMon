@@ -17056,8 +17056,20 @@ class Daemon(object):
             except OSError:
                 how = 'uploaded'
         conf['how'] = how or 'uploaded'
+        was = self.store.get_meta('tls')
         self.tls_save(conf)
-        ident = self.root_apply(pem=pem)
+        try:
+            ident = self.root_apply(pem=pem)
+        except ValueError:
+            # root not asked (busy, not installed) - nothing was put in
+            # (5.43.3): the settings as they were. "how" said "uploaded" of
+            # the CA's certificate still in place, ACME stopped renewing it,
+            # and the next order kept nothing to go back to
+            if was is None:
+                self.store.forget_meta('tls')
+            else:
+                self.store.set_meta('tls', was)
+            raise
         if used_pending:
             try:
                 if self.tls_pending_key().strip() == pem['key'].strip().encode():
@@ -47150,7 +47162,10 @@ def proxy_tls_look(d, fresh=False, w='front'):
     look = d.__dict__.get(W['look']) or {}
     if not proxy_tls_on():
         return {}
-    age = time.time() - float(look.get('at') or look.get('tried') or 0)
+    # since the newest try (5.43.3): a look that failed after one that worked
+    # keeps the old one's 'at' - the age went by that, and the server in front
+    # was asked over SSH again at every chore and every page while it was down
+    age = time.time() - max(float(look.get('at') or 0), float(look.get('tried') or 0))
     if (fresh and age > 5 or age > PROXY_TLS_LOOK_S) and not d.__dict__.get(W['looking']):
         setattr(d, W['looking'], True)
 
@@ -47343,6 +47358,16 @@ def proxy_tls_state(d, fresh=False, w='front'):
     return out
 
 
+def _proxy_conf_back(d, w, was):
+    """The card's settings as they were before a putting-in root was never
+    asked for (5.43.3: busy) - "how" said "uploaded" of the certificate still
+    there, and its own Automatic certificates stopped renewing it."""
+    if was is None:
+        d.store.forget_meta(PROXY_W[w]['meta'])
+    else:
+        d.store.set_meta(PROXY_W[w]['meta'], was)
+
+
 def proxy_tls_post(d, act, body, who, w='front'):
     """The card's buttons, for the server in front - its front's
     certificate, or ntfy's there (w='ntfy', 5.41)."""
@@ -47399,9 +47424,14 @@ def proxy_tls_post(d, act, body, who, w='front'):
         # one put in by hand: its own Automatic certificates leave it alone
         if conf.get('acme_care'):
             conf['acme_care'] = False
+        was = d.store.get_meta(W['meta'])
         proxy_tls_save(d, conf, w)
-        proxy_tls_ask(d, pem=pem, why='two certificates uploaded for it, RSA and EC side by side'
-                      if pem.get('alt') else 'a certificate uploaded for it', **_pw(w))
+        try:
+            proxy_tls_ask(d, pem=pem, why='two certificates uploaded for it, RSA and EC side by side'
+                          if pem.get('alt') else 'a certificate uploaded for it', **_pw(w))
+        except ValueError:
+            _proxy_conf_back(d, w, was)
+            raise
         d.tls_csr_drop(target=W['target'], only_if_key=pem['key'])
         return {'message': 'checked - root is putting it there'}
     if act == 'tls_csr':
@@ -47414,8 +47444,13 @@ def proxy_tls_post(d, act, body, who, w='front'):
         conf['how'] = 'self-signed, made here'
         if conf.get('acme_care'):
             conf['acme_care'] = False
+        was = d.store.get_meta(W['meta'])
         proxy_tls_save(d, conf, w)
-        proxy_tls_ask(d, pem=pem, why='a self-signed certificate for %s, %d days' % (cn, days), **_pw(w))
+        try:
+            proxy_tls_ask(d, pem=pem, why='a self-signed certificate for %s, %d days' % (cn, days), **_pw(w))
+        except ValueError:
+            _proxy_conf_back(d, w, was)
+            raise
         return {'message': 'made - root is putting it there'}
     if act == 'tls_policy':
         new = d.tls_policy_checked(body)
@@ -47489,7 +47524,10 @@ ACME_CHAL = {}                       # token -> (key authorization, when, name, 
 ACME_MANUAL = {}                     # the TXT record waiting to be put in by hand
 ACME_HOST = {'at': 0.0, 'fqdn': ''}
 ACME_TARGET = 'web'                  # the one certificate there is here
-ACME_NAME_RE = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
+# the last label letters - or (5.43.3) an internationalised top-level domain
+# in its ASCII form, xn--p1ai (.рф), xn--90ais (.бел): refused before, so no
+# name under one could ever be ordered
+ACME_NAME_RE = re.compile(r'^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{0,58}[a-z0-9])$')
 
 
 def acme_every():
@@ -47557,10 +47595,23 @@ def _acme_meta(d, key):
     return got if isinstance(got, dict) else {}
 
 
+ACME_WORK_STALE_S = 6 * 3600         # a work folder older than this is one left behind (5.43.3)
+
+
 def acme_workdir(prefix):
     """A folder of the daemon's own for a moment: 0700, in its state folder."""
     base = Path(CONFIG.get('state_dir') or STATE_DIR)
     base.mkdir(parents=True, exist_ok=True)
+    # one left by a daemon stopped in the middle of an order (5.43.3) - a
+    # restart, an upgrade: the account's key, a TSIG secret, for a moment the
+    # certificate's key, stayed in the state folder for good. An order is
+    # over in well under the hours this one has been left.
+    for old in base.glob(prefix + '*'):
+        try:
+            if old.is_dir() and not old.is_symlink() and time.time() - old.stat().st_mtime > ACME_WORK_STALE_S:
+                shutil.rmtree(str(old), ignore_errors=True)
+        except OSError:
+            pass
     work = tempfile.mkdtemp(prefix=prefix, dir=str(base))
     os.chmod(work, 0o700)
     return work
@@ -47896,7 +47947,12 @@ def acme_make_request(work, names, kind):
     k = os.path.join(work, 'cert.key')
     fd = os.open(k, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.close(fd)
-    der = _acme_openssl(['req', '-new', '-nodes', '-keyout', k, '-subj', '/CN=%s' % names[0],
+    # a CN holds 64 characters at most (5.43.3): a longer name - a DNS name
+    # may have 253 - made openssl refuse the request ("string too long") and
+    # no certificate was ever ordered; the CA reads the names from the
+    # subjectAltName, so such a request goes without a CN
+    subj = '/CN=%s' % names[0] if len(names[0]) <= 64 else '/'
+    der = _acme_openssl(['req', '-new', '-nodes', '-keyout', k, '-subj', subj,
                          '-addext', 'subjectAltName=%s' % ','.join('DNS:%s' % n for n in names),
                          '-outform', 'DER'] + newkey, what='the request')
     os.chmod(k, 0o600)
@@ -48141,18 +48197,25 @@ def acme_order_proxy(d, target, name, by, say=None):
         conf['how'] = 'ACME'
         conf['acme_care'] = True
         proxy_tls_save(d, conf, w)
-        ident = proxy_tls_ask(d, pem={'cert': pem['cert'], 'key': pem['key'], 'chain': pem['chain'],
-                                      'root': pem.get('root') or ''},
-                              why='from the ACME CA for %s' % name, **_pw(w))
-        pem = None
-        done = acme_wait_root(d, ident)
-        if done.get('state') != 'done':
+
+        def how_back():
             conf = proxy_tls_conf(d, w)
             if was_how:
                 conf['how'] = was_how
             else:
                 conf.pop('how', None)
             proxy_tls_save(d, conf, w)
+        try:
+            ident = proxy_tls_ask(d, pem={'cert': pem['cert'], 'key': pem['key'], 'chain': pem['chain'],
+                                          'root': pem.get('root') or ''},
+                                  why='from the ACME CA for %s' % name, **_pw(w))
+        except ValueError:
+            how_back()                  # root not asked: nothing went there (5.43.3)
+            raise
+        pem = None
+        done = acme_wait_root(d, ident)
+        if done.get('state') != 'done':
+            how_back()
             raise AcmeError('root did not put it there: %s' % '; '.join(
                 done.get('said') or ['it did not answer in 10 minutes']))
         st.update(ok=True, not_after=info.get('not_after'), not_before=info.get('not_before'),
@@ -48233,9 +48296,16 @@ def acme_order(d, name, by, say=None, target=ACME_TARGET):
             time.sleep(1)
         said('root puts it in')
         was_how = d.tls_conf().get('how')
-        ident = d.tls_put(dict(pem, keep_before=keep), 'from the ACME CA for %s, until %s' % (
-            name, time.strftime('%Y-%m-%d', time.localtime(info['not_after']))
-            if info.get('not_after') else '?'), how='ACME')
+        try:
+            ident = d.tls_put(dict(pem, keep_before=keep), 'from the ACME CA for %s, until %s' % (
+                name, time.strftime('%Y-%m-%d', time.localtime(info['not_after']))
+                if info.get('not_after') else '?'), how='ACME')
+        except ValueError:
+            # root still busy after two minutes (5.43.3): nothing kept by root
+            # either - the card said there was one from before to go back to
+            if keep:
+                d.store.forget_meta('acme_before')
+            raise
         pem = None
         done = acme_wait_root(d, ident)
         if done.get('state') != 'done':
