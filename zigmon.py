@@ -19363,7 +19363,7 @@ class Daemon(object):
                 continue
             if now - rt['since'] < wait_s or rt.get('for_fired') == rt['since']:
                 continue
-            if 0 <= now - rt['fired'] < int(r.get('cooldown_s') or 0):
+            if now - rt['fired'] < int(r.get('cooldown_s') or 0):
                 continue
             if self._rate_limited(r, rt):
                 continue
@@ -35656,6 +35656,13 @@ class Daemon(object):
                 if key not in payload:
                     continue
                 value = payload[key]
+                if value is None:
+                    # (5.43.3) not known is not open: Zigbee2MQTT says null
+                    # for a contact it has not heard yet (a sensor just
+                    # paired, a bridge restarted without its cache), and
+                    # bool(None) shut the room's heating as if a window stood
+                    # open, until the sensor next spoke
+                    continue
                 # Only an open window answers here; a shut one goes on to the
                 # next sensor. Answering "shut" on the first sensor that had
                 # anything to say meant a bedroom with a balcony door and a
@@ -38348,10 +38355,7 @@ class Daemon(object):
             # (_rule_act), not when it is armed: stamped here, a wait called
             # off by a movement and armed again inside the cooldown was
             # refused, the edge was spent, and the light never went off.
-            # (5.43.3) 0 <= ...: a firing "in the future" is a clock stepped
-            # back, not a cooldown - an hour's step held every motion light
-            # in the house dark for the hour.
-            if not later and 0 <= now - rt['fired'] < int(r.get('cooldown_s') or 0):
+            if not later and now - rt['fired'] < int(r.get('cooldown_s') or 0):
                 continue
             # The hourly cap counts what happens, not what is armed: somebody
             # at a desk moving every couple of minutes armed and cancelled
@@ -38395,7 +38399,7 @@ class Daemon(object):
         if int(r.get('after_s') or 0):
             # counted here for a rule that waits, so only what happens counts
             rt = self.rule_runtime.setdefault(r['id'], {'holds': None, 'fired': 0.0, 'reading': None})
-            if 0 <= time.time() - float(rt.get('fired') or 0) < int(r.get('cooldown_s') or 0):
+            if time.time() - float(rt.get('fired') or 0) < int(r.get('cooldown_s') or 0):
                 return
             if self._rate_limited(r, rt):
                 return

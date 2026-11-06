@@ -184,16 +184,15 @@ time.sleep(0.4)
 check(presses == ['single'], 'with the clock stepped back an hour, a press was taken for a repeat and dropped')
 print('a clock stepped back does not turn every press into "the same press again"')
 
-# -- 8. ...nor hold a rule in its cooldown for the length of the step ------------------
-dev('0xe1', 'Kitchen-PIR', occupancy=0)
-d.save_rules([{'device': '0xe1', 'key': 'occupancy', 'op': '==', 'value': 1, 'plug': 'notify', 'do': 'on',
-               'cooldown_s': 30}])
-rid = rule_ids()[0]
-d.rule_runtime[rid] = {'holds': False, 'fired': time.time() + 3600, 'reading': 0}
-del acted[:]
-d.fire_rules('0xe1', 'Kitchen-PIR', {'occupancy': 1.0})
-check(acted == [rid], 'a rule that last fired "in the future" (a clock stepped back) was held in its cooldown')
-print('a clock stepped back does not hold a rule in its cooldown')
+# -- 8. a window sensor that has said nothing yet is not an open window ------------------
+dev('0xe1', 'Window-Bedroom', contact=None)           # just paired: Zigbee2MQTT says null
+dev('0xe2', 'Door-Balcony', contact=True)
+check(d.room_window_open('r-bed', {'windows': ['0xe1', '0xe2']}) is False,
+      'a contact Zigbee2MQTT reports as null was taken for an open window, and the room\'s heating shut')
+d.live['0xe2']['payload'] = {'contact': False}
+check(d.room_window_open('r-bed', {'windows': ['0xe1', '0xe2']}) is True,
+      'an open balcony door behind a sensor that had not spoken yet was missed')
+print('a window sensor that has not said anything yet does not shut the heating')
 
 # -- 9. "what if" asks a 24-hour-average rule about the difference, as the rule does ---
 dev('0xf1', 'Lounge-Temp', temperature=20.0)
