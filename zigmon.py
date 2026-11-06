@@ -29694,11 +29694,17 @@ class Daemon(object):
         if sq.get('enabled') is False:
             self.debug('sequence %s: reset ignored, it is switched off' % sq.get('name'))
             return False, 'sequence "%s" is switched off' % sq.get('name')
-        positions = self.sequence_positions()
-        positions[sid] = 0
+        # (5.43.3) under the same lock as a step, and written before the
+        # reset scene runs: read here and written back after it, a press of
+        # the sequence in between was overwritten with the copy read before
+        # it - every other sequence's place included - and the next press
+        # repeated a step
+        with self.__dict__.setdefault('_sequence_lock', threading.Lock()):
+            positions = self.sequence_positions()
+            positions[sid] = 0
+            self.store.set_meta('sequence_pos', json.dumps(positions), deferred=True)
         self._run_step(sq.get('reset_scene'), 'sequence "%s" reset' % sq['name'], sq['name'],
                        hold_by, deep)
-        self.store.set_meta('sequence_pos', json.dumps(positions))
         self.store.add_event('sequence', 'sequence "%s" reset to step 1 (%s)' % (sq['name'], origin))
         log('sequence %s: reset (%s)' % (sq['name'], origin))
         self.bump()

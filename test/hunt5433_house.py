@@ -254,6 +254,26 @@ check((d.live.get('plug:Lamp') or {}).get('availability') == 'online',
       'a socket that pushed its state over MQTT stayed "not answering" until the next reading')
 print('a socket that stops answering is "not answering" in the status, and back the moment it speaks')
 
+# -- 12. a sequence's reset does not write over a press made while it ran -------------------
+seqs = d.save_sequences([{'name': 'Hall sequence', 'steps': ['notify', 'notify'], 'reset_scene': 'notify|on'},
+                         {'name': 'Desk sequence', 'steps': ['notify', 'notify', 'notify']}])
+hall, desk = seqs[0]['id'], seqs[1]['id']
+was_step = d._run_step
+
+
+def step_and_press(step, origin, seq_name, hold_by=None, deep=0):
+    if 'reset' in origin:
+        d.advance_sequence(desk, 'the desk button')        # pressed while the reset scene runs
+d._run_step = step_and_press
+try:
+    d.reset_sequence(hall, 'the hall button')
+finally:
+    d._run_step = was_step
+check(d.sequence_positions().get(desk) == 1,
+      'a press of one sequence while another was being reset was written over - it is back at step %r'
+      % (d.sequence_positions().get(desk, 0) + 1))
+print('resetting a sequence keeps every press made meanwhile')
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_house: %s' % ('%d failed' % len(bad) if bad else 'all good'))
 os._exit(1 if bad else 0)
