@@ -12,6 +12,8 @@
     140 ms of style work. A long list now goes into its select when the
     select is opened (by the pointer, a finger, the keyboard or a script),
     the closed select as wide as before and showing the same entry;
+  * an administrator's Overview sorted the whole house for its "add a card"
+    list with every status;
   * Alerts - Add message, then a name typed into "by text to": the box was
     given no status, and the first letter threw (whoCandidates);
   * the account's popup opened with the focus on Sign out (Lock now): Enter
@@ -288,6 +290,14 @@ async function open(b, as, hash) {
       await wait(300);
       out.rules.picked = await p.evaluate(t => ({value: document.querySelectorAll('#rules-list .rule-row:not(.bind-head)')[1].querySelector('select').value,
         want: t, note: document.getElementById('rule-note').textContent}), target);
+      // the Overview's "add a card" list, drawn with every status: sorted once
+      out.addList = await p.evaluate(() => {
+        let sorts = 0; const was = sortByKind;
+        sortByKind = function () { sorts++; return was.apply(this, arguments); };
+        for (let i = 0; i < 10; i++) renderOverviewAddControl(STATE.status);
+        sortByKind = was;
+        return {sorts, options: document.getElementById('ov-add-select').querySelectorAll('option').length};
+      });
       await p.evaluate(() => { RULES.dirty = false; RULES.rows = null; showControlSection('auto-scenes'); });
       await wait(2500);
       out.scenes = await p.evaluate(() => ({options: document.querySelectorAll('#scenes-list option').length,
@@ -454,6 +464,9 @@ pk = r.get('picked') or {}
 check(r.get('scripted'), 'a value set by a script on a rule\'s list nobody had opened did not take')
 check(pk.get('want') and pk.get('value') == pk.get('want') and pk.get('note') == 'Unsaved changes',
       'a device picked by a script from a rule\'s list nobody had opened did not take: %r' % pk)
+al = o.get('addList') or {}
+check(al.get('sorts', 99) <= 1, 'the Overview\'s "add a card" list, drawn ten times for the same house, was sorted %s '
+                              'times - every status sorted the whole house again' % al.get('sorts'))
 sc = o.get('scenes') or {}
 check(sc.get('actions', 0) >= 20 and sc.get('options', 99999) < 1000,
       'the scenes editor (ten scenes, two actions each) holds %s options' % sc.get('options'))

@@ -9657,7 +9657,12 @@ function overviewAvailableOptions(st) {
     if (d.source === 'plug') return;
     out.push([d.id, deviceIcon(d) + ' ' + d.name]);
   });
-  return sortByKind(out);
+  // (5.44) asked with every status an administrator's Overview draws: the same
+  // list is not sorted again (sixty-five names, by kind and by name, a tick)
+  var sig = JSON.stringify(out), memo = overviewAvailableOptions.memo;
+  if (memo && memo.sig === sig) return memo.sorted;
+  overviewAvailableOptions.memo = {sig: sig, sorted: sortByKind(out)};
+  return overviewAvailableOptions.memo.sorted;
 }
 function saveOverviewLayout(items) {
   OVERVIEW_LAYOUT_LOCAL = items;
