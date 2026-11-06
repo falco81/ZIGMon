@@ -170,11 +170,17 @@ free = []
 
 def gateway(path, method='GET', payload=None, retry=True, timeout=None):
     got = []
-    t = threading.Thread(target=lambda: got.append(d._sms_send_lock.acquire(blocking=False)))
+
+    def peek():
+        # taken and given back by the same thread: an RLock is its owner's
+        if d._sms_send_lock.acquire(blocking=False):
+            d._sms_send_lock.release()
+            got.append(True)
+        else:
+            got.append(False)
+    t = threading.Thread(target=peek)
     t.start()
     t.join()
-    if got and got[0]:
-        d._sms_send_lock.release()
     free.append(bool(got and got[0]))
     return {'message': 'Credit 120 CZK'}
 
@@ -296,6 +302,20 @@ check(heard and heard[0][1] == 'Bearer tk_PresenceTok99',
       'the presence listener never reached a private ntfy with its token (%s)' % (heard[:1],))
 check(not [x for x in said if 'tk_PresenceTok99' in x],
       'the presence listener wrote the ntfy token into the log')
+
+# 15. a long message waits as several before the next, as the setting says
+zigmon.CONFIG.update({'sms_send_gap_s': 0.6})
+d._sms_send_now = lambda number, text, why='alert', queue=True: (True, 'sent')
+d._sms_hold_until = 0
+d._sms_sent_at = 0
+d.sms_send('+420777123456', 'x' * 300, why='alert')            # two parts
+t0 = time.time()
+d.sms_send('+420777123456', 'y', why='alert')
+waited = time.time() - t0
+check(waited >= 1.0, 'after a message of two parts the next waited %.2f s, one gap of 0.6 s - not two'
+      % waited)
+del d._sms_send_now
+zigmon.CONFIG.update({'sms_send_gap_s': 0})
 
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))

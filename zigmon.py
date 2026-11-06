@@ -11481,6 +11481,10 @@ class Daemon(object):
         with self._sms_send_lock:
             raw_gap = CONFIG.get('sms_send_gap_s')
             gap = 5.0 if raw_gap in (None, '') else float(raw_gap)
+            # (5.43.3) a long message is several and waits as several, as the
+            # setting says: the radio is still sending the second part of the
+            # last one when a flat gap is up
+            gap *= max(1, int(getattr(self, '_sms_sent_parts', 1) or 1))
             since = time.time() - getattr(self, '_sms_sent_at', 0)
             if since < gap:
                 time.sleep(gap - since)
@@ -11495,6 +11499,7 @@ class Daemon(object):
                 log('SMS: the gateway stalled a moment ago, waiting %.0fs before the next' % hold, 'debug')
                 time.sleep(hold)
             self._sms_sent_at = time.time()
+            self._sms_sent_parts = self.sms_parts(str(text or '')[:1000])
             ok, said = self._sms_send_now(number, text, why, queue)
             # (5.43.3) an alert that timed out comes back as the socket's own
             # words ("timed out"), not as "no answer": only a reply's stall
