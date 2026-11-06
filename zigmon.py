@@ -8044,7 +8044,13 @@ def make_mqtt_client(client_id, clean=True):
         else:
             client.tls_set(cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS_CLIENT)
             client.tls_insecure_set(True)
-    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    # (5.44) At most five seconds between tries, not thirty. paho doubles the
+    # wait after each try that fails, so a broker away for half a minute (an
+    # upgrade of mosquitto, a restart that took its time) was tried again 16
+    # or 30 s after it was already back - and for all of that every button,
+    # every sensor and every light in the house did nothing. A try at a
+    # broker that is not there is a refused connection: it costs nothing.
+    client.reconnect_delay_set(min_delay=1, max_delay=5)
     # A scene that switches twenty things publishes twenty messages at once.
     # Paho lets twenty be in flight by default and then waits for each PUBACK
     # before the next goes out - so the far end of a big scene waited on the
@@ -9222,6 +9228,7 @@ class Daemon(object):
             self.last_error = 'connect refused: %s' % reason_text(rc)
             log(self.last_error, 'error')
             return
+        self._drop_late_commands(client)
         self.connected = True
         self.last_connect = time.time()
         self.last_error = None
@@ -9262,7 +9269,56 @@ class Daemon(object):
                 '<none>' if payload is None else str(payload))
             log('mqtt -> %s qos%d%s %s' % (topic, qos, ' retain' if retain else '',
                                            debug_cut(body)), 'debug')
-        return self.client.publish(topic, payload, qos=qos, retain=retain)
+        info = self.client.publish(topic, payload, qos=qos, retain=retain)
+        if qos and not retain and (topic.endswith('/set') or topic.endswith('/rpc')):
+            # (5.44) when a command went out, by its message id: see _drop_late_commands
+            sent = self.__dict__.setdefault('_cmd_mids', {})
+            mid = getattr(info, 'mid', None)
+            if mid is not None:
+                sent[mid] = time.monotonic()
+                if len(sent) > 2000:
+                    cut = time.monotonic() - 60
+                    for k in [k for k, v in sent.items() if v < cut]:
+                        sent.pop(k, None)
+        return info
+
+    # A command the broker has not acknowledged by the time the link comes
+    # back is older than this: it is not sent again. (5.44)
+    COMMAND_LATE_S = 2.0
+
+    def _drop_late_commands(self, client):
+        """(5.44) paho keeps every QoS 1 message the broker has not
+        acknowledged, and sends them all again the moment it is connected once
+        more - a light switched on when the broker restarted, or when a link
+        that had quietly died was noticed by the keepalive twenty or forty
+        seconds later, came on then, long after anybody was waiting for it.
+        Worse with a Shelly: its command had gone over HTTP meanwhile (the
+        answer over the broker is waited for two seconds), so the old "on"
+        arriving late undid an "off" given since. A command is now or not at
+        all; the house's rules and buttons say it again if it is still wanted.
+        Called from on_connect, which paho calls before it sends them again."""
+        sent = self.__dict__.get('_cmd_mids') or {}
+        queue = getattr(client, '_out_messages', None)
+        lock = getattr(client, '_out_message_mutex', None)
+        if not sent or queue is None or lock is None:
+            return 0
+        now = time.monotonic()
+        dropped = []
+        try:
+            with lock:
+                for mid, m in list(queue.items()):
+                    at = sent.get(mid)
+                    if at is None or now - at < self.COMMAND_LATE_S:
+                        continue
+                    queue.pop(mid, None)
+                    sent.pop(mid, None)
+                    dropped.append(str(getattr(m, 'topic', '') or ''))
+        except Exception as e:                          # noqa: BLE001 - paho's insides, best effort
+            log('looking at what paho would send again: %s' % e, 'debug')
+        if dropped:
+            log('%d command(s) from before the broker link went were not sent late (%s)'
+                % (len(dropped), ', '.join(sorted(set(dropped)))[:300]), 'warn')
+        return len(dropped)
 
     def _on_message(self, client, userdata, msg):
         self.messages += 1
@@ -10512,6 +10568,16 @@ class Daemon(object):
         for p in plugs:
             value = updates.get(int(p.cfg.get('switch_id') or 0))
             if value is None:
+                continue
+            if getattr(self, '_retained_msg', False) and p.output is not None:
+                # (5.44) the broker's copy of what the box said last, replayed
+                # at our reconnect - not something the box says now. Taken as
+                # news it was stamped newer than everything (output_at), so a
+                # socket switched over HTTP while its MQTT was down went back
+                # to its old state in the house's mind: the tile flipped, and
+                # the next rule asking for it was skipped as "already so". The
+                # box's own reading says what it is; this is only used when
+                # nothing else is known yet.
                 continue
             changed = False
             if 'output' in value:
@@ -21490,6 +21556,10 @@ class Daemon(object):
             and time.time() - p.generated < int(CONFIG.get('plug_poll_interval') or 15) * 2
         if fresh:
             state = bool(p.output)          # fresh from the last poll or push: no extra round trip
+        elif p.output in (0, 1) and p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
+            # (5.44) a box driven over the broker alone is not asked over HTTP
+            # what it is either: what it last said is what there is
+            state = bool(p.output)
         else:
             try:
                 state = bool(p.rpc().switch_status().get('output'))
@@ -21501,7 +21571,7 @@ class Daemon(object):
             p.pulsing = True
         try:
             try:
-                p.rpc().set_output(not state)
+                self._pulse_leg(p, not state)
             except PlugError as e:
                 self.store.add_event('plug', 'pulse failed: %s' % e, 'warn', p.device_id)
                 return False, str(e)
@@ -21517,7 +21587,7 @@ class Daemon(object):
             last = None
             for attempt in range(3):          # the way back must not be lost
                 try:
-                    p.rpc().set_output(state)
+                    self._pulse_leg(p, state)
                     last = None
                     break
                 except PlugError as e:
@@ -21539,21 +21609,52 @@ class Daemon(object):
         finally:
             p.pulsing = False
 
+    def _pulse_leg(self, p, on):
+        """(5.44) One half of a pulse, the way every other command to this box
+        goes: over the broker when it is set up for it, HTTP behind that. A
+        pulse went over HTTP whatever the box was - with "MQTT only" on as
+        well, which says in so many words that nothing goes over HTTP - and
+        a box on the broker paid a TCP round trip for each half of it."""
+        if self.mqtt_command(p, 'Switch.Set', {'id': int(p.cfg.get('switch_id') or 0), 'on': bool(on)},
+                             fallback=lambda: p.rpc().set_output(on)):
+            return
+        if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
+            raise PlugError('%s is set to MQTT only, and the broker is not carrying its commands' % p.name)
+        p.rpc().set_output(on)
+
     def toggle_plug(self, p, origin='the dashboard'):
         ok, message = self._monitor_guard(p)
         if not ok:
             return False, message
-        if p.cfg.get('mqtt') and self.connected and p.output is not None:
+        # (5.44) aimed at what the socket is about to be when a command to it
+        # is still on its way, not at what it said before that command: a
+        # press right behind a rule's "on" (a box taking its time over HTTP)
+        # toggled from "off" and sent "on" again - nothing happened
+        base = p.wanted if getattr(p, 'wanted', None) is not None else p.output
+        if p.cfg.get('mqtt') and self.connected and base is not None and self._mqtt_road_open(p):
             # over the broker the answer says what it is now, not what it was:
-            # aim at the opposite of what the box last said, which is a toggle
-            on = not bool(p.output)
-            # a Set to the opposite, not a Toggle: the HTTP road behind it
+            # aim at the opposite of what the box last said, which is a toggle.
+            # A Set to the opposite, not a Toggle: the HTTP road behind it
             # sets the same value, so a box that carried out the first and
-            # answered late is not flipped back by the second
-            if self.mqtt_command(p, 'Switch.Set', {'id': int(p.cfg.get('switch_id') or 0), 'on': on},
-                                 fallback=lambda: p.rpc().set_output(on)):
-                self._plug_switched(p, on, origin)
-                return True, '%s switched %s' % (p.name, 'on' if on else 'off')
+            # answered late is not flipped back by the second.
+            # (5.44) ...and through set_plug_output, with the socket's lock
+            # and its count of commands: sent beside it, a rule's "on" whose
+            # answer was lost fell back to HTTP two seconds later - after
+            # this toggle's "off" - and put the light back on
+            return self.set_plug_output(p, not bool(base), origin)
+        if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
+            # (5.44) "MQTT only" is MQTT only: the HTTP toggle below went out
+            # whenever the broker was down or the socket's state not known yet
+            p.cmd_seq = getattr(p, 'cmd_seq', 0) + 1
+            if not self.connected or not self.mqtt_command(
+                    p, 'Switch.Toggle', {'id': int(p.cfg.get('switch_id') or 0)}):
+                message = '%s is set to MQTT only, and the broker is not carrying its commands' % p.name
+                self.store.add_event('plug', message, 'warn', p.device_id)
+                return False, message
+            # which way it went is the box's to say: its own report over the
+            # broker, or the read that follows
+            threading.Thread(target=self._confirm_poll, args=(p,), name='confirm', daemon=True).start()
+            return True, '%s toggled' % p.name
         try:
             reply = p.rpc().toggle_output() or {}
         except PlugError as e:
@@ -31557,6 +31658,28 @@ class Daemon(object):
                          'the hallway rule carries.'
                          % (self.pretty_device(r.get('device') or ''),
                             self.target_label(r.get('plug') or '')))
+        # (5.44) A motion light "on" with a cooldown, and a rule that puts the
+        # same light out when the motion stops. The cooldown is there for a
+        # reading dancing around its line (a thermostat's compressor); every
+        # new rule gets 300 s of it. On a motion light it means: the light
+        # went out after the sensor's minute of "occupied" and its wait, and
+        # somebody walking back in within five minutes of the first movement
+        # stood in the dark - the rule saw them and was not allowed to act.
+        for r in live:
+            if str(r.get('key') or '') != 'occupancy' or str(r.get('do') or '').lower() != 'on':
+                continue
+            cool = int(numeric(r.get('cooldown_s')) or 0)
+            if cool <= 0:
+                continue
+            mate = [x for x in live if x.get('device') == r.get('device') and x.get('key') == 'occupancy'
+                    and x.get('plug') == r.get('plug') and str(x.get('do') or '').lower() == 'off']
+            if not mate:
+                continue
+            notes.append('"%s on when it sees somebody" has a cooldown of %d s while another rule puts %s '
+                         'out when the motion stops: somebody coming back within %d s of the last time '
+                         'it came on stays in the dark. A cooldown of 0 is what a motion light wants.'
+                         % (self.pretty_device(r.get('device') or ''), cool,
+                            self.target_label(r.get('plug') or ''), cool))
         for note in notes[:6]:
             log('rules: %s' % note, 'warn')
             self.say_event('control', note, 'warn', about='config_odd',

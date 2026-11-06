@@ -18389,6 +18389,17 @@ function switchPlug(plug, on, button, mode) {
     if (button) { button.disabled = false; button.classList.remove('busy'); }
     if (card) card.classList.remove('pending');
   };
+  // (5.44) ...and the tile painted ahead of the answer is painted again from
+  // the truth when the switch did not happen. The redraw that was meant to do
+  // it found the socket exactly as the last drawing had it (nothing changed:
+  // that is what a failed switch is), kept the card, and the card went on
+  // saying "on" - its colour and its word - over a socket that was off, until
+  // something else about it changed. A PIN box dismissed left it the same.
+  var putBack = function () {
+    SOCKET_SHAPE = null;
+    if (plug.id) delete OVERVIEW_CARDS[plug.id];
+    tick(true);
+  };
   var ask = mode === 'pin' ? withPinAlways : withPin;
   ask('Switch ' + plug.name + ' ' + (on ? 'on' : 'off'), on ? 'Restores power to the socket.' : '<b>Everything plugged into it loses power.</b>', function (pin) {
     var body = {name: plug.name, on: on, pin: pin};
@@ -18405,10 +18416,9 @@ function switchPlug(plug, on, button, mode) {
       return r.message || 'done';
     }, function (e) {
       free();
-      tick(true);                                  // put the real state back
-      throw e;
+      throw e;                                     // withPin hands it to putBack: the real state back
     });
-  }, !on, free);          // dismissed: nothing was sent, so nothing is pending
+  }, !on, function () { free(); putBack(); });   // dismissed: nothing was sent, so nothing is pending
 }
 function resetPlugCounters(plug, types, what, button) {
   if (button) { button.disabled = true; button.classList.add('busy'); }
