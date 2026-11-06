@@ -19281,7 +19281,9 @@ class Daemon(object):
             reasons.append('not as install.sh left them: %s' % self._some_names(off))
         if not reasons:
             return {'stale': False, 'parts': names}
-        listed = off or names
+        # (5.44.2) the parts named only when they differ: with only the record's
+        # version off, every part was listed as "not as this version ships them"
+        listed = off
         why = ('%s%s. What needs root - upgrades from the dashboard, the firewall and TLS from the pages, '
                'the network, the clock, the backups of the whole installation, logrotate - may not work until '
                './install.sh --upgrade is run once as root. An upgrade from the dashboard runs it by itself; a '

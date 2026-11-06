@@ -51,5 +51,31 @@ else:
               'after the machine check install.sh\'s VERSION is %r, not %r (the system\'s own, from '
               '/etc/os-release)' % (line[-1] if line else got.stdout[-200:] + got.stderr[-200:], want))
 
+# ---- the band says only what differs ----------------------------------------
+# With the record's version off and every part as install.sh left it, the band
+# listed every part as "not as this version ships them".
+os.environ['ZIGMON_ROOT_PARTS_CHECK'] = '1'
+sys.path.insert(0, str(HERE))
+sys.argv = ['zigmon']
+import hashlib                                           # noqa: E402
+import types                                             # noqa: E402
+import zigmon                                            # noqa: E402
+with tempfile.TemporaryDirectory(prefix='zigmon-review5442-parts-') as t:
+    part = Path(t) / 'zigmon-root.path'
+    part.write_text('[Path]\n')
+    good = hashlib.sha256(part.read_bytes()).hexdigest()
+    helper = types.SimpleNamespace(FS_ROOT='', SYSTEM_STAMP='/etc/zigmon-system.json',
+                                   system_level_here=lambda: (1, {'version': '9.8 (Olive Jaguar)',
+                                                                  'parts': {str(part): good}}))
+    me = types.SimpleNamespace(upgrade_helper=lambda: helper, _some_names=zigmon.Daemon._some_names)
+    got = zigmon.Daemon.root_parts_check(me) or {}
+    check(got.get('stale') and 'Not as this version ships them' not in got.get('why', '')
+          and 'install.sh last ran for zigmon 9.8' in got.get('why', ''),
+          'with only the version off the band named every part as not shipped: %r' % got.get('why'))
+    part.write_text('changed\n')
+    got = zigmon.Daemon.root_parts_check(me) or {}
+    check('Not as this version ships them: zigmon-root.path' in got.get('why', ''),
+          'a part that differs is not named: %r' % got.get('why'))
+
 print('review5442: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 sys.exit(1 if bad else 0)

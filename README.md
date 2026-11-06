@@ -2094,6 +2094,8 @@ Current version: **5.44.2**
   after every `install.sh --upgrade`, that they were from before the version
   running. It is read in a subshell now. The next upgrade - from the web or
   the command line - writes the stamp right, and the item goes by itself.
+* And the item named every part as "not as this version ships them" when
+  only the record's version was off: it names only the parts that differ.
 
 `test/review5442.py` (the installer's machine check run against this machine's
 own /etc/os-release); it fails on 5.44.1.
