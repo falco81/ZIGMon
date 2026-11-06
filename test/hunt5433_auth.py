@@ -33,7 +33,7 @@ from pathlib import Path
 
 HERE = Path(os.environ.get('ZIGMON_HUNT_HERE') or Path(__file__).resolve().parent.parent)
 W = Path(tempfile.mkdtemp(prefix='zigmon-hunt5433-auth-'))
-API_PORT, PHP_PORT = 19502, 19503
+API_PORT, PHP_PORT = 19570, 19571
 bad = []
 PROCS = []
 
@@ -250,6 +250,26 @@ try:
         c, text = page('?api=login', {'name': 'a' + 'é' * 40, 'password': 'whatever it is'})
         check(c == 401 and text.startswith('{'), 'a long name cut in the middle of a letter was a %s %r, '
               'not a refusal' % (c, text[:80]))
+    # ---- the ntfy addresses in the status (5.43.3) ------------------------------------
+    # whoever has one reads every notification, a token in it opens the server:
+    # the status went to every page - a visitor's too, in the public view - whole
+    print('the ntfy addresses only for an administrator')
+    secret = 'https://:tk_hunt5433secretvalue@ntfy.example.net/zigmon-house-hunt'
+    zigmon.CONFIG['notify_ntfy'] = secret
+    d.seq += 1
+    c, st = call('/api/status')
+    check(c == 200 and 'tk_hunt5433secretvalue' not in json.dumps(st)
+          and (st.get('runtime_config') or {}).get('notify_ntfy', {}).get('value') == '(kept)',
+          'a visitor\'s status carried the ntfy address with its token: %r'
+          % ((st.get('runtime_config') or {}).get('notify_ntfy'),))
+    c, st = call('/api/status', sess=T_OWNER)
+    check(c == 200 and (st.get('runtime_config') or {}).get('notify_ntfy', {}).get('value') == secret,
+          'an administrator\'s page lost the ntfy address it edits: %r'
+          % ((st.get('runtime_config') or {}).get('notify_ntfy'),))
+    d.save_config_overrides({'notify_ntfy': '(kept)'})
+    check(zigmon.CONFIG.get('notify_ntfy') == secret,
+          'the ntfy address as a visitor\'s page was shown it, sent back, replaced it: %r'
+          % zigmon.CONFIG.get('notify_ntfy'))
 except Exception as e:                                  # noqa: BLE001
     import traceback
     traceback.print_exc()

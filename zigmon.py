@@ -10561,6 +10561,8 @@ class Daemon(object):
                 # written into every event that says where a version came from
                 if key == 'upgrade_url' and '@' in urlsplit(value).netloc:
                     raise ValueError('upgrade_url takes no name or password')
+                if key in self.STATUS_HIDDEN and value == '(kept)':
+                    continue                 # as a page not an admin's was shown it (5.43.3): kept
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
                 if key in ('backup_time', 'reboot_at', 'osup_check_at', 'osup_auto_at') and \
@@ -35305,6 +35307,8 @@ class Daemon(object):
         old = self.wifi_config()
         cfg = dict(old)
         url = incoming.get('presence_ntfy')
+        if url == '(kept)':                  # as shown to a page not an admin's (5.43.3): kept
+            url = None
         if url is not None:
             url = str(url or '').strip()
             if url and not re.match(r'^https?://[A-Za-z0-9.:-]+/[A-Za-z0-9_-]{6,64}$', url.rstrip('/')):
@@ -39317,6 +39321,28 @@ class Daemon(object):
                     self._status_held = (seq, time.time(), body)
                 guard.notify_all()
 
+    # The ntfy addresses are secrets (5.43.3): whoever has one reads every
+    # notification, and one of a server of your own carries its token
+    # (https://:tk_...@host/topic). The status went out to every page - a
+    # visitor's too, in the public view - with them written out whole. For
+    # anyone but an administrator they go as "(kept)": only an administrator's
+    # page edits them.
+    STATUS_HIDDEN = ('notify_ntfy', 'presence_ntfy')
+
+    def status_for_viewer(self, body):
+        held = self.__dict__.get('_status_viewer')
+        if held and held[0] is body:
+            return held[1]
+        out = body
+        for key in self.STATUS_HIDDEN:
+            value = str(CONFIG.get(key) or '')
+            if len(value) < 4:
+                continue
+            enc = json.dumps(value, ensure_ascii=False)[1:-1].encode('utf-8')
+            out = out.replace(enc, b'(kept)')
+        self._status_viewer = (body, out)
+        return out
+
     @staticmethod
     def _json_out(obj):
         try:
@@ -42006,7 +42032,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not CONFIG.get('public_view', True) and not REQUEST_CALLER.cli \
                         and not d.session_valid(self.headers.get('X-Zigmon-Session') or ''):
                     return self._error(403, 'view locked - sign in to see the house')
-                return self._send_body(200, d.status_body())
+                body = d.status_body()
+                if not d.may(self.headers.get('X-Zigmon-Session') or '', 'admin'):
+                    body = d.status_for_viewer(body)
+                return self._send_body(200, body)
             if path == '/api/auth/whoami':
                 # who this page is signed in as - asked by every page, so
                 # answered whatever the view is set to
