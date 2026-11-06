@@ -88,6 +88,25 @@ run() {
     "$@"
 }
 
+# (5.44.1) A program file put in whole or not at all. `install` takes the
+# old file away and writes the new one in its place, and what it wrote stays
+# in the page cache for up to half a minute: the power going in that time -
+# an upgrade from the dashboard restarts the daemon within it - left
+# zigmon.py (or its unit, or root's helpers) empty or cut short, and systemd
+# started a program that was not there every ten seconds from then on.
+# Written beside it, put on the disk, then renamed over it.
+put_whole() {
+    local mode="$1" src="$2" dst="$3"
+    if [[ -n "$DRY_RUN" ]]; then
+        note "[would run] install -m $mode $src $dst"
+        return 0
+    fi
+    install -m "$mode" "$src" "$dst.zigmon-new"
+    sync "$dst.zigmon-new" 2>/dev/null || true
+    mv -f "$dst.zigmon-new" "$dst"
+    sync "$(dirname "$dst")" 2>/dev/null || true
+}
+
 # As run, for a command whose last argument is a secret. The dry run printed
 # the whole line, so --dry-run - the mode whose promise is that it changes
 # nothing and only says what it would do - echoed the broker password into a
@@ -380,7 +399,7 @@ create_user() {
 install_program() {
     step "Program files"
     run install -d -m 755 "$LIB_DIR"
-    run install -m 755 "$SOURCE_DIR/zigmon.py" "$LIB_DIR/zigmon.py"
+    put_whole 755 "$SOURCE_DIR/zigmon.py" "$LIB_DIR/zigmon.py"
     for doc in README.md INSTALL.md; do
         [[ -f "$SOURCE_DIR/$doc" ]] && run install -m 644 "$SOURCE_DIR/$doc" "$LIB_DIR/$doc"
     done
@@ -523,15 +542,15 @@ allow_broker_reload() {
 # must be signed by; only root, and only this script, puts them there.
 install_helpers() {
     step "What the dashboard may ask of root"
-    run install -m 755 "$SOURCE_DIR/deploy/zigmon_root.py" "$LIB_DIR/zigmon_root.py"
-    run install -m 755 "$SOURCE_DIR/deploy/zigmon_upgrade.py" "$LIB_DIR/zigmon_upgrade.py"
+    put_whole 755 "$SOURCE_DIR/deploy/zigmon_root.py" "$LIB_DIR/zigmon_root.py"
+    put_whole 755 "$SOURCE_DIR/deploy/zigmon_upgrade.py" "$LIB_DIR/zigmon_upgrade.py"
     run install -d -m 755 "$LIB_DIR/release-keys"
     local k u
     for k in "$SOURCE_DIR"/deploy/release-keys/*.pub; do
         [[ -f "$k" ]] && run install -m 644 "$k" "$LIB_DIR/release-keys/"
     done
     for u in zigmon-root.path zigmon-root.service zigmon-upgrade.path zigmon-upgrade.service; do
-        run install -m 644 "$SOURCE_DIR/deploy/$u" "/etc/systemd/system/$u"
+        put_whole 644 "$SOURCE_DIR/deploy/$u" "/etc/systemd/system/$u"
     done
     run install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/zigmon
     run install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/zigmon/root \
@@ -577,7 +596,7 @@ install_time_tools() {
 
 install_service() {
     step "systemd"
-    run install -m 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
+    put_whole 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
     [[ -n "$DRY_RUN" ]] || python_point_at "$ZIGMON_PY"   # 5.31: the Python ensure_python chose
     run install -m 644 "$SOURCE_DIR/deploy/zigmon.logrotate" "$LOGROTATE_FILE"
     run install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" /var/lib/zigmon /var/log/zigmon
@@ -640,8 +659,8 @@ install_web() {
     [[ -n "$WITH_WEB" ]] || return 0
     step "Dashboard files"
     run install -d -m 755 "$WEB_DIR"
-    run install -m 644 "$SOURCE_DIR/web/index.php" "$WEB_DIR/index.php"
-    run install -m 644 "$SOURCE_DIR/web/zigmon-api.php" "$WEB_DIR/zigmon-api.php"
+    put_whole 644 "$SOURCE_DIR/web/index.php" "$WEB_DIR/index.php"
+    put_whole 644 "$SOURCE_DIR/web/zigmon-api.php" "$WEB_DIR/zigmon-api.php"
     run install -m 644 "$SOURCE_DIR/web/favicon.svg" "$WEB_DIR/favicon.svg"
     good "$WEB_DIR"
 
@@ -1440,8 +1459,8 @@ do_upgrade() {
     install_backup_tools     # 5.21: ssh and smbclient for the backups to other machines
     [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && {
         step "Dashboard files"
-        run install -m 644 "$SOURCE_DIR/web/index.php" "$WEB_DIR/index.php"
-        run install -m 644 "$SOURCE_DIR/web/zigmon-api.php" "$WEB_DIR/zigmon-api.php"
+        put_whole 644 "$SOURCE_DIR/web/index.php" "$WEB_DIR/index.php"
+        put_whole 644 "$SOURCE_DIR/web/zigmon-api.php" "$WEB_DIR/zigmon-api.php"
         run install -m 644 "$SOURCE_DIR/web/favicon.svg" "$WEB_DIR/favicon.svg"
         good "$WEB_DIR"
         # 2.23: backup uploads travel in pieces of a few MB; the old 16k cap would block them
@@ -1608,7 +1627,7 @@ MPATCH
             fi
         fi
     }
-    run install -m 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
+    put_whole 644 "$SOURCE_DIR/deploy/zigmon.service" "$UNIT_FILE"
     [[ -n "$DRY_RUN" ]] || python_point_at "$ZIGMON_PY"
     run systemctl daemon-reload
     if [[ -f /etc/php-fpm.d/www.conf ]]; then

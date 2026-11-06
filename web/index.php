@@ -15896,6 +15896,10 @@ function loadHealth() {
       ['Database', h.db.path + ' — ' + (h.db.bytes ? (h.db.bytes / 1048576).toFixed(1) + ' MB' : '?') + ', ' + rowCount(h.db.samples) + ' samples, ' + rowCount(h.db.samples_hourly) + ' hourly, ' + rowCount(h.db.events) + ' events'],
       ['Oldest data', h.db.oldest ? stamp(h.db.oldest) : '–'],
     ];
+    // (5.44.1) the database refusing writes: said where the database is
+    var wf = h.db.writes_failing;
+    if (wf) pairs.push(['Database writes', 'REFUSED since ' + stamp(wf.since) + ' — ' + wf.error + '; ' + wf.lost + ' lost so far. The house is still switched; nothing new is recorded until it takes writes again']);
+    else if (h.db.write_error) pairs.push(['Database writes', 'refused just now — ' + h.db.write_error]);
     if (h.pushes && h.pushes.listening) {
       pairs.push(['Webhook listener', h.pushes.endpoint + ' — ' + h.pushes.received + ' received, ' + h.pushes.rejected + ' rejected' + (h.pushes.last ? ', last ' + ago(h.pushes.last) : '')]);
     }
