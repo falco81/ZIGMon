@@ -4177,6 +4177,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .formgrid .wide{grid-column:1/-1}
   .ot pre.zlines{white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:60vh;overflow:auto; background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0}
   .ot .note.bad{color:var(--crit)}
+  .ot .small.bad{color:var(--crit)}        /* (5.44.1) a line of its own that says something went wrong */
   .ot .note.good{color:var(--ok)}
   #zmodal .body > .set-item + .set-item{margin-top:14px}
   .ot .formgrid > .set-item{margin-top:0 !important}
@@ -23389,14 +23390,27 @@ function dbRunStart(what, prefix) {
     $(prefix + '-run-time').textContent = 'took ' + ((Date.now() - began) / 1000).toFixed(1) + ' s';
   };
 }
+// (5.44.1) While one of them runs, they are not there to press: signed in,
+// withPin runs at once, so a second click on Optimise (or Back up) started a
+// second VACUUM (a second copy) beside the first, and a Check pressed during
+// either wrote its line over the other's in the one box they share.
+var DB_JOBS = ['db-check', 'db-optimize', 'db-backup', 'db-prune', 'stale-scan'];
+function dbJobsBusy(button, on) {
+  DB_JOBS.forEach(function (id) { var b = $(id); if (b) b.disabled = !!on; });
+  if (button) button.classList.toggle('busy', !!on);
+}
 function dbJob(button, what, blurb, action, describe, prefix) {
+  if (button && button.disabled) return;
   withPin(what, blurb, function (pin) {
     var finish = dbRunStart(what, prefix);
+    dbJobsBusy(button, true);
     return post(action, {pin: pin}).then(function (r) {
+      dbJobsBusy(button, false);
       var text = describe(r);
       finish(true, text);
       return text;
     }, function (e) {
+      dbJobsBusy(button, false);
       finish(false, (e && e.message) || 'failed');
       throw e;
     });
@@ -28720,6 +28734,18 @@ function closeZModal() {
   var back = ZM.from; ZM.from = null;
   if (back && back.focus && document.body.contains(back)) { try { back.focus(); } catch (e) {} }
 }
+/* (5.44.1) What the daemon or root said against what a popup asked, said in
+   the popup itself - which stays open with everything typed in it - rather
+   than only in a toast, gone in seconds, the popup already closed. */
+function zmodalSaid(e, gen) {
+  zoops(e);
+  if (e && e.stopped) return;
+  var body = $('zmodal-body');
+  if (!body || $('zmodal').hidden || (gen !== undefined && gen !== ZM.gen)) return;
+  var p = body.querySelector(':scope > .zm-said');
+  if (!p) { p = el('p', 'note bad zm-said'); body.appendChild(p); }
+  p.textContent = String((e && e.message) || e);
+}
 function zconfirm(title, words, buttonWords, go, danger) {
   zmodal(title, function (body) {
     var p = el('p', 'note');
@@ -28945,8 +28971,22 @@ function fwMark() {
   fwBar();
 }
 function fwBar() {
-  if ($('fw-note')) $('fw-note').textContent = FW.dirty ? 'Unsaved changes' : '';
-  if ($('fw-access-note')) $('fw-access-note').textContent = FW.draft && FW.draft.access_changed ? 'Unsaved changes' : '';
+  if ($('fw-note')) { $('fw-note').textContent = FW.dirty ? 'Unsaved changes' : ''; $('fw-note').className = 'muted small'; }
+  if ($('fw-access-note')) {
+    $('fw-access-note').textContent = FW.draft && FW.draft.access_changed ? 'Unsaved changes' : '';
+    $('fw-access-note').className = 'muted small';
+  }
+}
+/* (5.44.1) A save refused - one that would shut out the address the page is
+   on above all - said beside its Save until something is changed again, not
+   only in a toast gone in seconds while the card went on saying "Unsaved
+   changes" as if nothing had been tried. */
+function fwRefused(id, e) {
+  zoops(e);
+  var n = $(id);
+  if (!n || (e && e.stopped)) return;
+  n.textContent = 'Not saved: ' + String((e && e.message) || e);
+  n.className = 'small bad';
 }
 function fwDirty() { fwMark(); if (FW.last) drawFw(FW.last); }
 function fwAccessSave() {
@@ -28959,7 +28999,7 @@ function fwAccessSave() {
     FW.draft.access_changed = false;
     fwBar();
     loadFw();
-  }, zoops).then(function () { zbusy(b, false); });
+  }, function (e) { fwRefused('fw-access-note', e); }).then(function () { zbusy(b, false); });
 }
 function fwSave() {
   if (!FW.draft) return;
@@ -28971,7 +29011,7 @@ function fwSave() {
       FW.dirty = false;
       fwBar();
       loadFw();
-    }, zoops).then(function () { zbusy($('fw-save'), false); });
+    }, function (e) { fwRefused('fw-note', e); }).then(function () { zbusy($('fw-save'), false); });
   };
   var ask = Promise.resolve(true);
   if (dr.on && !was) {
@@ -29281,7 +29321,7 @@ function fwRuleEdit(d, r) {
           var i = r ? list.findIndex(function (y) { return y.id === r.id; }) : -1;
           if (i >= 0) list[i] = got; else list.push(got);
           closeZModal(); fwDirty();
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });      // (5.44.1) in the popup
       }}], 'medium');
 }
 
@@ -29902,6 +29942,7 @@ function certDownload(d) {
     };
   }, [{words: 'Cancel', close: true},
       {words: 'Download .pem', cls: 'primary', icon: 'download', go: function (b) {
+        var gen = ZM.gen;
         var c = CERT_FORMATS.filter(function (x) { return x.id === pick.fmt; })[0];
         if (!c.key) {
           zbusy(b, true);
@@ -29917,7 +29958,7 @@ function certDownload(d) {
               setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
             } else saveText(name, x.text);
             closeZModal();
-          }).catch(function (e) { zbusy(b, false); zoops(e); });
+          }).catch(function (e) { zbusy(b, false); zmodalSaid(e, gen); });     // (5.44.1) in the popup
           return;
         }
         var pw = f.pw.value || '';
@@ -29935,7 +29976,7 @@ function certDownload(d) {
           if (ex.state === 'failed' || !st.ready) throw new Error(((ex.said || []).join('; ')) || 'it was not handed over');
           closeZModal();
           downloadBehindPin('tls-download&file=' + encodeURIComponent(st.ready.file), st.ready.file);
-        }).catch(function (e) { zbusy(b, false); zoops(e); });
+        }).catch(function (e) { zbusy(b, false); zmodalSaid(e, gen); });     // (5.44.1) in the popup
       }}], 'medium cert-dl');
   var redraw;
   /* (5.42) the second one asked for only while the card has one */
@@ -29956,7 +29997,7 @@ function certProxyName(d) {
         zbusy(b, true);
         tlsDo({action: 'proxy_name', name: box.value.trim()}).then(function (x) {
           toast(x.message, true); closeZModal(); setTimeout(loadWeb, 2500);
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }
 function certExportWait(asked) {
@@ -30183,7 +30224,7 @@ function certRequest(prof) {
         zbusy(b, true);
         tlsDo(Object.assign({action: 'tls_csr'}, certSubjectValues(f))).then(function (x) {
           closeZModal(); loadWeb(); showCsr(x.csr);
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }
 function showCsr(csr) {
@@ -30215,7 +30256,7 @@ function certSelf(d, asked) {
         zbusy(b, true);
         tlsDo(Object.assign({action: 'tls_selfsigned'}, certSubjectValues(f))).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }
 function certPolicy(prof, d) {
@@ -30300,7 +30341,7 @@ function certPolicy(prof, d) {
         tlsDo({action: 'tls_policy', preset: st.preset, protocols: st.protocols,
                             ciphers: String(st.ciphers || '').trim(), dh: st.dh, prefer: st.prefer ? 1 : 0, hsts: st.hsts}).then(function (x) {
           toast(x.message, true); closeZModal(); loadWeb();
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }
 
@@ -30317,6 +30358,10 @@ function acmeWho(t) { return t ? (ACME_WHO[t.target] || t.target) : ''; }
 function loadAcme(quiet) {
   var host = $('ac-host');
   if (!host) return;
+  // (5.44.1) looked at again now and then, as every other pane root looks
+  // after: an order begun by itself (a renewal) or from another page while
+  // this one was open was never seen here until the pane was opened again
+  rootTimer('sys-acme', function () { if (!AC.poll) loadAcme(true); }, 15000);
   if (!isUnlocked()) {
     acPoll(false);
     rootLocked(host, 'An administrator’s to see. The certificate and its key are the house’s own name on the network; ordering one is root’s to put in, asked for by an administrator.', loadAcme);
@@ -30541,7 +30586,7 @@ function acmeNameAsk(t) {
         rootPost('acme-do', {action: 'name', target: t.target, name: f.name.value.trim()}).then(function (x) {
           closeZModal(); AC.d = x; drawAcme(); toast('kept', true);
           forgetSig('settings');
-        }, zoops).then(function () { zbusy(b, false); });
+        }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'narrow');
 }
 
@@ -31145,6 +31190,11 @@ function drawUpWeb(d) {
   var host = $('up-web');
   if (!host) return;
   var w = d.web || {}, o = w.online || {};
+  // (5.44.1) the list of versions open, or one just chosen from it: drawn
+  // again every 8 s with nothing new, the list closed under the pointer
+  var sig = JSON.stringify([w.busy, w.check, w.url, o, !!d.running, !!d.asked]);
+  if (typingIn(host) && UP.webSig === sig) return;
+  UP.webSig = sig;
   var here = esc(o.here || d.version || '?');
   host.innerHTML = '';
   upWebState(w, o);
@@ -31172,10 +31222,14 @@ function drawUpWeb(d) {
   row.appendChild(look);
   if (o.newer && !d.running && !d.asked) {
     var v = String(o.newest.version), vurl = String(o.newest.url || w.url || '');
-    var up = cmdButton('Upgrade to ' + v + ' now', 'play', 'primary');
     // more than one version newer than this one: which of them is chosen
     // here, the newest first; with one, nothing is asked and nothing changes
     var many = (o.newer_list || []).filter(function (x) { return x && x.version; });
+    // (5.44.1) the one chosen stays chosen: every redraw put the newest back
+    // in the list and on the button, and Upgrade went to that one
+    var kept = many.length > 1 && many.filter(function (x) { return x.version === UP.pick; })[0];
+    if (kept) { v = String(kept.version); vurl = String(kept.url || w.url || ''); }
+    var up = cmdButton('Upgrade to ' + v + ' now', 'play', 'primary');
     // (5.44) a version that must be put in on the command line: the band says
     // why and what to run, and Upgrade is not offered for it
     var cliOf = function (ver) {
@@ -31204,6 +31258,7 @@ function drawUpWeb(d) {
       pick.setAttribute('aria-label', 'The version to go to');
       pick.onchange = function () {
         v = pick.value;
+        UP.pick = v;
         vurl = String((many.filter(function (x) { return x.version === v; })[0] || {}).url || w.url || '');
         setButtonIcon(up, 'play', 'Upgrade to ' + v + ' now');
         cliSet();
@@ -31332,8 +31387,10 @@ function drawUpgrade(d) {
     // the button (sent here or fetched; root refuses it from the dashboard)
     if (p.cli && !p.older) pk.appendChild(cliBand(p.cli));
   }
-  $('up-forget').hidden = !d.package || d.running;
-  $('up-start').disabled = !d.package || !d.ready;
+  // (5.44.1) asked and not taken by root yet is under way too: Upgrade was
+  // there to press a second time, and Forget took the package from under root
+  $('up-forget').hidden = !d.package || d.running || !!d.asked;
+  $('up-start').disabled = !d.package || !d.ready || !!d.asked;
   $('up-start').hidden = !!(d.package && d.package.cli && !d.package.older);      // (5.44)
   $('up-start').title = (d.package && d.package.cli) ? d.package.cli.words : '';
   var rd = $('up-ready');
@@ -31591,6 +31648,16 @@ function drawFull(d) {
     if (stuck) says.appendChild(stuck);
   }
   else if (d.status && d.status.state === 'failed') says.appendChild(el('p', 'note bad', (d.status.said || []).join('; ')));
+  // (5.44.1) root busy - a backup being made, asked for on another page or
+  // before a reload, or the nightly one: "Back up the whole installation
+  // now" is not there to press into "root is still busy" (pressed here, it
+  // is held busy by its own press until root is done)
+  var rootBusy = !!(d.busy || d.progress);
+  var mk = $('full-make');
+  if (mk && !mk.classList.contains('busy')) {
+    mk.disabled = rootBusy;
+    mk.title = rootBusy ? 'Root is busy with what was asked a moment ago' : '';
+  }
   var list = d.list || [], newest = list[0];
   var ff = otFacts([['Newest', newest ? ago(newest.ts) : 'none yet'], ['Its size', newest ? sizeText(newest.bytes) : ''],
     ['Kept here', String(list.length)], ['Where', d.dir || '', 'mono']]);
@@ -31622,7 +31689,9 @@ function drawFull(d) {
     };
     // one request to root at a time: while it works on one, the others wait
     // here rather than being pressed into "root is still busy"
-    if (d.busy) [rs, rm].forEach(function (x) { x.disabled = true; x.title = 'Root is busy with what was asked a moment ago'; });
+    // (5.44.1) the download too - root makes the copy - and while root shows
+    // how far it is with a backup as much as while it is asked
+    if (rootBusy) [dl, rs, rm].forEach(function (x) { x.disabled = true; x.title = 'Root is busy with what was asked a moment ago'; });
     [dl, rs, rm].forEach(function (x) { acts.appendChild(x); });
     tr.appendChild(acts);
     return tr;
@@ -31637,6 +31706,7 @@ function fullDownload(file) {
     body.appendChild(zField('Password for the copy', f.pw, 'Not kept anywhere: without it the copy cannot be opened.'));
   }, [{words: 'Cancel', close: true},
       {words: 'Download', cls: 'primary', icon: 'download', go: function (b) {
+        var gen = ZM.gen;
         zbusy(b, true);
         rootPost('fullbackup-do', {action: 'get', file: file, passphrase: f.pw.value || ''}).then(function (x) {
           closeZModal();
@@ -31646,7 +31716,7 @@ function fullDownload(file) {
             downloadBehindPin('fullbackup-download&file=' + encodeURIComponent(d.ready.file), d.ready.file);
             loadFull(true);
           });
-        }).catch(zoops).then(function () { zbusy(b, false); });
+        }).catch(function (e) { zmodalSaid(e, gen); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup while it is open
       }}], 'narrow');
 }
 function fullRestore(file) {
@@ -31686,6 +31756,7 @@ function fullRestoreAsk(info) {
       {words: 'Put it back', cls: 'danger', icon: 'undo', go: function (b) {
         var parts = Object.keys(chosen).filter(function (k) { return chosen[k]._get() && !chosen[k]._input.disabled; });
         if (!parts.length) { toast('choose what to put back', false); return; }
+        var gen = ZM.gen;
         zbusy(b, true);
         rootPost('fullbackup-do', {action: 'restore', file: info.file, parts: parts}).then(function (x) {
           closeZModal();
@@ -31703,7 +31774,7 @@ function fullRestoreAsk(info) {
             loadFull();
             tick(true);
           });
-        }).catch(zoops).then(function () { zbusy(b, false); });
+        }).catch(function (e) { zmodalSaid(e, gen); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup while it is open
       }}], 'medium');
 }
 function fullWire() {
@@ -31919,7 +31990,10 @@ function drawNet(d) {
   var job = d.job || {};
   var busy = job.state && ['asked', 'running', 'rebooting', 'going back', 'trial'].indexOf(job.state) >= 0;
   if (!NETP.dirty || NETP.drawnFor !== String(now.at || '')) {
-    if (!(NETP.dirty && document.activeElement && $('net-form').contains(document.activeElement))) drawNetForm(d, busy);
+    // (5.44.1) a box focused, nothing typed yet, is held too: drawn again
+    // every 6 s, it lost the focus (and an iPad its keyboard) and a list
+    // that was open closed
+    if (!typingIn($('net-form'))) drawNetForm(d, busy);
   }
   drawNetJob(d);
 }
@@ -32026,13 +32100,17 @@ function drawNetForm(d, busy) {
           + (d.trial_min ? ' It waits ' + d.trial_min + ' min to be kept - press Keep it on the banner once it answers there; '
             + 'not kept, the old network comes back by itself.' : '')));
       }, [{words: 'No, leave it', close: true},
-          {words: 'Change it and restart', cls: 'primary', icon: 'power', close: true, go: function () {
+          {words: 'Change it and restart', cls: 'primary', icon: 'power', go: function (b) {
+            // (5.44.1) closed once root has it: a refusal is said in the popup
+            var gen = ZM.gen;
+            zbusy(b, true);
             post('net-do', {action: 'apply', want: w}).then(function () {
+              if (gen === ZM.gen) closeZModal();
               var nw = r.want || {};
               NETP.target = {ip: nw.new_ip || '', old: nw.old_ip || '', host: nw.hostname || '', oldHost: nw.old_hostname || ''};
               toast('Asked - the server does it now', true);
               loadNet(true);
-            }).catch(zoops);
+            }, function (e) { zbusy(b, false); zmodalSaid(e, gen); });
           }}], 'narrow');
     }, function (e) { zbusy(go, false); plan.innerHTML = ''; plan.appendChild(el('p', 'note bad', e.message || String(e))); });
   };
@@ -32055,8 +32133,14 @@ function drawNetJob(d) {
   host.appendChild(el('h3', '', NET_TITLES[job.state] || job.state));
   var words = '';
   if (job.state === 'rebooting' && job.down_at) words = 'restarting: ' + sysSpan(Date.now() / 1000 - job.down_at) + ' so far - a restart takes a minute or two';
-  if (job.state === 'trial' && job.trial_until) words = sysSpan(job.trial_until - Date.now() / 1000 - CHG.skew) + ' left to keep it';
-  host.appendChild(upBar(job.pct || 0, job.state === 'failed' ? 'bad' : (job.state === 'done' ? 'ok' : 'warn'), words, true));
+  if (job.state === 'trial' && job.trial_until) words = netTrialLeft(job.trial_until);
+  var bar = upBar(job.pct || 0, job.state === 'failed' ? 'bad' : (job.state === 'done' ? 'ok' : 'warn'), words, true);
+  // (5.44.1) counted down every second, as the band at the top is
+  if (job.state === 'trial' && job.trial_until && bar.querySelector('.says')) {
+    bar.querySelector('.says').classList.add('net-left');
+    bar.querySelector('.says').dataset.until = job.trial_until;
+  }
+  host.appendChild(bar);
   host.appendChild(sysSteps(job));
   var row = el('div', 'btnrow');
   if (job.state === 'trial') changeTools(row, 'net');
@@ -32323,7 +32407,18 @@ function cliBand(cli) {
     action: 'As root, on the server:', command: cli.command}, {inline: true});
 }
 /* ==== (5.44) end ================================================================= */
+/* (5.44.1) The time a new network has left to be kept, on its card: drawn
+   at each look (every 6 s), it went down in jumps, and at 0 it stood at
+   "0 s left to keep it" while the band above said it was going back. */
+function netTrialLeft(until) {
+  var left = Number(until) - (Date.now() / 1000 + CHG.skew);
+  return left > 0 ? sysSpan(left) + ' left to keep it' : 'not kept in time - the old network comes back now';
+}
 function tickChanges() {
+  Array.prototype.forEach.call(document.querySelectorAll('.net-left'), function (n) {
+    var t = netTrialLeft(n.dataset.until);
+    if (n.textContent !== t) n.textContent = t;
+  });
   Array.prototype.forEach.call(document.querySelectorAll('.change-left'), function (n) {
     var left = Number(n.dataset.until) - (Date.now() / 1000 + CHG.skew);
     var t = left > 0 ? Math.floor(left / 60) + ':' + pad(Math.floor(left % 60)) + ' left' : 'going back now';
@@ -32423,10 +32518,15 @@ function powerAt() {
     body.appendChild(zField('When', inp, 'By this server’s clock and time zone. A month ahead at the most; called off as easily, here.'));
     body.appendChild(zField('What', how));
   }, [{words: 'No, leave it', close: true},
-      {words: 'Plan it', cls: 'primary', icon: 'clock', close: true, go: function () {
+      {words: 'Plan it', cls: 'primary', icon: 'clock', go: function (b) {
+        // (5.44.1) closed once it is planned: a time refused (gone by, more
+        // than a month ahead, a restart under way) is said here, the time kept
+        var gen = ZM.gen;
+        zbusy(b, true);
         post('power-do', {how: how.value, when: inp.value.replace('T', ' ')}).then(function (r) {
+          if (gen === ZM.gen) closeZModal();
           toast(r.message || 'planned', true); loadPower(true);
-        }).catch(zoops);
+        }, function (e) { zbusy(b, false); zmodalSaid(e, gen); });
       }}], 'narrow');
 }
 function drawPowerJob(d) {
@@ -32555,7 +32655,10 @@ function drawNtp(d) {
     src.appendChild(el('p', 'muted small ntp-own', 'Its own /etc/chrony.conf:'));
     src.appendChild(el('pre', 'zlines', nd.own.join('\n')));
   }
-  if (!NTPP.dirty) drawNtpConf(d);
+  // (5.44.1) nor while a box of it has the focus, nothing typed yet: drawn
+  // again every 10 s, the box focused (the keyboard up on an iPad) or the
+  // time zone's list open was taken away from under the finger
+  if (!NTPP.dirty && !typingIn($('ntp-conf'))) drawNtpConf(d);
 }
 function drawNtpConf(d) {
   var host = $('ntp-conf'), c = d.conf || {};
@@ -32619,7 +32722,7 @@ function drawNtpConf(d) {
   var zones = (d.zones || []).map(function (z) { return [z, z]; });
   f.tz = zones.length ? zSelect([['', '(as it is)']].concat(zones), c.timezone || '') : zText(c.timezone || '', 'Europe/Prague', 'mono');
   host.appendChild(zField('Time zone', f.tz, 'Of the machine: the logs, the times on these pages - and every schedule, sunrise scene and backup hour of the house, which run on its clock and zone.'));
-  host.addEventListener('input', dirty); host.addEventListener('change', dirty);
+  host.oninput = host.onchange = dirty;       // (5.44.1) once, not one more listener every 10 s
   var save = cmdButton('Save the time servers', 'save', 'primary');
   var said = el('span', 'muted small');
   save.onclick = function () {
@@ -32931,8 +33034,16 @@ function rbGuide() {
 }
 function rbWatch(then) {
   if (RB.poll) return;
+  // (5.44.1) taken at once, not at the first answer: the pane shown asks
+  // twice as it opens, and each began a watch of its own - every look
+  // asked twice. One look lost on the way (a 502 from nginx, the network
+  // gone a moment) ended the watch for good: the bar stood still and the
+  // buttons stayed off until a reload. Asked again, for a minute and a half.
+  RB.poll = true;
+  var lost = 0;
   var step = function () {
     rootPost('rbackup-do', {action: 'job'}).then(function (x) {
+      lost = 0;
       var j = x.job || {};
       var g = $('rb-going');
       if (g) {
@@ -32947,7 +33058,10 @@ function rbWatch(then) {
       else if (j.result && j.what === 'backup') toast(j.result.ok ? 'the backup went to every destination' : 'the backup did not reach every destination', !!j.result.ok);
       else if (j.result && j.what === 'verify') toast(j.result.ok ? 'the newest backup can be put back' : 'the newest backup is NOT GOOD: ' + (j.result.error || 'see Backups tried'), !!j.result.ok);
       loadRb(true);
-    }).catch(function () { RB.poll = null; });
+    }, function (e) {                    // the ask itself, not what was done with its answer
+      if (++lost > 30 || (e && e.status === 403)) { RB.poll = null; return; }
+      RB.poll = setTimeout(step, 3000);
+    });
   };
   step();
 }
@@ -33208,7 +33322,7 @@ function rbEdit(t) {
       {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
         zbusy(b, true);
         rbSaveForm(cur).then(function () { zbusy(b, false); toast('saved', true); closeZModal(); loadRb(true); })
-          .catch(function (e) { zbusy(b, false); zoops(e); });
+          .catch(function (e) { zbusy(b, false); zmodalSaid(e); });     // (5.44.1) in the popup
       }}], 'large rbx');
 }
 function rbFields(kind) {
