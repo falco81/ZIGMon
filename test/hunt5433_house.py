@@ -31,7 +31,10 @@ import zigmon                                            # noqa: E402
 
 zigmon.load_config()
 zigmon.CONFIG.update({'db_file': str(W / 'zigmon.db'), 'api_port': 19510, 'token_file': str(W / 'token'),
-                      'plugs': [], 'sensors': [], 'backup_dir': str(W / 'backups'),
+                      # two sockets on ports nothing listens on: boxes gone away
+                      'plugs': [{'name': 'Lamp', 'host': '127.0.0.1:19512'},
+                                {'name': 'Heater', 'host': '127.0.0.1:19513', 'host_state': 'optional'}],
+                      'sensors': [], 'backup_dir': str(W / 'backups'),
                       'latitude': 50.08, 'longitude': 14.42, 'weather': False,
                       'binding_debounce_ms': 400, 'state_dir': str(W)})
 d = zigmon.Daemon()
@@ -232,6 +235,24 @@ check(first == 100.0 and second == 800.0,
       'at 23:30 on the 25-hour day, today\'s energy was taken as a finished day and kept: %r then %r'
       % (first, second))
 print('the night the clocks go back, today is not counted as over an hour early')
+
+# -- 11. a socket that stops answering is shown as not answering --------------------------
+for name in ('Lamp', 'Heater'):
+    p = d.plugs[name]
+    d._record_plug(p, {'id': 0, 'output': True, 'apower': 5.0}, {}, time.time())    # it answered once
+    for _ in range(3):
+        d.poll_plug(p, force=True)                                                # ...and then never
+lamp = d.describe(d.store.device('plug:Lamp'), d.live.get('plug:Lamp'))
+check(not lamp['online'] and lamp['level'] == 'crit' and 'not answering' in lamp['reasons'],
+      'a socket that stopped answering three readings ago was still "online" and "%s" in the status: %r'
+      % (lamp['level'], lamp['reasons']))
+heater = d.describe(d.store.device('plug:Heater'), d.live.get('plug:Heater'))
+check(heater['unplugged'] and heater['level'] == 'ok',
+      'an optional socket that stopped answering was never shown as unplugged: %r' % heater['reasons'])
+d.handle_plug_push([d.plugs['Lamp']], ['status', 'switch:0'], json.dumps({'id': 0, 'output': False}).encode())
+check((d.live.get('plug:Lamp') or {}).get('availability') == 'online',
+      'a socket that pushed its state over MQTT stayed "not answering" until the next reading')
+print('a socket that stops answering is "not answering" in the status, and back the moment it speaks')
 
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_house: %s' % ('%d failed' % len(bad) if bad else 'all good'))

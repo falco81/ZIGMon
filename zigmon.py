@@ -10214,6 +10214,9 @@ class Daemon(object):
             entry = self.live.get(p.device_id)
             if entry:
                 entry['ts'] = now
+                if 'output' in value and entry.get('availability') == 'offline':
+                    entry['availability'] = 'online'       # (5.43.3) it is talking: it is there
+                    entry['rev'] = (entry.get('rev') or 0) + 1
             # The rules must hear this too. They were told only by the reading
             # that comes round every fifteen seconds, so the box's own push -
             # the fast road, the one that says a wall button was pressed the
@@ -20076,6 +20079,14 @@ class Daemon(object):
             else:
                 self.store.add_event('plug', 'lost contact: %s' % e, 'warn', p.device_id)
             self.store.store_snapshot(p.device_id, int(now), {}, 'offline')
+            # (5.43.3) ...and in the house's memory, which is what the status
+            # is built from: only the database row was told, so a socket that
+            # had stopped answering stayed "online" and "ok" in the device
+            # list, the counts and {attention_list} - and an optional one
+            # was never shown as unplugged - until the daemon restarted
+            entry = self.live.setdefault(p.device_id, {'payload': {}, 'ts': None, 'availability': None})
+            entry['availability'] = 'offline'
+            entry['rev'] = (entry.get('rev') or 0) + 1
             self.bump()
         log('plug %s poll failed: %s' % (p.name, e),
             'warn' if p.failures <= 3 and not p.optional else 'debug')
