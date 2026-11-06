@@ -2083,7 +2083,18 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.44.2**
+Current version: **5.44.3**
+
+5.44.3 — the item about root's parts goes with the version it was about.
+
+* After an upgrade the item "zigmon X is running, but the parts root installs
+  are from before it" raised by the version before stood on, with that
+  version's words, for the first minutes after the start (the parts are not
+  looked at then, while things settle) - now it is taken back at once, and
+  looked at again in five minutes.
+* *Look again* looks at once - in those first minutes too; it waited for them.
+
+`test/review5442.py`; these checks fail on 5.44.2.
 
 5.44.2 — install.sh kept its own version.
 

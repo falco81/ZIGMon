@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
@@ -76,6 +77,35 @@ with tempfile.TemporaryDirectory(prefix='zigmon-review5442-parts-') as t:
     got = zigmon.Daemon.root_parts_check(me) or {}
     check('Not as this version ships them: zigmon-root.path' in got.get('why', ''),
           'a part that differs is not named: %r' % got.get('why'))
+
+# ---- after the upgrade: the old version's item goes at once, Look again looks -------
+import shutil                                            # noqa: E402
+W2 = Path(tempfile.mkdtemp(prefix='zigmon-review5442-d-'))
+try:
+    zigmon.load_config()
+    zigmon.CONFIG.update({'db_file': str(W2 / 'z.db'), 'api_port': 0, 'token_file': str(W2 / 'tok'),
+                          'pin': '', 'plugs': [], 'sensors': [], 'mqtt_host': '', 'log_file': '',
+                          'state_dir': str(W2)})
+    d = zigmon.Daemon()
+    d.started = time.time()                              # the first minute after a start
+    d.notice_raise('root-parts', 'warn', 'zigmon 5.44.1 is running, but the parts root installs are from before it',
+                   'install.sh last ran for zigmon 9.8 (Olive Jaguar)', stamp='5.44.1|9.8 (Olive Jaguar)|1')
+    d.upgrade_state_light = lambda: False
+    looked = []
+    d.root_parts_check = lambda: looked.append(1) or {'stale': False, 'parts': []}
+    d.notices_tick()
+    check('root-parts' not in d.notices_all(),
+          'the item raised by 5.44.1 still stands over %s in the minutes after the start' % zigmon.__version__)
+    check(not looked, 'the parts were looked at in the first minutes after a start, unasked')
+    # Look again: at once, those minutes too
+    d.notice_raise('root-parts', 'warn', 'zigmon %s is running, but ...' % zigmon.__version__, 'why',
+                   stamp='%s|9.8 (Olive Jaguar)|1' % zigmon.__version__)
+    d._parts_force = True
+    d.notices_tick()
+    check(looked and 'root-parts' not in d.notices_all(),
+          'Look again did not look in the first minutes after a start: %r' % (looked,))
+finally:
+    shutil.rmtree(str(W2), ignore_errors=True)
 
 print('review5442: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 sys.exit(1 if bad else 0)

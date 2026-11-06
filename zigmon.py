@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.44.2'
+__version__ = '5.44.3'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -19217,10 +19217,19 @@ class Daemon(object):
         # the parts root installs older than this version (5.44): checked at
         # most every five minutes, and not in the first five after a start or
         # while an upgrade goes on - install.sh restarts zigmon before it ends
-        if time.time() - float(self.__dict__.get('_parts_at') or 0) >= self.ROOT_PARTS_EVERY_S:
+        # (5.44.2) one raised for another version than the one running is
+        # about a version that is gone: taken back at once, not left saying
+        # "5.44.1 is running" over 5.44.2 until the first look after the start
+        kept = self.notices_all().get('root-parts')
+        if isinstance(kept, dict) and not str(kept.get('stamp') or '').startswith(__version__ + '|') \
+                and str(kept.get('stamp') or '') != __version__:
+            self.notice_clear('root-parts', 'taken back')
+        force = bool(self.__dict__.pop('_parts_force', False))
+        if force or time.time() - float(self.__dict__.get('_parts_at') or 0) >= self.ROOT_PARTS_EVERY_S:
             self._parts_at = time.time()
             got = None
-            if time.time() - float(getattr(self, 'started', 0) or 0) >= self.ROOT_PARTS_SETTLE_S \
+            # Look again (force) looks at once, the five minutes after a start too
+            if (force or time.time() - float(getattr(self, 'started', 0) or 0) >= self.ROOT_PARTS_SETTLE_S) \
                     and not self.upgrade_state_light():
                 got = self.root_parts_check()
             if got and got.get('stale'):
@@ -43676,7 +43685,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     'the command line' if getattr(REQUEST_CALLER, 'cli', False) else who))
                 return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'marked done'}
             if act == 'look':
-                d._parts_at = 0                          # the parts root installs looked at now
+                d._parts_force = True                    # the parts root installs looked at now (5.44.2: at once)
                 d.notices_tick()
                 return {'notices': d.notices_view(), 'done': d.notices_done_view(), 'message': 'looked again'}
             if act in ('', 'list'):
