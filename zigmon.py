@@ -7053,6 +7053,13 @@ class Storage(object):
         Measured at most every 15 s: the probe is a real commit under the
         store lock, and /api/health is polled on every refresh of the
         Control tab - nothing that automations should ever queue behind."""
+        result = dict(self._latency_probe())
+        trouble = self.write_trouble
+        if trouble:
+            result['writes_failing'] = dict(trouble)     # (5.44.1) see _writer_failed
+        return result
+
+    def _latency_probe(self):
         at, cached = self._latency_cache
         if cached is not None and time.time() - at < 15:
             return cached
@@ -7060,7 +7067,16 @@ class Storage(object):
             # busy with something long: the last figures are far better than
             # holding up the page that asked for them
             return cached if cached is not None else {'read_ms': None, 'write_ms': None}
+        read_ms = write_ms = None
+        failed = ''
         try:
+            # (5.44.1) a probe, not a wait: with the file held by another
+            # program (a sqlite3 shell, a VACUUM from the command line) it
+            # waited the connection's 15 s, under the lock, and then raised -
+            # and so did /api/health, which is what the upgrade asks of a new
+            # version and `zigmon check` of a running one. A full disk raised
+            # at once. Said in the answer instead.
+            self.db.execute('PRAGMA busy_timeout=250')
             t0 = time.perf_counter()
             self.db.execute('SELECT value FROM meta WHERE key=?', ('schema',)).fetchone()
             read_ms = (time.perf_counter() - t0) * 1000
@@ -7070,9 +7086,18 @@ class Storage(object):
             self.db.commit()
             self._meta_raw['_latency_probe'] = stamp     # see _warm_meta: memory holds every row
             write_ms = (time.perf_counter() - t0) * 1000
+        except sqlite3.Error as e:
+            failed = str(e)[:200]
         finally:
+            try:
+                self.db.execute('PRAGMA busy_timeout=15000')
+            except sqlite3.Error:
+                pass
             self.lock.release()
-        result = {'read_ms': round(read_ms, 2), 'write_ms': round(write_ms, 2)}
+        result = {'read_ms': round(read_ms, 2) if read_ms is not None else None,
+                  'write_ms': round(write_ms, 2) if write_ms is not None else None}
+        if failed:
+            result['write_error'] = failed
         self._latency_cache = (time.time(), result)
         return result
 
@@ -7588,13 +7613,50 @@ class Storage(object):
                     break
                 try:
                     fn(*args)
+                    if self.write_trouble:
+                        self._writer_recovered()
                 except Exception as e:
-                    try:
-                        log('deferred write failed: %s' % e, 'error')
-                    except Exception:
-                        pass
+                    self._writer_failed(e)
                 finally:
                     self._writer_done()
+
+    # (5.44.1) what the writer could not write: {since, last, error, lost},
+    # None while every write lands
+    write_trouble = None
+
+    def _writer_failed(self, e):
+        """A queued write that did not land (5.44.1). A full disk, a file
+        held by another program or a broken one fails every write in the
+        queue - a line of the log for each of them, ten a second on a busy
+        house, into the journal of the same full disk; and nothing said so
+        anywhere but there. Now the first is said, then once a minute how
+        many since; the health answer, the machine's own alerts and the page
+        carry it until a write lands again."""
+        now = time.time()
+        words = str(e)[:200]
+        t = self.write_trouble
+        if t is None:
+            t = self.write_trouble = {'since': int(now), 'last': int(now), 'error': words, 'lost': 0,
+                                      'said_at': 0.0, 'said_lost': 0}
+        t['last'], t['error'] = int(now), words
+        t['lost'] += 1
+        if now - t['said_at'] >= 60:
+            more = t['lost'] - t['said_lost']
+            t['said_at'], t['said_lost'] = now, t['lost']
+            try:
+                log('the database refuses writes: %s - %d write(s) lost%s; switching and the rules go on'
+                    % (words, more, ' in the last minute' if t['lost'] > more else ''), 'error')
+            except Exception:
+                pass
+
+    def _writer_recovered(self):
+        t, self.write_trouble = self.write_trouble, None
+        if t:
+            try:
+                log('the database takes writes again, after %s - %d write(s) were lost'
+                    % (human_span(time.time() - t['since']), t['lost']), 'warn')
+            except Exception:
+                pass
 
     def flush(self, timeout=30.0):
         """Wait for the queued writes to land - before a backup or a VACUUM,
@@ -18111,9 +18173,43 @@ class Daemon(object):
         try:
             with open(str(self.upgrade_dir('status.json'))) as f:
                 got = json.load(f)
-            return got if isinstance(got, dict) else {}
         except (OSError, ValueError):
             return {}
+        if not isinstance(got, dict):
+            return {}
+        if got.get('state') == 'running' and self._upgrade_helper_gone(got):
+            # (5.44.1) root's helper is not there any more and never said how
+            # it ended - killed, or the power went in the middle: it was
+            # "running" for half an hour, the house in maintenance with it
+            got = dict(got, state='failed', rc=-3, said=(
+                'the upgrade stopped half way and never said how it ended (the helper was killed, or '
+                'the machine lost power): zigmon %s runs now - see the log of the upgrade below, and '
+                'send the package again to put it in' % __version__))
+        return got
+
+    def _upgrade_helper_gone(self, st):
+        """Whether the helper a 'running' status names has gone: its process
+        is not there, or the machine has started since it was written - and
+        no request waits that would start it again."""
+        if self.upgrade_dir('request.json').exists():
+            return False
+        try:
+            pid = int(st.get('pid') or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            except OSError:
+                pass                                # there, and root's
+        try:
+            with open('/proc/stat') as f:
+                booted = next((float(x.split()[1]) for x in f if x.startswith('btime ')), 0.0)
+        except (OSError, ValueError, IndexError):
+            booted = 0.0
+        return bool(booted) and float(st.get('at') or 0) < booted
 
     def upgrade_state(self):
         pkg = self.upgrade_package()
@@ -20801,9 +20897,20 @@ class Daemon(object):
                 # that, and the house is then whole.
                 gap = min(gap, 1.0 / max(1, len(jobs)))
             threads = []
+            # (5.44.1) a box still busy with the poll of a round before is
+            # left to it, and the round waits for its boxes no longer than
+            # the round itself. It waited up to a minute for each: one box
+            # answering a byte at a time (or a dozen seconds an answer, on
+            # bad Wi-Fi) held every other box's reading for as long - their
+            # watts, their state as the house knows it, the rules on them.
+            busy = self.__dict__.setdefault('_poll_busy', {})
             for i, (fn, dev, kind) in enumerate(jobs):
                 if self._stop.is_set():
                     break
+                key = (kind, str(dev.cfg.get('host') or dev.name) if kind != 'sensor' else dev.name)
+                before = busy.get(key)
+                if before is not None and before.is_alive():
+                    continue
                 if i and gap > 0.05:
                     self._stop.wait(gap)
                 def run(fn=fn, dev=dev, kind=kind):
@@ -20813,9 +20920,13 @@ class Daemon(object):
                         log('%s %s: %s' % (kind, dev.name, e), 'error')
                 t = threading.Thread(target=run, name='poll-' + dev.name, daemon=True)
                 t.start()
+                busy[key] = t
                 threads.append(t)
+            for key in [k for k, t in busy.items() if not t.is_alive()]:
+                busy.pop(key, None)
+            until = round_started + max(interval, 5)
             for t in threads:
-                t.join(60)
+                t.join(max(0.0, until - time.time()))
             self._polled_once = True
             self._stop.wait(max(0.5, interval - (time.time() - round_started)))
 
@@ -23349,6 +23460,14 @@ class Daemon(object):
     def host_trouble(self):
         """What is wrong with the machine zigmon runs on: [(key, words)]."""
         out = []
+        # (5.44.1) the database refusing writes is said whatever the disk's
+        # free space: a file held by another program or a broken one says
+        # nothing there, and the event that would say it cannot be written
+        t = getattr(self.store, 'write_trouble', None)
+        if t:
+            out.append(('database', 'the database has refused every write since %s (%s): %d lost so far - '
+                                    'the house is still switched, nothing new is recorded'
+                        % (time.strftime('%H:%M', time.localtime(t['since'])), t['error'], t['lost'])))
         pct = float(CONFIG.get('alert_disk_free_pct') or 0)
         if pct > 0:
             try:
@@ -24371,17 +24490,28 @@ class Daemon(object):
         for sch in self.schedules():
             if not sch.get('enabled', True) or weekday not in (sch.get('days') or []):
                 continue
-            at = sch['at']
-            m = re.match(r'^(sunrise|sunset)([+-]\d{1,3})?$', at)
-            if m:
-                if CONFIG.get('latitude') is None or CONFIG.get('longitude') is None:
-                    continue
-                base = sun_minutes(float(CONFIG['latitude']), float(CONFIG['longitude']), now, sunset=m.group(1) == 'sunset')
-                if base is None:
-                    continue
-                target_minute = (base + int(m.group(2) or 0)) % 1440
-            else:
-                target_minute = hhmm_minutes(at)
+            try:
+                # (5.44.1) one schedule that does not read - its time or its
+                # target missing, from an older version or a backup put back -
+                # is passed over: it raised out of this, after the minute was
+                # marked looked at, and every schedule of every minute after
+                # it did nothing for as long as it was there
+                at = str(sch['at'])
+                str(sch['target'])
+                m = re.match(r'^(sunrise|sunset)([+-]\d{1,3})?$', at)
+                if m:
+                    if CONFIG.get('latitude') is None or CONFIG.get('longitude') is None:
+                        continue
+                    base = sun_minutes(float(CONFIG['latitude']), float(CONFIG['longitude']), now,
+                                       sunset=m.group(1) == 'sunset')
+                    if base is None:
+                        continue
+                    target_minute = (base + int(m.group(2) or 0)) % 1440
+                else:
+                    target_minute = hhmm_minutes(at)
+            except Exception as e:                      # noqa: BLE001
+                self._beat_said('the schedule %s' % sch.get('id'), e)
+                continue
             if current_minute < target_minute or current_minute - target_minute > late_ok:
                 continue                     # not due yet, or the window to catch up (4 min) has passed
             due.append((target_minute, sch, at))
@@ -39551,163 +39681,175 @@ class Daemon(object):
         every reading while it stays true; the cooldown guards against a value
         that dances around the line."""
         for r in self.rules():
-            if not r.get('enabled', True):
-                # switched off: what it remembered is forgotten, as for a rule
-                # outside its hours - a door alarm switched back on found
-                # "already open" and said nothing at the next opening
-                rt = self.rule_runtime.get(r['id'])
-                if rt is not None and (rt.get('holds') is not None or 'since' in rt):
-                    rt['holds'] = None
-                    rt.pop('since', None)
-                continue
-            if gated is not None and bool(str(r.get('when') or '').strip()) != gated:
-                continue                     # the other worker's rules
-            mine = r['device'] in (device_id, name)
-            second = bool(r.get('device2')) and r['device2'] in (device_id, name)
-            third_src = bool(r.get('device3')) and r['device3'] in (device_id, name)
-            if not mine and not second and not third_src:
-                continue
-            if not self.rule_window_active(r) or not self.presence_allows(r):
-                # Outside its hours, or the house is not as the rule asks.
-                # Nothing fires - and what the rule remembers of the reading
-                # before is forgotten, because it stopped being watched. It was
-                # kept: an "away" alarm saw movement, the owner came home, the
-                # PIR went quiet while they were in (and that reading was never
-                # looked at), and the next movement after they left found
-                # "already true" and raised nothing. A burglar after every
-                # homecoming went unannounced until a quiet reading happened to
-                # arrive while the house was empty.
-                rt = self.rule_runtime.get(r['id'])
-                if rt is not None:
-                    rt['holds'] = None
-                    rt.pop('since', None)
-                continue
-            reading = values.get(r['key']) if mine else self.latest_value(r['device'], r['key'])
-            if reading is not None:
-                reading = self._effective_reading(r, reading)
-            paired = bool(r.get('device2')) and bool(r.get('key2'))
-            if reading is None and not (paired and r.get('combine') == 'or'):
-                continue                     # nothing to compare, and no other side to save it
-            rt = self.rule_runtime.setdefault(r['id'], {'holds': None, 'fired': 0.0, 'reading': None})
-            rt['reading'] = reading
-            # the way back of a hysteresis pair folded into one rule
-            back_op = {'>=': '<=', '<=': '>=', '>': '<', '<': '>'}.get(r.get('op'))
-            if r.get('back') is not None and back_op and reading is not None and self._rule_holds(
-                    back_op, reading, r['back']):
-                if rt.get('back_done') is not True:
-                    rt['back_done'] = True
-                    rt['holds'] = False
-                    rt.pop('since', None)
-                    opposite = 'off' if r['do'] == 'on' else 'on'
-                    origin = '%s %s %g back past %g' % (name, r['key'], reading, r['back'])
-                    for target in self._binding_targets(r['plug']):
-                        pretty = self.target_label(r['plug'])
-                        if self._trial_act('rules', r, target, opposite, 'rule: ' + origin, label=pretty):
-                            continue
-                        self._fire_target(target, opposite, 'rule: ' + origin, honour_hold=True)   # (5.44) first
-                        log('rule back: %s -> %s %s' % (origin, pretty, opposite))
-                        self.store.add_event('rule', '%s: %s %s' % (origin, pretty, opposite), 'info', device_id)
-                continue
-            holds_first = reading is not None and self._rule_holds(r['op'], reading, r['value'])
-            holds_second = None
-            other = None
-            if paired:
-                other = values.get(r['key2']) if second else None
-                if other is None:
-                    other = self.latest_value(r['device2'], r['key2'])
-                holds_second = other is not None and self._rule_holds(r['op2'], other, r['value2'])
-                holds = (holds_first or holds_second) if r.get('combine') == 'or' else (holds_first and holds_second)
-            else:
-                holds = holds_first
-            if r.get('device3') and r.get('key3'):
-                # (5.43.3) the third side's own report is read from what it
-                # said, as the second's is: the house's memory of it is written
-                # by the broker thread just AFTER this reading was handed over,
-                # so a rule woken by the third sensor read that sensor's OLD
-                # value - "hall empty AND door open AND no motion" never fired
-                # when the last of the three to change was the third.
-                third = values.get(r['key3']) if third_src else None
-                if third is None:
-                    third = self.latest_value(r['device3'], r['key3'])
-                holds_third = third is not None and self._rule_holds(r['op3'], third, r['value3'])
-                holds = (holds or holds_third) if r.get('combine3') == 'or' else (holds and holds_third)
-            was = rt['holds']
-            rt['holds'] = holds
-            if not holds:
+            # (5.44.1) each rule on its own: one that raised - a value of a
+            # kind its reading is not, a number saved as text by an older
+            # version or a restored backup - ended the walk, and every rule
+            # after it in the list did nothing for that report, the motion
+            # light among them, for as long as the odd one was there
+            try:
+                self._fire_rule(r, device_id, name, values, gated)
+            except Exception as e:                      # noqa: BLE001
+                self._beat_said('the rule %s' % (r.get('id') if isinstance(r, dict) else '?'), e)
+
+    def _fire_rule(self, r, device_id, name, values, gated):
+        """One rule against one report: see fire_rules."""
+        if not r.get('enabled', True):
+            # switched off: what it remembered is forgotten, as for a rule
+            # outside its hours - a door alarm switched back on found
+            # "already open" and said nothing at the next opening
+            rt = self.rule_runtime.get(r['id'])
+            if rt is not None and (rt.get('holds') is not None or 'since' in rt):
+                rt['holds'] = None
                 rt.pop('since', None)
-                rt['first'], rt['second'] = holds_first, holds_second
-                if r['id'] in self.rule_waiting:
-                    # an action put off for later, and the reason for it has
-                    # gone: somebody moved again before the light went out
-                    gone = self.rule_waiting.pop(r['id'], None)
-                    self.debug('rule: %s called off - %s is not true any more'
-                               % (gone['origin'] if gone else r['id'], r['key']))
-                    self.bump()
-                continue
-            # OR is two ways for the same thing to happen, and each of them is
-            # its own event: two motion sensors covering a hallway should both
-            # be heard, not only whichever tripped first while the other was
-            # still occupied.
-            if paired and r.get('combine') == 'or':
-                fresh = (holds_first and not rt.get('first')) or (holds_second and not rt.get('second'))
-            else:
-                fresh = was is not True
+            return
+        if gated is not None and bool(str(r.get('when') or '').strip()) != gated:
+            return                     # the other worker's rules
+        mine = r['device'] in (device_id, name)
+        second = bool(r.get('device2')) and r['device2'] in (device_id, name)
+        third_src = bool(r.get('device3')) and r['device3'] in (device_id, name)
+        if not mine and not second and not third_src:
+            return
+        if not self.rule_window_active(r) or not self.presence_allows(r):
+            # Outside its hours, or the house is not as the rule asks.
+            # Nothing fires - and what the rule remembers of the reading
+            # before is forgotten, because it stopped being watched. It was
+            # kept: an "away" alarm saw movement, the owner came home, the
+            # PIR went quiet while they were in (and that reading was never
+            # looked at), and the next movement after they left found
+            # "already true" and raised nothing. A burglar after every
+            # homecoming went unannounced until a quiet reading happened to
+            # arrive while the house was empty.
+            rt = self.rule_runtime.get(r['id'])
+            if rt is not None:
+                rt['holds'] = None
+                rt.pop('since', None)
+            return
+        reading = values.get(r['key']) if mine else self.latest_value(r['device'], r['key'])
+        if reading is not None:
+            reading = self._effective_reading(r, reading)
+        paired = bool(r.get('device2')) and bool(r.get('key2'))
+        if reading is None and not (paired and r.get('combine') == 'or'):
+            return                     # nothing to compare, and no other side to save it
+        rt = self.rule_runtime.setdefault(r['id'], {'holds': None, 'fired': 0.0, 'reading': None})
+        rt['reading'] = reading
+        # the way back of a hysteresis pair folded into one rule
+        back_op = {'>=': '<=', '<=': '>=', '>': '<', '<': '>'}.get(r.get('op'))
+        if r.get('back') is not None and back_op and reading is not None and self._rule_holds(
+                back_op, reading, r['back']):
+            if rt.get('back_done') is not True:
+                rt['back_done'] = True
+                rt['holds'] = False
+                rt.pop('since', None)
+                opposite = 'off' if r['do'] == 'on' else 'on'
+                origin = '%s %s %g back past %g' % (name, r['key'], reading, r['back'])
+                for target in self._binding_targets(r['plug']):
+                    pretty = self.target_label(r['plug'])
+                    if self._trial_act('rules', r, target, opposite, 'rule: ' + origin, label=pretty):
+                        continue
+                    self._fire_target(target, opposite, 'rule: ' + origin, honour_hold=True)   # (5.44) first
+                    log('rule back: %s -> %s %s' % (origin, pretty, opposite))
+                    self.store.add_event('rule', '%s: %s %s' % (origin, pretty, opposite), 'info', device_id)
+            return
+        holds_first = reading is not None and self._rule_holds(r['op'], reading, r['value'])
+        holds_second = None
+        other = None
+        if paired:
+            other = values.get(r['key2']) if second else None
+            if other is None:
+                other = self.latest_value(r['device2'], r['key2'])
+            holds_second = other is not None and self._rule_holds(r['op2'], other, r['value2'])
+            holds = (holds_first or holds_second) if r.get('combine') == 'or' else (holds_first and holds_second)
+        else:
+            holds = holds_first
+        if r.get('device3') and r.get('key3'):
+            # (5.43.3) the third side's own report is read from what it
+            # said, as the second's is: the house's memory of it is written
+            # by the broker thread just AFTER this reading was handed over,
+            # so a rule woken by the third sensor read that sensor's OLD
+            # value - "hall empty AND door open AND no motion" never fired
+            # when the last of the three to change was the third.
+            third = values.get(r['key3']) if third_src else None
+            if third is None:
+                third = self.latest_value(r['device3'], r['key3'])
+            holds_third = third is not None and self._rule_holds(r['op3'], third, r['value3'])
+            holds = (holds or holds_third) if r.get('combine3') == 'or' else (holds and holds_third)
+        was = rt['holds']
+        rt['holds'] = holds
+        if not holds:
+            rt.pop('since', None)
             rt['first'], rt['second'] = holds_first, holds_second
-            rt['back_done'] = False
-            if fresh or 'since' not in rt:
-                rt.setdefault('since', time.time())
-            wait_s = int(r.get('for_s') or 0)
-            if wait_s:
-                if time.time() - rt['since'] < wait_s:
-                    continue                 # not held long enough; the ticker finishes it
-                if rt.get('for_fired') == rt['since']:
-                    continue                 # this stretch already fired
-            elif not fresh:
-                continue
-            now = time.time()
-            later = int(r.get('after_s') or 0)
-            # A rule that waits is held back by its cooldown when it ACTS
-            # (_rule_act), not when it is armed: stamped here, a wait called
-            # off by a movement and armed again inside the cooldown was
-            # refused, the edge was spent, and the light never went off.
-            if not later and now - rt['fired'] < int(r.get('cooldown_s') or 0):
-                continue
-            # The hourly cap counts what happens, not what is armed: somebody
-            # at a desk moving every couple of minutes armed and cancelled
-            # the same wait three times and then met "max per hour" without
-            # anything having been switched at all.
-            if not later and self._rate_limited(r, rt):
-                continue
-            if not later:
-                rt['fired'] = now
-            if wait_s:
-                rt['for_fired'] = rt['since']
-            if paired and second and not mine and holds_second:
-                trip_key, trip_value, trip_op, trip_limit = r['key2'], other, r['op2'], r['value2']
-            else:
-                trip_key, trip_value, trip_op, trip_limit = r['key'], reading, r['op'], r['value']
-            origin = '%s %s %s %s %g' % (name, trip_key,
-                                         ('%g' % trip_value) if trip_value is not None else '?',
-                                         trip_op, trip_limit)
-            facts = {'device': name, 'key': trip_key, 'value': trip_value,
-                     'rule': '%s %s %s %g' % (name, trip_key, r['op'], r['value']),
-                     'threshold': r['value'], 'compare': r['op'], 'action': r['do']}
-            after_s = int(r.get('after_s') or 0)
-            if after_s:
-                # Not now: in a while, and only if it is still true then. A
-                # PIR holds its own occupancy for a minute or two after the
-                # last movement and then says 0; the light should go off some
-                # time after that, and not at all if somebody moves again in
-                # between. The waiting is started again on every fresh trip,
-                # so it is always counted from the last one.
-                self.rule_waiting[r['id']] = {'due': time.time() + after_s, 'origin': origin,
-                                              'facts': facts, 'device_id': device_id,
-                                              'do': r['do'], 'at': time.time()}
-                self.debug('rule: %s -> %s %s in %s' % (origin, self.target_label(r['plug']),
-                                                        r['do'], human_span(after_s)))
+            if r['id'] in self.rule_waiting:
+                # an action put off for later, and the reason for it has
+                # gone: somebody moved again before the light went out
+                gone = self.rule_waiting.pop(r['id'], None)
+                self.debug('rule: %s called off - %s is not true any more'
+                           % (gone['origin'] if gone else r['id'], r['key']))
                 self.bump()
-                continue
-            self._rule_act(r, origin, facts, device_id)
+            return
+        # OR is two ways for the same thing to happen, and each of them is
+        # its own event: two motion sensors covering a hallway should both
+        # be heard, not only whichever tripped first while the other was
+        # still occupied.
+        if paired and r.get('combine') == 'or':
+            fresh = (holds_first and not rt.get('first')) or (holds_second and not rt.get('second'))
+        else:
+            fresh = was is not True
+        rt['first'], rt['second'] = holds_first, holds_second
+        rt['back_done'] = False
+        if fresh or 'since' not in rt:
+            rt.setdefault('since', time.time())
+        wait_s = int(r.get('for_s') or 0)
+        if wait_s:
+            if time.time() - rt['since'] < wait_s:
+                return                 # not held long enough; the ticker finishes it
+            if rt.get('for_fired') == rt['since']:
+                return                 # this stretch already fired
+        elif not fresh:
+            return
+        now = time.time()
+        later = int(r.get('after_s') or 0)
+        # A rule that waits is held back by its cooldown when it ACTS
+        # (_rule_act), not when it is armed: stamped here, a wait called
+        # off by a movement and armed again inside the cooldown was
+        # refused, the edge was spent, and the light never went off.
+        if not later and now - rt['fired'] < int(r.get('cooldown_s') or 0):
+            return
+        # The hourly cap counts what happens, not what is armed: somebody
+        # at a desk moving every couple of minutes armed and cancelled
+        # the same wait three times and then met "max per hour" without
+        # anything having been switched at all.
+        if not later and self._rate_limited(r, rt):
+            return
+        if not later:
+            rt['fired'] = now
+        if wait_s:
+            rt['for_fired'] = rt['since']
+        if paired and second and not mine and holds_second:
+            trip_key, trip_value, trip_op, trip_limit = r['key2'], other, r['op2'], r['value2']
+        else:
+            trip_key, trip_value, trip_op, trip_limit = r['key'], reading, r['op'], r['value']
+        origin = '%s %s %s %s %g' % (name, trip_key,
+                                     ('%g' % trip_value) if trip_value is not None else '?',
+                                     trip_op, trip_limit)
+        facts = {'device': name, 'key': trip_key, 'value': trip_value,
+                 'rule': '%s %s %s %g' % (name, trip_key, r['op'], r['value']),
+                 'threshold': r['value'], 'compare': r['op'], 'action': r['do']}
+        after_s = int(r.get('after_s') or 0)
+        if after_s:
+            # Not now: in a while, and only if it is still true then. A
+            # PIR holds its own occupancy for a minute or two after the
+            # last movement and then says 0; the light should go off some
+            # time after that, and not at all if somebody moves again in
+            # between. The waiting is started again on every fresh trip,
+            # so it is always counted from the last one.
+            self.rule_waiting[r['id']] = {'due': time.time() + after_s, 'origin': origin,
+                                          'facts': facts, 'device_id': device_id,
+                                          'do': r['do'], 'at': time.time()}
+            self.debug('rule: %s -> %s %s in %s' % (origin, self.target_label(r['plug']),
+                                                    r['do'], human_span(after_s)))
+            self.bump()
+            return
+        self._rule_act(r, origin, facts, device_id)
 
     def _rule_act(self, r, origin, facts, device_id=''):
         """What a rule does when its moment has come - now, or after its wait."""
@@ -41805,23 +41947,32 @@ class Daemon(object):
         log('zigmon %s running; API on http://%s:%d' % (__version__, CONFIG['api_host'], CONFIG['api_port']))
         while not self._stop.is_set():
             self._stop.wait(30)
-            ensure_log_current()
-            self.store.checkpoint()          # off the store's lock (5.44)
-            now = time.time()
-            if now - self.last_aggregate_at >= int(CONFIG.get('aggregate_interval') or 3600):
-                self.last_aggregate_at = now
-                self.store.set_meta('last_aggregate_ts', str(int(now)))
-                try:
-                    self.purge_per_device()
-                except Exception as e:
-                    log('per-device retention: %s' % e, 'warn')
-                try:
-                    n = self.store.aggregate()
-                    if n:
-                        log('rolled up %d hourly rows' % n, 'debug')
-                except Exception as e:
-                    log('aggregate: %s' % e, 'error')
-                self.store.trim_wal()
+            try:
+                ensure_log_current()
+                self.store.checkpoint()          # off the store's lock (5.44)
+                now = time.time()
+                if now - self.last_aggregate_at >= int(CONFIG.get('aggregate_interval') or 3600):
+                    self.last_aggregate_at = now
+                    self.store.set_meta('last_aggregate_ts', str(int(now)), deferred=True)
+                    try:
+                        self.purge_per_device()
+                    except Exception as e:
+                        log('per-device retention: %s' % e, 'warn')
+                    try:
+                        n = self.store.aggregate()
+                        if n:
+                            log('rolled up %d hourly rows' % n, 'debug')
+                    except Exception as e:
+                        log('aggregate: %s' % e, 'error')
+                    self.store.trim_wal()
+            except Exception as e:                      # noqa: BLE001
+                # (5.44.1) whatever it was, the daemon stays: the stamp above
+                # written to a full disk (or a file another program held)
+                # raised out of run(), the daemon ended, systemd started it
+                # again ten seconds later, and half a minute after that it
+                # ended again - the house dark for a quarter of every minute
+                # for as long as the disk was full
+                self._beat_said('the main loop', e)
         log('stopping')
         try:
             self.client.loop_stop()

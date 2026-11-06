@@ -47,6 +47,7 @@ a path it could swap for a link.
                                           the system's updates (started by itself)
 """
 import calendar
+import fcntl
 import grp
 import hashlib
 import hmac
@@ -4072,6 +4073,64 @@ def handle(raw):
     raise Refused('nothing is done for a request of the kind %r' % kind[:40])
 
 
+TAKEN_LEFT_SAID = ("root's helper stopped before it had finished this - killed, out of time or the "
+                   'power went - and how far it got is not known: look at what is in place before '
+                   'asking for it again')
+
+
+def taken_left(d):
+    """(5.44.1) A request.taken that no run holds is one a run took and never
+    finished: killed, stopped by systemd at its 30 minutes, or the power went
+    in the middle. It was left as it was - so the daemon said root was busy
+    with it for half an hour, nothing could be asked meanwhile, and whoever
+    waited for the answer was never given one. Said as failed, and taken
+    away. True when there was one."""
+    try:
+        fd = os.open('request.taken', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=d)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or time.time() - st.st_mtime < 5:
+            return False                        # not a request, or one a run has only just taken
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False                        # a run is working on it now
+        try:
+            raw = json.loads(os.read(fd, 65536).decode('utf-8'))
+        except (OSError, ValueError):
+            raw = {}
+    finally:
+        os.close(fd)
+    if not isinstance(raw, dict):
+        raw = {}
+    last = status_read()
+    out = {'at': time.time(), 'state': 'failed', 'said': [TAKEN_LEFT_SAID],
+           'id': re.sub(r'[^A-Za-z0-9]', '', str(raw.get('id') or ''))[:32],
+           'kind': re.sub(r'[^a-z_]', '', str(raw.get('kind') or 'apply'))[:20],
+           'asked_hash': re.sub(r'[^0-9a-f]', '', str(raw.get('hash') or ''))[:64]}
+    if isinstance(last.get('dh_last'), dict):
+        out['dh_last'] = last['dh_last']
+    for k in ('applied_hash', 'failed_hash'):
+        if isinstance(last.get(k), str):
+            out[k] = last[k]
+    if out['kind'] == 'apply':
+        # not asked again by itself: a request that took the helper down
+        # once would take it down every half minute
+        out['failed_hash'] = out['asked_hash']
+    for name in ('request.taken', 'progress.json'):
+        try:
+            os.unlink(name, dir_fd=d)
+        except OSError:
+            pass
+    write_here('status.json', json.dumps(out))
+    if out['kind'].startswith('full_'):
+        write_here('status-full.json', json.dumps(out))
+    print('zigmon_root.py: %s (%s %s)' % (TAKEN_LEFT_SAID, out['kind'], out['id']), file=sys.stderr)
+    return True
+
+
 def serve():
     d = root_fd()
     # the network, the clock and switching off first, and the updates of the
@@ -4090,12 +4149,20 @@ def serve():
         pass
     except OSError:
         asked_look = True
+    left = taken_left(d)
     try:
         os.replace('request.json', 'request.taken', src_dir_fd=d, dst_dir_fd=d)
     except FileNotFoundError:
-        if asked_look:
+        if asked_look or left:
             look()
         return 0
+    # held for as long as this run works on it: what taken_left looks for
+    held = None
+    try:
+        held = os.open('request.taken', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=d)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        pass
     last = status_read()
     out = {'at': time.time()}
     if isinstance(last.get('dh_last'), dict):
@@ -4131,6 +4198,8 @@ def serve():
                 os.unlink(name, dir_fd=d)
             except OSError:
                 pass
+        if held is not None:
+            os.close(held)
     if out.get('kind') == 'apply':
         # the last apply refused, kept across the requests of other kinds, so
         # the daemon does not ask for it again by itself
