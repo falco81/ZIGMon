@@ -2083,7 +2083,65 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.44.0**
+Current version: **5.44.1**
+
+5.44.1 — the second pass: the first press after a quiet spell, what the first pass broke, a whole house lived for five days, the panes root works behind, staying up.
+
+**From a sensor to a light**
+* **No handshake on the first press after a quiet spell.** For a box a rule,
+  binding, scene or group switches (or one switched in the last 6 hours) a
+  spare connection is kept open and renewed in the background - connect
+  only, never a request; a command takes it. Motion to the box after 10 s or
+  10 min of quiet, with a 20 ms Wi-Fi handshake: 22 ms → 2 ms. Settings →
+  `plug_warm_spare` (0-4, default 1; 4 for every socket of a strip at once).
+  A connection the box has closed is seen before it is used.
+* Housekeeping threads (the writers, backups, chores, the meter) run at a
+  lower priority than the rule and broker threads: on a busy machine the
+  wake-up tail halved (p99 7.9 → 3.8 ms).
+* At a reconnect a Zigbee command is kept 10 s (a Shelly's 2 s, as it has
+  HTTP behind it), and none is sent that a newer one has replaced; the MQTT
+  boxes are read and the lamps asked at once after it, so a switch at the
+  wall while the link was down is not shown wrong.
+* A pulse pressed twice when the box's MQTT answers were lost (a gate opened
+  and closed): each half is answered, or done over HTTP, before the next. A
+  retry after a dead kept connection took another dead one. A reused message
+  id dropped as a "late command". A toggle of a box with MQTT but no prefix
+  sent a stale Set. An MQTT-only toggle of a socket not heard from yet is
+  said, not sent as a Toggle.
+
+**Five days of a whole house** (a fake clock, the night the clocks go back,
+two restarts): two Shelly boxes behind one address were taken for one (one
+unplugged showed the other's reading, online); a device coming back was never
+told; a retained copy replayed at a restart counted as the device speaking (a
+second paid text for a sensor already said quiet); the watchdog forgot across
+a restart what it had said; the monthly summary said 0 kWh.
+
+**Staying up**: `/api/health` answered 500 on a full disk and waited 15 s
+on a locked database; failing writes flooded the log and were said nowhere
+(now once a minute, in the alerts, on Control); the main loop died on a full
+disk; one slow box held every other box's readings; one bad rule stopped the
+rules after it, one bad schedule the minute's others; root killed mid-job
+left "busy" for 30 minutes, an upgrade "running" for 30 minutes; power lost
+during an upgrade could leave an empty program (install.sh writes each file
+beside and renames it). `/api/status` answered 500 now and then: a socket's
+reading changed under it as the box pushed over MQTT (and four like it).
+
+**Root and the web**: a database restore could hand a root file to zigmon,
+and the Zigbee2MQTT part of one write outside the state folder (links
+followed); downloads and the export could be started by another site of the
+same domain; a broker password in the debug log and events; config.json
+readable by all for a moment at install.
+
+**The panes behind root**: Time and Network redrawn under the hand every few
+seconds (the iPad's keyboard dropped); refusals only in a toast - now in the
+popup or beside Save; the network trial's countdown; an upgrade asked for
+could be asked again or its package forgotten from under it; a chosen
+version reset to the newest; whole backups, remote backups, the database's
+Optimise and Back up started twice; Automatic certificates never refreshed.
+
+`test/pass2_realtime.py`, `pass2_review.py`, `pass2_day.py`, `pass2_ui.py`,
+`pass2_robust.py`, `pass2_race.py`, `pass2_sec.py`, `pass2_web.py`; each
+fails on 5.44.0.
 
 5.44.0 — the first of two passes through the whole of it, the time from a sensor to a light first; and what has to be done by hand, said where it is done.
 
