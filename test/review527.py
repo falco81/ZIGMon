@@ -39,7 +39,10 @@ page = (HERE / 'web' / 'index.php').read_text()
 check('function rootStuck(' in page and 'systemctl reset-failed zigmon-root.service' in page,
       'a request root never takes says "waiting for root" for half an hour and nothing else')
 full = page[page.index('function drawFull('):page.index('function fullDownload(')]
-check('if (d.busy) [rs, rm].forEach' in full, 'delete and put back are offered while root works on the last one')
+# (5.44.1) the download too, and while root shows progress: `rootBusy`
+check('if (d.busy) [rs, rm].forEach' in full or
+      ('var rootBusy = !!(d.busy || d.progress)' in full and 'if (rootBusy) [dl, rs, rm].forEach' in full),
+      'delete and put back are offered while root works on the last one')
 
 if bad:
     print('\n%d check(s) failed' % len(bad))
