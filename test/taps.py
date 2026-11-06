@@ -3092,8 +3092,11 @@ d._blocked_times['203.0.113.5'] = 6
 assert _earn('203.0.113.5', 'proxy-poking')['left'] <= 121 * 60, 'the ceiling does not hold'
 # ...or keeps it out for good
 zigmon.CONFIG['block_over_max'] = 'forever'
-d._blocked_times['203.0.113.6'] = 6
-assert _earn('203.0.113.6', 'proxy-poking')['forever'], 'at the ceiling it was not kept out for good'
+# (5.43.3) an address out there: 203.0.113.0/24 is a documentation range,
+# which Python counts as private - the house - and the house is never kept
+# out for good, which is the rule the ceiling now keeps
+d._blocked_times['89.24.113.6'] = 6
+assert _earn('89.24.113.6', 'proxy-poking')['forever'], 'at the ceiling it was not kept out for good'
 zigmon.CONFIG.update({'block_max_minutes': 10080, 'block_over_max': 'cap'})
 zigmon.Daemon.SAME_TRY_WITHIN = _was_within
 d.store.unblock()
@@ -3103,17 +3106,19 @@ print('a block lasts by what earned it, doubles when they come back, and stops a
 # A ladder instead of the doubling: ten minutes the first time, an hour the
 # second, a day the third, for good after that - written out rather than
 # worked out, because that is how somebody thinks about it.
+# (5.43.3) addresses out there: 203.0.113.0/24 is the house to Python, and
+# the house is never kept out for good
 zigmon.CONFIG['block_ladder'] = '10, 60, 1440, forever'
-d._blocked_times.pop('203.0.113.20', None)
+d._blocked_times.pop('89.24.113.20', None)
 _rungs = []
 for _ in range(5):
-    _row = _earn('203.0.113.20', 'proxy-poking')
+    _row = _earn('89.24.113.20', 'proxy-poking')
     _rungs.append('forever' if _row['forever'] else _row['left'] // 60 + 1)
 assert _rungs[:4] == [10, 60, 1440, 'forever'], 'the ladder reads %r' % _rungs[:4]
 assert _rungs[4] == 'forever', 'past the end it stopped being for good'
 # something serious takes the step after the one it would have had
-d._blocked_times.pop('203.0.113.21', None)
-_first = _earn('203.0.113.21', 'bad-secret')
+d._blocked_times.pop('89.24.113.21', None)
+_first = _earn('89.24.113.21', 'bad-secret')
 assert _first['left'] // 60 + 1 == 60, 'a serious first time took %d min' % (_first['left'] // 60 + 1)
 # and the row says why it is that long
 assert 'first time' in (_first['how'] or ''), 'the row does not say how it was decided: %r' % _first['how']

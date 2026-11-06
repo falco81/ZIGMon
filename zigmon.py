@@ -4067,7 +4067,16 @@ def _ssh_argv(cfg, host, key_path=None):
             '-o', 'NumberOfPasswordPrompts=1']
     if key_path:
         argv += ['-i', key_path, '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes']
-    argv.append('%s@%s' % (str(cfg.get('ssh_user') or 'admin'), host))
+    # (5.43.3) The user name goes first on that word, and a word that begins
+    # with "-" is an option to ssh, not a place: a user written as
+    # -oProxyCommand=... ran that command on this machine, as zigmon, the
+    # first time the router or the server in front was asked anything.
+    user = str(cfg.get('ssh_user') or 'admin')
+    if not re.match(r'^[A-Za-z0-9_.][A-Za-z0-9_.@+-]{0,63}$', user) \
+            or not re.match(r'^[A-Za-z0-9_.:\[\]%-]{1,255}$', str(host or '')) or str(host).startswith('-'):
+        raise RuntimeError('the user name or the address is not one ssh can be given: letters, '
+                           'digits, dots and dashes, and not starting with a dash')
+    argv.append('%s@%s' % (user, host))
     return argv
 
 
@@ -6586,12 +6595,19 @@ class Storage(object):
         packed, family = pack_address(ip)
         if packed is None:
             return None
+        # (5.43.3) The nearest range starting at or below the address, and
+        # then whether it reaches it. The floor the lists use (nothing wider
+        # than a /8, or a /16) is a promise those lists keep and this one does
+        # not: db-ip joins neighbouring ranges of one country, so 28.0.0.0 to
+        # 30.255.255.255 is one row, and every address past the first /8 of
+        # it - or past the first /16 of a wide IPv6 allocation - had no
+        # country at all. The ranges do not overlap, so the nearest is the
+        # only one that can hold it, and the index finds it at once.
         with self.lock:
             row = self.db.execute(
-                'SELECT cc FROM geo_ranges WHERE family=? AND lo BETWEEN ? AND ? AND hi>=? '
-                'ORDER BY lo DESC LIMIT 1',
-                (family, self._floor_of(packed, family), packed, packed)).fetchone()
-        return row['cc'] if row else None
+                'SELECT cc, hi FROM geo_ranges WHERE family=? AND lo<=? '
+                'ORDER BY lo DESC LIMIT 1', (family, packed)).fetchone()
+        return row['cc'] if row and bytes(row['hi']) >= packed else None
 
     def feed_sizes(self):
         """How many ranges each list holds. Remembered, for the same reason
@@ -16582,6 +16598,13 @@ class Daemon(object):
                 return ('a rule of yours (%s from %s) would shut out %s, the address you are on now'
                         % (r['action'].upper(), r.get('source') or 'anywhere', ip))
             return None
+        # (5.43.3) ...and when none does, what zigmon lets in itself decides,
+        # as said above - which was never asked: HTTP / HTTPS switched off with
+        # no rule of yours for 443 was saved, and the page went dark.
+        web = next((x for x in self.fw_auto(conf, access or {}) if x['key'] == 'web'), None)
+        if web is not None and not web['on']:
+            return ('HTTP / HTTPS is switched off and no rule of yours lets %s, the address you are '
+                    'on now, in on 443: keep it on, or add a rule for it' % ip)
         return None
 
     def apply_body(self):
@@ -23609,7 +23632,11 @@ class Daemon(object):
     # a proxy. Everything else - the counting, the blocking - is done against
     # the one address that cannot be chosen by whoever is calling.
     def trusted_proxy(self, addr):
-        named = [x.strip() for x in str(CONFIG.get('trusted_proxies') or '').replace(';', ',').split(',')]
+        # (5.43.3) by commas, semicolons or spaces, as the list beside it
+        # (never kept out) is read: "10.0.0.5 10.0.0.6" on one line of the box
+        # was one entry that is no address, so neither server was believed and
+        # every caller was the server in front - one guesser kept them all out
+        named = re.split(r'[,;\s]+', str(CONFIG.get('trusted_proxies') or ''))
         for one in [x for x in named if x]:
             if one == addr:
                 return True
@@ -23866,6 +23893,16 @@ class Daemon(object):
         """
         ip = str(ip or '')
         if not ip or ip in ('127.0.0.1', '::1'):
+            return None
+        # (5.43.3) One way of writing an address. Suricata writes an IPv6
+        # source in full - 2a01:0430:0017:0000:0000:0000:0000:0005 - where
+        # nginx and the relay write 2a01:430:17::5; the list and the door
+        # compare the text, so a block made from an alert never kept that
+        # address out, and its tries were counted apart from its requests.
+        # Something that is no address at all is nobody to count against.
+        try:
+            ip = str(ipaddress.ip_address(ip))
+        except ValueError:
             return None
         # Somebody who pressed a link and was let in within the last two days
         # is the house, whatever the front server made of the next few
@@ -24215,11 +24252,24 @@ class Daemon(object):
             return {'minutes': 0, 'forever': True,
                     'words': 'for good, at the first thing it does — it is on the %s list' % listed}
         minutes, plain = self.block_length(ip, recent, before=before)
+        if plain == 'for good' and self.own_house(ip) and house not in ('1', 'on', 'yes', 'same'):
+            minutes, plain = self.house_length(minutes)       # (5.43.3) as maybe_block says
         if plain == 'for good':
             return {'minutes': minutes, 'forever': True, 'words': 'for good, by the ladder'}
         if mode == 'permanent':
             return {'minutes': minutes, 'forever': True, 'words': 'for good — ' + plain}
         return {'minutes': minutes, 'forever': False, 'words': plain}
+
+    @staticmethod
+    def house_length(minutes):
+        """How long one of the house's own addresses is kept out where the
+        settings would say for good: as long as the step that said it, held
+        at the ceiling where one is set. (5.43.3)"""
+        ceiling = int(CONFIG.get('block_max_minutes') or 0)
+        minutes = max(1, int(minutes or CONFIG.get('block_minutes') or 60))
+        if ceiling:
+            minutes = min(minutes, ceiling)
+        return minutes, '%s - the house is never kept out for good' % base_words(minutes)
 
     def block_length(self, ip, recent, before=None):
         """How long this one lasts, in minutes, and the words for it.
@@ -24302,6 +24352,13 @@ class Daemon(object):
         mode = str(CONFIG.get('block_mode') or 'temporary').strip().lower()
         if mode == 'off' or not self.blacklist_on():
             return None
+        # (5.43.3) Never kept out is never put on the list either. The log
+        # readers asked this before counting, the presses at the API (a wrong
+        # secret, a shut road, too many tries) did not - so a spared office
+        # address was written on the list, announced as blocked, and climbed
+        # the ladder for every block the door then ignored.
+        if self.spared(ip):
+            return None
         # how much has to happen before it acts: the standing bar, moved by
         # how keen the house wants it to be
         lean = self.SENSITIVITY.get(str(CONFIG.get('block_sensitivity') or 'normal').strip().lower(), 1.0)
@@ -24360,7 +24417,13 @@ class Daemon(object):
         if self.store.blocked_until(ip) is not None or score < bar:
             return None
         minutes, plain = self.block_length(ip, recent)
-        if plain == 'for good':
+        if plain == 'for good' and house == 'gently' and self.own_house(ip):
+            # (5.43.3) the end of the ladder, or a length past the ceiling
+            # with "for good" beyond it, is still not for good for the house:
+            # set above, and then undone here - a phone with a stale shortcut
+            # that tripped the guard often enough was shut out for ever
+            minutes, plain = self.house_length(minutes)
+        elif plain == 'for good':
             mode = 'permanent'
             plain = 'for good, by the ladder'
         until = None if mode == 'permanent' else time.time() + minutes * 60
@@ -25706,7 +25769,7 @@ class Daemon(object):
                 continue
             if str(one.get('event_type') or '') != 'tls':
                 continue
-            ip = str(one.get('src_ip') or '')
+            ip = self.same_address(one.get('src_ip') or '')       # (5.43.3) as above
             if not ip or self.spared(ip) or self.own_house(ip):
                 continue
             tls = one.get('tls') or {}
@@ -25987,8 +26050,10 @@ class Daemon(object):
             if str(one.get('event_type') or '') != 'alert':
                 continue
             alert = one.get('alert') or {}
-            ip = str(one.get('src_ip') or '')
-            if not ip or self.spared(ip):
+            # (5.43.3) the address as everything else here writes it: what is
+            # kept about it below is looked up again under that name
+            ip = self.same_address(one.get('src_ip') or '')
+            if not ip or '/' in ip or self.spared(ip):
                 continue
             # an alert about what WE sent is ours to fix, not somebody's to
             # answer for: those are weighed against nobody
@@ -27893,6 +27958,14 @@ class Daemon(object):
         wanted = tuple(self.feed_wanted())
         if not wanted:
             return None
+        # (5.43.3) The house's own addresses are on no list worth believing.
+        # FireHOL level 1 carries the bogons - 10.0.0.0/8, 192.168.0.0/16 -
+        # because nothing from the internet should ever come from them, so
+        # every phone in the house was "on the FireHOL list": its tries
+        # weighed three times over, which undid the three times as much the
+        # house is given, and a stale shortcut was kept out like a stranger.
+        if self.own_house(ip):
+            return None
         if not hasattr(self, '_feed_said') or getattr(self, '_feed_said_for', None) != wanted:
             self._feed_said, self._feed_said_for = {}, wanted
         key = str(ip)
@@ -28367,7 +28440,10 @@ class Daemon(object):
                     else (comment.group(3) if comment else ''))
             if addr:
                 out.append({'address': addr.group(1), 'comment': said or '',
-                            'ours': str(said or '').startswith(self.MIKROTIK_MARK)})
+                            'ours': str(said or '').startswith(self.MIKROTIK_MARK),
+                            # (5.43.3) how long the router will go on carrying
+                            # it: None for good, or seconds left
+                            'lasts': self.mikrotik_seconds(line)})
         if remember:
             # written down as the addresses themselves: a router may print
             # 2A01:430::5 where this holds 2a01:430::5, and the same address
@@ -28375,6 +28451,26 @@ class Daemon(object):
             self.store.set_meta('mikrotik_seen', json.dumps(
                 {'at': time.time(), 'on': sorted({self.same_address(e['address']) for e in out})}))
         return out
+
+    @staticmethod
+    def mikrotik_seconds(line):
+        """What is left of an entry's timeout, in seconds, as a print of the
+        list writes it - 9m58s, 1w2d3h, 1d02:03:04 or 00:09:58; None for an
+        entry with none, which the router carries for good. (5.43.3)"""
+        found = re.search(r'(?:^|\s)timeout=(\S+)', str(line or ''))
+        if not found:
+            return None
+        text, total = found.group(1), 0
+        clock = re.match(r'^(?:(\d+)d)?(\d+):(\d+):(\d+)$', text)
+        if clock:
+            return (int(clock.group(1) or 0) * 86400 + int(clock.group(2)) * 3600
+                    + int(clock.group(3)) * 60 + int(clock.group(4)))
+        pieces = re.findall(r'(\d+)(w|d|h|ms|m|s)', text)
+        if not pieces or ''.join(n + u for n, u in pieces) != text:
+            return 0                          # some timeout, of a length not understood
+        for n, unit in pieces:
+            total += int(n) * {'w': 604800, 'd': 86400, 'h': 3600, 'm': 60, 's': 1, 'ms': 0}[unit]
+        return total
 
     def blacklist_switched(self, on):
         """The list is kept either way; the router is not.
@@ -28432,6 +28528,22 @@ class Daemon(object):
         ours = {self.same_address(e['address']) for e in there if e['ours']}
         theirs = {self.same_address(e['address']) for e in there if not e['ours']}
         want = {self.same_address(r['ip']): r for r in self.blocked_list()}
+        # (5.43.3) An entry of ours the router will drop before the block here
+        # ends: a block made longer while it stood - kept out for good by hand
+        # on top of the detector's hour, a subnet folded into that was only
+        # there for a while - was "already there", so the router went on
+        # counting down the old timeout and let it in when that ran out,
+        # while this list still said kept out. Those are put there again.
+        short = set()
+        for e in there:
+            ip = self.same_address(e['address'])
+            row = want.get(ip)
+            lasts = e.get('lasts')
+            if not e['ours'] or row is None or row.get('spared') or lasts is None:
+                continue
+            if row['forever'] or int(row.get('left') or 0) > lasts + 120:
+                short.add(ip)
+        ours -= short
         added = removed = 0
         # Worked out whole before anything is sent, so whoever is watching
         # can be told "12 of 40" rather than only "busy".
@@ -28462,6 +28574,10 @@ class Daemon(object):
         if progress:
             progress(0, total, '%d to add, %d to take off' % (len(adds), len(removes)))
         for ip, row, family in adds:
+            if ip in short:
+                # the old entry first: the router will not hold two of one
+                self.mikrotik_run('%s firewall address-list remove [find list=%s address=%s comment~"^%s"]'
+                                  % (family, listed, ip, self.MIKROTIK_MARK))
             timeout = '' if row['forever'] else ' timeout=%ds' % max(60, row['left'])
             # '/' kept: a folded subnet's reason names the subnet, and
             # without it "81.200.10.0/24" read as "81.200.10.024" on the router
@@ -40797,7 +40913,10 @@ def _perf_watcher():
         if 'cpu' in out:
             PERF_WATCH['first'].set()
             store = PERF_STORE
-            if store is not None:
+            # (5.43.3) not after a switch-off that came while this was
+            # reading: the row perf_forget had just taken away was written
+            # back, and stayed there with the meter off
+            if store is not None and not stop.is_set() and perf_on():
                 try:
                     store.perf_keep(socket.gethostname().split('.')[0] or 'this machine', out['at'],
                                     {k: out.get(k) for k in ('cpu', 'mem_used', 'mem_total', 'disk_rd', 'disk_wr',
