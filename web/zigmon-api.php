@@ -87,6 +87,19 @@ function zigmon_set_session(string $token, int $until): void
     }
 }
 
+/** The first $most LETTERS of a string, not its first $most bytes (5.43.3).
+ *  A password is up to 200 characters to the daemon, and the sign-in cut it
+ *  at 200 bytes: a long one with any letter outside ASCII in it was cut
+ *  short and never right again, or cut in the middle of a letter. Bytes
+ *  that are not UTF-8 at all are cut as bytes, as before. */
+function zigmon_cut(string $text, int $most): string
+{
+    if (preg_match('/^.{0,' . $most . '}/su', $text, $m)) {
+        return $m[0];
+    }
+    return substr($text, 0, $most);
+}
+
 /** Read the API token the daemon wrote for us, or null if we can't. */
 function zigmon_token(): ?string
 {
@@ -156,7 +169,11 @@ function zigmon_call(string $path, string $method = 'GET', ?array $payload = nul
         // the sign-in is the cookie's to carry (5.19), never anything the
         // page's script put in a body
         unset($payload['session']);
-        $body = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        // a byte that is not UTF-8 is put in as U+FFFD (5.43.3): json_encode
+        // gave false for it, strlen(false) under strict_types threw, and
+        // the page got an empty 500 for a name or a password cut in the
+        // middle of a letter, or for anything a client sent that was not UTF-8
+        $body = (string) json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         $headers[] = 'Content-Type: application/json';
         $headers[] = 'Content-Length: ' . strlen($body);
     }

@@ -1374,8 +1374,9 @@ if (isset($_GET['api'])) {
             : (isset($in['pin']) && !isset($in['name'])
             ? ['pin' => substr((string) $in['pin'], 0, 32),
                'minutes' => max(1, min(720, (int) ($in['minutes'] ?? 15)))]
-            : ['name' => substr((string) ($in['name'] ?? ''), 0, 64),
-               'password' => substr((string) ($in['password'] ?? ''), 0, 200)]);
+            // cut by letters, as the daemon counts a password (5.43.3)
+            : ['name' => zigmon_cut((string) ($in['name'] ?? ''), 64),
+               'password' => zigmon_cut((string) ($in['password'] ?? ''), 200)]);
         [$status, $reply] = zigmon_call($what === 'unlock' ? '/api/unlock'
             : ($what === 'passkey-login' ? '/api/auth/passkey/login' : '/api/auth/login'), 'POST', $send, 30.0);
         if ($status === 0) {
