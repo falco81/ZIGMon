@@ -9028,7 +9028,10 @@ function thermostatControls(d, st) {
     : 'Not in a room \u2014 these are the head\u2019s own presets. Put it in a room under Settings \u2192 Rooms & heating and it gets Comfort / Eco / Night / Off / Plan instead.';
   hint.style.flexBasis = '100%';
   wrap.appendChild(hint);
-  function send(target, value) {
+  // (5.44) back: what the control showed before, put back when nothing was
+  // sent (the sign-in dismissed) or the valve was refused - the slider stayed
+  // where it had been dragged, and said a target the head did not have
+  function send(target, value, back) {
     // (5.43.3) the words of the PIN box are HTML: a preset is the device's own
     // word, from the list its converter sends, and is escaped like any other
     withPin('Set ' + target.name, 'Sets it to ' + esc(value) + '. It takes effect when the valve next talks to the mesh.', function (pin) {
@@ -9036,7 +9039,7 @@ function thermostatControls(d, st) {
         if (!r.ok) throw new Error(r.error || 'the valve did not take it');
         return r.message || 'Set';
       });
-    });
+    }, false, back);
   }
   if (point) {
     var now = isNum(point.state) ? point.state : null;
@@ -9052,8 +9055,9 @@ function thermostatControls(d, st) {
     }
     if (now !== null) paint(now);
     slider.disabled = now === null || !d.online;
+    var unslide = function () { if (now === null) return; slider.value = now; paint(now); };
     slider.oninput = function () { paint(parseFloat(slider.value)); };
-    slider.onchange = function () { send(point, parseFloat(slider.value)); };
+    slider.onchange = function () { send(point, parseFloat(slider.value), unslide); };
     slider.title = 'Drag to set the target; it is sent when you let go. Arrow keys step half a degree.';
     holdRepaint(slider);
     wrap.appendChild(el('span', 'lbl', 'Target'));
@@ -9066,7 +9070,7 @@ function thermostatControls(d, st) {
     off.disabled = !d.online;
     off.onclick = function () {
       if (offMode) send(mode, offMode);
-      else { slider.value = lo; paint(lo); send(point, lo); }
+      else { slider.value = lo; paint(lo); send(point, lo, unslide); }
     };
     wrap.appendChild(off);
   }
@@ -9074,7 +9078,7 @@ function thermostatControls(d, st) {
     var sel = el('select', 'trv-mode');
     fillSelect(sel, (mode.values || []).map(function (v) { return [v, v]; }), mode.state);
     sel.disabled = !d.online;
-    sel.onchange = function () { send(mode, sel.value); };
+    sel.onchange = function () { send(mode, sel.value, function () { sel.value = mode.state; }); };
     wrap.appendChild(el('span', 'lbl', mode.key === 'preset' ? 'Preset' : 'Mode'));
     wrap.appendChild(sel);
   }
@@ -9102,11 +9106,15 @@ function roomThermostat(d, st, room) {
   slider.title = 'Sets the room \u2014 every valve in it follows. Sent when you let go.';
   holdRepaint(slider);
   slider.oninput = function () { paint(parseFloat(slider.value)); };
+  var was = slider.value;
   slider.onchange = function () {
     withPin('Set ' + room.name + ' by hand', 'The valves in the room follow at once.', function (pin) {
       return post('target-set', {target: 'heat:temp:' + room.id, do: 'set:' + slider.value, pin: pin}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'could not'); forgetSig('heating-tab'); return room.name + ' set by hand';
       });
+    }, false, function () {      // (5.44) nothing sent, or refused: back to what the room holds
+      slider.value = was; paint(parseFloat(was));
+      if (!isNum(room.wanted_c)) shown.textContent = '\u2013';
     });
   };
   line.appendChild(slider); line.appendChild(shown);
@@ -9122,6 +9130,7 @@ function roomThermostat(d, st, room) {
   fillSelect(pick, opts, room.why === 'by hand' ? '' : (room.mode || 'plan'));
   pick.title = 'What the room holds: its plan, one of its three temperatures, wide open (Max), off, or '
     + '\u201cby hand on the head\u201d \u2014 which leaves the valve entirely alone, so whatever you turn it to on the wall stays.';
+  var picked = pick.value;
   pick.onchange = function () {
     if (!pick.value) return;
     var level = pick.value;
@@ -9129,7 +9138,7 @@ function roomThermostat(d, st, room) {
       return post('target-set', {target: 'heat:room:' + room.id, do: 'set:' + level, pin: pin}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'could not'); forgetSig('heating-tab'); return room.name + ' \u2192 ' + level;
       });
-    });
+    }, false, function () { pick.value = picked; });   // (5.44) as the slider
   };
   var pickLine = el('div', 'trv-line');
   pickLine.title = 'Off shuts the valves in this room. The head is held in manual, so its own programme cannot override the room; the room\u2019s plan lives under Heating.';
@@ -11940,6 +11949,11 @@ function renderHeating(st) {
         return post('target-set', {target: 'heat:temp:' + room.id, do: spec, pin: pin, hold_s: forSel.value || null}).then(function (r) {
           if (!r.ok) throw new Error(r.error || 'could not'); forgetSig('heating-tab'); return room.name + ' set by hand';
         });
+      }, false, function () {
+        // (5.44) the sign-in dismissed, or refused: the slider back where the
+        // room is. It stayed where it was dragged, saying 27 for a room at 18,
+        // until the room next changed
+        slider.value = shown; paintSlider(shown);
       });
     }
     slider.oninput = function () { paintSlider(parseFloat(slider.value)); };
@@ -12574,6 +12588,10 @@ function markMessages() { MESSAGES.dirty = true; $('messages-dirty').textContent
 
 function renderMessages(st) {
   if (MESSAGES.rows === null && st) MESSAGES.rows = JSON.parse(JSON.stringify(st.messages || []));
+  // (5.44) Add, Remove and Save draw it without a status: the "by text to"
+  // box was then given none, and the first letter typed into it threw
+  // (whoCandidates) - nobody was offered, the page logged an error a key
+  st = st || STATE.status || {};
   var rows = MESSAGES.rows || [];
   var host = $('messages-list'); host.innerHTML = '';
   if (!rows.length) {
@@ -17461,12 +17479,17 @@ function hloadNext(ms) {
 }
 function hloadTick(now) {
   var host = $('hload');
-  if (!host || (HLOAD.busy && !now)) return;
+  if (!host) return;
+  // (5.44) an ask still out is waited for - but the next ask is set all the
+  // same: an ask that hung past the 5 s and then failed (the network gone for
+  // a moment) left no next one, and the meter stood still until a reload.
+  // One out for longer than 20 s is given up.
+  if (HLOAD.busy && !now && Date.now() - HLOAD.busy < 20000) { hloadNext(5000); return; }
   if (document.hidden || STATE.paused) { hloadNext(5000); return; }
   if (!perfWanted()) { hloadStop(); return; }
   HLOAD.look = hlLook();
   if (HLOAD.look === 'off') { host.hidden = true; hloadPanelClose(); hloadNext(5000); return; }
-  HLOAD.busy = true;
+  HLOAD.busy = Date.now();
   hloadNext(5000);
   var ask = [];
   if (HLOAD.open) ask.push('detail=1');
@@ -18401,7 +18424,13 @@ function switchPlug(plug, on, button, mode) {
       tick(true);                                  // put the real state back
       throw e;
     });
-  }, !on, free);          // dismissed: nothing was sent, so nothing is pending
+  }, !on, function () {   // dismissed: nothing was sent, so nothing is pending
+    free();
+    // (5.44) ...and the card is what the socket still is. It was left showing
+    // the state it would have had: Escape on the sign-in over a lamp that was
+    // on, and the card said off until the lamp next changed
+    if (card) { showPlugPending(card, plug, !on); card.classList.remove('pending'); }
+  });
 }
 function resetPlugCounters(plug, types, what, button) {
   if (button) { button.disabled = true; button.classList.add('busy'); }
@@ -19309,15 +19338,96 @@ function optionsMarkup(options) {
   if (OPTION_HTML) OPTION_HTML.set(options, out);
   return out;
 }
-function fillSelect(select, options, current) {
+// (5.44) A long list - every device in the house, every target - goes into its
+// select the moment the select is opened, not when it is drawn. Thirty rules
+// held 120 such lists, eleven thousand options in all: drawing the rules took
+// 300 ms on a desktop and over a second on an iPad, and showing the section
+// again cost the browser 140 ms of style work for options nobody had opened.
+// Until then it holds the chosen entry, and the widest entry as a disabled
+// one, so the closed select is as wide as it always was. Opened by the
+// pointer, a finger or the keyboard (each focuses it or presses on it first),
+// or read and set from a script (options, value, selectedIndex), it is
+// filled first.
+var SELECT_LAZY_MIN = 30;
+var SELECT_NATIVE = (function () {
+  var P = window.HTMLSelectElement && HTMLSelectElement.prototype, d = {};
+  ['value', 'options', 'selectedIndex'].forEach(function (k) {
+    d[k] = P && Object.getOwnPropertyDescriptor(P, k);
+  });
+  return d.value && d.options && d.selectedIndex ? d : null;
+})();
+var OPTION_WIDEST = typeof WeakMap === 'function' ? new WeakMap() : null;
+function widestOption(options) {
+  if (OPTION_WIDEST && OPTION_WIDEST.has(options)) return OPTION_WIDEST.get(options);
+  // the page's own font, read once: asking for a style while a list is being
+  // drawn makes the browser work out the style of the whole page each time
+  var ctx = widestOption.ctx;
+  if (ctx === undefined) {
+    ctx = widestOption.ctx = document.createElement('canvas').getContext('2d') || null;
+    if (ctx) ctx.font = getComputedStyle(document.body).font || ctx.font;
+  }
+  var best = '', most = -1, seen = widestOption.seen || (widestOption.seen = {});
+  for (var i = 0; i < options.length; i++) {
+    var o = options[i], label = String(typeof o === 'string' ? o : o[1]);
+    var w = seen[label];
+    if (w === undefined) w = seen[label] = ctx ? ctx.measureText(label).width : label.length;
+    if (w > most) { most = w; best = label; }
+  }
+  if (OPTION_WIDEST) OPTION_WIDEST.set(options, best);
+  return best;
+}
+function fillSelectNow(select) {
+  var options = select._lazy;
+  if (!options) return;
+  select._lazy = null;
+  var v = SELECT_NATIVE.value.get.call(select);
   select.innerHTML = optionsMarkup(options);
-  if (current !== undefined && current !== null && Array.prototype.some.call(select.options, function (o) { return o.value === String(current); })) select.value = current;
+  SELECT_NATIVE.value.set.call(select, v);
+}
+function fillSelectLazy(select, options, current) {
+  var pick = null;
+  if (current !== undefined && current !== null) {
+    for (var i = 0; i < options.length && !pick; i++) {
+      var o = options[i];
+      if (String(typeof o === 'string' ? o : o[0]) === String(current)) pick = o;
+    }
+  }
+  pick = pick || options[0];                 // what the whole list would have shown: its first
+  var value = String(typeof pick === 'string' ? pick : pick[0]), label = String(typeof pick === 'string' ? pick : pick[1]);
+  var ghost = '<option disabled value="">' + esc(widestOption(options)) + '</option>';
+  // in a long list every entry sits under a heading, and is indented by it
+  select.innerHTML = '<option value="' + esc(value) + '">' + esc(label) + '</option>'
+    + (options.length > 12 ? '<optgroup label="">' + ghost + '</optgroup>' : ghost);
+  select._lazy = options;
+  if (!select._lazyHooked) {
+    select._lazyHooked = true;
+    var now = function () { fillSelectNow(select); };
+    ['pointerdown', 'mousedown', 'touchstart', 'focus', 'keydown'].forEach(function (ev) {
+      select.addEventListener(ev, now, {capture: true, passive: true});
+    });
+    Object.defineProperty(select, 'options', {configurable: true,
+      get: function () { fillSelectNow(this); return SELECT_NATIVE.options.get.call(this); }});
+    Object.defineProperty(select, 'value', {configurable: true,
+      get: function () { return SELECT_NATIVE.value.get.call(this); },
+      set: function (v) { fillSelectNow(this); SELECT_NATIVE.value.set.call(this, v); }});
+    Object.defineProperty(select, 'selectedIndex', {configurable: true,
+      get: function () { fillSelectNow(this); return SELECT_NATIVE.selectedIndex.get.call(this); },
+      set: function (v) { fillSelectNow(this); SELECT_NATIVE.selectedIndex.set.call(this, v); }});
+  }
+}
+function fillSelect(select, options, current) {
+  if (SELECT_NATIVE && options.length >= SELECT_LAZY_MIN) fillSelectLazy(select, options, current);
+  else {
+    select._lazy = null;
+    select.innerHTML = optionsMarkup(options);
+    if (current !== undefined && current !== null && Array.prototype.some.call(select.options, function (o) { return o.value === String(current); })) select.value = current;
+  }
   // A closed select can only show one line, so the tooltip carries the whole
   // of the chosen entry - and keeps whatever explanation the editor put there
   // as well, rather than replacing it.
   var sync = function () {
     if (select.title && select.title !== select._auto) select._hint = select.title;
-    var o = select.options[select.selectedIndex];
+    var o = select.querySelector('option:checked');   // (5.44) read without filling a long list
     var picked = o ? o.textContent : '';
     select._auto = (select._hint ? select._hint + '\n' : '') + picked;
     select.title = select._auto;
@@ -19651,6 +19761,11 @@ function renderRules(st) {
   var sources = ruleSources(st);
   if (!RULES.rows.length) host.appendChild(el('div', 'muted small', sources.length ? 'No rules yet.' : 'No device with numeric readings seen yet.'));
   var dupes = duplicateRuleIds(RULES.rows);
+  // (5.44) the second and third conditions' lists, once for every row: sorted
+  // again for each row, thirty rules sorted the house sixty times a drawing
+  var sorted = devicesSorted(sources).map(function (x) { return [x.id, deviceIcon(x) + ' ' + x.name]; });
+  var srcOptionsAll = [['', '\u2014 no second condition \u2014']].concat(sorted);
+  var src3All = [['', '\u2014 no third condition \u2014']].concat(sorted);
   RULES.rows.forEach(function (r, i) {
     var row = el('div', 'rule-row');
     if (dupes[r.id]) {
@@ -19915,7 +20030,7 @@ function renderRules(st) {
     val2.type = 'number'; val2.step = 'any';
     key2.title = 'Which reading of the second device is compared';
     op2.title = 'How the second reading is compared with its threshold';
-    var srcOptions = [['', '— no second condition —']].concat(devicesSorted(sources).map(function (x) { return [x.id, deviceIcon(x) + ' ' + x.name]; }));
+    var srcOptions = srcOptionsAll;
     r.device2 = fillSelect(dev2, srcOptions, r.device2 || '');
     function refillKeys2() {
       var device = deviceById(r.device2);
@@ -19947,7 +20062,7 @@ function renderRules(st) {
     val3.type = 'number'; val3.step = 'any';
     key3.title = 'Which reading of the third device is compared';
     op3.title = 'How the third reading is compared with its threshold';
-    var src3 = [['', '\u2014 no third condition \u2014']].concat(devicesSorted(sources).map(function (x) { return [x.id, deviceIcon(x) + ' ' + x.name]; }));
+    var src3 = src3All;
     r.device3 = fillSelect(dev3, src3, r.device3 || '');
     function refillKeys3() {
       var device = deviceById(r.device3);
@@ -25448,8 +25563,8 @@ function paintSchedules(st) {
     var row = el('div', 'sched-row');
     rowObjMark(row, sch.id && objRef('schedule', sch.id), 'this schedule');
     var target = el('select');
-    var opts = options.slice();
-    if (sch.target && !opts.some(function (o) { return o[0] === sch.target; })) opts.push([sch.target, sch.target + ' (gone)']);
+    var opts = options;                  // (5.44) not a copy for every row, as a scene's actions
+    if (sch.target && !opts.some(function (o) { return o[0] === sch.target; })) opts = options.concat([[sch.target, sch.target + ' (gone)']]);
     sch.target = fillSelect(target, opts, sch.target);
     attachTargetReadings(target, function () { return sch.target; });
     target.onchange = function () {
@@ -26619,8 +26734,10 @@ function paintScenes(st) {
     (scene.actions = scene.actions || []).forEach(function (a, j) {
       var line = el('span', 'act');
       var target = el('select');
-      var opts = options.slice();
-      if (a.target && !opts.some(function (o) { return o[0] === a.target; })) opts.push([a.target, a.target + ' (gone)']);
+      // (5.44) the scene's own list as it is, not a copy for every action: the
+      // same list is the one whose markup is kept (optionsMarkup)
+      var opts = options;
+      if (a.target && !opts.some(function (o) { return o[0] === a.target; })) opts = options.concat([[a.target, a.target + ' (gone)']]);
       a.target = fillSelect(target, opts, a.target);
       attachTargetReadings(target, function () { return a.target; });
       target.onchange = function () {
