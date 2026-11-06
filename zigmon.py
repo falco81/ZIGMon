@@ -9099,6 +9099,16 @@ class Daemon(object):
         self._mqtt_quiet = {}    # plug -> when we last said its MQTT went unanswered
         self._mqtt_road_off = {}  # plug -> until when its commands go straight over HTTP
         self._silent_since = {}  # device -> when we first said it had gone quiet
+        # (5.44.1) ...kept across a restart: forgotten, every device already
+        # said to be quiet was said to be quiet again after each restart and
+        # upgrade - one more push and one more paid text for a sensor the
+        # house had been told about in the night
+        try:
+            kept = json.loads(self.store.get_meta('watch_said') or '{}')
+            if isinstance(kept, dict):
+                self._silent_since = {str(k): float(v) for k, v in kept.items() if numeric(v)}
+        except (ValueError, TypeError):
+            pass
         self._group_last = {}    # sensor group -> the value it last read
         self._group_trigger = {} # sensor group -> which member last moved it
         self._group_skipped = {} # sensor group -> members left out this time
@@ -10573,7 +10583,21 @@ class Daemon(object):
 
     def record(self, device_id, name, payload):
         now = int(time.time())
-        self.zigbee_seen[device_id] = now
+        # (5.44.1) A retained copy the broker replays at a (re)connect is what
+        # the device said last, not the device speaking now. Taken as heard
+        # now, a thermometer whose battery had died in the night was "seen
+        # just now" after every restart of the daemon or the broker: the
+        # watchdog started its hours of patience again and then said "gone
+        # quiet" a second time (a second paid text), the dashboard showed it
+        # fresh, and its old reading went into the history as a new one. Its
+        # values are still taken; when it was heard stays when it was heard.
+        heard_at = None
+        if getattr(self, '_retained_msg', False):
+            seen_row = self.store.device(device_id) or {}
+            if seen_row.get('last_seen'):
+                heard_at = int(seen_row['last_seen'])
+        if heard_at is None:
+            self.zigbee_seen[device_id] = now
         if self._set_sent and isinstance(payload, dict):
             # a report carrying a key we just set is the command's echo
             for (dev_id, key), sent in list(self._set_sent.items()):
@@ -10622,14 +10646,16 @@ class Daemon(object):
                 values[key] = v
         if values:
             self.queue_rules(device_id, name, values)    # motion -> light must not wait for a disk commit
-            self.store.store_sample(device_id, now, values)
+            if heard_at is None:
+                self.store.store_sample(device_id, now, values)
         clean = {k: v for k, v in flat.items() if not k.startswith('update')}
-        merged = self.store.store_snapshot(device_id, now, clean)
-        self.store.touch_device(device_id, now)
+        merged = self.store.store_snapshot(device_id, heard_at or now, clean)
+        if heard_at is None:
+            self.store.touch_device(device_id, now)
         entry = self.live.setdefault(device_id, {'payload': {}, 'ts': None, 'availability': None})
         before = entry.get('payload') or {}
         entry['payload'] = merged
-        entry['ts'] = now
+        entry['ts'] = heard_at or now
         try:
             self.watch_states(device_id, name, before, flat)
         except Exception as e:
@@ -11565,6 +11591,12 @@ class Daemon(object):
             name = (row.get('alias') or row['name']) if row else device_id
         offline_ish = 'lost contact' in detail or 'offline' in detail or 'went quiet' in detail \
             or 'unreachable' in detail or 'back online' in detail or 'reporting again' in detail
+        # (5.44.1) ...and the two ways back this house really writes: a socket
+        # "contact restored" and a Zigbee device "online" again. Neither was
+        # among the words, so "a device going quiet, unreachable or back" said
+        # the heater was lost and never that it came back
+        offline_ish = offline_ish or (kind == 'plug' and detail.startswith('contact restored')) \
+            or (kind == 'availability' and detail == 'online')
         if offline_ish and self.maint_holding():
             return                       # the machine being worked on: kept in the events (maintenance)
         switch_ish = kind in ('plug', 'switch') and ('switched' in detail or detail.startswith('set ') or detail.startswith('pulse'))
@@ -20977,12 +21009,22 @@ class Daemon(object):
             'threads': threading.active_count(),
         }
 
+    @staticmethod
+    def _box_of(p):
+        """(5.44.1) Which box a socket is on: its address whole, port and all,
+        as the poll round groups them. By the address before the colon, two
+        boxes behind one address (a port forwarded to each, a proxy) were one
+        box here and separate boxes to the round - so each read "its part of
+        the whole box" from the other's answer, and one of them unplugged went
+        on showing the other's reading, online, with no "lost contact" ever."""
+        return str(p.cfg.get('host') or '').strip().lower()
+
     def _box_mates(self, p):
         """Every socket that lives on the same box as this one."""
-        host = str(p.cfg.get('host') or '').split(':')[0]
+        host = self._box_of(p)
         if not host:
             return [p]
-        return [q for q in self.plugs.values() if str(q.cfg.get('host') or '').split(':')[0] == host]
+        return [q for q in self.plugs.values() if self._box_of(q) == host]
 
     def _shared_switch_status(self, p, rpc, now, force):
         """This socket's part of one reading of the whole box, fetched once
@@ -20991,7 +21033,7 @@ class Daemon(object):
         mates = self._box_mates(p)
         if len(mates) < 2:
             return None
-        host = str(p.cfg.get('host') or '').split(':')[0]
+        host = self._box_of(p)
         fresh = float(CONFIG.get('plug_poll_interval') or 15) * 0.8
         with self._box_status_guard:
             cached = self._box_status.get(host)
@@ -24426,7 +24468,19 @@ class Daemon(object):
             return
         now = time.time()
         quiet = []
-        for dev in self.store.devices():
+        said_before = dict(self._silent_since)
+        try:
+            self._watchdog_round(now, quiet)
+        finally:
+            if self._silent_since != said_before:
+                self.store.set_meta('watch_said', json.dumps(self._silent_since), deferred=True)
+
+    def _watchdog_round(self, now, quiet):
+        listed = self.store.devices()
+        known = {dev['id'] for dev in listed}
+        for gone in [k for k in self._silent_since if k not in known]:
+            self._silent_since.pop(gone, None)       # kept on disk now: not for devices gone
+        for dev in listed:
             if dev.get('source') in ('plug', 'wifi', 'weather', 'sms', 'group', 'gateway'):
                 # Those are not sensors with batteries and radios: the weather
                 # is fetched, the modem is asked, a group is worked out. Each
@@ -36820,7 +36874,11 @@ class Daemon(object):
                 return None
             if self._month_done == tag or self.store.get_meta('monthly_summary_sent') == tag:
                 return None
-        data = self.energy_summary()
+        # (5.44.1) counted now, not the last answer kept for the pages: with no
+        # page open since the evening before, that answer was worked out in
+        # the old month, its "last month" was the month before - and the
+        # summary on the 1st said "October: 0.0 kWh" with September's figures
+        data = self.energy_summary(force=True)
         rows = sorted(data['plugs'], key=lambda r: -(r['last_month_wh'] or 0))
         total = sum(r['last_month_wh'] or 0 for r in rows) / 1000.0
         price = numeric(CONFIG.get('price_per_kwh'))
