@@ -131,6 +131,9 @@ class Box(BaseHTTPRequestHandler):
 
 
 # ---- paho's network thread, as in pass1_realtime -------------------------------------
+HOLD_UNACKED = [False]          # the broker link is gone: nothing is acknowledged
+
+
 class Info(object):
     rc = 0
     mid = 1
@@ -152,11 +155,22 @@ class FakePaho(object):
         self.cv = threading.Condition()
         self.inq = collections.deque()
         self.published = []
+        self._out_messages = collections.OrderedDict()
         threading.Thread(target=self.loop, name='paho', daemon=True).start()
+
+    # what paho keeps of a QoS 1 message the broker has not acknowledged yet
+    _out_message_mutex = threading.Lock()
+    _mid = 0
 
     def publish(self, topic, payload=None, qos=0, retain=False):
         self.published.append((time.perf_counter(), topic, payload))
-        return Info()
+        info = Info()
+        with self._out_message_mutex:
+            FakePaho._mid += 1
+            info.mid = FakePaho._mid
+            if qos and HOLD_UNACKED[0]:
+                self._out_messages[info.mid] = Msg(topic, payload.encode() if isinstance(payload, str) else payload)
+        return info
 
     def subscribe(self, *a, **k):
         return (0, 1)
@@ -210,6 +224,8 @@ d = zigmon.Daemon()
 d.backup_dir = lambda: W / 'backups'
 box = '127.0.0.1:%d'
 plugs = [{'name': 'Light-A', 'host': box % BOXPORT, 'switch_id': 0, 'kind': 'plug', 'host_state': 'enabled'},
+         {'name': 'Light-M', 'host': box % BOXPORT, 'switch_id': 1, 'kind': 'plug', 'host_state': 'enabled',
+          'mqtt': True, 'mqtt_name': 'shellyplug-m'},
          {'name': 'Nobody', 'host': box % IDLEPORT, 'switch_id': 0, 'kind': 'plug', 'host_state': 'enabled'},
          {'name': 'Gone', 'host': box % OFFPORT, 'switch_id': 0, 'kind': 'plug', 'host_state': 'enabled'}]
 plugs += [{'name': 'Strip-%d' % i, 'host': box % STRIPPORT, 'switch_id': i, 'kind': 'plug',
@@ -235,6 +251,7 @@ def rule(rid, dev, key, value, plug, do):
 d.store.set_meta('rules', json.dumps([
     rule('a-on', 'PIR-A', 'occupancy', 1, 'Light-A', 'on'), rule('a-off', 'PIR-A', 'occupancy', 0, 'Light-A', 'off'),
     rule('g-on', 'PIR-G', 'occupancy', 1, 'Gone', 'on'),
+    rule('z-on', 'PIR-G', 'occupancy', 0, 'zb:zigbee:Lamp:state', 'on'),
     rule('d-open', 'Door', 'contact', 0, 'scene:sc-strip', 'on'),
     rule('d-shut', 'Door', 'contact', 1, 'scene:sc-dark', 'on'),
 ]))
@@ -452,6 +469,58 @@ try:
             print('  %d spares opened to the box a rule switches (%.1f a second)' % (len(rot), len(rot) / span))
             check(len(rot) <= span / (zigmon.CONFIG['plug_keepalive_s'] * 0.5) + 6,
                   'the warmer opened %d spares in %.0f s to one box - more than one per renewal' % (len(rot), span))
+
+        # -- 7. at a broker reconnect: what paho would send again ------------------------
+        print('at a reconnect: a lamp\'s /set is kept for a while, a superseded command never goes')
+        HOLD_UNACKED[0] = True
+        paho._out_messages.clear()
+        mids = d.__dict__.setdefault('_cmd_mids', {})
+
+        def sent_ago(topic, body, ago):
+            info = d.say(topic, json.dumps(body), qos=1)
+            if info.mid in mids:
+                mids[info.mid] -= ago
+            return info.mid
+        lamp3 = sent_ago(BASE + '/Lamp/set', {'state': 'ON'}, 3)               # pressed 3 s before
+        lamp12 = sent_ago(BASE + '/Lamp-old/set', {'state': 'ON'}, 12)         # long ago
+        rpc3 = sent_ago('shellyplug-m/rpc', {'id': 9, 'method': 'Switch.Set'}, 3)   # went over HTTP too
+        dim_old = sent_ago(BASE + '/Lamp-2/set', {'brightness': 40}, 1)
+        dim_new = sent_ago(BASE + '/Lamp-2/set', {'brightness': 200}, 0.5)     # takes its place
+        state2 = sent_ago(BASE + '/Lamp-2/set', {'state': 'ON'}, 1)            # a different thing said
+        HOLD_UNACKED[0] = False
+        n_pub = len(paho.published)
+        n_box = len([a for a in ARRIVED[BOXPORT] if a[1] == 'Shelly.GetStatus'])
+        d._on_disconnect(paho, None, 1)                  # the link went
+        t0 = time.perf_counter()
+        d._on_connect(paho, None, {}, 0)
+        held_ms = (time.perf_counter() - t0) * 1000
+        left = set(paho._out_messages)
+        print('  kept: %s' % sorted(paho._out_messages[m].topic for m in left))
+        check(lamp3 in left, 'a lamp pressed 3 s before the reconnect was dropped - it never comes on')
+        check(lamp12 not in left, 'a lamp command from 12 s before the reconnect is sent late')
+        check(rpc3 not in left, 'a Shelly command over the broker from 3 s before is sent late (it went over HTTP)')
+        check(dim_old not in left and dim_new in left, 'an older command taken over by a newer one to the same '
+              'lamp would go again first: old %s, new %s' % (dim_old in left, dim_new in left))
+        check(state2 in left, 'a command saying something else to the same lamp was dropped as superseded')
+        check(held_ms < 50, 'the reconnect held the broker\'s thread %.1f ms' % held_ms)
+
+        # -- 8. ...and a read of the MQTT boxes and the switched lamps right after it -------
+        print('after a reconnect the MQTT boxes are read at once, and the lamps asked for their state')
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            reads = [a for a in ARRIVED[BOXPORT] if a[1] == 'Shelly.GetStatus'][n_box:]
+            gets = [x for x in paho.published[n_pub:] if x[1].endswith('/get')]
+            if reads and gets:
+                break
+            time.sleep(0.02)
+        reads = [a for a in ARRIVED[BOXPORT] if a[1] == 'Shelly.GetStatus'][n_box:]
+        gets = [x for x in paho.published[n_pub:] if x[1].endswith('/get')]
+        print('  %d status read(s) of the box, /get to %s' % (len(reads), sorted({g[1] for g in gets})))
+        check(reads and (reads[0][0] - t0) < 1.5, 'no status read of an MQTT box right after the reconnect: a '
+              'socket switched at the wall meanwhile shows the wrong state until the next poll')
+        check(any(g[1] == BASE + '/Lamp/get' for g in gets), 'the lamp a rule switches was not asked for its state '
+              'after the reconnect')
+        paho._out_messages.clear()
 
         # -- 6. turned off, the spares go ------------------------------------------------
         if WARM:

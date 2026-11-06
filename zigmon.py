@@ -9397,7 +9397,74 @@ class Daemon(object):
             self.notify('The broker connection is back.', 'info', dedup='broker-back', about='broker')
         client.subscribe(self.topics() + [('zigmon/ping', 0), ('zigmon/rpc', 0)])
         log('connected; subscribed to %s' % ', '.join(t for t, _ in self.topics()))
+        if getattr(self, '_connected_before', False) or self.last_disconnect:
+            # (5.44.1) off the broker's thread: it has the retained flood to take
+            threading.Thread(target=self._after_reconnect, name='reconnect-read', daemon=True).start()
+        self._connected_before = True
         self.store.add_event('broker', 'connected to %s:%s' % (CONFIG['mqtt_host'], CONFIG['mqtt_port']))
+
+    RECONNECT_READ_GAP_S = 0.15         # between one box (or lamp) asked and the next
+
+    def _after_reconnect(self):
+        """(5.44.1) What changed while only our link to the broker was down.
+        A box's retained status is ignored at a reconnect once its state is
+        known (it is the broker's old copy, not news), so a socket switched at
+        the wall meanwhile showed its old state until the next poll, fifteen
+        seconds on - and a rule asking for it then was skipped as "already
+        so". Every box with an MQTT name is read at once, one box after
+        another, and each Zigbee light that a rule, a binding or a scene
+        switches is asked for its state (Zigbee2MQTT's /get), a little apart
+        so the mesh is not asked everything in one breath."""
+        if self._stop.wait(0.3):        # the subscriptions and the retained copies first
+            return
+        gap = self.RECONNECT_READ_GAP_S
+        groups = {}
+        with self._plug_lock:
+            boxes = list(self.plugs.values())
+        for p in boxes:
+            if str(p.cfg.get('mqtt_name') or '').strip() and str(p.cfg.get('host_state') or '') != 'disabled':
+                groups.setdefault(str(p.cfg.get('host') or p.name), []).append(p)
+        for members in groups.values():
+            if self._stop.is_set() or not self.connected:
+                return
+            try:
+                if len(members) > 1:
+                    self.poll_plug_group(members, force=True)
+                else:
+                    self.poll_plug(members[0], force=True)
+            except Exception as e:
+                log('%s: the read after the reconnect: %s' % (members[0].name, e), 'debug')
+            self._stop.wait(gap)
+        wanted = {}
+
+        def walk(x):
+            if isinstance(x, str):
+                if x.startswith('zb:') and x.count(':') >= 2:
+                    pieces = x.split(':')
+                    wanted.setdefault(':'.join(pieces[1:-1]), set()).add(pieces[-1])
+            elif isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+        for key in ('rules', 'bindings', 'scenes', 'action_groups', 'sequences'):
+            try:
+                walk(self.store.meta_json(key))
+            except Exception:
+                pass
+        base = CONFIG['base_topic'].rstrip('/')
+        for device_id, keys in list(wanted.items())[:64]:
+            if self._stop.is_set() or not self.connected:
+                return
+            dev = self.store.device(device_id)
+            if not dev or not dev.get('name'):
+                continue
+            try:
+                self.say('%s/%s/get' % (base, dev['name']), json.dumps({k: '' for k in sorted(keys)}))
+            except Exception as e:
+                log('%s: the state asked after the reconnect: %s' % (dev['name'], e), 'debug')
+            self._stop.wait(gap)
 
     def _on_connect_fail(self, client, userdata, *rest):
         self.connect_failures += 1
@@ -9444,6 +9511,8 @@ class Daemon(object):
     # A command the broker has not acknowledged by the time the link comes
     # back is older than this: it is not sent again. (5.44)
     COMMAND_LATE_S = 2.0
+    # (5.44.1) a Zigbee /set has no HTTP to fall back on: kept this long
+    ZIGBEE_SET_LATE_S = 10.0
 
     def _drop_late_commands(self, client):
         """(5.44) paho keeps every QoS 1 message the broker has not
@@ -9456,6 +9525,15 @@ class Daemon(object):
         arriving late undid an "off" given since. A command is now or not at
         all; the house's rules and buttons say it again if it is still wanted.
         Called from on_connect, which paho calls before it sends them again."""
+        # (5.44.1) ...but a Zigbee light has no other road. A Shelly's command
+        # over the broker went over HTTP as well when its answer did not come,
+        # so its late copy is only a danger; a lamp's /set is the one and only
+        # way the press reaches it, and dropping it after two seconds meant a
+        # light pressed three seconds before the link came back never came on.
+        # A /set is kept for ZIGBEE_SET_LATE_S. Whatever its age, a command is
+        # never sent again once a newer one to the same topic, saying the same
+        # things (the same keys), has taken its place - the newer is what is
+        # wanted, and the older arriving first would flick the light.
         sent = self.__dict__.get('_cmd_mids') or {}
         queue = getattr(client, '_out_messages', None)
         lock = getattr(client, '_out_message_mutex', None)
@@ -9463,15 +9541,33 @@ class Daemon(object):
             return 0
         now = time.monotonic()
         dropped = []
+
+        def keys_of(m):
+            try:
+                body = json.loads(m.payload.decode('utf-8') if isinstance(m.payload, bytes) else m.payload)
+                return frozenset(body) if isinstance(body, dict) else None
+            except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
+                return None
         try:
             with lock:
+                newest = {}                     # (topic, keys) -> the latest mid saying it
+                for mid, m in list(queue.items()):
+                    if mid in sent:
+                        topic = str(getattr(m, 'topic', '') or '')
+                        newest[(topic, keys_of(m) if topic.endswith('/set') else None)] = mid
                 for mid, m in list(queue.items()):
                     at = sent.get(mid)
-                    if at is None or now - at < self.COMMAND_LATE_S:
+                    if at is None:
+                        continue
+                    topic = str(getattr(m, 'topic', '') or '')
+                    key = (topic, keys_of(m) if topic.endswith('/set') else None)
+                    limit = self.ZIGBEE_SET_LATE_S if topic.endswith('/set') else self.COMMAND_LATE_S
+                    superseded = newest.get(key) != mid
+                    if not superseded and now - at < limit:
                         continue
                     queue.pop(mid, None)
                     sent.pop(mid, None)
-                    dropped.append(str(getattr(m, 'topic', '') or ''))
+                    dropped.append(topic + (' (superseded)' if superseded else ''))
         except Exception as e:                          # noqa: BLE001 - paho's insides, best effort
             log('looking at what paho would send again: %s' % e, 'debug')
         if dropped:
