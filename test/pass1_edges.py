@@ -289,6 +289,79 @@ BROKER.acked()
 print('a reconnect sends nothing late: the command from before it is dropped, a fresh one kept')
 
 # ============================================================================
+# 4b. A motion light with a cooldown is said out loud
+# ============================================================================
+# Every new rule carries 300 s of cooldown - meant for a reading dancing around
+# its line. On "motion -> on" paired with "no motion -> off after 15 s": in at
+# 0, the PIR clears at 60, out at 75, back in at 120 - and the rule that sees
+# them may not act until 300. Measured below on the rules themselves.
+d.store.upsert_device({'id': 'zigbee:PIR-Edge', 'name': 'PIR-Edge', 'source': 'zigbee', 'kind': 'sensor',
+                       'exposes': {'occupancy': {}}})
+d.names['PIR-Edge'] = 'zigbee:PIR-Edge'
+motion = [{'id': 'm-on', 'device': 'zigbee:PIR-Edge', 'key': 'occupancy', 'op': '==', 'value': 1,
+           'plug': 'Light-Edge', 'do': 'on', 'enabled': True, 'cooldown_s': 300},
+          {'id': 'm-off', 'device': 'zigbee:PIR-Edge', 'key': 'occupancy', 'op': '==', 'value': 0,
+           'plug': 'Light-Edge', 'do': 'off', 'enabled': True, 'after_s': 15, 'cooldown_s': 300}]
+d.store.set_meta('rules', json.dumps(motion))
+check(any('cooldown of 300 s' in n for n in d.mind_the_rules()),
+      'a motion light whose "on" has a 300 s cooldown beside an "off" rule is not mentioned: %r'
+      % d.mind_the_rules())
+motion[0]['cooldown_s'] = 0
+d.store.set_meta('rules', json.dumps(motion))
+check(not any('cooldown' in n for n in d.mind_the_rules()), 'a motion light with no cooldown is complained about')
+d.store.set_meta('rules', json.dumps([]))
+print('a motion light whose "on" has a cooldown is said out loud')
+
+# ============================================================================
+# 4c. A broker back after half a minute is found again within seconds
+# ============================================================================
+# paho doubles its wait after every failed try up to max_delay: at 30 a broker
+# away for half a minute was tried again up to 30 s after it was back, and the
+# whole house - buttons, sensors, lights - did nothing all that time.
+class _FakeClient(object):
+    def __init__(self, *a, **k):
+        self.delays = None
+
+    def reconnect_delay_set(self, min_delay=1, max_delay=120):
+        self.delays = (min_delay, max_delay)
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+_was_mqtt = zigmon.mqtt
+zigmon.mqtt = type('M', (), {'Client': _FakeClient})
+try:
+    _c = zigmon.make_mqtt_client('edge')
+finally:
+    zigmon.mqtt = _was_mqtt
+check(_c.delays is not None and _c.delays[1] <= 5,
+      'the broker is tried again at most every %s s once it has been away a while' % (_c.delays,))
+print('a broker that comes back is tried again within %s s' % _c.delays[1])
+
+# ============================================================================
+# 4d. A box's retained status, replayed at a reconnect, is not news
+# ============================================================================
+# The socket was switched off over HTTP while its MQTT was down; the broker
+# still holds its last status (on), retained, and hands it over when we
+# subscribe again. Taken as news, it was stamped newer than everything: the
+# house believed "on", the tile flipped, and the next "on" a rule asked for
+# was skipped as already done - a dark room.
+p = plug(mqtt=True, mqtt_name='light-edge')
+d._plug_switched(p, False, 'a test')
+_m = type('M', (), {})()
+_m.topic, _m.retain = 'light-edge/status/switch:0', True
+_m.payload = json.dumps({'id': 0, 'output': True, 'apower': 40.0}).encode()
+d._on_message(None, None, _m)
+check(p.output == 0, 'the broker\'s retained "on" from before put a socket switched off back to on')
+check(not d._plug_already(p, True, 'rule: test'), 'a rule\'s "on" would be skipped as already on')
+_m.retain = False                                  # the same said by the box now does count
+d._on_message(None, None, _m)
+check(p.output == 1, 'the box saying "on" itself was not taken')
+print('a retained status replayed at a reconnect does not undo what the house knows')
+settle()
+
+# ============================================================================
 # 5. The page: click -> command -> tile, and a switch that did not happen
 # ============================================================================
 # The tile is painted the moment it is pressed and the answer confirms it. When

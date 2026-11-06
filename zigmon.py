@@ -7793,7 +7793,13 @@ def make_mqtt_client(client_id, clean=True):
         else:
             client.tls_set(cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS_CLIENT)
             client.tls_insecure_set(True)
-    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    # (5.44) At most five seconds between tries, not thirty. paho doubles the
+    # wait after each try that fails, so a broker away for half a minute (an
+    # upgrade of mosquitto, a restart that took its time) was tried again 16
+    # or 30 s after it was already back - and for all of that every button,
+    # every sensor and every light in the house did nothing. A try at a
+    # broker that is not there is a refused connection: it costs nothing.
+    client.reconnect_delay_set(min_delay=1, max_delay=5)
     # A scene that switches twenty things publishes twenty messages at once.
     # Paho lets twenty be in flight by default and then waits for each PUBACK
     # before the next goes out - so the far end of a big scene waited on the
@@ -10304,6 +10310,16 @@ class Daemon(object):
         for p in plugs:
             value = updates.get(int(p.cfg.get('switch_id') or 0))
             if value is None:
+                continue
+            if getattr(self, '_retained_msg', False) and p.output is not None:
+                # (5.44) the broker's copy of what the box said last, replayed
+                # at our reconnect - not something the box says now. Taken as
+                # news it was stamped newer than everything (output_at), so a
+                # socket switched over HTTP while its MQTT was down went back
+                # to its old state in the house's mind: the tile flipped, and
+                # the next rule asking for it was skipped as "already so". The
+                # box's own reading says what it is; this is only used when
+                # nothing else is known yet.
                 continue
             changed = False
             if 'output' in value:
@@ -31349,6 +31365,28 @@ class Daemon(object):
                          'the hallway rule carries.'
                          % (self.pretty_device(r.get('device') or ''),
                             self.target_label(r.get('plug') or '')))
+        # (5.44) A motion light "on" with a cooldown, and a rule that puts the
+        # same light out when the motion stops. The cooldown is there for a
+        # reading dancing around its line (a thermostat's compressor); every
+        # new rule gets 300 s of it. On a motion light it means: the light
+        # went out after the sensor's minute of "occupied" and its wait, and
+        # somebody walking back in within five minutes of the first movement
+        # stood in the dark - the rule saw them and was not allowed to act.
+        for r in live:
+            if str(r.get('key') or '') != 'occupancy' or str(r.get('do') or '').lower() != 'on':
+                continue
+            cool = int(numeric(r.get('cooldown_s')) or 0)
+            if cool <= 0:
+                continue
+            mate = [x for x in live if x.get('device') == r.get('device') and x.get('key') == 'occupancy'
+                    and x.get('plug') == r.get('plug') and str(x.get('do') or '').lower() == 'off']
+            if not mate:
+                continue
+            notes.append('"%s on when it sees somebody" has a cooldown of %d s while another rule puts %s '
+                         'out when the motion stops: somebody coming back within %d s of the last time '
+                         'it came on stays in the dark. A cooldown of 0 is what a motion light wants.'
+                         % (self.pretty_device(r.get('device') or ''), cool,
+                            self.target_label(r.get('plug') or ''), cool))
         for note in notes[:6]:
             log('rules: %s' % note, 'warn')
             self.say_event('control', note, 'warn', about='config_odd',
