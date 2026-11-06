@@ -38000,9 +38000,18 @@ class Daemon(object):
             if not url:
                 self._stop.wait(20)
                 continue
-            stream = url.rstrip('/') + '/json?since=' + str(int(time.time()))
+            # (5.43.3) a private server's token or user, taken out of the
+            # address as the alerts take it (ntfy_address): left in, urllib
+            # took ":tk_...@host" for the host and never connected - and the
+            # line below wrote the token into the log in full on every connect
+            where, auth = ntfy_address(url)
+            url = where
+            stream = where.rstrip('/') + '/json?since=' + str(int(time.time()))
             try:
-                req = urllib.request.Request(stream, headers={'User-Agent': 'zigmon/%s' % __version__})
+                headers = {'User-Agent': 'zigmon/%s' % __version__}
+                if auth:
+                    headers['Authorization'] = auth
+                req = urllib.request.Request(stream, headers=headers)
                 # ntfy sends a keepalive frame every 45 s; a read that sees
                 # nothing for two minutes means the link died quietly, and
                 # a reconnect is the only way to find out. Without this the

@@ -257,6 +257,46 @@ for url, secret in (('https://:tk_Abc123SecretToken@ntfy.example.org/house', 'tk
         check(auth and where == 'https://ntfy.example.org/house', 'the kept address no longer logs in')
 zigmon.CONFIG['notify_ntfy'] = ''
 
+# 14. presence over a private ntfy logs in, and the log never carries its token
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa: E402
+heard = []
+
+
+class Ntfy(BaseHTTPRequestHandler):
+    def do_GET(self):
+        heard.append((self.path, self.headers.get('Authorization') or ''))
+        raw = b'{"event":"open"}\n'
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = ThreadingHTTPServer(('127.0.0.1', 19521), Ntfy)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+said = []
+zigmon.log = lambda msg, level='info': said.append(str(msg))
+zigmon.CONFIG['presence_ntfy'] = 'http://:tk_PresenceTok99@127.0.0.1:19521/where'
+d._stop.clear()
+loop = threading.Thread(target=d.presence_ntfy_loop, daemon=True)
+loop.start()
+deadline = time.time() + 6
+while time.time() < deadline and not heard:
+    time.sleep(0.1)
+d._stop.set()
+loop.join(5)
+zigmon.log = real_log
+srv.shutdown()
+srv.server_close()
+zigmon.CONFIG['presence_ntfy'] = ''
+check(heard and heard[0][1] == 'Bearer tk_PresenceTok99',
+      'the presence listener never reached a private ntfy with its token (%s)' % (heard[:1],))
+check(not [x for x in said if 'tk_PresenceTok99' in x],
+      'the presence listener wrote the ntfy token into the log')
+
 shutil.rmtree(str(W), ignore_errors=True)
 print('hunt5433_msg: %s' % ('FAILED (%d)' % len(bad) if bad else 'ok'))
 os._exit(1 if bad else 0)
