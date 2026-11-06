@@ -1611,6 +1611,11 @@ class SmsLoginFailed(RuntimeError):
     send that timed out, which very likely was - and is kept to try again."""
 
 
+# (5.44) The thread switching one socket of a strip, telling the scene that
+# started it when its command has taken its place in the box's queue.
+CMD_ORDER = threading.local()
+
+
 class ShellyRPC(object):
     """Minimal JSON-RPC client for a Shelly Gen2+ device, standard library only.
 
@@ -1623,7 +1628,7 @@ class ShellyRPC(object):
     """
     _challenges = {}
     _last_request = {}
-    _conns = {}                 # one open connection per box, used again
+    _conns = {}                 # host -> [(connection, last used)]: a few open per box, used again (5.44)
     _conn_guard = threading.Lock()
     _pace_locks = {}                # host -> Lock: pacing serializes calls to ONE box, never across boxes
     _pace_locks_guard = threading.Lock()
@@ -1877,6 +1882,11 @@ class ShellyRPC(object):
                 ticket = gate['next']
                 gate['next'] += 1
                 gate['queue'].append(ticket)
+                # (5.44) whoever is waiting to start the next socket of a
+                # strip is told this one has its place (see run_scene)
+                placed = getattr(CMD_ORDER, 'placed', None)
+                if placed is not None:
+                    placed.set()
             deadline = time.time() + 20
             while True:
                 # A poll is a read and a command is what somebody is waiting
@@ -1989,16 +1999,30 @@ class ShellyRPC(object):
         window = float(CONFIG.get('plug_keepalive_s') or 0)
         for attempt in (0, 1):
             conn = None
+            # (5.44) A few kept per box, not one. The four sockets of a strip
+            # are four commands in flight together (plug_commands_at_once),
+            # and with one connection kept the other three opened a new one
+            # every time - a TCP handshake each, across the Wi-Fi, before the
+            # relay was even asked - and three of the four were closed again
+            # the moment they were put back. The newest is used first; the
+            # ones past the window are closed as before.
+            stale = []
             with self._conn_guard:
-                kept = self._conns.pop(self.host, None)
-            if kept:
-                conn, used_at = kept
-                if window <= 0 or time.time() - used_at > window:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    conn = None
+                pool = self._conns.get(self.host) or []
+                while pool and conn is None:
+                    one, used_at = pool.pop()
+                    if window <= 0 or time.time() - used_at > window:
+                        stale.append(one)
+                    else:
+                        conn = one
+                # whatever is older than the one taken is older still
+                stale.extend(c for c, used_at in pool if window <= 0 or time.time() - used_at > window)
+                pool[:] = [(c, u) for c, u in pool if c not in stale]
+            for one in stale:
+                try:
+                    one.close()
+                except Exception:
+                    pass
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -2029,7 +2053,15 @@ class ShellyRPC(object):
                     conn.close()
                 else:
                     with self._conn_guard:
-                        self._conns[self.host] = (conn, time.time())
+                        pool = self._conns.setdefault(self.host, [])
+                        pool.append((conn, time.time()))
+                        extra = pool[:-max(1, int(CONFIG.get('plug_commands_at_once') or 1))]
+                        del pool[:len(extra)]
+                    for one, _used in extra:
+                        try:
+                            one.close()
+                        except Exception:
+                            pass
                 return status, data, head
             except Exception as e:
                 if CONFIG.get('debug'):
@@ -29740,6 +29772,7 @@ class Daemon(object):
                             known.append(said in ('on', 'true', '1'))
                 if known:
                     together = 'off' if any(known) else 'on'
+            rest = []
             for action, targets in expanded:
                 if together and str(action.get('do', '')).lower() == 'toggle':
                     action = dict(action, do=together)
@@ -29748,12 +29781,18 @@ class Daemon(object):
                         host = (target[1].cfg or {}).get('host') or target[1].name
                         by_host.setdefault(host, []).append((target, action))
                     else:
-                        send(target, action, 0.0)
+                        rest.append((target, action))
+            # (5.44) the boxes first: a socket over HTTP has a round trip
+            # ahead of it, a Zigbee lamp's publish is gone in a moment - and
+            # sent after four lamps, the first socket of a strip started 2.7 ms
+            # late every time
             for jobs in by_host.values():
                 if len(jobs) == 1:
                     send(jobs[0][0], jobs[0][1], 0.0)     # nothing to keep in order
                 else:
                     threading.Thread(target=one_box, args=(jobs,), name='scene-box', daemon=True).start()
+            for target, action in rest:
+                send(target, action, 0.0)
 
         def send(target, action, stagger):
             if CONFIG.get('debug'):
@@ -29794,9 +29833,28 @@ class Daemon(object):
             # switch. Sent one at a time instead, each poll slipped in
             # between and the box answered it before the next command:
             # two round trips a socket rather than one.
-            pace = 0.0 if over_mqtt else min(gap, 0.003)
+            # (5.44) ...and the hair is no longer a sleep. Three milliseconds
+            # between starts put the fourth socket of a strip ten behind the
+            # first, every time, on a box that takes all four at once. The
+            # next socket now starts the moment the one before has its ticket
+            # in the box's queue - which is what fixes the order - or has
+            # finished without needing one (already so, sent over the broker),
+            # and at the latest after plug_command_gap, so one socket waiting
+            # on a command of its own never holds its neighbours back longer.
+            patience = 0.0 if over_mqtt else max(0.003, gap)
+            placed = None
+
+            def run(target, action, placed):
+                CMD_ORDER.placed = placed
+                try:
+                    self._run_binding(target[1], action['do'], 'scene "%s"' % scene['name'], action.get('pulse_ms'))
+                finally:
+                    CMD_ORDER.placed = None
+                    placed.set()
             for i, (target, action) in enumerate(jobs):
-                if i and pace and self._stop.wait(pace):
+                if placed is not None and patience:
+                    placed.wait(patience)
+                if self._stop.is_set():
                     return
                 # "on for ten minutes" and "a degree more" are worked out in
                 # _fire_target and nowhere else. This road went straight to
@@ -29811,10 +29869,8 @@ class Daemon(object):
                     key = self.hold_key(target)
                     if key and self.target_held(key):
                         continue             # taken over by hand, as _fire_target says
-                threading.Thread(
-                    target=self._run_binding,
-                    args=(target[1], action['do'], 'scene "%s"' % scene['name'], action.get('pulse_ms')),
-                    name='binding', daemon=True).start()
+                placed = threading.Event()
+                threading.Thread(target=run, args=(target, action, placed), name='binding', daemon=True).start()
                 if hold_by:
                     threading.Thread(target=self._settle_member, args=(target, action['do'], hold_by),
                                      name='hold', daemon=True).start()
@@ -38663,9 +38719,9 @@ class Daemon(object):
                         pretty = self.target_label(r['plug'])
                         if self._trial_act('rules', r, target, opposite, 'rule: ' + origin, label=pretty):
                             continue
+                        self._fire_target(target, opposite, 'rule: ' + origin, honour_hold=True)   # (5.44) first
                         log('rule back: %s -> %s %s' % (origin, pretty, opposite))
                         self.store.add_event('rule', '%s: %s %s' % (origin, pretty, opposite), 'info', device_id)
-                        self._fire_target(target, opposite, 'rule: ' + origin, honour_hold=True)
                 continue
             holds_first = reading is not None and self._rule_holds(r['op'], reading, r['value'])
             holds_second = None
@@ -38797,10 +38853,14 @@ class Daemon(object):
                     target[1], str(r['do']).lower() == 'on', 'rule'):
                 self.debug('rule: %s -> %s is already %s' % (origin, pretty, r['do']))
                 continue
-            log('rule: %s -> %s %s' % (origin, pretty, r['do']))
-            self.store.add_event('rule', '%s: %s %s' % (origin, pretty, r['do']), 'info', device_id)
+            # (5.44) the relay first, the paperwork after, as a binding has it:
+            # the event is where the notifications are considered (the
+            # device's row, the settings, maintenance, the dedup lock), and
+            # all of it ran on the rule worker before the light was asked
             self._fire_target(target, r['do'], 'rule: ' + origin, r.get('pulse_ms'),
                               facts, honour_hold=True)
+            log('rule: %s -> %s %s' % (origin, pretty, r['do']))
+            self.store.add_event('rule', '%s: %s %s' % (origin, pretty, r['do']), 'info', device_id)
 
     def check_rule_waiting(self):
         """The rules whose action was put off for a while: do the ones whose
