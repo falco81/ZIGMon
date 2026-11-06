@@ -1682,7 +1682,7 @@ class ShellyRPC(object):
     # thread; a command takes it, a poll never does.
     _warm = {}                      # host -> [(connection, when opened, monotonic)], oldest first
     _warm_wake = threading.Event()  # a spare was taken: the warmer opens the next one now
-    warm_counts = collections.Counter()   # opened / taken / aged / closed / failed (tests, /api/perf)
+    warm_counts = collections.Counter()   # opened / taken / aged / closed / failed (for the tests)
 
     @staticmethod
     def _sock_open(sock):
@@ -9426,8 +9426,11 @@ class Daemon(object):
             self.notify('The broker connection is back.', 'info', dedup='broker-back', about='broker')
         client.subscribe(self.topics() + [('zigmon/ping', 0), ('zigmon/rpc', 0)])
         log('connected; subscribed to %s' % ', '.join(t for t, _ in self.topics()))
-        if getattr(self, '_connected_before', False) or self.last_disconnect:
-            # (5.44.1) off the broker's thread: it has the retained flood to take
+        if (getattr(self, '_connected_before', False) or self.last_disconnect) \
+                and time.monotonic() - getattr(self, '_reconnect_read_at', -1e9) >= 10:
+            # (5.44.1) off the broker's thread: it has the retained flood to
+            # take. Once in ten seconds at most, for a link that flaps.
+            self._reconnect_read_at = time.monotonic()
             threading.Thread(target=self._after_reconnect, name='reconnect-read', daemon=True).start()
         self._connected_before = True
         self.store.add_event('broker', 'connected to %s:%s' % (CONFIG['mqtt_host'], CONFIG['mqtt_port']))
@@ -9572,24 +9575,33 @@ class Daemon(object):
         dropped = []
 
         def keys_of(m):
+            """What a command is about: the keys a /set says (state, brightness),
+            or the socket a box's RPC switches - two sockets of one strip told
+            together are two commands, not one taking the other's place. A body
+            not understood is about itself alone."""
             try:
                 body = json.loads(m.payload.decode('utf-8') if isinstance(m.payload, bytes) else m.payload)
-                return frozenset(body) if isinstance(body, dict) else None
             except (ValueError, TypeError, AttributeError, UnicodeDecodeError):
-                return None
+                body = None
+            if not isinstance(body, dict):
+                return ('mid', getattr(m, 'mid', id(m)))
+            if 'method' in body:
+                params = body.get('params') if isinstance(body.get('params'), dict) else {}
+                return ('rpc', str(body.get('method')), str(params.get('id', 0)))
+            return frozenset(body)
         try:
             with lock:
                 newest = {}                     # (topic, keys) -> the latest mid saying it
                 for mid, m in list(queue.items()):
                     if mid in sent:
                         topic = str(getattr(m, 'topic', '') or '')
-                        newest[(topic, keys_of(m) if topic.endswith('/set') else None)] = mid
+                        newest[(topic, keys_of(m))] = mid
                 for mid, m in list(queue.items()):
                     at = sent.get(mid)
                     if at is None:
                         continue
                     topic = str(getattr(m, 'topic', '') or '')
-                    key = (topic, keys_of(m) if topic.endswith('/set') else None)
+                    key = (topic, keys_of(m))
                     limit = self.ZIGBEE_SET_LATE_S if topic.endswith('/set') else self.COMMAND_LATE_S
                     superseded = newest.get(key) != mid
                     if not superseded and now - at < limit:

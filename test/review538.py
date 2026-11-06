@@ -70,7 +70,7 @@ def check(ok, what):
 # ---- the house around the daemon ----------------------------------------------
 BOX = {'output': False, 'polls': 0}
 SETS = queue.Queue()          # (when, on) for every switch command the box is given
-ALERTS = queue.Queue()        # (when, path) for every alert that arrives
+ALERTS = queue.Queue()        # (when, path, body) for every alert that arrives
 ZB = queue.Queue()            # (when, payload) for every command to the Zigbee lamp
 
 
@@ -117,8 +117,8 @@ class Ntfy(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get('Content-Length') or 0))
-        ALERTS.put((time.perf_counter(), self.path))
+        body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        ALERTS.put((time.perf_counter(), self.path, body))
         self.send_response(200)
         self.send_header('Content-Length', '2')
         self.end_headers()
@@ -448,10 +448,16 @@ def alert_probe(limit=15.0):
     drain(ALERTS)
     t0 = time.perf_counter()
     WIRE.put((BASE + '/PIR-Alarm', json.dumps({'occupancy': True}).encode()))
-    try:
-        return (ALERTS.get(timeout=limit)[0] - t0) * 1000
-    except queue.Empty:
-        return None
+    deadline = time.time() + limit
+    while True:
+        try:
+            got = ALERTS.get(timeout=max(0.01, deadline - time.time()))
+        except queue.Empty:
+            return None
+        # (5.44.1) the burglar's alert, not another one that happened to go
+        # out meanwhile (the dead socket's "not taking commands", from before)
+        if b'PIR-Alarm' in got[2]:
+            return (got[0] - t0) * 1000
 
 
 def stats(xs):

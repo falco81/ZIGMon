@@ -329,10 +329,13 @@ try:
     if BENCH:
         print('PIR -> command at the box, after a quiet spell; handshake %d ms; warm spare %s'
               % (HANDSHAKE * 1000, 'on' if WARM else 'not in this build'))
-        for warm in ((1, 4, 0) if WARM else (0,)):
+        modes = [int(x) for x in (os.environ.get('BENCH_WARM') or '1,4,0').split(',')]
+        spells = [(float(a), int(b)) for a, b in (x.split(':') for x in
+                                                 (os.environ.get('BENCH_SPELLS') or '0.5:10,10:6,60:3').split(','))]
+        for warm in (modes if WARM else (0,)):
             zigmon.CONFIG['plug_warm_spare'] = warm
             time.sleep(3.5)
-            for spell, n in ((0.5, 10), (10, 6), (60, 4)):
+            for spell, n in spells:
                 rows, conns = [], 0
                 for _ in range(n):
                     quiet(spell)
@@ -487,6 +490,8 @@ try:
         dim_old = sent_ago(BASE + '/Lamp-2/set', {'brightness': 40}, 1)
         dim_new = sent_ago(BASE + '/Lamp-2/set', {'brightness': 200}, 0.5)     # takes its place
         state2 = sent_ago(BASE + '/Lamp-2/set', {'state': 'ON'}, 1)            # a different thing said
+        strip0 = sent_ago('shellystrip/rpc', {'id': 11, 'method': 'Switch.Set', 'params': {'id': 0, 'on': True}}, 0.5)
+        strip1 = sent_ago('shellystrip/rpc', {'id': 12, 'method': 'Switch.Set', 'params': {'id': 1, 'on': True}}, 0.4)
         HOLD_UNACKED[0] = False
         n_pub = len(paho.published)
         n_box = len([a for a in ARRIVED[BOXPORT] if a[1] == 'Shelly.GetStatus'])
@@ -502,6 +507,8 @@ try:
         check(dim_old not in left and dim_new in left, 'an older command taken over by a newer one to the same '
               'lamp would go again first: old %s, new %s' % (dim_old in left, dim_new in left))
         check(state2 in left, 'a command saying something else to the same lamp was dropped as superseded')
+        check(strip0 in left and strip1 in left, 'two sockets of one strip told together over the broker: one was '
+              'taken for the other\'s replacement (%s, %s)' % (strip0 in left, strip1 in left))
         check(held_ms < 50, 'the reconnect held the broker\'s thread %.1f ms' % held_ms)
 
         # -- 8. ...and a read of the MQTT boxes and the switched lamps right after it -------
