@@ -896,6 +896,7 @@ def _log_write(lines):
 
 
 def _log_writer():
+    background_thread()                 # (5.44.1) a line can wait; a light cannot
     while True:
         _LOG_WAKE.wait()
         _LOG_WAKE.clear()
@@ -938,6 +939,33 @@ def log_drain(timeout=3.0):
     while (_LOG_Q or _LOG_STATE['busy']) and time.time() < deadline:
         time.sleep(0.005)
     return not _LOG_Q and not _LOG_STATE['busy']
+
+
+BACKGROUND_NICE = 10
+
+
+def background_thread(step=None):
+    """(5.44.1) This thread is housekeeping: let the scheduler put it behind.
+
+    The light path - paho's thread, the rule workers, the threads that send a
+    command - and the house's chores share four cores, and under load a
+    rule worker woken by a report waited for a core behind the database
+    writer, the log writer, a backup or VACUUM, the meter's /proc walk:
+    a few milliseconds now and then (pass 1's p99 of 5-24 ms). On Linux a
+    nice value is per thread, so the chores are given a higher one, here,
+    on their own threads, and everything they start inherits it. Raising a
+    nice value needs no privilege (lowering it back would, so only threads
+    that do nothing a person waits on call this). Quietly nothing where the
+    system says no."""
+    try:
+        tid = threading.get_native_id()
+        now = os.getpriority(os.PRIO_PROCESS, tid)
+        want = min(19, now + int(BACKGROUND_NICE if step is None else step))
+        if want > now:
+            os.setpriority(os.PRIO_PROCESS, tid, want)
+        return want
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def apply_gil_switch():
@@ -7687,6 +7715,7 @@ class Storage(object):
                 self._wq_cv.notify_all()
 
     def _writer_loop(self):
+        background_thread()                 # (5.44.1) the rules never wait on a write
         while True:
             self._wq_wake.wait(0.5)
             self._wq_wake.clear()
@@ -16918,6 +16947,7 @@ class Daemon(object):
             return 300.0
 
     def backup_loop(self):
+        background_thread()                 # (5.44.1) housekeeping
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
         while not self._stop.wait(self.backup_nap()):
@@ -20364,6 +20394,7 @@ class Daemon(object):
         """Every few seconds, on a thread of its own so that the clock thread
         that makes a lamp come on is never behind it: the network, a restart,
         the firewall on trial, the clock."""
+        background_thread()                 # (5.44.1) housekeeping
         try:
             self.maint_row()                    # read once here, never by the broker's thread
         except Exception:                       # noqa: BLE001
@@ -20402,6 +20433,7 @@ class Daemon(object):
         asking costs a subprocess and the clock thread is what makes a lamp
         come on when somebody walks past it.
         """
+        background_thread()                 # (5.44.1) housekeeping
         while getattr(self, '_stop', None) is None:
             time.sleep(0.5)                  # the constructor is still at work
         told = None
@@ -20826,6 +20858,7 @@ class Daemon(object):
 
     def _half_minute(self):
         """What the clock does every thirty seconds, off the quarter-second beat."""
+        background_thread()                 # (5.44.1) housekeeping
         # (5.44) each on its own: the heating raising once skipped the digest,
         # the watchdogs, root's chores and everything below them, every half
         # minute for as long as it kept raising
@@ -23996,6 +24029,7 @@ class Daemon(object):
 
     def _warm_caches(self):
         """Work out the slow answers before anybody asks for them."""
+        background_thread()                 # (5.44.1) housekeeping
         time.sleep(5)                     # let the first reports land first
         for what, fn in (('energy', self.energy_summary), ('battery', self.battery_health),
                          ('money', self.money), ('row counts', self.store.stats),
@@ -24018,6 +24052,7 @@ class Daemon(object):
         it first meant anyone asking during the recount found nothing and
         counted it themselves, which is the very wait this was to avoid.
         """
+        background_thread()                 # (5.44.1) housekeeping
         try:
             self.energy_summary(force=True)
         except Exception as e:
@@ -25911,6 +25946,7 @@ class Daemon(object):
 
     def intel_loop(self):
         """One question at a time, for as long as there is a queue."""
+        background_thread()                 # (5.44.1) housekeeping
         while True:
             if not self._intel_kick.wait(300):
                 # Nothing for five minutes: the thread goes. The queue is read
@@ -42600,6 +42636,7 @@ def perf_read():
 
 
 def _perf_watcher():
+    background_thread()                 # (5.44.1) the meter is not what it measures
     """The one thread of the meter (5.43.1): a reading every PERF_SAMPLE_S
     while pages ask, its newest kept as this node's one row; it ends by itself
     PERF_IDLE_S after the last ask, at once when the meter is switched off."""

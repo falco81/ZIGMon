@@ -522,6 +522,24 @@ try:
               'after the reconnect')
         paho._out_messages.clear()
 
+        # -- 9. the chores stand behind the light path for a core -------------------------
+        print('housekeeping threads run at a lower priority than the rule workers')
+        by_name = {t.name: t for t in threading.enumerate()}
+
+        def nice_of(t):
+            try:
+                return os.getpriority(os.PRIO_PROCESS, t.native_id)
+            except (OSError, AttributeError):
+                return None
+        rules_nice = nice_of(by_name['rules'])
+        chores = {n: nice_of(by_name[n]) for n in ('db-writer', 'log-writer') if n in by_name}
+        print('  rules %s, %s' % (rules_nice, chores))
+        check(len(chores) == 2 and all(v is not None and v > rules_nice for v in chores.values()),
+              'the database and log writers compete with the rule workers for a core on equal terms: rules %r, %r'
+              % (rules_nice, chores))
+        check(nice_of(by_name['paho']) == rules_nice and nice_of(by_name['plug-warmer']) == rules_nice,
+              'a thread on the light path was reniced')
+
         # -- 6. turned off, the spares go ------------------------------------------------
         if WARM:
             zigmon.CONFIG['plug_warm_spare'] = 0
