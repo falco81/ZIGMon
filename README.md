@@ -2083,7 +2083,33 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.44.3**
+Current version: **5.45.0**
+
+5.45.0 — a tile for the proxy in front, and sharper blocking from its logs.
+
+* New Overview tile **SSLProxy** (its own section in the tile picker, new
+  shield icon). It is there while the proxy in front is set up and its reading
+  is on: the server's state and uptime, load, memory and disk; nginx and
+  Suricata running or not; nginx's last hour (requests, 444s, 4xx, 5xx) and
+  Suricata's last day (alerts, the highest priority, the top signatures);
+  administrators also see the busiest addresses. One look a minute at most,
+  over the SSH session ZIGMon keeps to the proxy, and only while the card is on
+  the Overview; only counts come back.
+* Blocking from the proxy's logs, weighed against two weeks of real logs
+  (125 addresses blocked before, 182 now, no house address among them):
+  * an address on a reputation list Suricata carries (Spamhaus DROP, DShield,
+    CINS) counts (*ids-listed*), and what it does weighs three times as much
+    for a week;
+  * several addresses asking for the same unmistakable thing within minutes
+    (*proxy-swarm*), and probes sent at this house's own name rather than at
+    an address being walked (*proxy-aimed*), are new kinds;
+  * more scanners known by their User-Agent; RTSP and ICAP requests count as
+    junk; an empty method was counted twice - now once;
+  * never blocked: link previews of chat apps, ACME challenge paths, the proxy
+    itself; addresses seen with a good tap or ntfy answer are learned as the
+    house; forged SYNs do not count.
+
+`test/review545_block.py`, `test/review545_proxytile.py`; these checks fail on 5.44.3.
 
 5.44.3 — the item about root's parts goes with the version it was about.
 
