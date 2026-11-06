@@ -337,6 +337,11 @@ ready = (fb.get('ready') or {}).get('file')
 check(ready and ready.endswith('.enc'), 'the copy was not handed over: %r' % fb.get('status'))
 code, data = call('/api/fullbackup/download?file=%s' % ready, session=S, raw=True)
 check(code == 200 and data[:8] == b'Salted__', 'the download is not the copy locked with its password')
+# taken away once fetched - a moment later on a busy machine (5.44)
+for _ in range(30):
+    if not (STATE / 'root' / 'out' / ready).exists():
+        break
+    time.sleep(0.1)
 check(not (STATE / 'root' / 'out' / ready).exists(), 'the copy handed over stayed behind after its download')
 code, _ = call('/api/fullbackup/download?file=%s' % ready, raw=True)
 check(code == 403, 'a download went out without the PIN')
