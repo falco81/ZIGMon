@@ -187,6 +187,46 @@ try:
     check(ended is None and calls['n'] >= 2,
           'the Wi-Fi loop ended on one unreadable setting (%s; read %d times)' % (ended, calls['n']))
 
+    print('the schedules after the clock is stepped forward')
+
+    def schedules_after_step(wall_now_min, seen_min, rows):
+        lt = time.localtime()
+        now = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, wall_now_min // 60, wall_now_min % 60, 5, 0, 0, -1))
+        fired = []
+        f = fake(schedules=lambda: rows, store=types.SimpleNamespace(get_meta=lambda *a, **k: None,
+                                                                     set_meta=lambda *a, **k: None,
+                                                                     add_event=lambda *a, **k: None),
+                 _binding_targets=lambda t: [t], target_label=lambda t: t, _trial_act=lambda *a, **k: False,
+                 _fire_target=lambda target, do, *a, **k: fired.append((target, do)), schedule_runtime={},
+                 WEEKDAY_NAMES=zigmon.Daemon.WEEKDAY_NAMES,
+                 SCHED_CATCH_UP_MAX_MIN=zigmon.Daemon.SCHED_CATCH_UP_MAX_MIN,
+                 _sched_seen=(now - 60, time.strftime('%Y-%m-%d', time.localtime(now)), seen_min))
+        real_time = time.time
+        time.time = lambda: now
+        zigmon.log = lambda msg, level='info': None
+        try:
+            zigmon.Daemon.check_schedules(f)
+        finally:
+            time.time = real_time
+            zigmon.log = real_log
+        return fired
+
+    every = list(range(7))
+    rows = [{'id': 'a', 'target': 'Lamp', 'at': '08:00', 'do': 'off', 'days': every, 'enabled': True},
+            {'id': 'b', 'target': 'Lamp', 'at': '07:00', 'do': 'on', 'days': every, 'enabled': True},
+            {'id': 'c', 'target': 'Fan', 'at': '07:30', 'do': 'toggle', 'days': every, 'enabled': True}]
+    # the clock said 06:59 a minute ago and says 10:00 now: stepped three hours
+    fired = schedules_after_step(600, 419, rows)
+    check(('Fan', 'toggle') not in fired and fired[-1:] != [('Lamp', 'on')],
+          'a clock stepped forward three hours fired the schedules of those hours, in the order of '
+          'the list: %s' % fired)
+    # the night the clocks go forward: 01:59, and a minute later 03:00
+    rows = [{'id': 'a', 'target': 'Lamp', 'at': '02:40', 'do': 'off', 'days': every, 'enabled': True},
+            {'id': 'b', 'target': 'Lamp', 'at': '02:10', 'do': 'on', 'days': every, 'enabled': True}]
+    fired = schedules_after_step(180, 119, rows)
+    check(fired == [('Lamp', 'on'), ('Lamp', 'off')],
+          'the hour the clocks skip: a 02:10 on and a 02:40 off fired as %s (the off is the last)' % fired)
+
     print('no SMS gateway: said at once')
     f = fake(_sms_send_lock=threading.Lock(), sms_ready=lambda: False, _sms_sent_at=time.time(),
              _sms_sent_parts=1, sms_parts=zigmon.Daemon.sms_parts)

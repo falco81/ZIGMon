@@ -23542,7 +23542,11 @@ class Daemon(object):
         if seen and seen[1] == today_key:
             skipped = max(0, (current_minute - seen[2]) - int((now - seen[0]) // 60) - 1)
         self._sched_seen = (now, today_key, current_minute)
-        catch_up = 4 + skipped
+        # (5.44) ...an hour at most, as after a restart: the clock stepped
+        # forward by hours (NTP on a machine without a battery clock, at boot)
+        # is not a night of the clocks going forward, and every toggle, pulse
+        # and scene of those hours fired at once
+        catch_up = 4 + min(skipped, self.SCHED_CATCH_UP_MAX_MIN)
         # After a restart, the minutes the daemon was away (written down each
         # minute), up to an hour and never into yesterday: a 07:00 "heating
         # on" with the daemon back at 07:20 is still wanted; a 07:00 "lights
@@ -23576,6 +23580,10 @@ class Daemon(object):
             if current_minute < target_minute or current_minute - target_minute > late_ok:
                 continue                     # not due yet, or the window to catch up (4 min) has passed
             due.append((target_minute, sch, at))
+        # (5.44) in the order of the day, not of the list: a 02:10 on and a
+        # 02:40 off caught up together (the hour the clocks skip) ended on
+        # whichever of the two was written lower down
+        due.sort(key=lambda x: x[0])
         # caught up after being away: only what still means something late (on,
         # off, a value - not a toggle, a pulse or "for ten minutes"), and of
         # several missed for one target only the last: a 07:00 on and an 08:00
