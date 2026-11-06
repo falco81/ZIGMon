@@ -9395,7 +9395,8 @@ ICON.abs = '\ud83d\udcc8'; ICON.delta = '\ud83d\udcca';
 ICON.crit = '\ud83d\udea8'; ICON.warn = '\u26a0\ufe0f'; ICON.offline = '\ud83d\udcf4'; ICON.rule = '\ud83d\udccf'; ICON.switch = '\u21c4';
 ICON.follow = '\u21a9'; ICON.mute = '\ud83d\udd15'; ICON.everything = '\ud83d\udce2'; ICON.custom = '\ud83d\udee0';
 var EVENT_KIND_ICON = { device: ICON.sensor, plug: ICON.plug, action: ICON.button, rule: ICON.rule, binding: ICON.button, scene: ICON.scene,
-  sequence: ICON.seq, schedule: ICON.clock, switch: ICON.zb, control: ICON.custom, audit: '\ud83d\udd10', bridge: ICON.router, gateway: ICON.gateway };
+  sequence: ICON.seq, schedule: ICON.clock, switch: ICON.zb, control: ICON.custom, audit: '\ud83d\udd10', bridge: ICON.router, gateway: ICON.gateway,
+  sms: '\ud83d\udcac', alert: '\ud83d\udea8', notify: '\ud83d\udd14' };
 var EVENT_LEVEL_ICON = { info: '\u2139\ufe0f', warn: ICON.warn, crit: ICON.crit };
 var NOTIFY_CATEGORY_LABELS = { crit: 'critical problems (thresholds, lost devices)', warn: 'warnings too',
   offline: 'a device going quiet, unreachable or back', rule: 'every rule that fires',
@@ -15448,7 +15449,11 @@ function saveEventsAsText() {
   if (f.text) said.push('containing \u201c' + f.text + '\u201d');
   var head = ['zigmon events', 'saved ' + when(Date.now() / 1000),
               said.length ? 'showing: ' + said.join(', ') : 'showing: everything',
-              rows.length + ' event(s)', ''];
+              // (5.43.3) what was loaded is the newest few hundred: the file
+              // said "500 event(s)" of a search that matched 852, as though
+              // it were the whole of it
+              rows.length + ' event(s)' + (EVENTS.matched > rows.length
+                ? ' — the newest of ' + EVENTS.matched + ' that match' : ''), ''];
   var body = rows.map(function (e) {
     return [when(e.ts), (e.level || 'info'), (e.kind || ''), (e.device_name || e.device || ''),
             (e.detail || '')].join('\t');
@@ -15479,7 +15484,10 @@ function paintEvents() {
       sel.onchange = function () { EVENTS.filter[id.replace('evf-', '')] = sel.value; EVENTS.page = 1; loadEvents(); };
       return sel;
     };
-    bar.appendChild(mk('evf-kind', ['device', 'plug', 'action', 'rule', 'binding', 'scene', 'sequence', 'schedule', 'switch', 'control', 'audit', 'bridge', 'gateway'], 'every kind', EVENT_KIND_ICON));
+    // (5.43.3) and the messages': every text in or out, every alert, every
+    // notification held back is written under one of these three, and none
+    // of them could be picked
+    bar.appendChild(mk('evf-kind', ['device', 'plug', 'action', 'rule', 'binding', 'scene', 'sequence', 'schedule', 'switch', 'control', 'audit', 'bridge', 'gateway', 'sms', 'alert', 'notify'], 'every kind', EVENT_KIND_ICON));
     bar.appendChild(mk('evf-level', ['info', 'warn', 'crit'], 'every level', EVENT_LEVEL_ICON));
     var tx = el('input'); tx.type = 'search'; tx.placeholder = 'search device or text\u2026'; tx.className = 'evf'; tx.style.minWidth = '220px';
     tx.title = 'Search every event ever recorded, not just the page: case does not matter and several words all have to appear (in any order).';

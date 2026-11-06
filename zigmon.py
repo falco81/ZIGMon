@@ -64,7 +64,7 @@ import time
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote, urlsplit, urlunsplit
+from urllib.parse import urlparse, parse_qs, urlencode, quote, quote_plus, unquote, urlsplit, urlunsplit
 
 # The packages install.sh gives a newer Python than the system's (5.31):
 # paho-mqtt (and Duo's) in /usr/local/lib/zigmon/python3.12 beside this file,
@@ -1603,6 +1603,12 @@ def root_run_now(run, timeout):
 
 class PlugError(Exception):
     pass
+
+
+class SmsLoginFailed(RuntimeError):
+    """The gateway's own API would not give us a token (5.43.3). Nothing was
+    handed over, so a text that meets this was certainly not sent - unlike a
+    send that timed out, which very likely was - and is kept to try again."""
 
 
 class ShellyRPC(object):
@@ -6806,6 +6812,14 @@ class Storage(object):
                 (kind, since, str(starts).replace('%', '').replace('_', '') + '%')).fetchone()
         return int(row['n'] or 0) if row else 0
 
+    # One word of a search, over the detail, the device, the kind - and
+    # (5.43.3) the device's name: the box says "search device or text", the
+    # page shows the name, and the row holds only the id, so a search for
+    # "Kitchen" found none of the kitchen sensor's own "went quiet" rows
+    EVENT_WORD = ("(detail LIKE ? ESCAPE '\\' OR device LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\'"
+                  " OR device IN (SELECT id FROM devices WHERE name LIKE ? ESCAPE '\\'"
+                  " OR alias LIKE ? ESCAPE '\\'))")
+
     def events(self, limit=100, device=None, text=None, kind=None, level=None):
         """The newest events, and - when text is given - the newest ones that
         contain it, searched over the whole table rather than over whatever
@@ -6823,9 +6837,9 @@ class Storage(object):
             args.append(level)
         for word in [w for w in str(text or '').split() if w][:4]:
             # every word must appear somewhere in the row, in any order
-            where.append('(detail LIKE ? ESCAPE \'\\\' OR device LIKE ? ESCAPE \'\\\' OR kind LIKE ? ESCAPE \'\\\')')
+            where.append(self.EVENT_WORD)
             like = '%' + word.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
-            args += [like, like, like]
+            args += [like] * 5
         sql = 'SELECT * FROM events'
         if where:
             sql += ' WHERE ' + ' AND '.join(where)
@@ -6847,9 +6861,9 @@ class Storage(object):
             where.append("COALESCE(level,'info')=?")
             args.append(level)
         for word in [w for w in str(text or '').split() if w][:4]:
-            where.append('(detail LIKE ? ESCAPE \'\\\' OR device LIKE ? ESCAPE \'\\\' OR kind LIKE ? ESCAPE \'\\\')')
+            where.append(self.EVENT_WORD)
             like = '%' + word.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
-            args += [like, like, like]
+            args += [like] * 5
         sql = 'SELECT COUNT(*) FROM events' + (' WHERE ' + ' AND '.join(where) if where else '')
         if not where:
             # "of how many altogether" is asked again on every keystroke of a
@@ -10565,6 +10579,8 @@ class Daemon(object):
                     continue                 # as a page not an admin's was shown it (5.43.3): kept
                 if key == 'notify_ntfy' and value and not value.startswith(('http://', 'https://')):
                     raise ValueError('notify_ntfy must be a full topic URL (https://ntfy.sh/...)')
+                if key in self.TUNABLE_URL_SECRETS:
+                    value = ntfy_unkept(value, CONFIG.get(key) or '')
                 if key in ('backup_time', 'reboot_at', 'osup_check_at', 'osup_auto_at') and \
                         not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', value or ''):
                     raise ValueError('%s must look like 03:30' % key)
@@ -10799,6 +10815,11 @@ class Daemon(object):
     # it is the daemon that refuses a wrong one.
     TUNABLE_SECRETS = ('duo_skey', 'mikrotik_password', 'proxy_password', 'intel_shodan_key',
                        'acme_dns_key')
+    # (5.43.3) an address that may carry a token or a password in it: the
+    # status is read before the view lock and by every role, and it carried
+    # the ntfy server's token whole. The address goes out with the secret
+    # part as KEPT, and a save that sends KEPT back keeps what was there.
+    TUNABLE_URL_SECRETS = ('notify_ntfy',)
 
     # the words the settings of the system's updates take (5.34), checked on save
     OSUP_SETTING_WORDS = {'osup_auto_what': ('security', 'all'),
@@ -10961,6 +10982,9 @@ class Daemon(object):
             elif kind == 'phone' and not reveal:
                 value = self.mask_phone(value or '')
                 from_file = self.mask_phone(from_file or '')
+            elif key in self.TUNABLE_URL_SECRETS and not reveal:
+                value = ntfy_kept(value)
+                from_file = ntfy_kept(from_file)
             out[key] = {'value': value, 'file': from_file, 'default': default, 'source': source, 'in_file': in_file,
                         'kind': kind, 'overridden': key in overrides}
             if kind == 'choice':
@@ -11501,6 +11525,10 @@ class Daemon(object):
         with self._sms_send_lock:
             raw_gap = CONFIG.get('sms_send_gap_s')
             gap = 5.0 if raw_gap in (None, '') else float(raw_gap)
+            # (5.43.3) a long message is several and waits as several, as the
+            # setting says: the radio is still sending the second part of the
+            # last one when a flat gap is up
+            gap *= max(1, int(getattr(self, '_sms_sent_parts', 1) or 1))
             since = time.time() - getattr(self, '_sms_sent_at', 0)
             if since < gap:
                 time.sleep(gap - since)
@@ -11515,8 +11543,13 @@ class Daemon(object):
                 log('SMS: the gateway stalled a moment ago, waiting %.0fs before the next' % hold, 'debug')
                 time.sleep(hold)
             self._sms_sent_at = time.time()
+            self._sms_sent_parts = self.sms_parts(str(text or '')[:1000])
             ok, said = self._sms_send_now(number, text, why, queue)
-            if not ok and 'no answer' in str(said):
+            # (5.43.3) an alert that timed out comes back as the socket's own
+            # words ("timed out"), not as "no answer": only a reply's stall
+            # held the next send off, and an alert's went straight on into
+            # the box that was still wedged
+            if not ok and ('no answer' in str(said) or 'timed out' in str(said).lower()):
                 self._sms_hold_until = time.time() + 30
             else:
                 self._sms_hold_until = 0
@@ -11637,7 +11670,8 @@ class Daemon(object):
             # a row leave the second and third waiting past our patience while
             # the messages themselves go out perfectly well. Saying "failed"
             # about a message that arrives is worse than saying nothing.
-            timed_out = isinstance(e, socket.timeout) or 'timed out' in str(e).lower()
+            timed_out = not isinstance(e, SmsLoginFailed) and \
+                (isinstance(e, socket.timeout) or 'timed out' in str(e).lower())
             if timed_out:
                 log('SMS to %s: no answer within %gs, it may still have gone out'
                     % (number, timeout), 'warn')
@@ -11734,7 +11768,18 @@ class Daemon(object):
 
     def _rest_once(self, path, method, payload, retry, timeout):
         import urllib.request
-        token = self._sms_token()
+        try:
+            token = self._sms_token()
+        except SmsLoginFailed:
+            raise
+        except Exception as e:
+            # (5.43.3) a login that timed out read as a SEND that timed out -
+            # "it may still have gone out" - so the alert was neither queued
+            # nor tried again, and the flush threw a kept one away. The words
+            # say what happened without the ones that mean "maybe sent".
+            why = 'no answer in time' if (isinstance(e, socket.timeout) or 'timed out' in str(e).lower()) \
+                else str(e)[:120]
+            raise SmsLoginFailed('could not log in to the gateway: %s' % why)
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(self._sms_url('/api' + path), data=data,
                                      headers={'Content-Type': 'application/json',
@@ -12047,12 +12092,17 @@ class Daemon(object):
             told.append('SIM %s' % status['sim'])
         if status.get('data_month_mb') is not None:
             told.append('%s MB this month' % status['data_month_mb'])
-        try:
-            inbox = self.sms_poll(force=True)
-            if inbox:
-                told.append('%d message(s) in the inbox' % inbox['read'])
-        except Exception:
-            pass
+        # (5.43.3) not with the webhook on: there the inbox is read only to
+        # take a pushed message off it, and a forced round here read it and
+        # ACTED on whatever the webhook had already handled and the modem had
+        # not yet let go of - a test of the gateway switched the lamp again
+        if not int(CONFIG.get('sms_push') or 0):
+            try:
+                inbox = self.sms_poll(force=True)
+                if inbox:
+                    told.append('%d message(s) in the inbox' % inbox['read'])
+            except Exception:
+                pass
         detail_bits = (' \u2014 ' + ', '.join(told)) if told else ''
         if number:
             ok, detail = self.sms_send(number, 'zigmon: this is the test message.', why='test')
@@ -12947,11 +12997,19 @@ class Daemon(object):
             return False, 'no code to send - the operator says which one, often *101#'
         if not self._sms_rest():
             return False, 'the older interface cannot ask this; use the device\'s own API'
+        # (5.43.3) the box the sending holds, as the status and AT+CMMS take
+        # it: the clock's question to the network went straight in beside a
+        # text being handed over, and a USSD takes the modem seconds - the
+        # text waited it out and was written down as "no answer"
+        if not self._sms_send_lock.acquire(timeout=60):
+            return False, 'the gateway is busy sending; ask again in a moment'
         try:
             out = self._rest('/modems/%s/actions/send_ussd' % self.sms_modem_id(), 'POST',
                              {'data': {'ussd': code}})
         except Exception as e:
             return False, str(e)[:200]
+        finally:
+            self._sms_send_lock.release()
         text = ''
         if isinstance(out, dict):
             text = str(out.get('message') or out.get('response') or '').strip()
@@ -13716,12 +13774,15 @@ class Daemon(object):
             # the message stayed there for good, and a full inbox stops new
             # ones arriving.
             log('taking %d message(s) off the gateway' % len(done), 'debug')
-            if self.sms_clear([x[0] for x in done]):
-                # off the device, so it can never be offered again: forgetting
-                # it keeps the memory small and lets the slot be reused
-                for _, key in done:
-                    self._sms_seen.pop(key, None)
-                self._sms_save_seen()
+            # (5.43.3) ...and still remembered afterwards. It was forgotten
+            # the moment the box said yes to the delete - and a delete the
+            # box accepts and does not do ("urcd: Failed to Remove SMS") is
+            # exactly what hands the same message over again: on the next
+            # round it was new, and "heating toggle" was done twice. The
+            # memory keeps itself to two hundred, and a slot given back is
+            # told apart by its date; where there is no date the memory is
+            # not what decides (see above).
+            self.sms_clear([x[0] for x in done])
         return {'read': len(messages), 'acted': acted}
 
     def _sms_tidy(self, wanted=None, getting_late=False, hurry=False):
@@ -14075,7 +14136,11 @@ class Daemon(object):
                 self.notify('%s sent "%s", but their number is not allowed to give commands.'
                             % (who['name'], text[:100]), 'warn', dedup='sms-untick-' + who['id'],
                             title='A message that could not act',
-                            sms='sms' in self.stranger_roads(), about='sms_in')
+                            sms='sms' in self.stranger_roads(), about='sms_in',
+                            # (5.43.3) never texted back at the phone it came
+                            # from: somebody ticked for alerts and not for
+                            # commands was sent their own words, at a price
+                            about_number=sender)
             else:
                 self.store.add_event('sms', 'a number nobody knows (%s) sent: %s' % (sender or '?', text[:80]), 'warn')
                 # Telling somebody about it must not mean texting them the
@@ -15318,6 +15383,14 @@ class Daemon(object):
                     if came_from:
                         to = [x for x in to if not self._same_number(x, came_from)]   # never text it back at itself
                     to = [x for x in to if re.match(r'^\+?\d{6,15}$', re.sub(r'[^0-9+]', '', x or ''))]
+                    # (5.43.3) one phone once: a message naming a person and
+                    # their number as well, or two cards sharing the house's
+                    # phone, sent the same paid text to it twice
+                    once = []
+                    for x in to:
+                        if not any(self._same_number(x, y) for y in once):
+                            once.append(x)
+                    to = once
                     texts = []
                     if self.sms_ready() and to and item.get('sms', True):
                         body = ((item.get('title') + ': ') if item.get('title') else '') + item['message']
@@ -15404,10 +15477,20 @@ class Daemon(object):
         budget = max(1, parts) * room - 3
         if parts > 1:
             budget = max(1, parts) * (67 if room == 70 else 153) - 3
+        # (5.43.3) the ellipsis is itself outside the GSM alphabet: added to a
+        # plain alert it turned the whole text wide, and the one part it was
+        # cut to went out as three (a critical one's two as five). A plain
+        # text ends in three dots; and the cut is checked against what the
+        # network counts, since an emoji or a {} is two of the units it fills
+        tail = '\u2026' if room == 70 else '...'
         cut = words[:budget]
         if ' ' in cut[-20:]:                  # not in the middle of a word
             cut = cut[:cut.rfind(' ')]
-        return cut.rstrip(' ,;.') + '\u2026'
+        out = cut.rstrip(' ,;.') + tail
+        while len(cut) > 1 and self.sms_parts(out) > max(1, parts):
+            cut = cut[:-1]
+            out = cut.rstrip(' ,;.') + tail
+        return out
 
     def _sms_quiet_now(self, when=None):
         """When the quiet hours end, if they are running, else None.
@@ -30249,6 +30332,19 @@ class Daemon(object):
                 until = time.time() + (span or self._until_morning())
                 if str(do).lower() == 'off':
                     self.store.set_meta('sms_hushed_until', '0')
+                    # (5.43.3) ...and the ones it held go with them: they
+                    # were kept for the moment the hush ended, and went on
+                    # waiting for it after "texts may go out again" - until
+                    # the morning the hand had just called off
+                    # (let go of NOW, not "never held": the hours a stuck
+                    # text is given count from when it was let go)
+                    free = self._sms_quiet_now() or time.time()
+                    with self._sms_lock():
+                        queue = self.sms_outbox()
+                        for item in queue:
+                            if item.get('why') == 'quiet hours' and float(item.get('after') or 0) > free:
+                                item['after'] = float(free)
+                        self.store.set_meta('sms_outbox', json.dumps(queue))
                     self.store.add_event('control', 'texts may go out again (%s)' % origin)
                 else:
                     self.store.set_meta('sms_hushed_until', str(int(until)))
@@ -35521,17 +35617,24 @@ class Daemon(object):
             lines.append('This month: %.1f kWh%s%s' % (money['month_kwh'],
                          (' = %.0f %s' % (money['month_cost'], money['currency'])) if money.get('price_per_kwh') else '',
                          (' - most of it %s' % top) if top else ''))
-        # what the automation did
-        events = self.store.events(1000)
-        recent = [e for e in events if (e.get('ts') or 0) >= since]
-        fired = sum(1 for e in recent if e.get('kind') == 'rule')
-        switched = sum(1 for e in recent if e.get('kind') == 'plug' and 'switched' in (e.get('detail') or ''))
-        warned = [e for e in recent if e.get('level') in ('warn', 'crit')]
-        lines.append('%d rule(s) fired, %d switch(es), %d warning(s)' % (fired, switched, len(warned)))
+        # what the automation did - (5.43.3) counted in the table: the
+        # newest thousand events were all a busy day kept in view, and a house
+        # that writes two thousand a day was told it fired half its rules
+        with self.store.lock:
+            row = self.store.db.execute(
+                "SELECT SUM(kind='rule'), SUM(kind='plug' AND detail LIKE '%switched%'), "
+                "SUM(level IN ('warn','crit')) FROM events WHERE ts>=?", (int(since),)).fetchone()
+            worst = self.store.db.execute(
+                "SELECT detail FROM events WHERE ts>=? AND level IN ('warn','crit') "
+                "ORDER BY ts DESC, id DESC LIMIT 1", (int(since),)).fetchone()
+        fired, switched, warned = (int(x or 0) for x in (row or (0, 0, 0)))
+        lines.append('%d rule(s) fired, %d switch(es), %d warning(s)' % (fired, switched, warned))
         # what has gone quiet, and what is sinking
         quiet = []
         for dev in self.store.devices():
-            if dev.get('source') in ('plug', 'wifi', 'group'):
+            # (5.43.3) the sources the watchdog leaves out, left out here too:
+            # the forecast and the modem are fetched, not heard from
+            if dev.get('source') in ('plug', 'wifi', 'weather', 'sms', 'group', 'gateway'):
                 continue
             seen = dev.get('last_seen') or 0
             # the same patience the watchdog uses, so a button that rightly
@@ -35559,8 +35662,8 @@ class Daemon(object):
                 int(chk.get('count') or 0),
                 ', %d of them security' % int(chk['security']) if chk.get('security') else '',
                 '; a restart needed' if osup_reboot_needed(self, chk) else ''))
-        if warned:
-            lines.append('Worst of the day: ' + (warned[0].get('detail') or '')[:90])
+        if warned and worst:
+            lines.append('Worst of the day: ' + (worst[0] or '')[:90])
         text = '\n'.join(lines)
         self.notify(text, 'info', dedup='digest', title='Today at home', about='digest')
         self.store.add_event('summary', 'the daily digest went out (%d line(s))' % len(lines), 'info')
@@ -38228,9 +38331,18 @@ class Daemon(object):
             if not url:
                 self._stop.wait(20)
                 continue
-            stream = url.rstrip('/') + '/json?since=' + str(int(time.time()))
+            # (5.43.3) a private server's token or user, taken out of the
+            # address as the alerts take it (ntfy_address): left in, urllib
+            # took ":tk_...@host" for the host and never connected - and the
+            # line below wrote the token into the log in full on every connect
+            where, auth = ntfy_address(url)
+            url = where
+            stream = where.rstrip('/') + '/json?since=' + str(int(time.time()))
             try:
-                req = urllib.request.Request(stream, headers={'User-Agent': 'zigmon/%s' % __version__})
+                headers = {'User-Agent': 'zigmon/%s' % __version__}
+                if auth:
+                    headers['Authorization'] = auth
+                req = urllib.request.Request(stream, headers=headers)
                 # ntfy sends a keepalive frame every 45 s; a read that sees
                 # nothing for two minutes means the link died quietly, and
                 # a reconnect is the only way to find out. Without this the
@@ -40746,6 +40858,48 @@ def base_words(minutes):
     return '%.0f days' % (minutes / 1440.0)
 
 
+NTFY_KEPT = '(kept)'
+
+
+def ntfy_kept(url):
+    """An ntfy address as the status may show it: the server and the topic,
+    and in place of its token or its user and password, NTFY_KEPT (5.43.3)."""
+    text = str(url or '')
+    try:
+        bits = urlsplit(text)
+    except Exception:
+        return text
+    if not bits.username and not bits.password:
+        return url
+    who = quote(NTFY_KEPT, safe='')
+    head = (':' + who) if not bits.username else (who + ':' + who)
+    netloc = head + '@' + bits.netloc.rsplit('@', 1)[1]
+    return urlunsplit((bits.scheme, netloc, bits.path, bits.query, bits.fragment))
+
+
+def ntfy_unkept(url, current):
+    """A saved ntfy address with NTFY_KEPT in it given back what it stands
+    for, from the address already kept. Anything typed afresh stands."""
+    text = str(url or '')
+    try:
+        bits, was = urlsplit(text), urlsplit(str(current or ''))
+    except Exception:
+        return text
+    user, secret = unquote(bits.username or ''), unquote(bits.password or '')
+    if NTFY_KEPT not in (user, secret):
+        return text
+    if user == NTFY_KEPT:
+        user = unquote(was.username or '')
+    if secret == NTFY_KEPT:
+        secret = unquote(was.password or '')
+    if not user and not secret:
+        who = ''
+    else:
+        who = (quote(user, safe='') + ':' + quote(secret, safe='')) + '@'
+    netloc = who + bits.netloc.rsplit('@', 1)[1]
+    return urlunsplit((bits.scheme, netloc, bits.path, bits.query, bits.fragment))
+
+
 def ntfy_address(url):
     """A topic URL, and what to send as Authorization if it carries a name.
 
@@ -42743,9 +42897,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             def _blot(name, value):
                 low = str(name).lower()
                 word = str(CONFIG.get('sms_push_secret') or '')
-                if word and word in str(value):
-                    # the raw body carries it whatever the field is called
-                    return str(value).replace(word, '<the word, %d char(s)>' % len(word))[:300]
+                # (5.43.3) ...as written in an address, too: a push by GET
+                # carries it in the query, and the request line and the
+                # modem's own URI went into the log with the word in full
+                for form in ((word, quote(word, safe=''), quote_plus(word)) if word else ()):
+                    if form and form in str(value):
+                        # the raw body carries it whatever the field is called
+                        return str(value).replace(form, '<the word, %d char(s)>' % len(word))[:300]
                 # ...and the daemon's own token, which the relay sends on every
                 # request as X-Zigmon-Token. The names below were matched
                 # whole, so "x-zigmon-token" was none of them and the token
@@ -42768,14 +42926,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 log('SMS push, as the modem sent it to the web server:', 'debug')
                 log('   from    %s' % str(came.get('from') or '?')[:60], 'debug')
                 log('   %s %s' % (str(came.get('method') or '?')[:10],
-                                  str(came.get('uri') or '')[:150]), 'debug')
+                                  _blot('uri', str(came.get('uri') or ''))[:150]), 'debug')
                 for line, value in sorted((came.get('headers') or {}).items()):
                     log('   header  %s: %s' % (str(line)[:40], _blot(line, value)), 'debug')
                 if came.get('raw'):
                     log('   body    %s' % _blot('raw', came.get('raw')), 'debug')
                 log('...and as it reached the daemon:', 'debug')
             log('SMS push from %s:' % self.client_address[0], 'debug')
-            log('   %s %s' % (self.command, self.path[:200]), 'debug')
+            log('   %s %s' % (self.command, _blot('path', self.path)[:200]), 'debug')
             for line, value in self.headers.items():
                 log('   header  %s: %s' % (str(line)[:40], _blot(line, value)), 'debug')
             for name, value in sorted((body or {}).items()):
