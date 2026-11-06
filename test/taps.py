@@ -2034,8 +2034,10 @@ for _ip, _req, _status, _many, _kind, _out in (
         # from a street of its own: next door to the ones just kept out, the
         # same ask a moment later is one tool on two addresses and is kept
         # out (4.85), and whether "a moment later" fell into the next second
-        # decided whether this line passed
-        ('45.9.177.62', 'GET /.env HTTP/1.1', 404, 1, 'proxy-secret-hunt', False)):
+        # decided whether this line passed. (5.45) At an address being walked,
+        # a 444: the same one ask at the house's own name - answered 404 - is
+        # a block since 5.45, and test/review545_block.py says so.
+        ('45.9.177.62', 'GET /.env HTTP/1.1', 444, 1, 'proxy-secret-hunt', False)):
     _score, _got, _kept = _shape(_ip, _req, _status, _many)
     assert _got == _kind, '%r was read as %r, not %r' % (_req[:34], _got, _kind)
     assert _kept == _out, '%r %s kept out' % (_req[:34], 'was' if _kept else 'was not')
@@ -4590,12 +4592,14 @@ d.proxy_weigh(['194.180.48.253 - - [%s] "GET /.git/config HTTP/1.1" 444 0 "-" "S
                % _stamp(_now - 10)] * 5)
 assert '194.180.48.253' in [r['ip'] for r in d.blocked_list()], \
     'five requests for /.git/config in one second were folded into one'
-# one in the morning and one in the afternoon: remembered over the day
+# one in the morning and one in the afternoon: remembered over the day.
+# (5.45) At an address being walked, a 444: one ask at the house's own name
+# (a 404) is a block on its own since 5.45 - see test/review545_block.py.
 d.store.unblock()
 d.forget_anomaly()
-d.proxy_weigh(['216.81.248.83 - - [%s] "GET /.env HTTP/1.1" 404 51 "-" "x"' % _stamp(_now - 5 * 3600)])
+d.proxy_weigh(['216.81.248.83 - - [%s] "GET /.env HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 5 * 3600)])
 assert '216.81.248.83' not in [r['ip'] for r in d.blocked_list()], 'one request for .env was a block'
-d.proxy_weigh(['216.81.248.83 - - [%s] "GET /.git/HEAD HTTP/1.1" 404 51 "-" "x"' % _stamp(_now - 60)])
+d.proxy_weigh(['216.81.248.83 - - [%s] "GET /.git/HEAD HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 60)])
 _row = next((r for r in d.blocked_list() if r['ip'] == '216.81.248.83'), None)
 assert _row, 'an address back hunting for secrets five hours later was not kept out'
 assert 'earlier this week' in str(_row.get('why') or ''), 'the block did not say it counted the morning: %r' % _row
@@ -5847,9 +5851,11 @@ for _p in ('/', '/tap', '/api/tap', '/index.php', '/zigmon-api.php', '/favicon.s
            '/config.js', '/sw.js', '/manifest.json', '/v1/health', '/login', '/template.yaml'):
     assert not (d._after_secrets(_p) or d._known_way_in(_p)), 'an ordinary path was taken for an attack: %s' % _p
 
-# .env on one day and again three days later: one address, one intent
+# .env on one day and again three days later: one address, one intent.
+# (5.45) Asked by address, a 444, here and below: one ask at the house's own
+# name, a 404, is a block by itself since 5.45 (test/review545_block.py).
 _fresh()
-d.proxy_weigh(['129.159.56.14 - - [%s] "GET /.env HTTP/1.1" 404 146 "-" "Mozilla/5.0 (Windows NT 10.0; '
+d.proxy_weigh(['129.159.56.14 - - [%s] "GET /.env HTTP/1.1" 444 0 "-" "Mozilla/5.0 (Windows NT 10.0; '
                'Win64; x64) AppleWebKit/537.36"' % _stamp(_now - 3 * 86400 - 3600)])
 assert not _kept('129.159.56.14'), 'one request for .env was a block'
 d.full_weigh([json.dumps({'ip': '129.159.56.14', 't': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(_now - 30))
@@ -5858,8 +5864,8 @@ d.full_weigh([json.dumps({'ip': '129.159.56.14', 't': time.strftime('%Y-%m-%dT%H
 assert _kept('129.159.56.14'), 'asking for .env again three days later was forgotten'
 # ...but not for longer than a week
 _fresh()
-d.proxy_weigh(['129.159.56.15 - - [%s] "GET /.env HTTP/1.1" 404 146 "-" "x"' % _stamp(_now - 8 * 86400)])
-d.proxy_weigh(['129.159.56.15 - - [%s] "GET /.env HTTP/1.1" 404 146 "-" "x"' % _stamp(_now - 30)])
+d.proxy_weigh(['129.159.56.15 - - [%s] "GET /.env HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 8 * 86400)])
+d.proxy_weigh(['129.159.56.15 - - [%s] "GET /.env HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 30)])
 assert not _kept('129.159.56.15'), 'a request for .env eight days ago was still held against an address'
 
 # two neighbours, one tool, two seconds apart
@@ -5881,7 +5887,7 @@ assert not _kept('47.88.94.28') and not _kept('47.251.15.21'), 'addresses in dif
 # ...and a light thing next door is not the same thing
 _fresh()
 d.proxy_weigh(['216.73.161.56 - - [%s] "GET /wp-login.php HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 12)])
-d.proxy_weigh(['216.73.161.204 - - [%s] "GET /.env HTTP/1.1" 404 0 "-" "x"' % _stamp(_now - 10)])
+d.proxy_weigh(['216.73.161.204 - - [%s] "GET /.env HTTP/1.1" 444 0 "-" "x"' % _stamp(_now - 10)])
 assert not _kept('216.73.161.204'), 'a different kind of thing next door was counted as the same tool'
 
 # a round done slowly: other people's sites asked for through this server,
