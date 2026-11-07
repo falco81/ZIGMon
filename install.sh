@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="5.46.0"
+VERSION="5.47.0"
 SERVICE_USER="zigmon"
 LIB_DIR="/usr/local/lib/zigmon"
 BIN_LINK="/usr/local/bin/zigmon"
@@ -1340,6 +1340,8 @@ DEPLOY_CHANGES="
 5.17.0|nginx-ntfy-front.conf|the full log says whether a cookie was sent, not what it was
 5.46.0|nginx-tap-front.conf|every header in the full log, and every secret written by its shape alone, never whole
 5.46.0|nginx-ntfy-front.conf|the same: every header in the full log, the phones' login by its shape alone
+5.47.0|nginx-tap-front.conf|more secrets masked: quoted, encoded, across lines, in a Referer or an Origin, a JWT's claims
+5.47.0|nginx-ntfy-front.conf|the same
 "
 
 report_deploy_changes() {

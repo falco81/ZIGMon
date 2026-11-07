@@ -2083,7 +2083,49 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.46.0**
+Current version: **5.47.0**
+
+5.47.0 — a third pass over the whole house: nothing waits in front of a sensor.
+
+* Reactions: a renamed or re-described device, an erase of the device rows, a
+  radiator head's report and a one-tap link's answer could each wait behind a
+  slow database job (a backup, a VACUUM, a proxy sweep) - with the database
+  held 1.5 s, PIR to a renamed lamp took 1451 ms, now under 1 ms; the broker
+  thread is no longer held by a head's report (1452 ms, now 0.3 ms); a watch's
+  answer 1451 ms, now 9 ms. The heating has a worker of its own.
+* **An open window shuts its room's heads at once** (about 1 ms), not at the
+  next half-minute round, and opens them again when it shuts; a window that
+  says it is still shut sends nothing.
+* Under load (a proxy sweep writing 4,000 rows, backups, charts, 64 chattering
+  sensors): PIR to a Zigbee lamp p99 4.0 ms, PIR to a Shelly 4.6 ms, a button
+  to a Shelly 4.4 ms.
+* The database: searches (events, blocked story, presses, the proxy's
+  requests) run on a reader of their own, never under the lock (26-117 ms
+  before); retention and the hourly fold go in paced pieces (waits of 0.8-1 s
+  for others, now 15-17 ms); prune's scan off the lock (1.6 s); reset's VACUUM
+  under the lock; the router page's story of 1.2.3.4 no longer shows
+  11.2.3.45's; a slow MikroTik no longer queues a sync per change.
+* The server in front: the payload patterns are bounded (100 kB of "{{" in a
+  header froze the whole daemon for 36 s); a Sharp or Indonesian phone's agent
+  and a cookie called id are no longer "a shell command"; a quoted secret with
+  spaces, single quotes, URL-encoded keys (pass%77ord), client_secret,
+  id_token, a secret across several lines of a body, user:password@ in a
+  Referer or an Origin, a JWT's claims, known token shapes (ghp_, sk_live_,
+  AKIA, tk_) and a link's secret in a Referer are masked, in nginx and as the
+  house reads; the plain access log's request lines (/tap/<secret>, ?token=,
+  ?auth=) are masked before they reach anomalies, events or an address's
+  history; an odd status no longer stops a reading; one odd method on /tap
+  counted twice; a JWT that cannot be read is not called forged; each line is
+  masked once, not four times; the proxy device goes offline the moment a look
+  fails, and look() no longer forgets the last look.
+* The page: one status fetch per socket press, not two; a hidden page fetches
+  nothing; the requests card reloads on its own half minute only, and a search
+  typed while one is loading is kept.
+
+Copy the two front configs to the server in front again.
+
+`test/pass3_hotpath.py`, `test/pass3_locks.py`, `test/pass3_proxy.py`,
+`test/pass3_sec.py`, `test/pass3_web.py`; these checks fail on 5.46.0.
 
 5.46.0 — the full logs of the server in front: every header, nobody's key.
 
