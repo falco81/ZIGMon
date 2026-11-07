@@ -16,6 +16,7 @@ import json
 from pathlib import Path as _Path
 import re
 import sys
+import threading
 import time
 import time as _time
 from pathlib import Path
@@ -717,6 +718,12 @@ assert _sent, 'a change here never reached the router'
 assert time.time() - _t0 < 1.0, 'it took its time about it'
 assert any('address=89.24.7.7' in c for c in _sent), 'the new one was not put there'
 zigmon.CONFIG['mikrotik_sync'] = 0
+# the sync that change started may still be on its way out - on a busy
+# machine it wrote what the router "held" over what is set up just below
+for _ in range(200):
+    if not any(t.name == 'mikrotik' and t.is_alive() for t in threading.enumerate()):
+        break
+    time.sleep(0.05)
 print('a change here is on the router within the second')
 
 # Each line says whether the router is carrying it too, as the last look found

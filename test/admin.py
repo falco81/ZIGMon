@@ -319,9 +319,15 @@ for _ in range(200):
     if not d.root_busy():
         break
     time.sleep(0.05)
-d.root_drift()
+drifted = d.root_drift()
 st = d.root_read('status.json')
-check(st.get('state') == 'failed', 'nginx refusing did not fail the request')
+# what was refused stays written down as refused (failed_hash), whatever root
+# is asked next: the clock's own look can land between this request and the
+# read, and "state" is then that one's
+_, refused_digest = d.apply_body()
+check(st.get('failed_hash') == refused_digest,
+      'nginx refusing did not fail the request (asked: %r, status: %r)'
+      % (drifted, {k: st.get(k) for k in ('state', 'kind', 'said', 'failed_hash', 'asked_hash')}))
 check(d.root_drift() is False, 'a request root refused was asked for again by itself')
 os.environ['ZIGMON_NGINX_TEST'] = 'nginx -t -p %s -c %s' % (W, W / 'nginx.conf')
 code, got = post('/api/firewall', {'action': 'retry'})
