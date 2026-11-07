@@ -4122,6 +4122,28 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         overscroll-behavior:contain;padding-right:8px;padding-bottom:24px;box-sizing:border-box;
         scrollbar-width:thin;scrollbar-gutter:stable}
     body.app-shell .wrap > section#tab-control:not([hidden]){overflow:hidden;padding-bottom:0;padding-right:0}
+    /* (5.47.2) A tab that is a list is a frame, as isemon's are: its buttons,
+       its filters and its pages stay where they are and only the rows
+       scroll, under a heading row that stays as well. Whatever does not fit
+       the window at all still scrolls the whole tab (min-height), so a short
+       window never cuts anything off. */
+    body.app-shell .wrap > section.panel.frame:not([hidden]){display:flex;flex-direction:column;padding-bottom:14px}
+    section.panel.frame > *{flex:none}
+    section.panel.frame > .frame-fill:not(.sub-off){flex:1 1 auto;min-height:320px}
+    section.panel.frame > .frame-scroll{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
+        padding-right:4px}
+    section.panel.frame > .listcard{display:flex;flex-direction:column}
+    section.panel.frame > .listcard > *{flex:none}
+    section.panel.frame > .listcard > .list-scroll{flex:1 1 auto;min-height:120px;overflow:auto;
+        overscroll-behavior:contain;scrollbar-width:thin}
+    .list-scroll thead th{position:sticky;top:0;z-index:2;background:var(--panel)}
+    .list-scroll .pager{position:static}
+    /* a Devices tab with the mesh drawn under its list is a page again */
+    body.app-shell .wrap > section.panel.frame:has(> #mesh-card:not([hidden])){display:block}
+    /* the SMS log's own row of boxes stays above the messages it picks */
+    #sms-subtabs{position:sticky;top:0;z-index:3;background:var(--panel);padding:6px 0}
+    /* a section of Settings keeps its title while its body scrolls */
+    body.ctl-shell .ctl-main > .ctl-head{position:sticky;top:0;z-index:4;background:var(--bg);padding-top:2px}
   }
   /* Control on a desk is an application, not a document: the browser's page
      never scrolls. The header, the tabs, the Editing bar and the rail stay
@@ -5351,20 +5373,20 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <div class="row" style="margin-top:12px" id="ov-ranges"></div>
 </section>
 
-<section class="panel" id="tab-history" hidden>
+<section class="panel frame" id="tab-history" hidden>
   <div class="row" style="margin-bottom:14px">
     <select id="h-device"></select>
     <span id="h-ranges" class="row"></span>
     <span class="spacer"></span>
     <span class="muted small" id="h-note"></span>
   </div>
-  <div class="grid charts" id="h-charts"></div>
+  <div class="frame-fill frame-scroll"><div class="grid charts" id="h-charts"></div></div>
 </section>
 
-<section class="panel" id="tab-devices" hidden>
-  <div class="card scroll"><table id="devices-table"><thead><tr>
+<section class="panel frame" id="tab-devices" hidden>
+  <div class="card listcard frame-fill"><div class="list-scroll"><table id="devices-table"><thead><tr>
     <th>Name</th><th>Model</th><th>Source</th><th>Address</th><th>Status</th><th>Battery</th><th>Signal</th><th>Last report</th><th>First seen</th>
-  </tr></thead><tbody></tbody></table></div>
+  </tr></thead><tbody></tbody></table></div></div>
   <div class="card full" id="mesh-card" hidden style="margin-top:14px">
     <h2>Who talks through whom</h2>
     <p class="note">From the Zigbee network map — each parent with the children it carries and the link quality of that hop.</p>
@@ -5428,11 +5450,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div id="sms-log"></div>
   </div>
 </section>
-<section class="panel" id="tab-wifi" hidden>
+<section class="panel frame" id="tab-wifi" hidden>
   <div class="btnrow" style="margin-bottom:12px;flex-wrap:wrap">
     <button class="btn cmd" id="wifi-refresh">Ask the controller</button>
     <span class="muted small" id="wifi-tab-note"></span>
   </div>
+  <div class="frame-fill frame-scroll">
   <div id="wifi-tiles"></div>
   <div class="card full" id="wifi-clients-card" style="margin-top:14px">
     <h2>On the network</h2>
@@ -5454,11 +5477,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <div id="wifi-seen"></div>
     </div>
   </div>
+  </div>
 </section>
 
-<section class="panel" id="tab-events" hidden>
-  <div class="card scroll">
+<section class="panel frame" id="tab-events" hidden>
+  <div class="card listcard frame-fill">
     <h2>Events</h2>
+    <div class="list-scroll" id="events-scroll">
     <table id="events-table"><thead><tr>
       <th title="When it happened, by this machine’s clock.">When</th>
       <th title="How it ended: ✅ as it should · ⚠️ worth a look · ⛔ it failed. The dot is coloured the same way in the alert band at the top of the page.">&nbsp;</th>
@@ -5467,10 +5492,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <th title="What happened, in the daemon’s own words — the same sentence that goes into the log and, for the ones worth telling you about, into a notification.">Detail</th>
     </tr></thead><tbody></tbody></table>
     <div class="center" id="events-empty" hidden>Nothing recorded yet</div>
+    </div>
   </div>
 </section>
 
-<section class="panel" id="tab-approvals" hidden>
+<section class="panel frame" id="tab-approvals" hidden>
   <!-- (5.47.1) one part of the tab at a time, picked here: the four cards
        one under the other were a page of several screens -->
   <nav class="api-subs" id="api-subs" aria-label="Parts of Public API">
@@ -5479,25 +5505,26 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sub="requests" id="api-sub-requests" hidden><span class="ic" data-icon="sslproxy"></span>At the server in front<span class="n" id="api-n-requests"></span></button>
     <button type="button" data-sub="blocked"><span class="ic" data-icon="wall"></span>Blocked addresses<span class="n" id="api-n-blocked"></span></button>
   </nav>
-  <div class="card full" data-sub="waiting">
+  <div class="card full listcard frame-fill" data-sub="waiting">
     <h2>Waiting to be approved</h2>
     <p class="note">A press on a link that asks Duo does not act on its own: it asks, and waits for
       somebody to say yes. What is waiting is here, with what it would do and how long it has left.
       Calling one off is not undoing it — nothing has happened yet; it is telling the press that
       nobody is going to answer, so an approval arriving afterwards does nothing.</p>
-    <div id="approvals-live"></div>
+    <div class="list-scroll"><div id="approvals-live"></div></div>
     <div class="btnrow" style="margin-top:12px">
       <button class="btn cmd danger" id="approvals-stop-all">Call them all off</button>
       <span class="muted small" id="approvals-note" style="align-self:center"></span>
     </div>
   </div>
-  <div class="card full scroll" style="margin-top:14px" data-sub="presses">
+  <div class="card full listcard frame-fill" style="margin-top:14px" data-sub="presses">
     <h2>Every press, and what came of it</h2>
     <p class="note">Every one of them, whichever road it came by and whatever it had to get past: a
       press approved through Duo, one that carried a six-digit code, one that carried neither because
       none is asked for, and one that was refused. Kept in the database, so it is still here after a
       restart; erased from Settings → Data &amp; database → <i>Recorded data</i>.</p>
     <div class="btnrow" id="presses-filter" style="flex-wrap:wrap;margin-bottom:12px;gap:8px"></div>
+    <div class="list-scroll">
     <table id="approvals-past"><thead><tr>
       <th title="When the press arrived, by this machine&#39;s clock. Presses of the same link that were refused for the same reason within five seconds are folded into one line, counted as &#39;×6&#39; — a watch that retries looks like one press, because it was one.">When</th>
       <th title="What kind of press: ✅ it did what it was for · ⛔ it was refused · ⏳ it is waiting for somebody to approve it">&nbsp;</th>
@@ -5510,9 +5537,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <th title="What came of it, in the daemon&#39;s own words: what was switched, why it was refused, or what the person was told.">How it ended</th>
     </tr></thead><tbody></tbody></table>
     <div class="center" id="approvals-empty" hidden>No link has been pressed yet</div>
+    </div>
     <div class="pager" id="presses-pager"></div>
   </div>
-  <div class="card full" style="margin-top:14px" id="preq-card" data-sub="requests" hidden>
+  <div class="card full listcard frame-fill" style="margin-top:14px" id="preq-card" data-sub="requests" hidden>
     <h2>Every request at the server in front</h2>
     <p class="note">What the full logs of the server in front wrote down - every header it names, the
       start of the body, and what the weighing made of each request. Secrets are written by their
@@ -5528,13 +5556,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <button class="btn cmd" id="preq-go" type="button">Show</button>
       <span class="muted small" id="preq-note" style="align-self:center"></span>
     </div>
-    <div class="table-wrap"><table id="preq-table"><thead><tr>
+    <div class="table-wrap list-scroll"><table id="preq-table"><thead><tr>
       <th>When</th><th>Server</th><th>&nbsp;</th><th>Asked from</th><th class="story-ask">&nbsp;</th><th>Request</th><th>Answer</th><th>Found</th>
     </tr></thead><tbody></tbody></table></div>
     <div class="center" id="preq-empty" hidden></div>
     <div class="btnrow" style="margin-top:8px"><button class="btn cmd" id="preq-more" type="button" hidden>Older</button></div>
   </div>
-  <div class="card full" style="margin-top:14px" id="blocked-card" data-sub="blocked">
+  <div class="card full listcard frame-fill" style="margin-top:14px" id="blocked-card" data-sub="blocked">
     <h2>Addresses that may not talk to this</h2>
     <p class="note">An address that behaves like somebody trying things rather than like somebody
       opening a door is put on this list, and everything the API answers it with is a refusal. What
@@ -5547,10 +5575,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
              placeholder="ask about one address — 45.9.148.9">
       <button class="btn cmd" id="look-go">Ask about it</button>
     </div>
+    <div class="list-scroll">
     <div id="look-out"></div>
     <div id="blocked-watch"></div>
     <div id="blocked-list"></div>
     <div id="blocked-past" style="margin-top:12px"></div>
+    </div>
+    <!-- (5.47.2) the story's pages, outside what scrolls -->
+    <div id="blockstory-pager-slot"></div>
     <div class="btnrow" style="margin-top:10px">
       <input id="blocked-ip" type="text" autocomplete="off"
              placeholder="89.24.5.7, 89.24.5.0/24 or 2a01:430::/48">
@@ -8008,6 +8040,7 @@ function paintApprovalsLocked() {
   }
   if (host) host.innerHTML = '';
   var past = $('blocked-past'); if (past) past.innerHTML = '';
+  if ($('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
   var body = $('approvals-past') && $('approvals-past').querySelector('tbody');
   if (body) body.innerHTML = '';
   $('approvals-note').textContent = 'locked';
@@ -8999,6 +9032,7 @@ function paintBlockedNow(force) {
   var past = $('blocked-past'); if (!past) return;
   var old = (APPROVALS.blockedPast || []).filter(function (r) { return inCountry(r, BLOCKSTORY.cc); });
   past.innerHTML = '';
+  if ($('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
   // A search that matches nothing must not take the search box away with it.
   // Emptying the whole section on an empty answer left somebody looking at a
   // blank card with no way to clear what they had typed - the one moment the
@@ -9154,7 +9188,9 @@ function paintBlockedNow(force) {
   table.id = 'blocked-history';
   past.appendChild(table);
   var pager = el('div', 'pager'); pager.id = 'blockstory-pager';
-  past.appendChild(pager);
+  // (5.47.2) under what scrolls, so the pages stay where the hand is
+  var slot = $('blockstory-pager-slot');
+  if (slot) { slot.innerHTML = ''; slot.appendChild(pager); } else past.appendChild(pager);
   if (pages > 1) {
     var go = function (n) { BLOCKSTORY.page = Math.max(1, Math.min(pages, n)); paintBlocked(true); };
     var mk = function (n, key) {
@@ -16240,7 +16276,7 @@ function saveEventsAsText() {
 }
 
 function paintEvents() {
-  var host = $('events-table').parentNode;
+  var host = $('events-scroll').parentNode;     // (5.47.2) the card; the table scrolls in its own frame
   var bar = $('events-filter');
   if (!bar) {
     bar = el('div', 'btnrow'); bar.id = 'events-filter'; bar.style.cssText = 'flex-wrap:wrap;margin-bottom:12px;gap:8px';
@@ -16278,9 +16314,9 @@ function paintEvents() {
     save.title = 'Everything the filters have left, all pages of it, as a plain text file';
     save.onclick = function () { saveEventsAsText(); };
     bar.appendChild(save);
-    host.insertBefore(bar, $('events-table'));
+    host.insertBefore(bar, $('events-scroll'));
     var pager = el('div', 'pager'); pager.id = 'events-pager';
-    host.insertBefore(pager, $('events-table').nextSibling);
+    host.insertBefore(pager, $('events-scroll').nextSibling);
   }
   var f = EVENTS.filter;
   var rows = EVENTS.rows.filter(function (e) {

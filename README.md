@@ -2083,7 +2083,22 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.1**
+Current version: **5.47.2**
+
+5.47.2 — on a desk, a list scrolls its rows and nothing else.
+
+* Events, every part of Public API (waiting, presses, the requests at the
+  server in front, blocked addresses), Devices, History and WiFi are frames,
+  as isemon's are: the pills, the buttons, the filters and the pages stay
+  where they are, and only the rows scroll - under a heading row that stays
+  as well. The blocked story's pages and the buttons under them stay at the
+  bottom of the card. The SMS log's Inbox / Outbox / Everything stays above
+  the messages, and a section of Settings keeps its title while it scrolls.
+* A window too short for a frame still scrolls the whole tab, so nothing is
+  ever cut off; a phone and an iPad upright scroll the page as a page, as
+  they did.
+
+`test/review5472_frames.py`; these checks fail on 5.47.1.
 
 5.47.1 — Public API in parts.
 
