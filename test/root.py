@@ -35,6 +35,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 HELPER = HERE / 'deploy' / 'zigmon_root.py'
 W = Path(tempfile.mkdtemp(prefix='zigmon-root-check-'))
+# gone however the check ends - a failure that exits early left 600 MB behind each time
+import atexit                                            # noqa: E402
+if not os.environ.get('ROOT_KEEP'):
+    atexit.register(shutil.rmtree, W, True)
 bad = []
 
 

@@ -429,11 +429,14 @@ try:
     at = wait_out(lambda w, p: w == 'mqtt:%s/TRV/set' % BASE and isinstance(p, dict)
                   and p.get('system_mode') == 'heat', t0, 3.0)
     check(at is not None, 'the window shut again and the head was opened within 3 s')
+    # the round that opened it sends its set point right after the mode: let
+    # it finish, so what follows is only what the next report causes
+    time.sleep(0.3)
     t0 = time.perf_counter()
     report('Win', {'contact': True, 'battery': 90})
     time.sleep(0.5)
-    check(wait_out(lambda w, p: w == 'mqtt:%s/TRV/set' % BASE, t0, 0.01) is None,
-          'a window that says it is still shut tells the head nothing')
+    sent = [(round((a - t0) * 1000), p) for a, w, p in list(OUT) if a >= t0 and w == 'mqtt:%s/TRV/set' % BASE]
+    check(not sent, 'a window that says it is still shut tells the head nothing: %r' % sent)
 
     print('a one-tap link pressed while the database is held %.1f s' % HOLD_S)
     tap()
