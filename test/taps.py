@@ -736,6 +736,12 @@ d.store.set_meta('mikrotik_seen', '')
 assert all(r['router'] == 'no' for r in d.blocked_list()), 'unlooked-at reads as carried'
 d.mikrotik_run = lambda cmd: ('0 list=zigmon address=89.24.7.7 comment="zigmon: by hand"\n'
                               if 'print terse' in cmd else '')
+# the look blocked_list() just started on its own (mikrotik-look) is let
+# finish first: on a busy machine it wrote what it found after the look below
+for _ in range(200):
+    if not any(t.name in ('mikrotik', 'mikrotik-look') and t.is_alive() for t in threading.enumerate()):
+        break
+    time.sleep(0.05)
 d.mikrotik_entries()
 _marks = {r['ip']: r['router'] for r in d.blocked_list()}
 assert _marks.get('89.24.7.7') == 'yes', 'one the router holds is not marked: %r' % _marks
