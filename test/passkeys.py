@@ -764,8 +764,10 @@ async function page(b, url, opts, init) {
     await vauth(B, pb);
     out.unlockB = (await post(pb, 'unlock', {pin: '4826', minutes: 15})).status;
     await pb.goto(cfg.now + '/#control'); await pb.reload(); await wait(1800);
-    out.manageB = await pb.evaluate(() => !document.getElementById('pk-manage').hidden);
-    await pb.click('#pk-manage');
+    // (5.47.7) the passkeys of a PIN account, from the account button: the
+    // strip across Settings that had a Passkeys button of its own is gone
+    out.manageB = await pb.evaluate(() => !!LOCK.who && pkShape().on);
+    await pb.evaluate(() => accountMenu());
     await pb.waitForSelector('#pk-add'); await wait(900);
     // the list as the server has it, drawn - not counted while it is still on its way
     await pb.waitForSelector('#zmodal-body .pk-list[data-n]');
@@ -874,8 +876,15 @@ def browser_part():
         o = {'error': (got.stdout + got.stderr)[-600:]}
     check(not o.get('error'), 'the page could not be driven: %s' % o.get('error'))
     # the desk, exactly as it was
+    # (5.47.7) ...but for the strip across Settings, taken away on purpose: it
+    # and what moved up into its room (the first card, the menu, the section)
+    # are measured by test/review5477_lockstrip.py instead
+    gone = {'desk': ('lockcard', 'toggle'), 'deskctl': ('lockcard', 'toggle', 'card', 'nav', 'main')}
     for k in ('desk', 'deskctl'):
         a, z = o.get(k + '_before'), o.get(k + '_after')
+        for one in (a, z):
+            for x in gone[k]:
+                (one or {}).pop(x, None)
         check(a and a == z, 'the desk at 1600 is not drawn as 5.42.1 drew it (%s): %s' % (
             k, json.dumps({x: [a.get(x), z.get(x)] for x in (a or {}) if z and a.get(x) != z.get(x)})
             if a and z else 'nothing measured'))

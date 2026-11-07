@@ -4036,6 +4036,11 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #tab-control .grid.charts > .card > h2 .card-info,#lock-card > h2 .card-info{display:inline-flex;align-items:center;gap:5px}
   #tab-control .set-card.set-one .set-host > .set-grid > .set-head{display:none}
   #lock-card{display:flex;align-items:center;flex-wrap:wrap;gap:6px 18px;padding:12px 18px}
+  /* (5.47.7) not drawn: signing in, out, a password, a PIN and the passkeys
+     are all on the account button in the header - the strip across Settings
+     only took a row of the screen. Kept in the page: its buttons are what
+     the account popup and the shortcuts press. */
+  #lock-card{display:none !important}
   #lock-card > h2{display:flex;align-items:center;gap:10px;margin:0;font-size:15px;font-weight:650;
                   letter-spacing:0;text-transform:none;color:var(--tx)}
   #lock-card > h2 .card-info{font-size:12px;color:var(--tx-dim);padding:4px 10px 4px 8px}

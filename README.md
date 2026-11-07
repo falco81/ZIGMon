@@ -2083,7 +2083,16 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.6**
+Current version: **5.47.7**
+
+5.47.7 — Settings without the "Signed in" strip.
+
+* The strip across the top of Settings (Signed in, Lock now / Sign out, Change
+  password, Passkeys) is gone: every one of those is on the account button in
+  the header, and signing in is the button there too. The menu of sections and
+  the section beside it start right under the tabs.
+
+`test/review5477_lockstrip.py`; these checks fail on 5.47.6.
 
 5.47.6 — more room for the rows.
 
