@@ -7075,6 +7075,7 @@ class Storage(object):
         return done.rowcount or 0
 
     PROXY_REQUESTS_MOST = 200000      # rows kept at most, whatever the days say
+    PROXY_REQUESTS_SEARCH_S = 4.0     # (pass 3) the longest one page of a search may take
 
     def keep_proxy_requests(self, rows):
         """(5.46) The full logs' requests, masked already (Daemon.full_mask).
@@ -7094,17 +7095,39 @@ class Storage(object):
 
     def proxy_requests_forget(self, days):
         """As the lines go: after the same days, and never more than
-        PROXY_REQUESTS_MOST of them whatever the days say."""
-        gone = 0
+        PROXY_REQUESTS_MOST of them whatever the days say.
+
+        (pass 3) A few thousand rows at a time, the lock let go between them:
+        this runs after every reading, and the first one after the days were
+        shortened, or after a week away, deleted up to the whole 200,000 rows
+        in one statement under the only lock the database has. And the
+        ceiling is found from the newest id rather than by walking 200,000
+        rows back from it (LIMIT 1 OFFSET) every time."""
+        gone, step = 0, 2000
+        if days:
+            edge = time.time() - days * 86400
+            while True:
+                with self.lock:
+                    n = self.db.execute('DELETE FROM proxy_requests WHERE id IN (SELECT id FROM proxy_requests '
+                                        'WHERE ts < ? LIMIT ?)', (edge, step)).rowcount or 0
+                gone += n
+                if n < step:
+                    break
+                time.sleep(0.005)
         with self.lock:
-            if days:
-                gone += self.db.execute('DELETE FROM proxy_requests WHERE ts < ?',
-                                        (time.time() - days * 86400,)).rowcount or 0
-            row = self.db.execute('SELECT id FROM proxy_requests ORDER BY id DESC LIMIT 1 OFFSET ?',
-                                  (self.PROXY_REQUESTS_MOST,)).fetchone()
-            if row:
-                gone += self.db.execute('DELETE FROM proxy_requests WHERE id <= ?', (row['id'],)).rowcount or 0
-            self.db.commit()
+            row = self.db.execute('SELECT MIN(id), MAX(id) FROM proxy_requests').fetchone()
+        low, top = (row[0], row[1]) if row else (None, None)
+        if top is not None and top - low >= self.PROXY_REQUESTS_MOST:
+            # ids only grow, so whatever is at or below this edge is past the
+            # newest PROXY_REQUESTS_MOST
+            edge_id = top - self.PROXY_REQUESTS_MOST
+            while low <= edge_id:
+                upto = min(edge_id, low + step - 1)
+                with self.lock:
+                    gone += self.db.execute('DELETE FROM proxy_requests WHERE id <= ?', (upto,)).rowcount or 0
+                low = upto + 1
+                if low <= edge_id:
+                    time.sleep(0.005)
         return gone
 
     def proxy_requests_list(self, ip='', q='', which='', found=False, before=0, limit=100):
@@ -7131,9 +7154,37 @@ class Storage(object):
         limit = max(1, min(int(limit or 100), 200))
         sql = 'SELECT * FROM proxy_requests' + (' WHERE ' + ' AND '.join(where) if where else '') + \
             ' ORDER BY id DESC LIMIT ?'
-        with self.lock:
-            rows = self.db.execute(sql, args + [limit + 1]).fetchall()
-            total = self.db.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
+        # (pass 3) On a reader of its own, never under the store's lock: a
+        # word looked for in six columns of 200,000 rows that are not indexed
+        # for it walks every one of them, and under the lock every sensor's
+        # reading waited for that. Held to a few seconds as well - whatever
+        # was found by then is the page, and the next page goes on from it.
+        rows, total, cut = None, 0, False
+        reader = self._reader(timeout=5)
+        if reader is not None:
+            try:
+                reader.row_factory = sqlite3.Row
+                ends = time.monotonic() + self.PROXY_REQUESTS_SEARCH_S
+                reader.set_progress_handler(lambda: 1 if time.monotonic() > ends else 0, 20000)
+                found_rows = []
+                try:
+                    for r in reader.execute(sql, args + [limit + 1]):
+                        found_rows.append(r)
+                except sqlite3.OperationalError as e:
+                    if 'interrupt' not in str(e).lower():
+                        raise
+                    cut = bool(found_rows)    # out of time: what there is, and "more" to go on from it
+                reader.set_progress_handler(None, 0)
+                total = reader.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
+                rows = found_rows
+            except sqlite3.Error:
+                rows = None
+            finally:
+                reader.close()
+        if rows is None:
+            with self.lock:
+                rows = self.db.execute(sql, args + [limit + 1]).fetchall()
+                total = self.db.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
         out = []
         for r in rows[:limit]:
             one = dict(r)
@@ -7144,7 +7195,7 @@ class Storage(object):
                 one['fields'] = {}
             one['kinds'] = [k for k in str(one.get('kinds') or '').split(',') if k]
             out.append(one)
-        return out, len(rows) > limit, int(total or 0)
+        return out, len(rows) > limit or cut, int(total or 0)
 
     def paths_in(self, ip, seconds):
         """How many different paths this address has asked for lately, and how
@@ -28356,17 +28407,20 @@ class Daemon(object):
         log's line already."""
         return self.full_weigh([json.dumps(one)], keep=False)
 
-    def _friends_from(self, lines):
+    def _friends_from(self, lines, masked=False):
         """(5.45) The house, as the full logs show it: a press answered 200
         that carried a secret, or the notification server answering 200 to a
         name it took. Looked for by two plain words before any JSON is read,
-        so the scanners' lines - nearly all of them - cost a substring test."""
+        so the scanners' lines - nearly all of them - cost a substring test.
+        masked: (pass 3) the lines are full_mask_line's already, and are not
+        masked again."""
         for line in lines or ():
             # (5.46) a secret is written by its shape now, not as "sent"
             if '200' not in line:
                 continue
             try:
-                one = full_mask(json.loads(line.strip()))
+                one = json.loads(line.strip())
+                one = one if masked and isinstance(one, dict) else full_mask(one)
             except Exception:
                 continue
             if self._leak_checker(one.get('ua')):
@@ -28377,10 +28431,28 @@ class Daemon(object):
             else:
                 ok = (str(one.get('m') or '') == 'POST' and full_sent(one.get('secret'))
                       and str(one.get('u') or '').split('?')[0] in ('/tap', '/api/tap'))
-            if ok and str(one.get('s')) == '200':
+            if ok and self._full_status(one.get('s')) == 200:
                 self._friend_seen(one.get('ip'), self._iso_moment(one.get('t')))
 
-    def full_weigh(self, lines, keep=True):
+    @staticmethod
+    def _full_status(value):
+        """(pass 3) The status a full log wrote, as a number - or 0 for one
+        that is none. A format of somebody's own writes "-", a string, a
+        list; JSON itself can say 1e999 or NaN. int() of any of those raised
+        out of the weighing and took the whole reading with it: the batch of
+        full lines unweighed and unkept, Suricata's lines left for later."""
+        if isinstance(value, bool):
+            return 0
+        try:
+            n = int(value)
+        except (TypeError, ValueError, OverflowError):
+            try:
+                n = int(float(str(value).strip()))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+        return n if 0 <= n < 1000 else 0
+
+    def full_weigh(self, lines, keep=True, masked=False, friends=True):
         """The full log: one line of JSON per request, with the body and the
         headers, weighed for the things only a whole request shows.
 
@@ -28389,11 +28461,21 @@ class Daemon(object):
         these rules ask anyway. Everything written down here about a request
         is held to a size, because a body is whatever somebody felt like
         sending.
+
+        (pass 3) masked: the lines are full_mask_line's already (the
+        reading's own), so they are not masked again; friends=False: the
+        reading has looked for the house in them already. Each line was
+        masked four times over in one reading - half of what it cost.
         """
         seen, checks = {}, {}
         rows = []
         twins = {}                    # the same line twice is two requests, not one read twice
-        self._friends_from(lines)
+        # (pass 3) the access log of the one-tap road is read beside this one
+        # and weighs an odd method itself: weighed here too, one DELETE /tap
+        # counted twice, once from each file
+        access_too = self.proxy_ready()
+        if friends:
+            self._friends_from(lines, masked=masked)
         for line in lines:
             line = line.strip()
             if not line.startswith('{'):
@@ -28401,7 +28483,8 @@ class Daemon(object):
             try:
                 # (5.46) every secret by its shape before anything else reads
                 # it - a config from before 5.46 writes a Cookie as it came
-                one = full_mask(json.loads(line))
+                one = json.loads(line)
+                one = one if masked and isinstance(one, dict) else full_mask(one)
             except Exception:
                 continue
             ip = str(one.get('ip') or '')
@@ -28414,7 +28497,7 @@ class Daemon(object):
             at = self._iso_moment(one.get('t'))
             method = str(one.get('m') or '')[:12]
             where = str(one.get('u') or '')[:120]
-            status = int(one.get('s') or 0)
+            status = self._full_status(one.get('s'))
             body = str(one.get('body') or '')
             found = []
             if self._leak_checker(one.get('ua')):
@@ -28530,7 +28613,8 @@ class Daemon(object):
             # lines in these logs, from 82 addresses. The rule this file keeps
             # for the scanner's user agent (one request counts once), kept
             # for this too.
-            if not found and status in (400, 405) and method and method not in ('GET', 'POST', 'HEAD'):
+            if not found and status in (400, 405) and method and method not in ('GET', 'POST', 'HEAD') \
+                    and not (access_too and str(one.get('which') or '') != 'ntfy'):
                 found.append(('proxy-odd-method', '%s %s' % (method, where[:40])))
             # (5.46) ...and what the headers carry, now that they are written
             # whole: one payload is one payload, wherever in the request it was
@@ -28592,8 +28676,12 @@ class Daemon(object):
         auth = str(one.get('auth') or '')
         jwt = re.search(r'jwt:(eyJ[A-Za-z0-9_-]{0,160})', auth)
         if jwt:
-            alg = str(_jwt_says(jwt.group(1)).get('alg') or '').strip().lower()
-            if auth.endswith(' unsigned') or alg in ('none', ''):
+            # (pass 3) a header that cannot be read says nothing about its
+            # algorithm: only one that reads, and says "none" or no alg at
+            # all, signs itself off - and one with no signature, whatever
+            said = _jwt_says(jwt.group(1))
+            alg = str(said.get('alg') or '').strip().lower()
+            if auth.endswith(' unsigned') or (said and alg in ('none', '')):
                 found.append(('proxy-forged-token', 'a JWT %s at %s %s'
                               % ('with no signature' if auth.endswith(' unsigned') else 'saying alg "none"',
                                  method, where[:30])))
@@ -28629,10 +28717,7 @@ class Daemon(object):
             fields = {k: (str(v)[:120] if isinstance(v, str) else v) for k, v in fields.items()}
             packed = json.dumps(fields, ensure_ascii=False, separators=(',', ':'), sort_keys=True)[:8000]
         whole = json.dumps(one, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
-        try:
-            status = int(one.get('s') or 0)
-        except (TypeError, ValueError):
-            status = 0
+        status = self._full_status(one.get('s'))
         return (self._iso_moment(one.get('t')) or time.time(),
                 self._twin_print(whole, twins),
                 'ntfy' if str(one.get('which') or '') == 'ntfy' else 'tap',
@@ -30567,7 +30652,7 @@ class Daemon(object):
             # them afterwards - weighed, kept, counted, written to the log in
             # debug - is done with no secret in them, whichever config wrote them
             whole_lines = [x for x in (full_mask_line(one) for one in whole_lines) if x]
-            self._friends_from(whole_lines)
+            self._friends_from(whole_lines, masked=True)
         weighed = self.proxy_weigh(lines)
         # ...and the error log, where one is named: what nginx says about the
         # callers it could not even get a request from
@@ -30600,7 +30685,7 @@ class Daemon(object):
                 log('the full log(s): %d line(s) read' % len(whole_lines), 'debug')
             elif not str(CONFIG.get('proxy_full_log') or '').strip():
                 log('the full log is switched on but no path is set for it', 'warn')
-            for ip, n in self.full_weigh(whole_lines).items():
+            for ip, n in self.full_weigh(whole_lines, masked=True, friends=False).items():
                 weighed[ip] = weighed.get(ip, 0) + n
             troubles = list(troubles) + list(whole_lines)
         # ...and Suricata, where it is running and named. It is the only one of
@@ -35278,9 +35363,15 @@ class Daemon(object):
         if kind == 'device' and oid == PROXY_TILE_ID and member == 'look':
             if not proxy_tile_on(self):
                 raise ValueError('the server in front is not set up, or its reading is off')
-            self.__dict__.pop('_proxy_tile_started', None)
+            # (pass 3) due at once - but not by forgetting the last look: with
+            # its time put to 0 the card said "waiting" and lost its name until
+            # the new one came back, or for good if it failed
+            if time.time() - float(self.__dict__.get('_proxy_tile_now_at') or 0) < PROXY_TILE_NOW_S:
+                return 'the server in front was asked for a moment ago; it is read once in %d s at most' \
+                    % PROXY_TILE_NOW_S
+            self._proxy_tile_now_at = time.time()
             look = dict(self.__dict__.get('_proxy_tile_look') or {})
-            self._proxy_tile_look = dict(look, at=0, tried=0)
+            self._proxy_tile_look = dict(look, now=True)
             proxy_tile_look(self)
             return 'the server in front is being read now'
         if kind == 'device' and oid == 'sms:gateway' and member in ('poll', 'flush'):
@@ -37284,8 +37375,11 @@ class Daemon(object):
             'sms_received_today': (lambda v: int(v) if v is not None else '')(
                 numeric(self.latest_value('sms:gateway', 'received_today'))),
             # (5.46) the server in front, as its device last read it
+            # (pass 3) and offline the moment a look fails, as its card and
+            # Devices say - not online for three more minutes
             'proxy_state': ('online' if (self.store.device('proxy:front') or {}).get('last_seen', 0)
-                            > time.time() - 180 else 'offline') if self.store.device('proxy:front') else '',
+                            > time.time() - 180 and (self.live.get('proxy:front') or {}).get('availability')
+                            != 'offline' else 'offline') if self.store.device('proxy:front') else '',
             'proxy_nginx': str(((self.live.get('proxy:front') or {}).get('payload') or {}).get('px_nginx') or ''),
             'proxy_suricata': str(((self.live.get('proxy:front') or {}).get('payload') or {})
                                   .get('px_suricata') or ''),
@@ -43464,23 +43558,39 @@ DEFAULT_LOGINS = (
 # there and one masked here say the same thing.
 VALUE_LOOKS = (
     ('jndi', re.compile(r'\$\{(?:jndi|env|sys|lower|upper|\$\{)|JHtqbmRp', re.I)),
-    ('sqli', re.compile(r"union(?:\s|\+|%20|/\*.*?\*/)+(?:all(?:\s|\+|%20)+)?select|'\s*or\s+'?1'?\s*=\s*'?1"
+    # (pass 3) Every repeat below is bounded. Python's re holds the GIL for
+    # the whole of one search, and an unbounded ".*?" or "[^>]*" is tried
+    # again from every place it could start: 100 kB of "{{" took 36 s, and
+    # in all that time no other thread of the daemon - the broker's, the
+    # rules' - ran at all. 8 kB of it in each of four headers, which nginx
+    # lets through, froze everything for a second per request.
+    ('sqli', re.compile(r"union(?:\s|\+|%20|/\*[^*]{0,64}\*/)+(?:all(?:\s|\+|%20)+)?select"
+                        r"|'\s*or\s+'?1'?\s*=\s*'?1"
                         r"|\bor\s+1=1\b|sleep\(\s*\d|benchmark\(|waitfor\s+delay", re.I)),
-    ('xss', re.compile(r'<script|javascript:|onerror\s*=|onload\s*=|<svg[^>]*on\w+=', re.I)),
+    ('xss', re.compile(r'<script|javascript:|onerror\s*=|onload\s*=|<svg[^>]{0,200}?[\s/]on\w{1,20}\s*=', re.I)),
     ('traversal', re.compile(r'\.\./|\.\.\\|\.\.%2f|%2e%2e|/etc/passwd|win\.ini', re.I)),
-    ('shell', re.compile(r'\(\)\s*\{\s*:\s*;\s*\}|\$\(|`|;\s*(?:wget|curl|bash|sh|nc|id)\b|\|\s*(?:sh|bash)\b'
-                         r'|/bin/(?:sh|bash)|cmd\.exe|powershell', re.I)),
-    ('template', re.compile(r'\{\{.*?\}\}|\$\{[^}]{0,80}\}|#\{[^}]{0,80}\}|<%=')),
+    # (pass 3) a command word only where a command would end: "; SH-53C" is
+    # a Sharp phone's agent, "; id-id;" an Indonesian one's, "a=1; id=5" a
+    # cookie called id - none of them a shell, all of them weighed as one
+    ('shell', re.compile(r'\(\)\s*\{\s*:\s*;\s*\}|\$\(|`|;\s*(?:wget|curl|bash|sh|nc|id)(?=[\s;|&`)#]|$)'
+                         r'|\|\s*(?:sh|bash)\b|/bin/(?:sh|bash)|cmd\.exe|powershell', re.I)),
+    ('template', re.compile(r'\{\{.{0,200}?\}\}|\$\{[^}]{0,80}\}|#\{[^}]{0,80}\}|<%=')),
 )
+# (pass 3) ...and no more of a value is read for them than a header can be
+VALUE_LOOKS_MOST = 16384
 # Keys in a body, a query or a form whose value is a secret, wherever they
 # stand. Bounded in front so "spin=" is not "pin=".
 _SECRET_PAIR = re.compile(
-    r'''(?i)((?:^|[?&;\s{,"'])"?(?:pass(?:word|wd)?|pwd|passcode|pin|otp|token|secret|api[_-]?key|apikey'''
-    r'''|access[_-]?token|refresh[_-]?token|auth|session|sessionid|sid|code|key)"?\s*[:=]\s*"?)'''
-    r'''([^&"',}\s]+)''')
+    r'''(?i)((?:^|[?&;\s{,"'])["']?(?:pass(?:word|wd)?|pwd|passcode|pin|otp|token|secret|api[_-]?key|apikey'''
+    r'''|access[_-]?token|refresh[_-]?token|auth|session|sessionid|sid|code|key)["']?\s*[:=]\s*)'''
+    # (pass 3) a quoted value is all of what stands between its quotes:
+    # {"password": "correct horse battery"} kept "horse battery" in the clear
+    r'''(?:"(?P<dq>(?:[^"\\]|\\.)*)"?|'(?P<sq>[^']*)'?|(?P<bare>[^&"',}\s]+))''')
 # The road whose path carries a link's own secret, while the address form of
 # the links is still accepted
-_SECRET_PATH = re.compile(r'^(/(?:api/)?tap/)([^/?#]+)')
+# - (pass 3) and in a whole address, as a Referer carries one: a browser that
+# opened /tap/<secret> names it, scheme and host in front, in what it asks next
+_SECRET_PATH = re.compile(r'^((?:[A-Za-z][A-Za-z0-9+.-]{0,15}://[^/?#\s]{0,255})?/(?:api/)?tap/)([^/?#]+)')
 _MASKED_AUTH = re.compile(r'^(?:[A-Za-z][\w-]{0,19} )?(?:user:\S{0,40} )?(?:jwt:eyJ[A-Za-z0-9_-]{0,160} )?'
                           r'(?:[*•]\S{0,2}|unsigned)$')
 # The fields the front config writes in the clear: what they say is the point
@@ -43504,7 +43614,8 @@ def value_looks(text):
     text = str(text or '')
     if not text:
         return ''
-    found = [name for name, rx in VALUE_LOOKS if rx.search(text)]
+    seen = text[:VALUE_LOOKS_MOST]
+    found = [name for name, rx in VALUE_LOOKS if rx.search(seen)]
     if len(text) > 4096:
         found.append('huge')
     return ','.join(found)
@@ -43522,7 +43633,10 @@ def _last_two(value, least=8):
 
 
 def _plain(text, most):
-    return ''.join(ch for ch in str(text or '') if ch.isprintable())[:most]
+    text = str(text or '')
+    if text.isprintable():           # nearly every value: not walked a character at a time
+        return text[:most]
+    return ''.join(ch for ch in text[:most * 4] if ch.isprintable())[:most]
 
 
 def _jwt_says(head):
@@ -43620,8 +43734,31 @@ def mask_pairs(text, most=2000):
     """A body, a query, an address: every value whose key says it is a
     secret, masked, wherever it stands - and a link's secret in its path."""
     text = str(text or '')[:most * 2]
-    text = _SECRET_PATH.sub(lambda m: m.group(1) + FULL_MASK + _last_two(m.group(2), 12), text)
-    return _SECRET_PAIR.sub(lambda m: m.group(1) + FULL_MASK, text)[:most]
+    text = _SECRET_PATH.sub(_path_masked, text)
+    return _SECRET_PAIR.sub(_pair_masked, text)[:most]
+
+
+def _path_masked(m):
+    """A link's secret in its path, by its last two - and (pass 3) one that
+    is masked already as it was, so masked twice is masked once: read again,
+    "/tap/•kS" lost its last two."""
+    value = m.group(2)
+    if value[:1] in ('*', FULL_MASK) and len(value) <= 3:
+        return m.group(1) + FULL_MASK + value[1:]
+    return m.group(1) + FULL_MASK + _last_two(value, 12)
+
+
+def _pair_masked(m):
+    """One key's value masked where it stands, its quotes kept. An empty
+    one is left as it is: there is nothing in it to hide."""
+    for name in ('dq', 'sq', 'bare'):
+        if m.group(name) is not None:
+            if not m.group(name):
+                return m.group(0)
+            start, end = m.span(name)
+            whole = m.group(0)
+            return whole[:start - m.start()] + FULL_MASK + whole[end - m.start():]
+    return m.group(0)
 
 
 def full_mask(one):
@@ -50555,6 +50692,26 @@ def proxy_device_record(d, got):
     d.record(PROXY_TILE_ID, proxy_device_name(d), vals)
 
 
+def proxy_device_gone(d):
+    """(pass 3) A look that failed says so on the device as well as on the
+    card. The card said "offline" at once, while Devices went on showing the
+    server in front online - and green - for as long as the silence took to
+    reach stale_crit_min, hours, because a look only ever wrote it online.
+    The next look that answers writes it online again (record)."""
+    try:
+        if d.store.device(PROXY_TILE_ID):
+            d.set_availability(PROXY_TILE_ID, 'offline', proxy_device_name(d))
+    except Exception as e:                              # noqa: BLE001 - the card still shows
+        log('the server in front as a device: %s' % e, 'debug')
+
+
+# (pass 3) look() from a script or a rule: at most this often. Each one used
+# to start a look of its own the moment the last one ended, so a rule that
+# called it on every reading of a sensor kept an SSH to the server in front
+# open without a pause.
+PROXY_TILE_NOW_S = 10
+
+
 def proxy_tile_look(d):
     """The last look, and a new one on a background thread when it is a
     minute old - whoever asks, a page or the clock. The lock and the age make
@@ -50565,7 +50722,8 @@ def proxy_tile_look(d):
     with PROXY_TILE_LOCK:
         last = max(float(look.get('at') or 0), float(look.get('tried') or 0),
                    float(d.__dict__.get('_proxy_tile_started') or 0))
-        due = time.time() - last >= PROXY_TILE_S and not d.__dict__.get('_proxy_tile_looking')
+        due = (time.time() - last >= PROXY_TILE_S or look.get('now')) \
+            and not d.__dict__.get('_proxy_tile_looking')
         if due:
             d._proxy_tile_looking = True
             d._proxy_tile_started = time.time()
@@ -50575,8 +50733,10 @@ def proxy_tile_look(d):
             try:
                 d._proxy_tile_look = proxy_tile_read(d)
             except Exception as e:                       # noqa: BLE001 - said on the card
-                was = d.__dict__.get('_proxy_tile_look') or {}
+                was = dict(d.__dict__.get('_proxy_tile_look') or {})
+                was.pop('now', None)
                 d._proxy_tile_look = dict(was, ok=False, error=str(e)[:200], tried=int(time.time()))
+                proxy_device_gone(d)
             finally:
                 d._proxy_tile_runs = int(d.__dict__.get('_proxy_tile_runs') or 0) + 1
                 d._proxy_tile_looking = False
