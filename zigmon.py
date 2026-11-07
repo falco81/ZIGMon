@@ -44171,6 +44171,8 @@ def mask_pairs(text, most=2000):
         start = m.end()
         if _key_is_secret(m.group('key')):
             end = _value_end(text, start)
+            if end - start == 2 and text[start] in '"\'' and text[start + 1] == text[start]:
+                end = start                  # "" holds nothing to hide: left as it is
             if end > start:
                 first = text[start]
                 if first in '"\'':
