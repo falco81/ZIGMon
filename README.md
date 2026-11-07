@@ -2083,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.2**
+Current version: **5.47.3**
+
+5.47.3 — the frames, mended and carried further.
+
+* Devices: the mouse wheel over the table scrolls it (it only moved at the
+  scroll bar on the edge of the screen), and the Devices tab is no longer
+  drawn over the tab picked after it - its frame had come out "shown"
+  whenever its mesh card was. The table and the mesh scroll as one frame,
+  under the table's heading row.
+* SMS: *Write a message* stays where it is; only the messages scroll, under
+  Inbox / Outbox / Everything.
+* Public API: the pills are smaller and sit in one compact row, and a card
+  says what it is in its title alone - the rest is under its About - so the
+  room goes to the data.
+* WiFi in parts, as Public API: **Access points**, **On the network** and
+  **Other networks** (when any are heard), each with how many, in one row
+  with *Ask the controller* and when it last looked; the part is in the
+  address (`#wifi/clients`) and kept over a reload.
+
+`test/review5472_frames.py` (now also the wheel, SMS, WiFi and a hidden tab
+drawn over another); these checks fail on 5.47.2.
 
 5.47.2 — on a desk, a list scrolls its rows and nothing else.
 

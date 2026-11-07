@@ -122,9 +122,10 @@ const CASES = [
   ['#approvals/presses', ['#api-subs', '#presses-filter', '#presses-pager'], '#tab-approvals > [data-sub="presses"] > .list-scroll', '#approvals-past thead th'],
   ['#approvals/requests', ['#api-subs', '#preq-ip', '#preq-more'], '#preq-card > .list-scroll', '#preq-table thead th'],
   ['#approvals/blocked', ['#api-subs', '#look-ip', '#blocked-add', '#blockstory-pager-slot'], '#blocked-card > .list-scroll', null],
-  ['#devices', ['#tab-devices > .card'], '#tab-devices .list-scroll', '#devices-table thead th'],
+  ['#devices', ['#devices-scroll'], '#devices-scroll', '#devices-table thead th'],
   ['#history', ['#h-device'], '#tab-history > .frame-scroll', null],
-  ['#wifi', ['#wifi-refresh'], '#tab-wifi > .frame-scroll', null],
+  ['#wifi', ['#wifi-refresh', '#wifi-subs'], '#tab-wifi > .frame-scroll', null],
+  ['#sms', ['#sms-subtabs', '#tab-sms > .card:first-child h2'], '#sms-log-card > .list-scroll', null],
 ];
 (async () => {
   const b = await chromium.launch();
@@ -141,6 +142,17 @@ const CASES = [
       await p.evaluate(() => document.querySelectorAll('#blocked-list details').forEach(x => x.open = true));
       await p.waitForTimeout(300);
     }
+    // (5.47.3) the wheel over the rows scrolls them - not only a scroll bar at the edge
+    const box = await p.evaluate(sel => { const e = document.querySelector(sel); if (!e) return null;
+      const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + Math.min(r.height / 2, 200), e.scrollHeight > e.clientHeight + 4]; }, scroller);
+    let wheeled = null;
+    if (box && box[2]) {
+      await p.mouse.move(box[0], box[1]);
+      await p.mouse.wheel(0, 400);
+      await p.waitForTimeout(400);
+      wheeled = await p.evaluate(sel => document.querySelector(sel).scrollTop, scroller);
+      await p.evaluate(sel => { document.querySelector(sel).scrollTop = 0; }, scroller);
+    }
     const r = await p.evaluate(([stays, scroller, head]) => {
       const panel = document.querySelector('section.panel:not([hidden])');
       const top = sel => { const e = document.querySelector(sel); return e ? Math.round(e.getBoundingClientRect().top) : null; };
@@ -153,9 +165,17 @@ const CASES = [
       return {before: before, after: {stays: stays.map(top), panel: panel.scrollTop, head: head ? top(head) : null,
               scTop: scTop === null ? null : Math.round(scTop), scrolled: sc ? sc.scrollTop : null}};
     }, [stays, scroller, head]);
+    r.wheeled = wheeled;
     out.cases[where] = r;
     await p.screenshot({path: SH + '/' + where.replace(/[#\/]/g, '_') + '.png'});
   }
+  // (5.47.3) a tab that is not shown is not drawn over the one that is - the
+  // Devices tab with its mesh card open stayed on the screen under History
+  await p.goto('http://127.0.0.1:' + PORT + '/?f=mesh#devices');
+  await p.waitForTimeout(2000);
+  await p.evaluate(() => { const m = document.getElementById('mesh-card'); if (m) m.hidden = false; showTab('history'); });
+  await p.waitForTimeout(400);
+  out.overlay = await p.evaluate(() => getComputedStyle(document.getElementById('tab-devices')).display);
   out.errors = p.errors;
   const phone = await b.newContext({viewport: {width: 420, height: 800}});
   await phone.addCookies([{name: 'zigmon_session', value: S, url: 'http://127.0.0.1:' + PORT + '/'}]);
@@ -199,9 +219,12 @@ for where, c in sorted((r.get('cases') or {}).items()):
           '%s: what should stay moved: %r -> %r' % (where, b4.get('stays'), af.get('stays')))
     if b4.get('sc') and b4['sc'][0] > b4['sc'][1] + 4:
         check((af.get('scrolled') or 0) > 0, '%s: the rows did not scroll' % where)
+    if c.get('wheeled') is not None:
+        check(c['wheeled'] > 0, '%s: the mouse wheel over the rows did not scroll them' % where)
     if b4.get('head') is not None:
         check(af.get('head') is not None and abs(af['head'] - (af.get('scTop') or 0)) <= 2,
               '%s: the heading row went with the rows (%s, its frame at %s)' % (where, af.get('head'), af.get('scTop')))
+check(r.get('overlay') == 'none', 'a hidden Devices tab is drawn over History: display %r' % r.get('overlay'))
 ph = r.get('phone') or {}
 check(ph.get('doc', 0) > ph.get('win', 0) and ph.get('wide', 999) <= 421,
       'a phone does not scroll the page as a page: %r' % ph)

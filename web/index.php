@@ -3464,10 +3464,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #blocked-history tbody tr:nth-child(odd){background:var(--panel2)}
   /* (5.47.1) the parts of Public API, as isemon picks its own: a row of
      pills at the top, each with how many it holds */
-  .api-subs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
-  .api-subs button{appearance:none;cursor:pointer;font:inherit;font-size:13.5px;font-weight:600;display:inline-flex;
-    align-items:center;gap:8px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);
-    border-radius:999px;padding:8px 16px;transition:color .12s,border-color .12s,background .12s}
+  /* (5.47.3) one compact row: the parts on the left, what the tab does on the right */
+  .parts-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+  .parts-bar .spacer{flex:1 1 auto}
+  .api-subs{display:flex;flex-wrap:wrap;gap:6px;margin:0}
+  .api-subs button{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:inline-flex;
+    align-items:center;gap:6px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);
+    border-radius:999px;padding:4px 12px;line-height:20px;transition:color .12s,border-color .12s,background .12s}
   .api-subs button:hover{color:var(--tx);border-color:var(--tx-mut)}
   .api-subs button.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
   .api-subs button[hidden]{display:none}
@@ -3475,8 +3478,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .api-subs .n{font-size:12px;font-weight:600;color:var(--tx-mut)}
   .api-subs .n:empty{display:none}
   .api-subs .n.hot{color:#fff;background:var(--warn);border-radius:999px;padding:0 7px;line-height:18px}
-  #tab-approvals > .card.sub-off{display:none}
-  #tab-approvals > .card[data-sub]{margin-top:0 !important}
+  #tab-approvals > .card.sub-off, #tab-wifi > [data-sub].sub-off{display:none}
+  #tab-approvals > .card[data-sub], #tab-wifi > [data-sub]{margin-top:0 !important}
+  /* in a tab of parts every pixel goes to the data: a card says what it is
+     in its title, and the rest is under About */
+  #tab-approvals .card > .card-lede, #tab-wifi .card > .card-lede{display:none}
+  #tab-approvals .card > h2, #tab-wifi .card > h2{margin-bottom:8px}
   @media (max-width:520px){.api-subs button{padding:7px 12px;font-size:13px}}
   /* (5.46) the requests at the server in front */
   #preq-table{width:100%}
@@ -4129,7 +4136,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
        window never cuts anything off. */
     body.app-shell .wrap > section.panel.frame:not([hidden]){display:flex;flex-direction:column;padding-bottom:14px}
     section.panel.frame > *{flex:none}
-    section.panel.frame > .frame-fill:not(.sub-off){flex:1 1 auto;min-height:320px}
+    section.panel.frame > .frame-fill:not(.sub-off){flex:1 1 auto;min-height:220px}
     section.panel.frame > .frame-scroll{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
         padding-right:4px}
     section.panel.frame > .listcard{display:flex;flex-direction:column}
@@ -4138,10 +4145,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         overscroll-behavior:contain;scrollbar-width:thin}
     .list-scroll thead th{position:sticky;top:0;z-index:2;background:var(--panel)}
     .list-scroll .pager{position:static}
-    /* a Devices tab with the mesh drawn under its list is a page again */
-    body.app-shell .wrap > section.panel.frame:has(> #mesh-card:not([hidden])){display:block}
-    /* the SMS log's own row of boxes stays above the messages it picks */
-    #sms-subtabs{position:sticky;top:0;z-index:3;background:var(--panel);padding:6px 0}
+    /* the table's head stays as its rows go by, in a frame that scrolls cards */
+    .frame-scroll .card > table > thead th{position:sticky;top:0;z-index:2;background:var(--panel)}
     /* a section of Settings keeps its title while its body scrolls */
     body.ctl-shell .ctl-main > .ctl-head{position:sticky;top:0;z-index:4;background:var(--bg);padding-top:2px}
   }
@@ -5384,13 +5389,15 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 </section>
 
 <section class="panel frame" id="tab-devices" hidden>
-  <div class="card listcard frame-fill"><div class="list-scroll"><table id="devices-table"><thead><tr>
+  <div class="frame-fill frame-scroll" id="devices-scroll">
+  <div class="card"><table id="devices-table"><thead><tr>
     <th>Name</th><th>Model</th><th>Source</th><th>Address</th><th>Status</th><th>Battery</th><th>Signal</th><th>Last report</th><th>First seen</th>
-  </tr></thead><tbody></tbody></table></div></div>
+  </tr></thead><tbody></tbody></table></div>
   <div class="card full" id="mesh-card" hidden style="margin-top:14px">
     <h2>Who talks through whom</h2>
     <p class="note">From the Zigbee network map — each parent with the children it carries and the link quality of that hop.</p>
     <div id="mesh-tree"></div>
+  </div>
   </div>
 </section>
 
@@ -5414,7 +5421,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <div id="heating-rooms" class="grid" style="margin-top:14px"></div>
   <p class="muted small" id="heating-empty" hidden>No rooms yet — make one under Settings → Rooms &amp; heating, put a valve and a thermometer in it, and it appears here.</p>
 </section>
-<section class="panel" id="tab-sms" hidden>
+<section class="panel frame" id="tab-sms" hidden>
   <div class="card full">
     <h2>Write a message</h2>
     <p class="note">Pick who it goes to — anybody with a number on their card, or type one — and write it.
@@ -5436,7 +5443,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
     </div>
   </div>
-  <div class="card full">
+  <div class="card full listcard frame-fill" id="sms-log-card" style="margin-top:14px">
     <div class="head">
       <h2>Messages</h2>
       <span class="spacer"></span>
@@ -5447,25 +5454,35 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <button class="btn small" type="button" data-box="out" id="sms-tab-out">Outbox</button>
       <button class="btn small on" type="button" data-box="all" id="sms-tab-all">Everything</button>
     </div>
-    <div id="sms-log"></div>
+    <div class="list-scroll"><div id="sms-log"></div></div>
   </div>
 </section>
 <section class="panel frame" id="tab-wifi" hidden>
-  <div class="btnrow" style="margin-bottom:12px;flex-wrap:wrap">
-    <button class="btn cmd" id="wifi-refresh">Ask the controller</button>
+  <!-- (5.47.3) in parts, as Public API is: one row with the parts and the
+       one thing the tab does, and the room under it for what it shows -->
+  <div class="parts-bar">
+    <nav class="api-subs" id="wifi-subs" aria-label="Parts of WiFi">
+      <button type="button" data-sub="aps"><span class="ic" data-icon="wifi"></span>Access points<span class="n" id="wifi-n-aps"></span></button>
+      <button type="button" data-sub="clients"><span class="ic" data-icon="person"></span>On the network<span class="n" id="wifi-n-clients"></span></button>
+      <button type="button" data-sub="others" id="wifi-sub-others"><span class="ic" data-icon="globe"></span>Other networks<span class="n" id="wifi-n-others"></span></button>
+    </nav>
+    <span class="spacer"></span>
     <span class="muted small" id="wifi-tab-note"></span>
+    <button class="btn cmd small" id="wifi-refresh">Ask the controller</button>
   </div>
-  <div class="frame-fill frame-scroll">
+  <div class="frame-fill frame-scroll" data-sub="aps" id="wifi-aps-part">
   <div id="wifi-tiles"></div>
-  <div class="card full" id="wifi-clients-card" style="margin-top:14px">
+  </div>
+  <div class="card full listcard frame-fill" id="wifi-clients-card" data-sub="clients">
     <h2>On the network</h2>
     <p class="note">Everything the controller can see right now. Wireless first, then anything on a cable. A device assigned to somebody under Settings → Presence is marked in green.</p>
     <p class="note" id="wifi-api-note"></p>
-    <div id="wifi-client-table"></div>
+    <div class="list-scroll"><div id="wifi-client-table"></div></div>
   </div>
-  <div class="card full" id="wifi-others-card" style="margin-top:14px" hidden>
+  <div class="card full listcard frame-fill" id="wifi-others-card" data-sub="others" hidden>
     <h2>Other networks on the air <span class="right"><button class="btn small" id="wifi-seen-btn">Everything ever heard</button></span></h2>
     <p class="note">What the access points can hear besides your own, strongest first. A network on the same channel as one of yours is sharing the airtime with it — which is what the <b>quieter going spare</b> hint on an access point tile is about. Your own networks are left out; the hidden ones your points broadcast are marked.</p>
+    <div class="list-scroll">
     <div id="wifi-others"></div>
     <div id="wifi-seen-wrap" hidden style="margin-top:14px">
       <p class="note" id="wifi-seen-note"></p>
@@ -5476,7 +5493,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
       <div id="wifi-seen"></div>
     </div>
-  </div>
+    </div>
   </div>
 </section>
 
@@ -5499,12 +5516,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 <section class="panel frame" id="tab-approvals" hidden>
   <!-- (5.47.1) one part of the tab at a time, picked here: the four cards
        one under the other were a page of several screens -->
+  <div class="parts-bar">
   <nav class="api-subs" id="api-subs" aria-label="Parts of Public API">
     <button type="button" data-sub="waiting"><span class="ic" data-icon="clock"></span>Waiting<span class="n" id="api-n-waiting"></span></button>
     <button type="button" data-sub="presses"><span class="ic" data-icon="hand"></span>Presses<span class="n" id="api-n-presses"></span></button>
     <button type="button" data-sub="requests" id="api-sub-requests" hidden><span class="ic" data-icon="sslproxy"></span>At the server in front<span class="n" id="api-n-requests"></span></button>
     <button type="button" data-sub="blocked"><span class="ic" data-icon="wall"></span>Blocked addresses<span class="n" id="api-n-blocked"></span></button>
   </nav>
+  </div>
   <div class="card full listcard frame-fill" data-sub="waiting">
     <h2>Waiting to be approved</h2>
     <p class="note">A press on a link that asks Duo does not act on its own: it asks, and waits for
@@ -7761,7 +7780,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#api-subs button'), func
 function drawApiSubIcons() {
   if (drawApiSubIcons.done || typeof ICONS === 'undefined' || !ICONS) return;
   drawApiSubIcons.done = true;
-  Array.prototype.forEach.call(document.querySelectorAll('#api-subs .ic'), function (ic) {
+  Array.prototype.forEach.call(document.querySelectorAll('#api-subs .ic, #wifi-subs .ic'), function (ic) {
     ic.innerHTML = iconMarkup(ic.getAttribute('data-icon'), 15);
   });
 }
@@ -12825,7 +12844,54 @@ $('heat-save').onclick = function () {
     });
   });
 };
+// ---- the parts of WiFi (5.47.3), as Public API's ----------------------------
+var WIFI_SUBS = ['aps', 'clients', 'others'];
+var WIFI_SUB = (function () {
+  try { var v = localStorage.getItem('zigmon.wifiSub'); if (WIFI_SUBS.indexOf(v) >= 0) return v; } catch (e) {}
+  return 'aps';
+})();
+function wifiSubShown() {
+  // a part with nothing in it (no other networks heard, no controller to
+  // ask who is on it) gives way to the access points
+  if (WIFI_SUB === 'others' && $('wifi-others-card') && $('wifi-others-card').hidden) return 'aps';
+  if (WIFI_SUB === 'clients' && $('wifi-clients-card') && $('wifi-clients-card').hidden) return 'aps';
+  return WIFI_SUB;
+}
+function showWifiSub(name, keepHash) {
+  if (API_SUBS && typeof drawApiSubIcons === 'function') drawApiSubIcons();
+  if (WIFI_SUBS.indexOf(name) < 0) name = 'aps';
+  WIFI_SUB = name;
+  try { localStorage.setItem('zigmon.wifiSub', name); } catch (e) {}
+  var shown = wifiSubShown();
+  Array.prototype.forEach.call(document.querySelectorAll('#wifi-subs button'), function (b) {
+    var on = b.getAttribute('data-sub') === shown;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#tab-wifi > [data-sub]'), function (c) {
+    c.classList.toggle('sub-off', c.getAttribute('data-sub') !== shown);
+  });
+  if (!keepHash && STATE.tab === 'wifi') {
+    try { history.replaceState(null, '', '#wifi/' + shown); } catch (e) {}
+  }
+}
+function paintWifiSubs(st) {
+  var wifi = (st && st.wifi_detail) || {};
+  var put = function (id, n) { var e = $(id); if (e) e.textContent = n ? String(n) : ''; };
+  put('wifi-n-aps', (wifi.aps || []).length);
+  put('wifi-n-clients', (wifi.clients || []).length);
+  var others = (wifi.neighbours || []).filter(function (n) { return !n.ours; }).length;
+  put('wifi-n-others', others);
+  if ($('wifi-sub-others')) $('wifi-sub-others').hidden = !others;
+  showWifiSub(WIFI_SUB, true);
+}
+Array.prototype.forEach.call(document.querySelectorAll('#wifi-subs button'), function (b) {
+  b.onclick = function () { showWifiSub(b.getAttribute('data-sub')); };
+});
 function renderWifiTab(st) {
+  try { renderWifiTabParts(st); } finally { paintWifiSubs(st); }
+}
+function renderWifiTabParts(st) {
   var wall = $('wifi-tiles'); wall.innerHTML = '';
   var cfg = st.wifi_config || {};
   var note = $('wifi-tab-note');
@@ -34655,6 +34721,7 @@ function showTab(name) {
   // (pass 3) once on opening; the tab's clock after - (5.47.1) and only the
   // part of it that is picked
   if (name === 'approvals') { showApiSub(API_SUB); loadProxyRequests(false); }
+  if (name === 'wifi') showWifiSub(WIFI_SUB);
   var arriving = $('tab-' + name);
   if (arriving && PANEL_SCROLL['tab-' + name]) arriving.scrollTop = PANEL_SCROLL['tab-' + name];
   if (name === 'history') { renderHistoryControls(); loadHistory(); }
@@ -34665,7 +34732,8 @@ function showTab(name) {
   if (name === 'control') { loadHealth(); showControlSection(CONTROL_SEC); setTimeout(placeCtlNav, 0); }
   if (name === 'overview') { redrawCharts(); if (!STATE._ovLoaded) { loadOverviewCharts(); STATE._ovLoaded = Date.now(); } }
   try { history.replaceState(null, '', '#' + name + (name === 'control' ? '/' + CONTROL_SEC
-                                                   : name === 'approvals' ? '/' + apiSubShown() : '')); } catch (e) {}
+                                                   : name === 'approvals' ? '/' + apiSubShown()
+                                                   : name === 'wifi' ? '/' + wifiSubShown() : '')); } catch (e) {}
 }
 Array.prototype.forEach.call(document.querySelectorAll('#control-nav button[data-sec]'), function (b) {
   if (b.dataset.icon) setButtonIcon(b, b.dataset.icon);
@@ -35126,6 +35194,7 @@ wanted = wanted.split('/')[0];
 if (wantedSec && (CONTROL_SECTIONS[wantedSec] || CONTROL_ALIAS[wantedSec])) CONTROL_SEC = controlSecOf(wantedSec);
 // (5.47.1) #approvals/requests opens that part of Public API
 if (wanted === 'approvals' && API_SUBS.indexOf(wantedSec) >= 0) API_SUB = wantedSec;
+if (wanted === 'wifi' && WIFI_SUBS.indexOf(wantedSec) >= 0) WIFI_SUB = wantedSec;
 showControlSection(CONTROL_SEC);
 // (5.43.3) the SMS tab too: #sms came back as the Overview after a reload
 showTab(['overview', 'plugs', 'sensors', 'buttons', 'heating', 'history', 'devices', 'sms', 'wifi', 'events', 'approvals', 'control', 'all'].indexOf(wanted) >= 0 ? wanted : 'overview');
