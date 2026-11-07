@@ -2083,7 +2083,23 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.0**
+Current version: **5.47.1**
+
+5.47.1 — Public API in parts.
+
+* The tab is no longer four cards one under the other: a row of pills at its
+  top picks one part - **Waiting** (orange with how many wait, when any do),
+  **Presses**, **At the server in front** (an administrator's) and **Blocked
+  addresses** - each with how many it holds. The part is in the address
+  (`#approvals/blocked`) and is kept over a reload; the find box opens the part
+  that holds what it found. The requests at the server in front are asked for
+  only while their part is shown.
+* Every request at the server in front wears the marks the blocked list wears:
+  the address's flag, kept out now, a list somebody else keeps that knows it,
+  Suricata, the house's own - and its object mark and the Shodan and Talos
+  buttons.
+
+`test/review5471_apisubs.py`; these checks fail on 5.47.0.
 
 5.47.0 — a third pass over the whole house: nothing waits in front of a sensor.
 

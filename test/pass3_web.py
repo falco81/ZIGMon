@@ -191,7 +191,7 @@ const out = {errors: []};
 
   // ---- Public API: the requests at the server in front -----------------------------------------
   const to = Date.now();
-  await p.evaluate(() => showTab('approvals'));
+  await p.evaluate(() => { API_SUB = 'requests'; showTab('approvals'); });
   await wait(2000);
   out.preqOpen = since(to, 'proxy-requests').length;
   const ta = Date.now();

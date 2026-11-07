@@ -380,7 +380,7 @@ async function open(b, session) {
   const p = await ctx.newPage();
   p.errors = [];
   p.on('pageerror', e => p.errors.push(String(e)));
-  await p.goto('http://127.0.0.1:' + PORT + '/#approvals');
+  await p.goto('http://127.0.0.1:' + PORT + '/#approvals/requests');
   return p;
 }
 (async () => {

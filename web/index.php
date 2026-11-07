@@ -3462,12 +3462,33 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   #approvals-past th:first-child, #approvals-past td:first-child{padding-left:7px}
   #approvals-past tbody tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--info)}
   #blocked-history tbody tr:nth-child(odd){background:var(--panel2)}
+  /* (5.47.1) the parts of Public API, as isemon picks its own: a row of
+     pills at the top, each with how many it holds */
+  .api-subs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+  .api-subs button{appearance:none;cursor:pointer;font:inherit;font-size:13.5px;font-weight:600;display:inline-flex;
+    align-items:center;gap:8px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);
+    border-radius:999px;padding:8px 16px;transition:color .12s,border-color .12s,background .12s}
+  .api-subs button:hover{color:var(--tx);border-color:var(--tx-mut)}
+  .api-subs button.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
+  .api-subs button[hidden]{display:none}
+  .api-subs .ic{display:inline-flex;opacity:.85}
+  .api-subs .n{font-size:12px;font-weight:600;color:var(--tx-mut)}
+  .api-subs .n:empty{display:none}
+  .api-subs .n.hot{color:#fff;background:var(--warn);border-radius:999px;padding:0 7px;line-height:18px}
+  #tab-approvals > .card.sub-off{display:none}
+  #tab-approvals > .card[data-sub]{margin-top:0 !important}
+  @media (max-width:520px){.api-subs button{padding:7px 12px;font-size:13px}}
   /* (5.46) the requests at the server in front */
   #preq-table{width:100%}
   #preq-table td{vertical-align:top;font-size:13px}
   #preq-table tbody tr.preq-row{cursor:pointer}
   #preq-table tbody tr.preq-row:nth-child(4n+1){background:var(--panel2)}
   #preq-table tbody tr.preq-row:hover{background:rgba(88,166,255,.07)}
+  /* (5.47.1) the marks in three slots of their own, the narrow columns as
+     narrow as they are, and the request taking the room that is left */
+  #preq-table .story-marks{grid-template-columns:repeat(3,20px)}
+  #preq-table th:nth-child(-n+5), #preq-table td:nth-child(-n+5){width:1px;white-space:nowrap}
+  #preq-table th:nth-child(n+7), #preq-table td:nth-child(n+7){width:1px;white-space:nowrap}
   #preq-table td.preq-req{overflow-wrap:anywhere;font-family:var(--mono,ui-monospace,monospace);font-size:12.5px}
   #preq-table .preq-kind{display:inline-block;margin:0 4px 2px 0;padding:1px 6px;border-radius:9px;font-size:11.5px;background:rgba(248,81,73,.14);color:var(--crit)}
   #preq-table .preq-s4{color:var(--warn)} #preq-table .preq-s2{color:var(--ok)}
@@ -5450,7 +5471,15 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 </section>
 
 <section class="panel" id="tab-approvals" hidden>
-  <div class="card full">
+  <!-- (5.47.1) one part of the tab at a time, picked here: the four cards
+       one under the other were a page of several screens -->
+  <nav class="api-subs" id="api-subs" aria-label="Parts of Public API">
+    <button type="button" data-sub="waiting"><span class="ic" data-icon="clock"></span>Waiting<span class="n" id="api-n-waiting"></span></button>
+    <button type="button" data-sub="presses"><span class="ic" data-icon="hand"></span>Presses<span class="n" id="api-n-presses"></span></button>
+    <button type="button" data-sub="requests" id="api-sub-requests" hidden><span class="ic" data-icon="sslproxy"></span>At the server in front<span class="n" id="api-n-requests"></span></button>
+    <button type="button" data-sub="blocked"><span class="ic" data-icon="wall"></span>Blocked addresses<span class="n" id="api-n-blocked"></span></button>
+  </nav>
+  <div class="card full" data-sub="waiting">
     <h2>Waiting to be approved</h2>
     <p class="note">A press on a link that asks Duo does not act on its own: it asks, and waits for
       somebody to say yes. What is waiting is here, with what it would do and how long it has left.
@@ -5462,7 +5491,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <span class="muted small" id="approvals-note" style="align-self:center"></span>
     </div>
   </div>
-  <div class="card full scroll" style="margin-top:14px">
+  <div class="card full scroll" style="margin-top:14px" data-sub="presses">
     <h2>Every press, and what came of it</h2>
     <p class="note">Every one of them, whichever road it came by and whatever it had to get past: a
       press approved through Duo, one that carried a six-digit code, one that carried neither because
@@ -5483,7 +5512,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="center" id="approvals-empty" hidden>No link has been pressed yet</div>
     <div class="pager" id="presses-pager"></div>
   </div>
-  <div class="card full" style="margin-top:14px" id="preq-card" hidden>
+  <div class="card full" style="margin-top:14px" id="preq-card" data-sub="requests" hidden>
     <h2>Every request at the server in front</h2>
     <p class="note">What the full logs of the server in front wrote down - every header it names, the
       start of the body, and what the weighing made of each request. Secrets are written by their
@@ -5500,12 +5529,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <span class="muted small" id="preq-note" style="align-self:center"></span>
     </div>
     <div class="table-wrap"><table id="preq-table"><thead><tr>
-      <th>When</th><th>Server</th><th>Asked from</th><th>Request</th><th>Answer</th><th>Found</th>
+      <th>When</th><th>Server</th><th>&nbsp;</th><th>Asked from</th><th class="story-ask">&nbsp;</th><th>Request</th><th>Answer</th><th>Found</th>
     </tr></thead><tbody></tbody></table></div>
     <div class="center" id="preq-empty" hidden></div>
     <div class="btnrow" style="margin-top:8px"><button class="btn cmd" id="preq-more" type="button" hidden>Older</button></div>
   </div>
-  <div class="card full" style="margin-top:14px" id="blocked-card">
+  <div class="card full" style="margin-top:14px" id="blocked-card" data-sub="blocked">
     <h2>Addresses that may not talk to this</h2>
     <p class="note">An address that behaves like somebody trying things rather than like somebody
       opening a door is put on this list, and everything the API answers it with is a refusal. What
@@ -7642,6 +7671,73 @@ function paintPressesPager(pages) {
   pager.appendChild(mk('', PRESSES.page + 1, 'next'));
   pager.appendChild(mk('', pages, 'last'));
 }
+// ---- the parts of Public API (5.47.1) ----------------------------------------
+var API_SUBS = ['waiting', 'presses', 'requests', 'blocked'];
+var API_COUNT = {};
+var API_SUB = (function () {
+  try { var v = localStorage.getItem('zigmon.apiSub'); if (API_SUBS.indexOf(v) >= 0) return v; } catch (e) {}
+  return 'presses';
+})();
+function apiSubShown() {
+  // the requests are an administrator's: until the page knows it is one, the
+  // presses are shown - and the choice is kept, so signing in brings it back
+  return API_SUB === 'requests' && !isAdmin() ? 'presses' : API_SUB;
+}
+function showApiSub(name, keepHash) {
+  drawApiSubIcons();
+  if (API_SUBS.indexOf(name) < 0) name = 'presses';
+  var was = apiSubShown();
+  API_SUB = name;
+  try { localStorage.setItem('zigmon.apiSub', name); } catch (e) {}
+  name = apiSubShown();
+  Array.prototype.forEach.call(document.querySelectorAll('#api-subs button'), function (b) {
+    var on = b.getAttribute('data-sub') === name;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#tab-approvals > .card[data-sub]'), function (c) {
+    c.classList.toggle('sub-off', c.getAttribute('data-sub') !== name);
+  });
+  if (!keepHash && STATE.tab === 'approvals') {
+    try { history.replaceState(null, '', '#approvals/' + name); } catch (e) {}
+  }
+  // the requests are asked for only while they are the part being looked at
+  if (name === 'requests' && was !== 'requests' && STATE.tab === 'approvals') loadProxyRequests(false);
+}
+function paintApiSubs() {
+  var req = $('api-sub-requests');
+  if (req) req.hidden = !isAdmin();
+  // signed in or out since it was drawn: the part shown follows
+  var on = document.querySelector('#api-subs button.on');
+  if (!on || on.getAttribute('data-sub') !== apiSubShown()) showApiSub(API_SUB, true);
+  var put = function (id, n, hot) {
+    var e = $(id); if (!e) return;
+    e.textContent = n ? String(n) : '';
+    e.classList.toggle('hot', !!hot);
+  };
+  var waiting = (APPROVALS.waiting || []).length;
+  put('api-n-waiting', waiting, waiting > 0);
+  put('api-n-presses', PRESSES.total);
+  put('api-n-requests', isAdmin() ? PREQ.total : 0);
+  put('api-n-blocked', API_COUNT.blocked);
+}
+Array.prototype.forEach.call(document.querySelectorAll('#api-subs button'), function (b) {
+  b.onclick = function () { showApiSub(b.getAttribute('data-sub')); };
+});
+// the drawings come from ICONS, which is defined further down the page: drawn
+// the first time the row is shown, not while the page is still being read
+function drawApiSubIcons() {
+  if (drawApiSubIcons.done || typeof ICONS === 'undefined' || !ICONS) return;
+  drawApiSubIcons.done = true;
+  Array.prototype.forEach.call(document.querySelectorAll('#api-subs .ic'), function (ic) {
+    ic.innerHTML = iconMarkup(ic.getAttribute('data-icon'), 15);
+  });
+}
+// whatever the find box or a link opens inside a part that is not shown
+function revealApiSubOf(node) {
+  var card = node && node.closest && node.closest('#tab-approvals > .card[data-sub]');
+  if (card && card.classList.contains('sub-off')) showApiSub(card.getAttribute('data-sub'));
+}
 // ---- every request at the server in front (5.46) ---------------------------
 var PREQ = {rows: [], more: false, busy: false, at: 0, open: {}, key: ''};
 // the full log's own short names, as a person knows the headers
@@ -7671,6 +7767,8 @@ function loadProxyRequests(older) {
   var card = $('preq-card'); if (!card) return;
   card.hidden = !isAdmin();
   if (card.hidden) return;
+  // (5.47.1) not while another part of the tab is shown: asked when it is picked
+  if (apiSubShown() !== 'requests') return;
   // (pass 3) one at a time - but what was asked meanwhile is not dropped: an
   // address typed and Enter pressed while the half-minute look was on its
   // way did nothing, and the table went on showing every address under a box
@@ -7692,6 +7790,7 @@ function loadProxyRequests(older) {
     PREQ.at = Date.now();
     $('preq-note').textContent = PREQ.total ? PREQ.total + ' kept in all' : '';
     paintProxyRequests();
+    paintApiSubs();
   }, function (e) {
     PREQ.at = Date.now();                    // a failure waits its half minute too
     $('preq-note').textContent = 'could not ask the daemon' + (e && e.message ? ': ' + e.message : '');
@@ -7733,12 +7832,37 @@ function paintProxyRequests() {
     var tr = el('tr', 'preq-row');
     tr.appendChild(el('td', 'nowrap', stamp(one.ts)));
     tr.appendChild(el('td', 'nowrap', one.which === 'ntfy' ? 'ntfy' : 'one-tap'));
+    // (5.47.1) the marks the blocked list and its story wear, in fixed slots
+    // so the addresses line up: kept out now, a list that knows it, Suricata,
+    // the house's own
+    var markCell = el('td', 'nowrap');
+    var slots = el('div', 'story-marks');
+    var mark = function (glyph, words) {
+      var cell = el('span', 'story-slot');
+      if (glyph) { var g = el('span', 'appr-icon', glyph); explain(g, words); cell.appendChild(g); }
+      slots.appendChild(cell);
+    };
+    if (one.spared) mark('\ud83c\udfe0', 'The house\u2019s own, or never kept out: never weighed.');
+    else if (one.blocked) mark('\u26d4', 'Kept out now: the API refuses it, and the router where one is set.');
+    else mark('', '');
+    if (one.listed) mark('\ud83d\udcd5', 'On a list somebody else keeps \u2014 ' + one.listed + '.');
+    else mark('', '');
+    if (one.ids) mark('\ud83d\udce1', 'Suricata has said something about this address at the server in front.');
+    else mark('', '');
+    markCell.appendChild(slots);
+    tr.appendChild(markCell);
     var ipCell = el('td', 'nowrap');
+    ipCell.appendChild(countryBadge(one.country));
     var ipLink = el('span', 'preq-ip', one.ip); ipLink.title = 'Only this address';
     ipLink.onclick = function (ev) { ev.stopPropagation(); $('preq-ip').value = one.ip; loadProxyRequests(false); };
+    ipCell.appendChild(document.createTextNode(' '));
     ipCell.appendChild(ipLink);
-    if (one.country) ipCell.appendChild(el('span', 'muted small', ' ' + one.country));
+    ipCell.appendChild(objMark('address:' + one.ip, one.ip));
     tr.appendChild(ipCell);
+    var askCell = el('td', 'nowrap story-ask');
+    var ask = intelButtons(one.ip, true);
+    if (ask) askCell.appendChild(ask);
+    tr.appendChild(askCell);
     tr.appendChild(el('td', 'preq-req', (one.method || '\u2014') + ' ' + (one.uri || '')));
     var st = el('td', 'nowrap preq-s' + String(one.status || 0).charAt(0), String(one.status || ''));
     tr.appendChild(st);
@@ -7748,7 +7872,7 @@ function paintProxyRequests() {
     });
     tr.appendChild(kinds);
     body.appendChild(tr);
-    var more = el('tr', 'preq-detail'); var td = el('td'); td.colSpan = 6;
+    var more = el('tr', 'preq-detail'); var td = el('td'); td.colSpan = 8;
     more.appendChild(td); more.hidden = !PREQ.open[one.id];
     if (!more.hidden) td.appendChild(preqFields(one));
     tr.onclick = function () {
@@ -7824,6 +7948,8 @@ function loadApprovals(quiet, fromClock) {
       + (BLOCKSTORY.text ? '&q=' + encodeURIComponent(BLOCKSTORY.text) : '')).then(function (r) {
     BLOCKSTORY.matched = r.matched || 0;
     BLOCKSTORY.total = r.total || 0;
+    API_COUNT.blocked = (r.blocked || []).length;
+    paintApiSubs();
     APPROVALS.blocked = r.blocked || [];
     APPROVALS.counters = r.counters || [];
     APPROVALS.blockedPast = r.history || [];
@@ -7912,6 +8038,7 @@ function renderApprovals() {
   }, 1000);
 }
 function paintApprovals() {
+  paintApiSubs();
   var host = $('approvals-live'); if (!host) return;
   var gone = Math.floor((Date.now() - APPROVALS.at) / 1000);
   // A dropdown held open and a run of text being copied are taken away by a
@@ -11838,6 +11965,7 @@ function openSectionsAround(node) {
 // Go there, and put the focus on it: the box itself for a setting or an
 // editor row, the card or row otherwise, and let it glow for a moment.
 function focusFound(node) {
+  revealApiSubOf(node);
   if (!node) return false;
   openSectionsAround(node);
   var box = node.matches && node.matches('input, select, textarea') ? node
@@ -34488,7 +34616,9 @@ function showTab(name) {
   });
   Array.prototype.forEach.call(document.querySelectorAll('.panel'), function (p) { p.hidden = p.id !== 'tab-' + name; });
   if (TAB_STALE[name] !== false) renderTab(name, STATE.status);   // catch up on what changed while hidden
-  if (name === 'approvals') loadProxyRequests(false);   // (pass 3) once on opening; the tab's clock after
+  // (pass 3) once on opening; the tab's clock after - (5.47.1) and only the
+  // part of it that is picked
+  if (name === 'approvals') { showApiSub(API_SUB); loadProxyRequests(false); }
   var arriving = $('tab-' + name);
   if (arriving && PANEL_SCROLL['tab-' + name]) arriving.scrollTop = PANEL_SCROLL['tab-' + name];
   if (name === 'history') { renderHistoryControls(); loadHistory(); }
@@ -34498,7 +34628,8 @@ function showTab(name) {
   document.documentElement.classList.toggle('app-shell-root', window.innerWidth > 980);
   if (name === 'control') { loadHealth(); showControlSection(CONTROL_SEC); setTimeout(placeCtlNav, 0); }
   if (name === 'overview') { redrawCharts(); if (!STATE._ovLoaded) { loadOverviewCharts(); STATE._ovLoaded = Date.now(); } }
-  try { history.replaceState(null, '', '#' + name + (name === 'control' ? '/' + CONTROL_SEC : '')); } catch (e) {}
+  try { history.replaceState(null, '', '#' + name + (name === 'control' ? '/' + CONTROL_SEC
+                                                   : name === 'approvals' ? '/' + apiSubShown() : '')); } catch (e) {}
 }
 Array.prototype.forEach.call(document.querySelectorAll('#control-nav button[data-sec]'), function (b) {
   if (b.dataset.icon) setButtonIcon(b, b.dataset.icon);
@@ -34957,6 +35088,8 @@ var wanted = (location.hash || '#overview').substring(1);
 var wantedSec = wanted.split('/')[1] || '';
 wanted = wanted.split('/')[0];
 if (wantedSec && (CONTROL_SECTIONS[wantedSec] || CONTROL_ALIAS[wantedSec])) CONTROL_SEC = controlSecOf(wantedSec);
+// (5.47.1) #approvals/requests opens that part of Public API
+if (wanted === 'approvals' && API_SUBS.indexOf(wantedSec) >= 0) API_SUB = wantedSec;
 showControlSection(CONTROL_SEC);
 // (5.43.3) the SMS tab too: #sms came back as the Overview after a reload
 showTab(['overview', 'plugs', 'sensors', 'buttons', 'heating', 'history', 'devices', 'sms', 'wifi', 'events', 'approvals', 'control', 'all'].indexOf(wanted) >= 0 ? wanted : 'overview');

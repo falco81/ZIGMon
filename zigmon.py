@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.47.0'
+__version__ = '5.47.1'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -45737,8 +45737,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                     found=str(q.get('found') or '') == '1', before=before,
                     limit=int(q.get('limit') or 100) if str(q.get('limit') or '').isdigit() else 100)
                 words = {}
+                # (5.47.1) the marks every other list of addresses wears: its
+                # country, whether it is kept out now, the list that knew it,
+                # Suricata, the house's own - once per address, not per row
+                marks = {}
                 for one in rows:
-                    one['country'] = d.country_says(one.get('ip')) or ''
+                    ip = str(one.get('ip') or '')
+                    if ip not in marks:
+                        try:
+                            marks[ip] = {
+                                'country': d.country_says(ip) or '',
+                                'blocked': d.store.blocked_until(ip, wait=False) is not None,
+                                'listed': (d.feed_says(ip) or '') if d.feed_wanted() else '',
+                                'ids': bool(d.store.get_meta('ids_about_%s' % ip)
+                                            or d.store.get_meta('blocked_ids_%s' % ip)),
+                                'spared': bool(d.spared(ip))}
+                        except Exception:                       # noqa: BLE001 - a mark, not the answer
+                            marks[ip] = {'country': '', 'blocked': False, 'listed': '', 'ids': False,
+                                         'spared': False}
+                    one.update(marks[ip])
                     for k in one['kinds']:
                         words[k] = d.ANOMALY_WORDS.get(k, k)
                 return self._send(200, {'ok': True, 'rows': rows, 'more': more, 'total': total,
