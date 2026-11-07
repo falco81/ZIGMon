@@ -2083,7 +2083,25 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.4**
+Current version: **5.47.5**
+
+5.47.5 — lists found and paged everywhere, and the blocked addresses a list at a time.
+
+* WiFi: the find boxes look as the other lists' do; Other networks (on the
+  air now, and everything ever heard) and **On the network** are paged - 25,
+  50, 100 or 200 a page, the pages under the list - and On the network has a
+  find box of its own (a name, an address, a MAC, a network, an access point,
+  whose it is). Its note about how the controller is read keeps to one line,
+  the whole of it on hover.
+* Public API, Blocked addresses: *What happened*, *Blacklisted IPs*, *Seen by
+  Suricata*, *Blocked by system* and *On their way* are pills at the top of
+  the card, each with how many, one list shown at a time (they were folds one
+  under another, with little room left for any of them); *Ask about it* sits
+  in the same row. Each list has its find box and its country at the top and
+  its pages at the foot of the card, drawn as every other list's; the boxes
+  and buttons of the card are lower.
+
+`test/review5474_parts.py`, `test/review5472_frames.py`; these checks fail on 5.47.4.
 
 5.47.4 — SMS in parts, and the networks heard, now or ever.
 

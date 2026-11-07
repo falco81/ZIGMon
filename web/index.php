@@ -3467,7 +3467,19 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   /* (5.47.3) one compact row: the parts on the left, what the tab does on the right */
   .parts-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
   .parts-bar .spacer{flex:1 1 auto}
-  .air-bar .air-find{max-width:320px;flex:0 1 320px;padding:5px 10px;font-size:13px}
+  /* (5.47.5) the blocked addresses: a list at a time, the boxes and buttons low */
+  #blocked-card .view-off{display:none !important}
+  #blocked-past > .set-head{display:none}             /* its pill says it */
+  #blocked-card .listed-fold.as-view{border:0;background:none;padding:0;margin:0}
+  #blocked-card .listed-fold.as-view .listed-body{padding:0}
+  #blocked-card .btn.cmd{padding:5px 12px;font-size:13px}
+  #blocked-card input[type=text], #blocked-card input[type=search], #blocked-card select{padding:5px 10px;font-size:13px}
+  #blocked-card .listed-body > .btnrow:first-child{margin:0 0 8px}
+  /* (5.47.5) the find box of a list, as Events has it */
+  .list-find{min-width:220px;flex:0 1 340px}
+  .parts-bar.list-bar{margin:0 0 8px}
+  /* a live note that would take two lines of the list: one, the rest on hover */
+  #wifi-api-note{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0 0 8px}
   /* the heading of a list of rows stays as the rows go by */
   .list-scroll .oth-row.head{position:sticky;top:0;z-index:2;background:var(--panel)}
   .api-subs{display:flex;flex-wrap:wrap;gap:6px;margin:0}
@@ -5490,7 +5502,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <h2>On the network</h2>
     <p class="note">Everything the controller can see right now. Wireless first, then anything on a cable. A device assigned to somebody under Settings → Presence is marked in green.</p>
     <p class="note" id="wifi-api-note"></p>
+    <div class="parts-bar list-bar">
+      <input id="wifi-client-find" type="search" class="evf list-find" autocomplete="off"
+             placeholder="find: a name, an address, a MAC, a network, an access point" aria-label="Find a device">
+      <select id="wifi-client-pp" class="evf" aria-label="How many on a page"></select>
+      <span class="muted small" id="wifi-client-count"></span>
+    </div>
     <div class="list-scroll"><div id="wifi-client-table"></div></div>
+    <div class="pager" id="wifi-client-pager"></div>
   </div>
   <div class="card full listcard frame-fill" id="wifi-others-card" data-sub="others" hidden>
     <h2>Other networks on the air</h2>
@@ -5501,8 +5520,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <button type="button" data-air="now" class="on">On the air now<span class="n" id="wifi-air-now"></span></button>
         <button type="button" data-air="ever" id="wifi-seen-btn">Everything ever heard<span class="n" id="wifi-air-ever"></span></button>
       </nav>
-      <input id="wifi-seen-find" type="search" autocomplete="off" class="air-find"
-             placeholder="filter — a name, a BSSID, a channel, WPA2…" aria-label="Filter the networks">
+      <input id="wifi-seen-find" type="search" autocomplete="off" class="evf list-find"
+             placeholder="find: a name, a BSSID, a channel, WPA2…" aria-label="Filter the networks">
+      <select id="wifi-air-pp" class="evf" aria-label="How many on a page"></select>
       <span class="muted small" id="wifi-seen-count"></span>
       <span class="spacer"></span>
       <span class="muted small" id="wifi-seen-note"></span>
@@ -5513,6 +5533,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       <div id="wifi-seen"></div>
     </div>
     </div>
+    <div class="pager" id="wifi-air-pager"></div>
   </div>
 </section>
 
@@ -5608,10 +5629,20 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       that is shut, and trying five different links weighs more than trying one five times. The house's
       own addresses are left alone unless you say otherwise, so nobody shuts the family out. How long
       a block lasts, and what earns one, are in Settings.</p>
-    <div class="btnrow" style="margin:6px 0 10px">
-      <input id="look-ip" type="text" autocomplete="off" style="max-width:260px"
+    <!-- (5.47.5) the lists of the card as pills, one shown at a time, and the
+         asking box in the same row -->
+    <div class="parts-bar">
+      <nav class="api-subs" id="blk-views" aria-label="Which addresses">
+        <button type="button" data-view="story">What happened<span class="n" id="blk-n-story"></span></button>
+        <button type="button" data-view="listed">Blacklisted IPs<span class="n" id="blk-n-listed"></span></button>
+        <button type="button" data-view="ids">Seen by Suricata<span class="n" id="blk-n-ids"></span></button>
+        <button type="button" data-view="system">Blocked by system<span class="n" id="blk-n-system"></span></button>
+        <button type="button" data-view="watch">On their way<span class="n" id="blk-n-watch"></span></button>
+      </nav>
+      <span class="spacer"></span>
+      <input id="look-ip" type="text" class="evf" autocomplete="off" style="max-width:240px"
              placeholder="ask about one address — 45.9.148.9">
-      <button class="btn cmd" id="look-go">Ask about it</button>
+      <button class="btn cmd small" id="look-go">Ask about it</button>
     </div>
     <div class="list-scroll">
     <div id="look-out"></div>
@@ -5622,7 +5653,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <!-- (5.47.2) the story's pages, outside what scrolls -->
     <div id="blockstory-pager-slot"></div>
     <div class="btnrow" style="margin-top:10px">
-      <input id="blocked-ip" type="text" autocomplete="off"
+      <input id="blocked-ip" type="text" class="evf" autocomplete="off"
              placeholder="89.24.5.7, 89.24.5.0/24 or 2a01:430::/48">
       <button class="btn cmd" id="blocked-add">Block this one</button>
       <button class="btn cmd" id="blocked-add-forever">Block it for good</button>
@@ -8591,7 +8622,6 @@ function paintWatched() {
   var host = $('blocked-watch'); if (!host) return;
   var rows = (APPROVALS.counters || []).filter(function (x) { return !x.blocked; });
   host.innerHTML = '';
-  if (!rows.length) return;
   // The same fold as the lists below it, for the same reason: on a house that
   // faces the internet this is a hundred addresses on a quiet afternoon, and
   // a hundred rows above the lists buries them. Open by default, because
@@ -8756,15 +8786,56 @@ function ccOf(one) {
 function inCountry(one, cc) {
   return !cc || ccOf(one) === cc;
 }
+// ---- the lists of the blocked card, one at a time (5.47.5) -------------------
+var BLK_VIEWS = ['story', 'listed', 'ids', 'system', 'watch'];
+var BLK_VIEW = (function () {
+  try { var v = localStorage.getItem('zigmon.blkView'); if (BLK_VIEWS.indexOf(v) >= 0) return v; } catch (e) {}
+  return 'story';
+})();
+var BLK_COUNT = {};
+function paintBlkViews() {
+  Array.prototype.forEach.call(document.querySelectorAll('#blk-views button'), function (b) {
+    var v = b.getAttribute('data-view'), on = v === BLK_VIEW;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    var n = b.querySelector('.n');
+    if (n) n.textContent = BLK_COUNT[v] ? String(BLK_COUNT[v]) : '';
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#blocked-card [data-view]:not(button)'), function (box) {
+    box.classList.toggle('view-off', box.getAttribute('data-view') !== BLK_VIEW);
+  });
+  var past = $('blocked-past');
+  if (past) past.classList.toggle('view-off', BLK_VIEW !== 'story');
+}
+Array.prototype.forEach.call(document.querySelectorAll('#blk-views button'), function (b) {
+  b.onclick = function () {
+    BLK_VIEW = b.getAttribute('data-view');
+    try { localStorage.setItem('zigmon.blkView', BLK_VIEW); } catch (e) {}
+    if ($('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
+    paintBlocked(true);                // the pages under the card are the shown list's
+    if (BLK_VIEW === 'watch') paintWatched();
+    paintBlkViews();
+    var sc = $('blocked-past') && $('blocked-past').parentNode;
+    if (sc) sc.scrollTop = 0;
+  };
+});
 function listedFold(rows, drawRow, which, title) {
   var LISTED_FOLD = FOLDS[which || 'listed'];
-  var box = el('div', 'listed-fold');
+  // (5.47.5) in the blocked card a list is a view of its own, picked by its
+  // pill: open, with no head, its pages at the foot of the card
+  var asView = BLK_VIEWS.indexOf(which) >= 0;
+  if (asView) { LISTED_FOLD.open = true; BLK_COUNT[which] = rows.length; }
+  var box = el('div', 'listed-fold' + (asView ? ' as-view' : ''));
+  if (asView) {
+    box.setAttribute('data-view', which);
+    if (which !== BLK_VIEW) box.classList.add('view-off');
+  }
   var head = el('button', 'listed-head');
   var caret = el('span', 'listed-caret', LISTED_FOLD.open ? '\u25be' : '\u25b8');
   head.appendChild(caret);
   head.appendChild(el('span', '', title || 'Blacklisted IPs'));
   head.appendChild(el('span', 'muted small', rows.length + ' address(es)'));
-  box.appendChild(head);
+  if (!asView) box.appendChild(head);
   var body = el('div', 'listed-body');
   body.hidden = !LISTED_FOLD.open;
   box.appendChild(body);
@@ -8776,7 +8847,8 @@ function listedFold(rows, drawRow, which, title) {
   };
   var bar = el('div', 'btnrow');
   var find = el('input');
-  find.type = 'text';
+  find.type = 'search';
+  find.className = 'evf list-find';
   find.value = LISTED_FOLD.text;
   find.placeholder = 'filter \u2014 an address, a list, a country, a reason';
   find.dataset.keep = 'listed-filter-' + which;
@@ -8824,7 +8896,20 @@ function listedFold(rows, drawRow, which, title) {
     if (!page.length) inner.appendChild(el('p', 'btnhelp', 'nothing here matches that.'));
     page.forEach(function (one) { drawRow(one, inner); });
     pages.innerHTML = '';
-    if (last > 0) {
+    if (asView) {
+      // the pages of the list shown, where the story's are, under what scrolls
+      var slot = $('blockstory-pager-slot');
+      if (slot && which === BLK_VIEW) {
+        var pg = el('div', 'pager');
+        slot.innerHTML = '';
+        slot.appendChild(pg);
+        paintPagerInto(pg, LISTED_FOLD.page + 1, last + 1, function (n) {
+          LISTED_FOLD.page = n - 1; fill();
+          var sc = box.parentNode && box.parentNode.parentNode;
+          if (sc) sc.scrollTop = 0;
+        });
+      }
+    } else if (last > 0) {
       var back = cmdButton('Back', 'prev', 'small');
       back.classList.remove('needs-unlock');
       back.disabled = LISTED_FOLD.page <= 0;
@@ -9063,25 +9148,26 @@ function paintBlockedNow(force) {
   // Two folds of the same shape: the ones a list already knew, and the ones
   // this house decided about on its own. Both will be long in time, and a
   // hundred rows above the handful that are waiting buries them.
-  if (listedRows.length) {
-    host.appendChild(listedFold(listedRows, drawRow, 'listed', 'Blacklisted IPs'));
-  }
-  if (idsRows.length) {
-    host.appendChild(listedFold(idsRows, drawRow, 'ids', 'Seen by Suricata'));
-  }
-  if (ownRows.length) {
-    host.appendChild(listedFold(ownRows, drawRow, 'system', 'Blocked by system'));
-  }
+  // (5.47.5) each one a view of its own, there even when it is empty, so its
+  // pill opens something that says so
+  host.appendChild(listedFold(listedRows, drawRow, 'listed', 'Blacklisted IPs'));
+  host.appendChild(listedFold(idsRows, drawRow, 'ids', 'Seen by Suricata'));
+  host.appendChild(listedFold(ownRows, drawRow, 'system', 'Blocked by system'));
   // every address that was ever kept out, long after it was let back in
   var past = $('blocked-past'); if (!past) return;
   var old = (APPROVALS.blockedPast || []).filter(function (r) { return inCountry(r, BLOCKSTORY.cc); });
   past.innerHTML = '';
-  if ($('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
+  if (BLK_VIEW === 'story' && $('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
   // A search that matches nothing must not take the search box away with it.
   // Emptying the whole section on an empty answer left somebody looking at a
   // blank card with no way to clear what they had typed - the one moment the
   // box is most needed.
-  if (!old.length && !BLOCKSTORY.text && !BLOCKSTORY.cc) return;
+  if (!old.length && !BLOCKSTORY.text && !BLOCKSTORY.cc) {
+    BLK_COUNT.story = 0;
+    past.appendChild(el('p', 'muted small', 'Nothing has happened to an address yet.'));
+    paintBlkViews();
+    return;
+  }
   past.appendChild(el('div', 'set-head', 'Everything that has happened to an address'));
   past.appendChild(blockedStoryBar());
   if (!old.length) {
@@ -9234,23 +9320,15 @@ function paintBlockedNow(force) {
   var pager = el('div', 'pager'); pager.id = 'blockstory-pager';
   // (5.47.2) under what scrolls, so the pages stay where the hand is
   var slot = $('blockstory-pager-slot');
-  if (slot) { slot.innerHTML = ''; slot.appendChild(pager); } else past.appendChild(pager);
-  if (pages > 1) {
-    var go = function (n) { BLOCKSTORY.page = Math.max(1, Math.min(pages, n)); paintBlocked(true); };
-    var mk = function (n, key) {
-      var b = el('button', 'btn cmd small pg'); b.type = 'button';
-      b.classList.remove('needs-unlock');
-      setButtonIcon(b, key, '');
-      b.disabled = n === BLOCKSTORY.page || n < 1 || n > pages;
-      b.onclick = function () { go(n); };
-      return b;
-    };
-    pager.appendChild(mk(1, 'first'));
-    pager.appendChild(mk(BLOCKSTORY.page - 1, 'prev'));
-    pager.appendChild(el('span', 'muted small', ' page ' + BLOCKSTORY.page + ' of ' + pages + ' '));
-    pager.appendChild(mk(BLOCKSTORY.page + 1, 'next'));
-    pager.appendChild(mk(pages, 'last'));
-  }
+  BLK_COUNT.story = BLOCKSTORY.total || (APPROVALS.blockedPast || []).length;
+  if (BLK_VIEW !== 'story') { /* another list's pages are there */ }
+  else if (slot) { slot.innerHTML = ''; slot.appendChild(pager); } else past.appendChild(pager);
+  paintBlkViews();
+  // (5.47.5) the same pages as every other list's
+  paintPagerInto(pager, BLOCKSTORY.page, pages, function (n) {
+    BLOCKSTORY.page = Math.max(1, Math.min(pages, n)); paintBlocked(true);
+    var sc = $('blocked-past') && $('blocked-past').parentNode; if (sc) sc.scrollTop = 0;
+  });
 }
 var BLOCKSTORY = {page: 1, perPage: 50, text: '', cc: '', matched: 0, total: 0};
 function blockedStoryBar() {
@@ -12869,6 +12947,59 @@ $('heat-save').onclick = function () {
     });
   });
 };
+// ---- pages of a list (5.47.5), drawn as Events draws its own ----------------
+function paintPagerInto(pager, page, pages, go) {
+  if (!pager) return;
+  pager.innerHTML = '';
+  if (pages <= 1) return;
+  var mk = function (label, n, cls, key) {
+    var b = el('button', 'btn cmd small pg' + (cls ? ' ' + cls : '')); b.type = 'button';
+    b.classList.remove('needs-unlock');
+    if (key) setButtonIcon(b, key, label); else b.textContent = label;
+    b.disabled = n === page || n < 1 || n > pages;
+    b.onclick = function () { go(n); };
+    return b;
+  };
+  pager.appendChild(mk('First', 1, '', 'first'));
+  pager.appendChild(mk('Prev', page - 1, '', 'prev'));
+  var lo = Math.max(1, page - 2), hi = Math.min(pages, page + 2);
+  if (lo > 1) pager.appendChild(el('span', 'pg-dots', '\u2026'));
+  for (var n = lo; n <= hi; n++) pager.appendChild(mk(String(n), n, n === page ? 'current' : ''));
+  if (hi < pages) pager.appendChild(el('span', 'pg-dots', '\u2026'));
+  pager.appendChild(mk('Next', page + 1, '', 'next'));
+  pager.appendChild(mk('Last', pages, '', 'last'));
+  pager.appendChild(el('span', 'muted small pg-info', 'page ' + page + ' of ' + pages));
+}
+// one page of rows, the page held inside what there is
+function pageOf(rows, state) {
+  var per = state.per || 50;
+  var pages = Math.max(1, Math.ceil(rows.length / per));
+  state.page = Math.max(1, Math.min(pages, state.page || 1));
+  return {rows: rows.slice((state.page - 1) * per, state.page * per), pages: pages};
+}
+var WIFI_PAGES = {now: {page: 1, per: 50}, ever: {page: 1, per: 50}, clients: {page: 1, per: 50}};
+(function () {
+  var fill = function (id, which) {
+    var sel = $(id); if (!sel) return;
+    fillSelect(sel, [25, 50, 100, 200].map(function (n) { return [String(n), '\ud83d\udcc4 ' + n + ' per page']; }), '50');
+    sel.onchange = function () {
+      var per = parseInt(sel.value, 10) || 50;
+      which.forEach(function (w) { WIFI_PAGES[w].per = per; WIFI_PAGES[w].page = 1; });
+      wifiRepaintLists();
+    };
+  };
+  fill('wifi-air-pp', ['now', 'ever']);
+  fill('wifi-client-pp', ['clients']);
+})();
+if ($('wifi-client-find')) $('wifi-client-find').oninput = function () {
+  WIFI_PAGES.clients.page = 1;
+  if (STATE.status) renderWifiClients_tab(STATE.status);
+};
+function wifiRepaintLists() {
+  if (WIFI_SEEN_OPEN) paintWifiSeen(WIFI_SEEN_ROWS);
+  else if (STATE.status) renderWifiOthers(STATE.status);
+  if (STATE.status) renderWifiClients_tab(STATE.status);
+}
 // ---- the parts of SMS (5.47.4) ------------------------------------------------
 var SMS_SUBS = ['log', 'write'];
 var SMS_SUB = (function () {
@@ -13101,10 +13232,15 @@ function paintWifiSeen(rows) {
     ? (shown.length + ' of ' + rows.length + ' shown')
     : '';
   if (!shown.length) {
+    paintPagerInto($('wifi-air-pager'), 1, 1);
     host.appendChild(el('p', 'muted small', 'nothing heard matches that.'));
     return;
   }
-  rows = shown;
+  var pg = pageOf(shown, WIFI_PAGES.ever);
+  rows = pg.rows;
+  paintPagerInto($('wifi-air-pager'), WIFI_PAGES.ever.page, pg.pages, function (n) {
+    WIFI_PAGES.ever.page = n; paintWifiSeen(WIFI_SEEN_ROWS); $('wifi-seen-wrap').parentNode.scrollTop = 0;
+  });
   var head = el('div', 'oth-row head');
   ['Network', 'BSSID', 'Band', 'Channel', 'Best ever', 'Times', 'First heard', 'Last heard']
     .forEach(function (t) { head.appendChild(el('div', '', t)); });
@@ -13134,6 +13270,7 @@ function loadWifiSeen() {
 // Typed into, the list is drawn again from what was already fetched - the
 // controller is not asked a second time for something it has already said.
 $('wifi-seen-find').oninput = function () {
+  WIFI_PAGES.now.page = 1; WIFI_PAGES.ever.page = 1;
   if (WIFI_SEEN_OPEN) paintWifiSeen(WIFI_SEEN_ROWS);
   else if (STATE.status) renderWifiOthers(STATE.status);    // the same filter, over what is on the air now
 };
@@ -13194,7 +13331,13 @@ function renderWifiOthers(st) {
     head.appendChild(el('div', '', t));
   });
   host.appendChild(head);
-  rows.slice(0, 200).forEach(function (n) {
+  var pgNow = pageOf(rows, WIFI_PAGES.now);
+  if (!WIFI_SEEN_OPEN) {
+    paintPagerInto($('wifi-air-pager'), WIFI_PAGES.now.page, pgNow.pages, function (n) {
+      WIFI_PAGES.now.page = n; renderWifiOthers(STATE.status); $('wifi-others').parentNode.scrollTop = 0;
+    });
+  }
+  pgNow.rows.forEach(function (n) {
     var row = el('div', 'oth-row');
     var name = el('div');
     name.appendChild(el('div', '', n.ssid || '(hidden)'));
@@ -13217,7 +13360,7 @@ function renderWifiOthers(st) {
     row.appendChild(el('div', 'muted small', n.seen_by || ''));
     host.appendChild(row);
   });
-  if (rows.length > 200) host.appendChild(el('div', 'muted small', 'and ' + (rows.length - 200) + ' more \u2014 the filter finds them'));
+
 }
 function saveWifiOrder(ids) {
   WIFI_ORDER.rows = ids;
@@ -13282,6 +13425,8 @@ function signalClass(dbm) {
 }
 function renderWifiClients_tab(st) {
   var wifi = st.wifi_detail || {};
+  // the whole of the note on hover: drawn on one line, it is cut
+  if ($('wifi-api-note')) $('wifi-api-note').title = $('wifi-api-note').textContent || '';
   var owner = {};
   ((st.people) || []).forEach(function (p) {
     (p.macs || []).forEach(function (m) { owner[m] = p.name; });
@@ -13300,6 +13445,26 @@ function renderWifiClients_tab(st) {
   if (!rows.length) {
     host.appendChild(el('div', 'muted small', pw.ok === false ? 'No client list until it answers.'
       : (pw.checked ? 'The controller listed nobody ' + ago(pw.checked) + '.' : 'Nothing listed yet \u2014 the controller has not been asked since the daemon started.')));
+    return;
+  }
+  // (5.47.5) found by anything the row says, in any order, and a page at a time
+  var all = rows.length;
+  var words = String(($('wifi-client-find') || {}).value || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length) {
+    rows = rows.filter(function (c) {
+      var hay = [c.name, c.hostname, c.mac, c.vendor, c.ip, c.ssid, c.wired ? 'cable wired' : 'wifi', c.ap_name,
+                 c.band ? c.band + ' GHz' : '', c.technology, owner[c.mac], c.guest ? 'guest' : ''].join(' ').toLowerCase();
+      return words.every(function (w) { return hay.indexOf(w) >= 0; });
+    });
+  }
+  if ($('wifi-client-count')) $('wifi-client-count').textContent = words.length ? rows.length + ' of ' + all + ' shown' : all + ' in all';
+  var pgc = pageOf(rows, WIFI_PAGES.clients);
+  paintPagerInto($('wifi-client-pager'), WIFI_PAGES.clients.page, pgc.pages, function (n) {
+    WIFI_PAGES.clients.page = n; renderWifiClients_tab(STATE.status); $('wifi-client-table').parentNode.scrollTop = 0;
+  });
+  rows = pgc.rows;
+  if (!rows.length) {
+    host.appendChild(el('div', 'muted small', 'nothing on the network matches that.'));
     return;
   }
   var head = el('div', 'wc-row wide head');

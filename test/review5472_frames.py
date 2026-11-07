@@ -169,6 +169,28 @@ const CASES = [
     out.cases[where] = r;
     await p.screenshot({path: SH + '/' + where.replace(/[#\/]/g, '_') + '.png'});
   }
+  // (5.47.5) the blocked card: its lists as pills, one at a time, low boxes
+  await p.goto('http://127.0.0.1:' + PORT + '/?f=blk#approvals/blocked');
+  await p.waitForTimeout(2500);
+  const view = () => p.evaluate(() => ({
+    shown: Array.from(document.querySelectorAll('#blocked-card [data-view]:not(button), #blocked-past'))
+      .filter(x => getComputedStyle(x).display !== 'none').map(x => x.getAttribute('data-view') || x.id),
+    pills: Array.from(document.querySelectorAll('#blk-views button')).map(b => [b.getAttribute('data-view'),
+      b.classList.contains('on'), (b.querySelector('.n') || {}).textContent]),
+    pager: (document.querySelector('#blockstory-pager-slot .pg-info') || {}).textContent || '',
+    rows: document.querySelectorAll('#blocked-list [data-view="system"] .listed-body > div:nth-child(2) > *').length,
+    heads: document.querySelectorAll('#blocked-card .listed-head').length,
+    lookH: document.getElementById('look-ip').offsetHeight, askH: document.getElementById('look-go').offsetHeight}));
+  await p.evaluate(() => { try { localStorage.removeItem('zigmon.blkView'); } catch (e) {} });
+  try { await p.waitForFunction(() => (APPROVALS.blocked || []).length > 0, null, {timeout: 20000}); } catch (e) { out.blkWait = String(e).slice(0, 100); }
+  out.blk = {first: await view()};
+  await p.click('#blk-views button[data-view="system"]');
+  await p.waitForTimeout(500);
+  out.blk.system = await view();
+  await p.screenshot({path: SH + '/blocked-system.png'});
+  await p.click('#blk-views button[data-view="story"]');
+  await p.waitForTimeout(500);
+  out.blk.story = await view();
   // (5.47.3) a tab that is not shown is not drawn over the one that is - the
   // Devices tab with its mesh card open stayed on the screen under History
   await p.goto('http://127.0.0.1:' + PORT + '/?f=mesh#devices');
@@ -224,6 +246,17 @@ for where, c in sorted((r.get('cases') or {}).items()):
     if b4.get('head') is not None:
         check(af.get('head') is not None and abs(af['head'] - (af.get('scTop') or 0)) <= 2,
               '%s: the heading row went with the rows (%s, its frame at %s)' % (where, af.get('head'), af.get('scTop')))
+bk = r.get('blk') or {}
+check(not r.get('blkWait'), 'the blocked lists never came: %s' % r.get('blkWait'))
+sy, sto = bk.get('system') or {}, bk.get('story') or {}
+check([x[0] for x in sy.get('pills') or []] == ['story', 'listed', 'ids', 'system', 'watch'],
+      'the pills of the blocked card: %r' % sy.get('pills'))
+check(sy.get('shown') == ['system'] and sy.get('heads') == 0, 'Blocked by system alone, as a view: %r' % sy)
+check(dict((x[0], x[2]) for x in sy.get('pills') or []).get('system') == '150', 'its count: %r' % sy.get('pills'))
+check(sy.get('pager') == 'page 1 of 6', 'its pages at the foot of the card: %r' % sy.get('pager'))
+check(sto.get('shown') == ['blocked-past'] and sto.get('pager', '').startswith('page 1 of'),
+      'What happened, and its pages: %r' % sto)
+check(sy.get('lookH', 99) <= 34 and sy.get('askH', 99) <= 34, 'the asking box is not low: %r' % sy)
 check(r.get('overlay') == 'none', 'a hidden Devices tab is drawn over History: display %r' % r.get('overlay'))
 ph = r.get('phone') or {}
 check(ph.get('doc', 0) > ph.get('win', 0) and ph.get('wide', 999) <= 421,

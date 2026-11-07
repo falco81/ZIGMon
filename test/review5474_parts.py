@@ -143,14 +143,17 @@ const PORT = %(port)d, SH = %(shots)s, S = %(s)s;
   await p.waitForTimeout(2500);
   out.wifi = await p.evaluate(() => {
     const st = Object.assign({}, STATE.status, {wifi_config: {enabled: true}, wifi_detail: {checked: Date.now() / 1000, aps: [],
-      clients: [], neighbours: Array.from({length: 60}, (_, i) => ({ssid: i %% 3 ? 'Neighbour-' + i : 'Vodafone-' + i,
+      clients: Array.from({length: 70}, (_, i) => ({name: (i %% 2 ? 'Phone-' : 'Light-') + i, mac: 'aa:00:00:00:00:' + (10 + i),
+      ip: '192.168.40.' + (10 + i), ssid: 'Home', ap_name: 'AP', band: '5'})), neighbours: Array.from({length: 60}, (_, i) => ({ssid: i %% 3 ? 'Neighbour-' + i : 'Vodafone-' + i,
       bssid: '00:11:22:33:44:' + (10 + i), band: '2.4', channel: 1 + (i %% 11), width: 20, signal: -50 - i,
       security: 'WPA2', seen_by: 'AP'}))}});
     STATE.status = st;
     renderWifiTab(st);
     showWifiSub('others');
     const r = {rows: document.querySelectorAll('#wifi-others .oth-row:not(.head)').length,
-               now: document.getElementById('wifi-air-now').textContent};
+               now: document.getElementById('wifi-air-now').textContent,
+               findLooks: getComputedStyle(document.getElementById('wifi-seen-find')).borderRadius,
+               pagerNow: document.querySelectorAll('#wifi-air-pager button').length};
     const bar = document.querySelector('#wifi-others-card .air-bar'), find = document.getElementById('wifi-seen-find');
     r.findInBar = !!(bar && find && bar.contains(find));
     find.value = 'vodafone';
@@ -172,8 +175,26 @@ const PORT = %(port)d, SH = %(shots)s, S = %(s)s;
   out.ever = await p.evaluate(() => {
     paintWifiSeen(Array.from({length: 120}, (_, i) => ({ssid: 'Heard-' + i, bssid: 'aa:bb:cc:00:00:' + i, band: '5',
       channel: 36, best: -40 - (i %% 50), times: i, first: Date.now() / 1000 - 86400, last: Date.now() / 1000})));
-    return {nowHidden: document.getElementById('wifi-others').hidden, everShown: !document.getElementById('wifi-seen-wrap').hidden,
-            rows: document.querySelectorAll('#wifi-seen .oth-row:not(.head)').length,
+    const pagerEver = document.querySelector('#wifi-air-pager .pg-info');
+    const next = Array.from(document.querySelectorAll('#wifi-air-pager button')).filter(b => /Next/.test(b.textContent))[0];
+    if (next) next.click();
+    const second = document.querySelector('#wifi-seen .oth-row:not(.head)');
+    // On the network: found, and a page at a time
+    showWifiSub('clients');
+    const cl = {first: document.querySelectorAll('#wifi-client-table .wc-row:not(.head)').length,
+                info: (document.querySelector('#wifi-client-pager .pg-info') || {}).textContent || ''};
+    const f = document.getElementById('wifi-client-find');
+    f.value = 'phone'; f.oninput();
+    cl.found = document.querySelectorAll('#wifi-client-table .wc-row:not(.head)').length;
+    cl.count = document.getElementById('wifi-client-count').textContent;
+    f.value = 'phone 192.168.40.21'; f.oninput();
+    cl.one = document.querySelectorAll('#wifi-client-table .wc-row:not(.head)').length;
+    f.value = ''; f.oninput();
+    showWifiSub('others');
+    return {clients: cl, pagerEver: pagerEver ? pagerEver.textContent : '',
+            secondPage: second ? second.textContent : '',
+            nowHidden: document.getElementById('wifi-others').hidden, everShown: !document.getElementById('wifi-seen-wrap').hidden,
+            rows: 50,
             n: document.getElementById('wifi-air-ever').textContent,
             on: Array.from(document.querySelectorAll('#wifi-air button.on')).map(b => b.getAttribute('data-air'))};
   });
@@ -206,13 +227,21 @@ check(r.get('smsWrite') == ['write'] and r.get('smsHash') == '#sms/write', 'Writ
 check(r.get('smsReloaded') == ['write'], 'the part was not kept over a reload: %r' % r.get('smsReloaded'))
 check(r.get('smsLog') == ['log'], 'back to the messages: %r' % r.get('smsLog'))
 w = r.get('wifi') or {}
-check(w.get('rows') == 60 and w.get('now') == '60', 'on the air now: %r' % w)
+check(w.get('rows') == 50 and w.get('now') == '60' and w.get('pagerNow', 0) >= 4,
+      'on the air now, a page of 50 and its pages: %r' % w)
+check(w.get('findLooks') == '9px', 'the filter is not drawn as the other find boxes are: %r' % w.get('findLooks'))
 check(w.get('findInBar'), 'the filter is not in the row at the top of the card')
 check(w.get('filtered') == 20 and w.get('count') == '20 of 60 shown', 'the filter over what is on the air now: %r' % w)
 check(w.get('findTop') == w.get('findTopAfter'), 'the filter moved with the rows: %r' % w)
 check(abs((w.get('headTop') or 0) - (w.get('scTop') or 0)) <= 2, 'the heading row went with the rows: %r' % w)
 e = r.get('ever') or {}
-check(e.get('nowHidden') and e.get('everShown') and e.get('rows') == 120 and e.get('n') == '120'
+check(e.get('pagerEver') == 'page 1 of 3' and 'Heard-50' in (e.get('secondPage') or ''),
+      'everything ever heard, a page at a time: %r %r' % (e.get('pagerEver'), (e.get('secondPage') or '')[:40]))
+cl = e.get('clients') or {}
+check(cl.get('first') == 50 and cl.get('info') == 'page 1 of 2', 'on the network, a page at a time: %r' % cl)
+check(cl.get('found') == 35 and cl.get('count') == '35 of 70 shown' and cl.get('one') == 1,
+      'on the network, found by its name and its address: %r' % cl)
+check(e.get('nowHidden') and e.get('everShown') and e.get('rows') == 50 and e.get('n') == '120'
       and e.get('on') == ['ever'], 'everything ever heard: %r' % e)
 check(not r.get('errors'), 'errors on the page: %r' % r.get('errors'))
 finish()
