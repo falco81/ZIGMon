@@ -3467,6 +3467,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   /* (5.47.3) one compact row: the parts on the left, what the tab does on the right */
   .parts-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
   .parts-bar .spacer{flex:1 1 auto}
+  .air-bar .air-find{max-width:320px;flex:0 1 320px;padding:5px 10px;font-size:13px}
+  /* the heading of a list of rows stays as the rows go by */
+  .list-scroll .oth-row.head{position:sticky;top:0;z-index:2;background:var(--panel)}
   .api-subs{display:flex;flex-wrap:wrap;gap:6px;margin:0}
   .api-subs button{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:inline-flex;
     align-items:center;gap:6px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);
@@ -3478,12 +3481,15 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .api-subs .n{font-size:12px;font-weight:600;color:var(--tx-mut)}
   .api-subs .n:empty{display:none}
   .api-subs .n.hot{color:#fff;background:var(--warn);border-radius:999px;padding:0 7px;line-height:18px}
-  #tab-approvals > .card.sub-off, #tab-wifi > [data-sub].sub-off{display:none}
-  #tab-approvals > .card[data-sub], #tab-wifi > [data-sub]{margin-top:0 !important}
+  #tab-approvals > .card.sub-off, #tab-wifi > [data-sub].sub-off, #tab-sms > [data-sub].sub-off{display:none}
+  #tab-approvals > .card[data-sub], #tab-wifi > [data-sub], #tab-sms > [data-sub]{margin-top:0 !important}
+  /* a card that fills its part and scrolls as a whole when it is taller */
+  section.panel.frame > .frame-card{overflow-y:auto}
+  #sms-log-tools{margin:0}
   /* in a tab of parts every pixel goes to the data: a card says what it is
      in its title, and the rest is under About */
-  #tab-approvals .card > .card-lede, #tab-wifi .card > .card-lede{display:none}
-  #tab-approvals .card > h2, #tab-wifi .card > h2{margin-bottom:8px}
+  #tab-approvals .card > .card-lede, #tab-wifi .card > .card-lede, #tab-sms .card > .card-lede{display:none}
+  #tab-approvals .card > h2, #tab-wifi .card > h2, #tab-sms .card > h2{margin-bottom:8px}
   @media (max-width:520px){.api-subs button{padding:7px 12px;font-size:13px}}
   /* (5.46) the requests at the server in front */
   #preq-table{width:100%}
@@ -5422,7 +5428,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <p class="muted small" id="heating-empty" hidden>No rooms yet — make one under Settings → Rooms &amp; heating, put a valve and a thermometer in it, and it appears here.</p>
 </section>
 <section class="panel frame" id="tab-sms" hidden>
-  <div class="card full">
+  <!-- (5.47.4) in parts, as WiFi and Public API are -->
+  <div class="parts-bar">
+    <nav class="api-subs" id="sms-parts" aria-label="Parts of SMS">
+      <button type="button" data-sub="log"><span class="ic" data-icon="sms"></span>Messages<span class="n" id="sms-n-log"></span></button>
+      <button type="button" data-sub="write"><span class="ic" data-icon="edit"></span>Write a message</button>
+    </nav>
+  </div>
+  <div class="card full frame-fill frame-card" data-sub="write">
     <h2>Write a message</h2>
     <p class="note">Pick who it goes to — anybody with a number on their card, or type one — and write it.
       <b>Ctrl+Space</b> offers the same <code>{…}</code> facts an alert can quote — and, under <i>Ready-made blocks</i>, a whole <code>{if …}{else}{end}</code> or <code>{for x in …}{end}</code> written out for you — and the preview underneath
@@ -5443,16 +5456,16 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       </div>
     </div>
   </div>
-  <div class="card full listcard frame-fill" id="sms-log-card" style="margin-top:14px">
-    <div class="head">
-      <h2>Messages</h2>
+  <div class="card full listcard frame-fill" id="sms-log-card" data-sub="log">
+    <h2>Messages</h2>
+    <div class="parts-bar">
+      <nav class="api-subs" id="sms-subtabs" aria-label="Which messages">
+        <button type="button" data-box="in" id="sms-tab-in">Inbox</button>
+        <button type="button" data-box="out" id="sms-tab-out">Outbox</button>
+        <button type="button" class="on" data-box="all" id="sms-tab-all">Everything</button>
+      </nav>
       <span class="spacer"></span>
       <div class="btnrow" id="sms-log-tools"></div>
-    </div>
-    <div class="subtabs" id="sms-subtabs">
-      <button class="btn small" type="button" data-box="in" id="sms-tab-in">Inbox</button>
-      <button class="btn small" type="button" data-box="out" id="sms-tab-out">Outbox</button>
-      <button class="btn small on" type="button" data-box="all" id="sms-tab-all">Everything</button>
     </div>
     <div class="list-scroll"><div id="sms-log"></div></div>
   </div>
@@ -5480,17 +5493,23 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="list-scroll"><div id="wifi-client-table"></div></div>
   </div>
   <div class="card full listcard frame-fill" id="wifi-others-card" data-sub="others" hidden>
-    <h2>Other networks on the air <span class="right"><button class="btn small" id="wifi-seen-btn">Everything ever heard</button></span></h2>
-    <p class="note">What the access points can hear besides your own, strongest first. A network on the same channel as one of yours is sharing the airtime with it — which is what the <b>quieter going spare</b> hint on an access point tile is about. Your own networks are left out; the hidden ones your points broadcast are marked.</p>
+    <h2>Other networks on the air</h2>
+    <p class="note">What the access points can hear besides your own, strongest first. A network on the same channel as one of yours is sharing the airtime with it — which is what the <b>quieter going spare</b> hint on an access point tile is about. Your own networks are left out; the hidden ones your points broadcast are marked. <i>Everything ever heard</i> is what the controller has written down since it started keeping it: the strongest reading each network ever gave, and when it was first and last on the air.</p>
+    <!-- (5.47.4) now or ever, one at a time; the filter beside them, for both -->
+    <div class="parts-bar air-bar">
+      <nav class="api-subs" id="wifi-air" aria-label="Which networks">
+        <button type="button" data-air="now" class="on">On the air now<span class="n" id="wifi-air-now"></span></button>
+        <button type="button" data-air="ever" id="wifi-seen-btn">Everything ever heard<span class="n" id="wifi-air-ever"></span></button>
+      </nav>
+      <input id="wifi-seen-find" type="search" autocomplete="off" class="air-find"
+             placeholder="filter — a name, a BSSID, a channel, WPA2…" aria-label="Filter the networks">
+      <span class="muted small" id="wifi-seen-count"></span>
+      <span class="spacer"></span>
+      <span class="muted small" id="wifi-seen-note"></span>
+    </div>
     <div class="list-scroll">
     <div id="wifi-others"></div>
-    <div id="wifi-seen-wrap" hidden style="margin-top:14px">
-      <p class="note" id="wifi-seen-note"></p>
-      <div class="btnrow" style="margin-bottom:8px">
-        <input id="wifi-seen-find" type="text" autocomplete="off" style="max-width:280px"
-               placeholder="filter — a name, a BSSID, a channel, WPA2…">
-        <span class="muted small" id="wifi-seen-count"></span>
-      </div>
+    <div id="wifi-seen-wrap" hidden>
       <div id="wifi-seen"></div>
     </div>
     </div>
@@ -7780,14 +7799,20 @@ Array.prototype.forEach.call(document.querySelectorAll('#api-subs button'), func
 function drawApiSubIcons() {
   if (drawApiSubIcons.done || typeof ICONS === 'undefined' || !ICONS) return;
   drawApiSubIcons.done = true;
-  Array.prototype.forEach.call(document.querySelectorAll('#api-subs .ic, #wifi-subs .ic'), function (ic) {
+  Array.prototype.forEach.call(document.querySelectorAll('#api-subs .ic, #wifi-subs .ic, #sms-parts .ic'), function (ic) {
     ic.innerHTML = iconMarkup(ic.getAttribute('data-icon'), 15);
   });
 }
 // whatever the find box or a link opens inside a part that is not shown
 function revealApiSubOf(node) {
-  var card = node && node.closest && node.closest('#tab-approvals > .card[data-sub]');
+  if (!node || !node.closest) return;
+  var card = node.closest('#tab-approvals > .card[data-sub]');
   if (card && card.classList.contains('sub-off')) showApiSub(card.getAttribute('data-sub'));
+  // (5.47.4) and the parts of WiFi and SMS the same way
+  var part = node.closest('#tab-wifi > [data-sub]');
+  if (part && part.classList.contains('sub-off')) showWifiSub(part.getAttribute('data-sub'));
+  part = node.closest('#tab-sms > [data-sub]');
+  if (part && part.classList.contains('sub-off')) showSmsSub(part.getAttribute('data-sub'));
 }
 // ---- every request at the server in front (5.46) ---------------------------
 var PREQ = {rows: [], more: false, busy: false, at: 0, open: {}, key: ''};
@@ -12844,6 +12869,36 @@ $('heat-save').onclick = function () {
     });
   });
 };
+// ---- the parts of SMS (5.47.4) ------------------------------------------------
+var SMS_SUBS = ['log', 'write'];
+var SMS_SUB = (function () {
+  try { var v = localStorage.getItem('zigmon.smsSub'); if (SMS_SUBS.indexOf(v) >= 0) return v; } catch (e) {}
+  return 'log';
+})();
+function showSmsSub(name, keepHash) {
+  if (typeof drawApiSubIcons === 'function') drawApiSubIcons();
+  if (SMS_SUBS.indexOf(name) < 0) name = 'log';
+  SMS_SUB = name;
+  try { localStorage.setItem('zigmon.smsSub', name); } catch (e) {}
+  Array.prototype.forEach.call(document.querySelectorAll('#sms-parts button'), function (b) {
+    var on = b.getAttribute('data-sub') === name;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('#tab-sms > [data-sub]'), function (c) {
+    c.classList.toggle('sub-off', c.getAttribute('data-sub') !== name);
+  });
+  if (!keepHash && STATE.tab === 'sms') {
+    try { history.replaceState(null, '', '#sms/' + name); } catch (e) {}
+  }
+}
+function paintSmsParts(st) {
+  var n = (((st || {}).sms) || {}).log_n;
+  if ($('sms-n-log')) $('sms-n-log').textContent = n ? String(n) : '';
+}
+Array.prototype.forEach.call(document.querySelectorAll('#sms-parts button'), function (b) {
+  b.onclick = function () { showSmsSub(b.getAttribute('data-sub')); };
+});
 // ---- the parts of WiFi (5.47.3), as Public API's ----------------------------
 var WIFI_SUBS = ['aps', 'clients', 'others'];
 var WIFI_SUB = (function () {
@@ -13001,16 +13056,27 @@ function renderWifiTabParts(st) {
 // What the air has held, not only what it holds now: one row per network,
 // with when it was first and last heard and the best it ever came in.
 var WIFI_SEEN_OPEN = false;
+// (5.47.4) which of the two lists the card shows; the buttons say it
+function paintWifiAir() {
+  Array.prototype.forEach.call(document.querySelectorAll('#wifi-air button'), function (b) {
+    var on = (b.getAttribute('data-air') === 'ever') === WIFI_SEEN_OPEN;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  if ($('wifi-others')) $('wifi-others').hidden = WIFI_SEEN_OPEN;
+}
+function wifiFindWords() {
+  return String(($('wifi-seen-find') || {}).value || '').toLowerCase().split(/\s+/).filter(Boolean);
+}
 function paintWifiSeen(rows) {
   var wrap = $('wifi-seen-wrap'), host = $('wifi-seen'), note = $('wifi-seen-note');
   wrap.hidden = !WIFI_SEEN_OPEN;
-  setButtonIcon($('wifi-seen-btn'), WIFI_SEEN_OPEN ? 'up' : 'search',
-                WIFI_SEEN_OPEN ? 'Hide the history' : 'Everything ever heard');
+  paintWifiAir();
   if (!WIFI_SEEN_OPEN) return;
+  if (rows === null) { note.textContent = 'asking the controller\u2026'; return; }
   rows = rows || [];
-  note.textContent = rows.length
-    ? rows.length + ' network(s) heard since the controller started keeping them. '
-      + 'The strongest reading each one ever gave, and when it was last on the air.'
+  if ($('wifi-air-ever')) $('wifi-air-ever').textContent = rows.length ? String(rows.length) : '';
+  note.textContent = rows.length ? 'kept since the controller started keeping them'
     : 'Nothing written down yet \u2014 the access points are read every few minutes, and what they hear is kept from then on.';
   host.innerHTML = '';
   WIFI_SEEN_ROWS = rows;
@@ -13022,8 +13088,7 @@ function paintWifiSeen(rows) {
   // BSSID, the band, the channel, how it is locked - in any order, and
   // without anybody having to get the capitals right. Several words all have
   // to be there: "wpa2 5" finds the WPA2 networks on the 5 GHz band.
-  var wanted = String(($('wifi-seen-find') || {}).value || '').toLowerCase().split(/\s+/)
-    .filter(Boolean);
+  var wanted = wifiFindWords();
   var fits = function (n) {
     if (!wanted.length) return true;
     var hay = [n.ssid || '(hidden)', n.bssid || '', n.band ? n.band + ' GHz' : '',
@@ -13068,7 +13133,10 @@ function loadWifiSeen() {
 }
 // Typed into, the list is drawn again from what was already fetched - the
 // controller is not asked a second time for something it has already said.
-$('wifi-seen-find').oninput = function () { paintWifiSeen(WIFI_SEEN_ROWS); };
+$('wifi-seen-find').oninput = function () {
+  if (WIFI_SEEN_OPEN) paintWifiSeen(WIFI_SEEN_ROWS);
+  else if (STATE.status) renderWifiOthers(STATE.status);    // the same filter, over what is on the air now
+};
 $('wifi-forget-btn').onclick = function () {
   withPin('Forget every network heard on the air',
           'The record of what the access points have overheard \u2014 other people\u2019s networks, when each was '
@@ -13082,11 +13150,17 @@ $('wifi-forget-btn').onclick = function () {
     });
   });
 };
-$('wifi-seen-btn').onclick = function () {
-  WIFI_SEEN_OPEN = !WIFI_SEEN_OPEN;
-  paintWifiSeen(null);
-  if (WIFI_SEEN_OPEN) loadWifiSeen();
-};
+Array.prototype.forEach.call(document.querySelectorAll('#wifi-air button'), function (b) {
+  b.onclick = function () {
+    var ever = b.getAttribute('data-air') === 'ever';
+    if (ever === WIFI_SEEN_OPEN) return;
+    WIFI_SEEN_OPEN = ever;
+    $('wifi-seen-count').textContent = '';
+    $('wifi-seen-note').textContent = '';
+    if (ever) { paintWifiSeen(null); loadWifiSeen(); }
+    else { paintWifiSeen(null); if (STATE.status) renderWifiOthers(STATE.status); }
+  };
+});
 
 function renderWifiOthers(st) {
   var wifi = st.wifi_detail || {};
@@ -13101,13 +13175,26 @@ function renderWifiOthers(st) {
       if (r.channel) oursOn[r.band + '|' + r.channel] = (oursOn[r.band + '|' + r.channel] || []).concat(ap.name);
     });
   });
+  if ($('wifi-air-now')) $('wifi-air-now').textContent = String(rows.length);
+  var all = rows.length;
+  if (!WIFI_SEEN_OPEN) {
+    var wanted = wifiFindWords();
+    if (wanted.length) {
+      rows = rows.filter(function (n) {
+        var hay = [n.ssid || '(hidden)', n.bssid || '', n.band ? n.band + ' GHz' : '', n.channel || '',
+                   n.security || '', n.seen_by || '', n.ubiquiti ? 'ubiquiti' : ''].join(' ').toLowerCase();
+        return wanted.every(function (w) { return hay.indexOf(w) >= 0; });
+      });
+    }
+    $('wifi-seen-count').textContent = wanted.length ? rows.length + ' of ' + all + ' shown' : '';
+  }
   var host = $('wifi-others'); host.innerHTML = '';
   var head = el('div', 'oth-row head');
   ['Network', 'BSSID', 'Band', 'Channel', 'Width', 'Signal', 'Security', 'Heard by'].forEach(function (t) {
     head.appendChild(el('div', '', t));
   });
   host.appendChild(head);
-  rows.slice(0, 40).forEach(function (n) {
+  rows.slice(0, 200).forEach(function (n) {
     var row = el('div', 'oth-row');
     var name = el('div');
     name.appendChild(el('div', '', n.ssid || '(hidden)'));
@@ -13130,7 +13217,7 @@ function renderWifiOthers(st) {
     row.appendChild(el('div', 'muted small', n.seen_by || ''));
     host.appendChild(row);
   });
-  if (rows.length > 40) host.appendChild(el('div', 'muted small', 'and ' + (rows.length - 40) + ' more'));
+  if (rows.length > 200) host.appendChild(el('div', 'muted small', 'and ' + (rows.length - 200) + ' more \u2014 the filter finds them'));
 }
 function saveWifiOrder(ids) {
   WIFI_ORDER.rows = ids;
@@ -18612,7 +18699,7 @@ window.addEventListener('scroll', hideHint, true);
   setButtonIcon($('sms-credit'), 'search');
   setButtonIcon($('acl-mend'), 'check');
   setButtonIcon($('wifi-forget-btn'), 'forget');
-  setButtonIcon($('wifi-seen-btn'), 'search');
+  // (5.47.4) wifi-seen-btn is a pill now, its count inside it: no icon put over it
   setButtonIcon($('sms-write-send'), 'upload');
   setButtonIcon($('binding-add'), 'add');
   setButtonIcon($('binding-save'), 'save');
@@ -25058,6 +25145,7 @@ function showSmsPreview(asked, filled, chars, parts) {
   count.textContent = n ? n + ' character(s)' + (parts > 1 ? ' \u00b7 ' + parts + ' parts' : '') : '';
 }
 function renderSmsLog(st, force) {
+  paintSmsParts(st);
   var host = $('sms-log'); if (!host) return;
   // Three hundred messages fetched on every tick, several times a second,
   // for a log that had not changed: the daemon says how many messages there
@@ -25134,6 +25222,7 @@ function renderSmsLog(st, force) {
         SMSBOX.free = m.number; SMSBOX.to = [];
         if (m.dir === 'out') $('sms-text').value = m.text;
         renderSmsTab(STATE.status, true);
+        showSmsSub('write');                  // (5.47.4) the form is a part of its own now
         $('sms-text').focus();
       };
       var drop = cmdButton('', 'trash', 'small iconbtn danger needs-unlock');
@@ -34722,6 +34811,7 @@ function showTab(name) {
   // part of it that is picked
   if (name === 'approvals') { showApiSub(API_SUB); loadProxyRequests(false); }
   if (name === 'wifi') showWifiSub(WIFI_SUB);
+  if (name === 'sms') showSmsSub(SMS_SUB, true);
   var arriving = $('tab-' + name);
   if (arriving && PANEL_SCROLL['tab-' + name]) arriving.scrollTop = PANEL_SCROLL['tab-' + name];
   if (name === 'history') { renderHistoryControls(); loadHistory(); }
@@ -34733,7 +34823,8 @@ function showTab(name) {
   if (name === 'overview') { redrawCharts(); if (!STATE._ovLoaded) { loadOverviewCharts(); STATE._ovLoaded = Date.now(); } }
   try { history.replaceState(null, '', '#' + name + (name === 'control' ? '/' + CONTROL_SEC
                                                    : name === 'approvals' ? '/' + apiSubShown()
-                                                   : name === 'wifi' ? '/' + wifiSubShown() : '')); } catch (e) {}
+                                                   : name === 'wifi' ? '/' + wifiSubShown()
+                                                   : name === 'sms' ? '/' + SMS_SUB : '')); } catch (e) {}
 }
 Array.prototype.forEach.call(document.querySelectorAll('#control-nav button[data-sec]'), function (b) {
   if (b.dataset.icon) setButtonIcon(b, b.dataset.icon);
@@ -35195,6 +35286,7 @@ if (wantedSec && (CONTROL_SECTIONS[wantedSec] || CONTROL_ALIAS[wantedSec])) CONT
 // (5.47.1) #approvals/requests opens that part of Public API
 if (wanted === 'approvals' && API_SUBS.indexOf(wantedSec) >= 0) API_SUB = wantedSec;
 if (wanted === 'wifi' && WIFI_SUBS.indexOf(wantedSec) >= 0) WIFI_SUB = wantedSec;
+if (wanted === 'sms' && SMS_SUBS.indexOf(wantedSec) >= 0) SMS_SUB = wantedSec;
 showControlSection(CONTROL_SEC);
 // (5.43.3) the SMS tab too: #sms came back as the Overview after a reload
 showTab(['overview', 'plugs', 'sensors', 'buttons', 'heating', 'history', 'devices', 'sms', 'wifi', 'events', 'approvals', 'control', 'all'].indexOf(wanted) >= 0 ? wanted : 'overview');

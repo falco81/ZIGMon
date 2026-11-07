@@ -2083,7 +2083,26 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.3**
+Current version: **5.47.4**
+
+5.47.4 — SMS in parts, and the networks heard, now or ever.
+
+* SMS in parts, as WiFi and Public API: **Messages** (how many) and **Write a
+  message**, one at a time, the part in the address (`#sms/write`) and kept
+  over a reload. Inbox / Outbox / Everything are pills in one row with
+  *Forget them all*; *Answer this one* on a message opens the form with its
+  number in.
+* WiFi, Other networks: **On the air now** and **Everything ever heard** are
+  two pills at the top of the card, each with how many, and one list is shown
+  at a time; the filter sits beside them (no longer in the middle of the page)
+  and filters whichever list is shown - what is on the air now too. Up to 200
+  networks on the air are listed (40 before); the heading row of each list
+  stays as it scrolls.
+* The find box opens the part of SMS or WiFi that holds what it found.
+* test/admin.py waits for root to finish one request before it asks for the
+  next (it failed now and then on a busy machine).
+
+`test/review5474_parts.py`; these checks fail on 5.47.3.
 
 5.47.3 — the frames, mended and carried further.
 

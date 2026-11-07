@@ -125,7 +125,7 @@ const CASES = [
   ['#devices', ['#devices-scroll'], '#devices-scroll', '#devices-table thead th'],
   ['#history', ['#h-device'], '#tab-history > .frame-scroll', null],
   ['#wifi', ['#wifi-refresh', '#wifi-subs'], '#tab-wifi > .frame-scroll', null],
-  ['#sms', ['#sms-subtabs', '#tab-sms > .card:first-child h2'], '#sms-log-card > .list-scroll', null],
+  ['#sms', ['#sms-parts', '#sms-subtabs'], '#sms-log-card > .list-scroll', null],
 ];
 (async () => {
   const b = await chromium.launch();
