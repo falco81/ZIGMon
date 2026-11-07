@@ -313,6 +313,12 @@ check(d.root_drift() is True and 'allow all;' in NGINX_CONF.read_text().split('#
 check(d.root_drift() is False, 'what is in place was asked for again')
 os.environ['ZIGMON_NGINX_TEST'] = 'false'
 d.store.set_meta('web_access', json.dumps({'dashboard': {'any': False, 'from': ['192.168.40.0/24']}}))
+# root_drift passes over a request while root is still at the last one: on a
+# busy machine the one before had not been answered yet, and nothing was asked
+for _ in range(200):
+    if not d.root_busy():
+        break
+    time.sleep(0.05)
 d.root_drift()
 st = d.root_read('status.json')
 check(st.get('state') == 'failed', 'nginx refusing did not fail the request')
