@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.47.5'
+__version__ = '5.47.6'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -7199,10 +7199,13 @@ class Storage(object):
             pace()
         return gone
 
-    def proxy_requests_list(self, ip='', q='', which='', found=False, before=0, limit=100):
+    def proxy_requests_list(self, ip='', q='', which='', found=False, before=0, limit=100, offset=0,
+                            counted=None):
         """Newest first, a page at a time (before: the id the last page
-        ended at). q is looked for in the address asked for, the agent, the
-        name and the headers - as written, masked."""
+        ended at; or (5.47.6) offset: how many to pass over, for numbered
+        pages). q is looked for in the address asked for, the agent, the
+        name and the headers - as written, masked. counted, a dict, is told
+        how many match in all ('matched'), where that was found in time."""
         where, args = [], []
         if ip:
             where.append('ip = ?')
@@ -7221,8 +7224,9 @@ class Storage(object):
                          "OR fields LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR kinds LIKE ? ESCAPE '\\')")
             args += [like] * 6
         limit = max(1, min(int(limit or 100), 200))
-        sql = 'SELECT * FROM proxy_requests' + (' WHERE ' + ' AND '.join(where) if where else '') + \
-            ' ORDER BY id DESC LIMIT ?'
+        offset = max(0, min(int(offset or 0), 10 ** 7))
+        cond = (' WHERE ' + ' AND '.join(where)) if where else ''
+        sql = 'SELECT * FROM proxy_requests' + cond + ' ORDER BY id DESC LIMIT ? OFFSET %d' % offset
         # (pass 3) On a reader of its own, never under the store's lock: a
         # word looked for in six columns of 200,000 rows that are not indexed
         # for it walks every one of them, and under the lock every sensor's
@@ -7243,6 +7247,12 @@ class Storage(object):
                     if 'interrupt' not in str(e).lower():
                         raise
                     cut = bool(found_rows)    # out of time: what there is, and "more" to go on from it
+                if counted is not None and not cut:
+                    try:
+                        counted['matched'] = reader.execute('SELECT COUNT(*) FROM proxy_requests' + cond,
+                                                            args).fetchone()[0]
+                    except sqlite3.OperationalError:
+                        pass                      # out of time: the pages are counted as far as known
                 reader.set_progress_handler(None, 0)
                 total = reader.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
                 rows = found_rows
@@ -45732,10 +45742,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                         ip = str(ipaddress.ip_address(ip))
                     except ValueError:
                         return self._error(400, 'that is not an address')
+                counted = {}
                 rows, more, total = d.store.proxy_requests_list(
                     ip=ip, q=str(q.get('q') or '').strip(), which=str(q.get('which') or ''),
                     found=str(q.get('found') or '') == '1', before=before,
-                    limit=int(q.get('limit') or 100) if str(q.get('limit') or '').isdigit() else 100)
+                    limit=int(q.get('limit') or 100) if str(q.get('limit') or '').isdigit() else 100,
+                    offset=int(q.get('offset') or 0) if str(q.get('offset') or '').isdigit() else 0,
+                    counted=counted)
                 words = {}
                 # (5.47.1) the marks every other list of addresses wears: its
                 # country, whether it is kept out now, the list that knew it,
@@ -45759,6 +45772,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     for k in one['kinds']:
                         words[k] = d.ANOMALY_WORDS.get(k, k)
                 return self._send(200, {'ok': True, 'rows': rows, 'more': more, 'total': total,
+                                        'matched': counted.get('matched'),
                                         'words': words,
                                         'watching': bool(int(CONFIG.get('proxy_full_watch') or 0))})
             if path == '/api/blocked':

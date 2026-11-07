@@ -120,8 +120,8 @@ const PORT = %(port)d, SH = %(shots)s, S = %(s)s;
 const CASES = [
   ['#events', ['#evf-kind', '#events-pager', '#tab-events h2'], '#events-scroll', '#events-table thead th'],
   ['#approvals/presses', ['#api-subs', '#presses-filter', '#presses-pager'], '#tab-approvals > [data-sub="presses"] > .list-scroll', '#approvals-past thead th'],
-  ['#approvals/requests', ['#api-subs', '#preq-ip', '#preq-more'], '#preq-card > .list-scroll', '#preq-table thead th'],
-  ['#approvals/blocked', ['#api-subs', '#look-ip', '#blocked-add', '#blockstory-pager-slot'], '#blocked-card > .list-scroll', null],
+  ['#approvals/requests', ['#api-subs', '#preq-ip', '#preq-pager'], '#preq-card > .list-scroll', '#preq-table thead th'],
+  ['#approvals/blocked', ['#api-subs', '#look-ip', '#blocked-add', '#blockstory-pager-slot', '#blk-filter-slot input'], '#blocked-card > .list-scroll', null],
   ['#devices', ['#devices-scroll'], '#devices-scroll', '#devices-table thead th'],
   ['#history', ['#h-device'], '#tab-history > .frame-scroll', null],
   ['#wifi', ['#wifi-refresh', '#wifi-subs'], '#tab-wifi > .frame-scroll', null],
@@ -180,7 +180,13 @@ const CASES = [
     pager: (document.querySelector('#blockstory-pager-slot .pg-info') || {}).textContent || '',
     rows: document.querySelectorAll('#blocked-list [data-view="system"] .listed-body > div:nth-child(2) > *').length,
     heads: document.querySelectorAll('#blocked-card .listed-head').length,
-    lookH: document.getElementById('look-ip').offsetHeight, askH: document.getElementById('look-go').offsetHeight}));
+    lookH: document.getElementById('look-ip').offsetHeight, askH: document.getElementById('look-go').offsetHeight,
+    inTop: !!document.querySelector('#tab-approvals > .parts-bar #blk-views'),
+    topShown: getComputedStyle(document.getElementById('blk-views')).display !== 'none',
+    rowH: document.getElementById('blk-filter-row').offsetHeight,
+    title: getComputedStyle(document.querySelector('#blocked-card > h2')).display,
+    about: !!document.querySelector('#blk-filter-row .card-info'),
+    filterIn: !!document.querySelector('#blk-filter-slot input')}));
   await p.evaluate(() => { try { localStorage.removeItem('zigmon.blkView'); } catch (e) {} });
   try { await p.waitForFunction(() => (APPROVALS.blocked || []).length > 0, null, {timeout: 20000}); } catch (e) { out.blkWait = String(e).slice(0, 100); }
   out.blk = {first: await view()};
@@ -256,7 +262,10 @@ check(dict((x[0], x[2]) for x in sy.get('pills') or []).get('system') == '150', 
 check(sy.get('pager') == 'page 1 of 6', 'its pages at the foot of the card: %r' % sy.get('pager'))
 check(sto.get('shown') == ['blocked-past'] and sto.get('pager', '').startswith('page 1 of'),
       'What happened, and its pages: %r' % sto)
-check(sy.get('lookH', 99) <= 34 and sy.get('askH', 99) <= 34, 'the asking box is not low: %r' % sy)
+check(sy.get('lookH', 99) <= 30 and sy.get('askH', 99) <= 30 and sy.get('rowH', 99) <= 34,
+      'the row above the list is not low: %r' % sy)
+check(sy.get('inTop') and sy.get('topShown') and sy.get('title') == 'none' and sy.get('about') and sy.get('filterIn'),
+      'the lists beside Blocked addresses, the card without its title, About and the filter in the row: %r' % sy)
 check(r.get('overlay') == 'none', 'a hidden Devices tab is drawn over History: display %r' % r.get('overlay'))
 ph = r.get('phone') or {}
 check(ph.get('doc', 0) > ph.get('win', 0) and ph.get('wide', 999) <= 421,

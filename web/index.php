@@ -889,6 +889,9 @@ if (isset($_GET['api'])) {
         if (isset($_GET['before']) && ctype_digit((string) $_GET['before'])) {
             $ask[] = 'before=' . (int) $_GET['before'];
         }
+        if (isset($_GET['offset']) && ctype_digit((string) $_GET['offset'])) {
+            $ask[] = 'offset=' . min(10000000, (int) $_GET['offset']);
+        }
         zigmon_relay('/api/proxy/requests?' . implode('&', $ask));
         exit;
     }
@@ -2664,8 +2667,13 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .set-grid{grid-template-columns:1fr}
     .socket-figures{grid-auto-flow:row;grid-template-columns:repeat(auto-fill,100px);justify-content:start}
   }
-  .evf{font:inherit;font-size:13px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:7px 10px}
+  .evf{font:inherit;font-size:12.5px;line-height:20px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:9px;padding:3px 10px}
   select.evf{padding-right:26px}
+  /* (5.47.6) a row of filters is a low strip, not a row of big buttons: its
+     country button and its small buttons the height of its boxes */
+  .btnrow:has(> .evf) .btn.cmd.small, .btnrow:has(> .evf) .cpick-btn, .parts-bar .btn.cmd.small,
+  .parts-bar .cpick-btn{padding:3px 10px;font-size:12.5px;line-height:20px;min-height:0}
+  .btnrow:has(> .evf){gap:6px !important}
   .set-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px 22px;margin-top:6px;align-items:stretch}
   /* A list of addresses: one per line, in a box that grows with what is in
      it. Past the third entry a one-line box is a letterbox, and a house has a
@@ -3469,11 +3477,23 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .parts-bar .spacer{flex:1 1 auto}
   /* (5.47.5) the blocked addresses: a list at a time, the boxes and buttons low */
   #blocked-card .view-off{display:none !important}
+  /* (5.47.6) the lists of the blocked card beside its pill, a step smaller;
+     the card says nothing above them - its About sits at the end of its row */
+  .blk-subs{gap:5px}
+  .blk-subs .sep{align-self:center;color:var(--tx-mut);font-size:15px;padding:0 2px}
+  .blk-subs button{font-size:12px;padding:3px 10px}
+  #blocked-card > h2{display:none}
+  #blk-filter-row .card-info{margin-left:2px;padding:3px 10px;line-height:20px;font-size:12.5px;min-height:0}
+  .blk-filter-slot{display:flex;flex:0 1 auto;min-width:0}
+  .blk-filter-slot > .btnrow{margin:0 !important;flex-wrap:nowrap;min-width:0}
+  .blk-filter-slot > .btnrow > input{min-width:160px}
+  .blk-filter-slot .muted, #blk-filter-row .card-info{white-space:nowrap;align-self:center}
+  #blk-filter-row{flex-wrap:nowrap}
   #blocked-past > .set-head{display:none}             /* its pill says it */
   #blocked-card .listed-fold.as-view{border:0;background:none;padding:0;margin:0}
   #blocked-card .listed-fold.as-view .listed-body{padding:0}
-  #blocked-card .btn.cmd{padding:5px 12px;font-size:13px}
-  #blocked-card input[type=text], #blocked-card input[type=search], #blocked-card select{padding:5px 10px;font-size:13px}
+  #blocked-card .btn.cmd{padding:3px 10px;font-size:12.5px;line-height:20px}
+  #blocked-card input[type=text], #blocked-card input[type=search], #blocked-card select{padding:3px 10px;font-size:12.5px;line-height:20px}
   #blocked-card .listed-body > .btnrow:first-child{margin:0 0 8px}
   /* (5.47.5) the find box of a list, as Events has it */
   .list-find{min-width:220px;flex:0 1 340px}
@@ -5327,8 +5347,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   <button role="tab" aria-selected="false" data-tab="devices">Devices</button>
   <button role="tab" aria-selected="false" data-tab="sms">SMS</button>
   <button role="tab" aria-selected="false" data-tab="wifi">WiFi</button>
-  <button role="tab" aria-selected="false" data-tab="events">Events</button>
   <button role="tab" aria-selected="false" data-tab="approvals">Public API</button>
+  <button role="tab" aria-selected="false" data-tab="events">Events</button>
   <button role="tab" aria-selected="false" data-tab="control">Settings</button>
 </div>
 
@@ -5563,6 +5583,15 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sub="requests" id="api-sub-requests" hidden><span class="ic" data-icon="sslproxy"></span>At the server in front<span class="n" id="api-n-requests"></span></button>
     <button type="button" data-sub="blocked"><span class="ic" data-icon="wall"></span>Blocked addresses<span class="n" id="api-n-blocked"></span></button>
   </nav>
+  <!-- (5.47.6) the lists of Blocked addresses, beside it, while it is shown -->
+  <nav class="api-subs blk-subs" id="blk-views" aria-label="Which addresses" style="display:none">
+    <span class="sep" aria-hidden="true">›</span>
+    <button type="button" data-view="story">What happened<span class="n" id="blk-n-story"></span></button>
+    <button type="button" data-view="listed">Blacklisted IPs<span class="n" id="blk-n-listed"></span></button>
+    <button type="button" data-view="ids">Seen by Suricata<span class="n" id="blk-n-ids"></span></button>
+    <button type="button" data-view="system">Blocked by system<span class="n" id="blk-n-system"></span></button>
+    <button type="button" data-view="watch">On their way<span class="n" id="blk-n-watch"></span></button>
+  </nav>
   </div>
   <div class="card full listcard frame-fill" data-sub="waiting">
     <h2>Waiting to be approved</h2>
@@ -5607,19 +5636,19 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       (with its name, <i>Basic user:jan •3x</i>, where an older front config wrote it whole and the
       house masked it as it read it), a cookie by its names alone, a password in a body as •. Kept as long as the proxy's lines
       (Settings → Data &amp; database); an administrator's to read.</p>
-    <div class="btnrow preq-filter" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
-      <input id="preq-ip" type="text" autocomplete="off" placeholder="an address" style="max-width:200px" aria-label="Only this address">
-      <input id="preq-q" type="search" autocomplete="off" placeholder="find: a path, an agent, a header" style="max-width:280px" aria-label="Find in the requests">
-      <select id="preq-which" aria-label="Which server"><option value="">both servers</option><option value="tap">one-tap links</option><option value="ntfy">ntfy</option></select>
+    <div class="btnrow preq-filter" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <input id="preq-ip" type="text" class="evf" autocomplete="off" placeholder="an address" style="max-width:200px" aria-label="Only this address">
+      <input id="preq-q" type="search" class="evf list-find" autocomplete="off" placeholder="find: a path, an agent, a header" aria-label="Find in the requests">
+      <select id="preq-which" class="evf" aria-label="Which server"><option value="">both servers</option><option value="tap">one-tap links</option><option value="ntfy">ntfy</option></select>
       <label class="small" style="align-self:center"><input type="checkbox" id="preq-found"> only what was weighed</label>
-      <button class="btn cmd" id="preq-go" type="button">Show</button>
+      <button class="btn cmd small" id="preq-go" type="button">Show</button>
       <span class="muted small" id="preq-note" style="align-self:center"></span>
     </div>
     <div class="table-wrap list-scroll"><table id="preq-table"><thead><tr>
       <th>When</th><th>Server</th><th>&nbsp;</th><th>Asked from</th><th class="story-ask">&nbsp;</th><th>Request</th><th>Answer</th><th>Found</th>
     </tr></thead><tbody></tbody></table></div>
     <div class="center" id="preq-empty" hidden></div>
-    <div class="btnrow" style="margin-top:8px"><button class="btn cmd" id="preq-more" type="button" hidden>Older</button></div>
+    <div class="pager" id="preq-pager"></div>
   </div>
   <div class="card full listcard frame-fill" style="margin-top:14px" id="blocked-card" data-sub="blocked">
     <h2>Addresses that may not talk to this</h2>
@@ -5629,18 +5658,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
       that is shut, and trying five different links weighs more than trying one five times. The house's
       own addresses are left alone unless you say otherwise, so nobody shuts the family out. How long
       a block lasts, and what earns one, are in Settings.</p>
-    <!-- (5.47.5) the lists of the card as pills, one shown at a time, and the
-         asking box in the same row -->
-    <div class="parts-bar">
-      <nav class="api-subs" id="blk-views" aria-label="Which addresses">
-        <button type="button" data-view="story">What happened<span class="n" id="blk-n-story"></span></button>
-        <button type="button" data-view="listed">Blacklisted IPs<span class="n" id="blk-n-listed"></span></button>
-        <button type="button" data-view="ids">Seen by Suricata<span class="n" id="blk-n-ids"></span></button>
-        <button type="button" data-view="system">Blocked by system<span class="n" id="blk-n-system"></span></button>
-        <button type="button" data-view="watch">On their way<span class="n" id="blk-n-watch"></span></button>
-      </nav>
+    <!-- (5.47.6) one low row that stays: the shown list's own filters, and
+         the asking box; the lists themselves are pills in the row above -->
+    <div class="parts-bar list-bar" id="blk-filter-row">
+      <div id="blk-filter-slot" class="blk-filter-slot"></div>
       <span class="spacer"></span>
-      <input id="look-ip" type="text" class="evf" autocomplete="off" style="max-width:240px"
+      <input id="look-ip" type="text" class="evf" autocomplete="off" style="max-width:220px"
              placeholder="ask about one address — 45.9.148.9">
       <button class="btn cmd small" id="look-go">Ask about it</button>
     </div>
@@ -7754,23 +7777,11 @@ function paintPressesBar() {
   bar.appendChild(cnt);
 }
 function paintPressesPager(pages) {
-  var pager = $('presses-pager'); if (!pager) return;
-  pager.innerHTML = '';
-  if (pages <= 1) return;
-  var go = function (n) { PRESSES.page = Math.max(1, Math.min(pages, n)); paintApprovals(); };
-  var mk = function (label, n, key) {
-    var b = el('button', 'btn cmd small pg'); b.type = 'button';
-    b.classList.remove('needs-unlock');
-    if (key) setButtonIcon(b, key, label); else b.textContent = label;
-    b.disabled = n === PRESSES.page || n < 1 || n > pages;
-    b.onclick = function () { go(n); };
-    return b;
-  };
-  pager.appendChild(mk('', 1, 'first'));
-  pager.appendChild(mk('', PRESSES.page - 1, 'prev'));
-  pager.appendChild(el('span', 'muted small', ' page ' + PRESSES.page + ' of ' + pages + ' '));
-  pager.appendChild(mk('', PRESSES.page + 1, 'next'));
-  pager.appendChild(mk('', pages, 'last'));
+  // (5.47.6) the same pages as every other list's
+  paintPagerInto($('presses-pager'), PRESSES.page, pages, function (n) {
+    PRESSES.page = Math.max(1, Math.min(pages, n)); paintApprovals();
+    var sc = $('approvals-past') && $('approvals-past').parentNode; if (sc) sc.scrollTop = 0;
+  });
 }
 // ---- the parts of Public API (5.47.1) ----------------------------------------
 var API_SUBS = ['waiting', 'presses', 'requests', 'blocked'];
@@ -7799,6 +7810,7 @@ function showApiSub(name, keepHash) {
   Array.prototype.forEach.call(document.querySelectorAll('#tab-approvals > .card[data-sub]'), function (c) {
     c.classList.toggle('sub-off', c.getAttribute('data-sub') !== name);
   });
+  if ($('blk-views')) $('blk-views').style.display = name === 'blocked' ? '' : 'none';
   if (!keepHash && STATE.tab === 'approvals') {
     try { history.replaceState(null, '', '#approvals/' + name); } catch (e) {}
   }
@@ -7846,7 +7858,7 @@ function revealApiSubOf(node) {
   if (part && part.classList.contains('sub-off')) showSmsSub(part.getAttribute('data-sub'));
 }
 // ---- every request at the server in front (5.46) ---------------------------
-var PREQ = {rows: [], more: false, busy: false, at: 0, open: {}, key: ''};
+var PREQ = {rows: [], more: false, busy: false, at: 0, open: {}, key: '', page: 1, per: 100};
 // the full log's own short names, as a person knows the headers
 var PREQ_NAMES = {proto: 'Protocol', bytes: 'Bytes sent', took: 'Took (s)', ref: 'Referer', ct: 'Content-Type',
   clen: 'Content-Length (read)', ctlen: 'Content-Length', xff: 'X-Forwarded-For', xfh: 'X-Forwarded-Host',
@@ -7870,7 +7882,7 @@ function preqKey() {
   return [$('preq-ip').value.trim(), $('preq-q').value.trim(), $('preq-which').value,
           $('preq-found').checked ? 1 : 0].join('#');
 }
-function loadProxyRequests(older) {
+function loadProxyRequests(keepPage) {
   var card = $('preq-card'); if (!card) return;
   card.hidden = !isAdmin();
   if (card.hidden) return;
@@ -7880,22 +7892,33 @@ function loadProxyRequests(older) {
   // address typed and Enter pressed while the half-minute look was on its
   // way did nothing, and the table went on showing every address under a box
   // that named one
-  if (PREQ.busy) { if (!older) PREQ.again = true; return; }
+  if (PREQ.busy) { PREQ.again = true; return; }
   var ip = $('preq-ip').value.trim(), q = $('preq-q').value.trim();
   if (ip && !/^[0-9A-Fa-f.:]{2,45}$/.test(ip)) { $('preq-note').textContent = 'that is not an address'; return; }
   var key = preqKey();
-  if (!older && key !== PREQ.key) { PREQ.open = {}; }
-  var ask = 'proxy-requests&limit=100' + (ip ? '&ip=' + encodeURIComponent(ip) : '')
+  // (5.47.6) numbered pages, as every list has: a new search starts at the first
+  if (key !== PREQ.key) { PREQ.open = {}; PREQ.page = 1; }
+  PREQ.page = Math.max(1, PREQ.page || 1);
+  var ask = 'proxy-requests&limit=' + PREQ.per + (ip ? '&ip=' + encodeURIComponent(ip) : '')
     + (q ? '&q=' + encodeURIComponent(q) : '') + ($('preq-which').value ? '&which=' + $('preq-which').value : '')
     + ($('preq-found').checked ? '&found=1' : '')
-    + (older && PREQ.rows.length ? '&before=' + PREQ.rows[PREQ.rows.length - 1].id : '');
+    + (PREQ.page > 1 ? '&offset=' + (PREQ.page - 1) * PREQ.per : '');
   PREQ.busy = true;
   api(ask).then(function (r) {
     PREQ.key = key;
-    PREQ.rows = older ? PREQ.rows.concat(r.rows || []) : (r.rows || []);
+    PREQ.rows = r.rows || [];
     PREQ.more = !!r.more; PREQ.words = r.words || {}; PREQ.watching = !!r.watching; PREQ.total = r.total || 0;
+    PREQ.matched = (r.matched === null || r.matched === undefined) ? null : r.matched;
     PREQ.at = Date.now();
-    $('preq-note').textContent = PREQ.total ? PREQ.total + ' kept in all' : '';
+    var all = PREQ.matched === null ? PREQ.total : PREQ.matched;
+    $('preq-note').textContent = PREQ.total
+      ? (PREQ.matched !== null && PREQ.matched !== PREQ.total ? PREQ.matched + ' of ' + PREQ.total : PREQ.total + ' kept in all')
+      : '';
+    var pages = PREQ.matched !== null ? Math.max(1, Math.ceil(all / PREQ.per)) : PREQ.page + (PREQ.more ? 1 : 0);
+    paintPagerInto($('preq-pager'), PREQ.page, pages, function (n) {
+      PREQ.page = n; loadProxyRequests(true);
+      var sc = $('preq-table') && $('preq-table').parentNode; if (sc) sc.scrollTop = 0;
+    });
     paintProxyRequests();
     paintApiSubs();
   }, function (e) {
@@ -7989,12 +8012,8 @@ function paintProxyRequests() {
     };
     body.appendChild(more);
   });
-  // (a .btn.cmd is drawn whatever its hidden says: its display wins)
-  $('preq-more').hidden = !PREQ.more;
-  $('preq-more').style.display = PREQ.more ? '' : 'none';
 }
 $('preq-go').onclick = function () { loadProxyRequests(false); };
-$('preq-more').onclick = function () { loadProxyRequests(true); };
 ['preq-ip', 'preq-q'].forEach(function (id) {
   $(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') loadProxyRequests(false); });
 });
@@ -8142,7 +8161,7 @@ function renderApprovals() {
     paintApprovals();
     if (APPROVALS.waiting.length || Date.now() - APPROVALS.at > 5000) loadApprovals(true, true);
     if (Date.now() - PREQ.at > 30000 && !Object.keys(PREQ.open).some(function (k) { return PREQ.open[k]; })
-        && PREQ.rows.length <= 100) loadProxyRequests(false);
+        ) loadProxyRequests(true);
   }, 1000);
 }
 function paintApprovals() {
@@ -8812,6 +8831,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#blk-views button'), fun
     BLK_VIEW = b.getAttribute('data-view');
     try { localStorage.setItem('zigmon.blkView', BLK_VIEW); } catch (e) {}
     if ($('blockstory-pager-slot')) $('blockstory-pager-slot').innerHTML = '';
+    if ($('blk-filter-slot')) $('blk-filter-slot').innerHTML = '';
     paintBlocked(true);                // the pages under the card are the shown list's
     if (BLK_VIEW === 'watch') paintWatched();
     paintBlkViews();
@@ -8857,7 +8877,9 @@ function listedFold(rows, drawRow, which, title) {
   bar.appendChild(countryPick(rows, function (r) { return r.country; }, LISTED_FOLD.cc || '',
     function (cc) { LISTED_FOLD.cc = cc; LISTED_FOLD.page = 0; fill(); paintFold(); }));
   bar.appendChild(count);
-  body.appendChild(bar);
+  // (5.47.6) the shown list's filters stay above it, in the card's own row
+  var fslot = asView && which === BLK_VIEW ? $('blk-filter-slot') : null;
+  if (fslot) { fslot.innerHTML = ''; fslot.appendChild(bar); } else body.appendChild(bar);
   // the button wears the flag it is set to, so it is redrawn when it changes
   var paintFold = function () {
     var fresh = countryPick(rows, function (r) { return r.country; }, LISTED_FOLD.cc || '',
@@ -8953,7 +8975,7 @@ function keepHands(hostIds, build) {
   }
 }
 function paintBlocked(force) {
-  keepHands(['blocked-list', 'blocked-past'], function () { paintBlockedNow(force); });
+  keepHands(['blocked-list', 'blocked-past', 'blk-filter-slot'], function () { paintBlockedNow(force); });
 }
 function paintBlockedNow(force) {
   var host = $('blocked-list'); if (!host) return;
@@ -9164,12 +9186,15 @@ function paintBlockedNow(force) {
   // box is most needed.
   if (!old.length && !BLOCKSTORY.text && !BLOCKSTORY.cc) {
     BLK_COUNT.story = 0;
+    if (BLK_VIEW === 'story' && $('blk-filter-slot')) $('blk-filter-slot').innerHTML = '';
     past.appendChild(el('p', 'muted small', 'Nothing has happened to an address yet.'));
     paintBlkViews();
     return;
   }
   past.appendChild(el('div', 'set-head', 'Everything that has happened to an address'));
-  past.appendChild(blockedStoryBar());
+  var sbar = blockedStoryBar();
+  var sslot = BLK_VIEW === 'story' ? $('blk-filter-slot') : null;
+  if (sslot) { sslot.innerHTML = ''; sslot.appendChild(sbar); } else past.appendChild(sbar);
   if (!old.length) {
     var count = $('blockstory-count');
     if (count) count.textContent = '0 of ' + (BLOCKSTORY.total || 0) + ' recorded';
@@ -35310,6 +35335,12 @@ function decorateControlCards(root) {
   });
 }
 decorateControlCards();
+// (5.47.6) the blocked card shows no title: its About goes to the end of the
+// row that stays above its list
+(function () {
+  var about = document.querySelector('#blocked-card > h2 .card-info'), row = $('blk-filter-row');
+  if (about && row) row.appendChild(about);
+})();
 // Finding anything from the header: a tab, a card on any tab, a Control
 // section, card or setting, or a device - and going there.
 var TAB_NAMES = {overview: 'Overview', plugs: 'Plugs', sensors: 'Sensors', buttons: 'Buttons', heating: 'Heating',

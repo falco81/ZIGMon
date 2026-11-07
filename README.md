@@ -2083,7 +2083,26 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.5**
+Current version: **5.47.6**
+
+5.47.6 — more room for the rows.
+
+* Public API, Blocked addresses (as picked from three drafts): its lists -
+  What happened, Blacklisted IPs, Seen by Suricata, Blocked by system, On
+  their way - are smaller pills in the top row, beside *Blocked addresses*.
+  The card has no title above them any more; one low row stays above the list
+  with the shown list's own filters, *Ask about it* and *About*, and it no
+  longer scrolls away with the rows.
+* Every row of filters is lower: the find boxes, the selects, the country
+  button and their small buttons are the height of one line of text.
+* Every list pages the same way - First, Prev, the numbers, Next, Last, "page
+  n of m": the presses and the requests at the server in front as well (their
+  "Older" is numbered pages now; the daemon takes an offset and says how many
+  match).
+* Public API comes before Events in the row of tabs.
+
+`test/review5472_frames.py` (the blocked card's row, its height and its
+place); these checks fail on 5.47.5.
 
 5.47.5 — lists found and paged everywhere, and the blocked addresses a list at a time.
 

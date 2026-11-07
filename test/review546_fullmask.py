@@ -390,7 +390,7 @@ async function open(b, session) {
   try { await p.waitForSelector('#preq-table tbody tr.preq-row', {timeout: 20000}); } catch (e) { r.wait = String(e); }
   r.rows = await p.$$eval('#preq-table tbody tr.preq-row', t => t.length);
   r.kinds = await p.$$eval('#preq-table .preq-kind', t => t.map(x => x.textContent));
-  r.older = await p.evaluate(() => getComputedStyle(document.getElementById('preq-more')).display);
+  r.older = await p.evaluate(() => document.querySelectorAll('#preq-pager button').length ? 'pages' : 'none');
   const card = await p.$('#preq-card');
   if (card) await card.scrollIntoViewIfNeeded();
   // the house's own request at ntfy, opened
