@@ -319,6 +319,11 @@ for _ in range(200):
     if not d.root_busy():
         break
     time.sleep(0.05)
+# ...and a helper the clock started before nginx was told to refuse takes
+# whatever request it finds, this one too, with nginx still agreeing: it is let
+# finish first (the checks run root one at a time, under ROOT_RUN_LOCK)
+with zigmon.ROOT_RUN_LOCK:
+    pass
 drifted = d.root_drift()
 st = d.root_read('status.json')
 # what was refused stays written down as refused (failed_hash), whatever root
