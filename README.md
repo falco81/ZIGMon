@@ -2083,7 +2083,18 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.7**
+Current version: **5.47.8**
+
+5.47.8 — a card says what it is; a Settings section scrolls whole.
+
+* Every card on the Overview, Sensors and Buttons - a device, a socket, the
+  server in front - wears the mark of its kind before its name: the same mark
+  it wears in the lists it is picked from (a socket, a light, a valve, a
+  thermometer, a PIR, a door, a button, a router, the SIM gateway, the shield).
+* In Settings the head of a section (its drawing, its title, its line about
+  it) scrolls with the section, as part of the page beside the menu.
+
+`test/review5478_icons.py`; these checks fail on 5.47.7.
 
 5.47.7 — Settings without the "Signed in" strip.
 

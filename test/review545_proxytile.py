@@ -371,7 +371,7 @@ async function open(b, session, width) {
   try { await p.waitForSelector('#overview-custom .proxy-tile .tag.ok', {timeout: 20000}); } catch (e) { r.waitErr = String(e); }
   await p.waitForTimeout(800);
   r.card = await p.evaluate(() => { const c = document.querySelector('#overview-custom .proxy-tile'); if (!c) return null;
-    return {text: c.innerText, tag: (c.querySelector('.tag') || {}).textContent, icon: c.querySelectorAll('.name .pt-icon svg path, .name .pt-icon svg rect').length,
+    return {text: c.innerText, tag: (c.querySelector('.tag') || {}).textContent, icon: ((c.querySelector('.name .dev-ic') || {}).textContent || '').indexOf('\ud83d\udee1') === 0 ? 2 : 0,
             values: Array.from(c.querySelectorAll('.reading')).map(x => [x.querySelector('.l').textContent, x.querySelector('.v').textContent])}; });
   r.optionGone = await p.evaluate(() => !document.querySelector('#ov-add-select option[value="proxy:front"]'));
   const card = await p.$('#overview-custom .proxy-tile');

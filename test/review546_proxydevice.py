@@ -250,7 +250,7 @@ if r.get('error') and ('Executable doesn' in r['error'] or 'Cannot find module' 
 else:
     check(not r.get('error'), 'the page: %s' % r.get('error'))
     c = r.get('card') or {}
-    check(c.get('name', '').strip() == 'Edge' and c.get('mark') and c.get('hist'),
+    check(c.get('name', '').strip().endswith('Edge') and c.get('name', '').startswith('\U0001f6e1') and c.get('mark') and c.get('hist'),
           'the card has not its name, its object mark and the way to its charts: %r (%s)' % (c, r.get('wait', '')))
     check(r.get('history') == {'tab': 'history', 'device': 'proxy:front'}, 'the charts: %r' % r.get('history'))
     check('Requests' in (r.get('firstChart') or '') or (r.get('firstChart') or '').endswith('px_requests_h'),

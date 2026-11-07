@@ -1955,6 +1955,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   /* (5.45) the SSLProxy card: the server in front, its nginx and Suricata */
   .dev.proxy-tile{cursor:pointer}
   .dev.proxy-tile .name .pt-icon{display:inline-flex;vertical-align:-3px;margin-right:6px;color:var(--info)}
+  .dev .name .dev-ic{display:inline-block;margin-right:6px;font-size:15px;line-height:1}
+  .socket-label .dev-ic{display:inline-block;margin-right:6px;font-size:14px;line-height:1}
   .dev.proxy-tile .reading .v.pt-on{color:var(--ok)} .dev.proxy-tile .reading .v.pt-off{color:var(--crit)}
   .dev.proxy-tile .reading .v.pt-unk{color:var(--tx-dim)}
   .dev.proxy-tile .pt-facts{font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
@@ -4190,8 +4192,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .list-scroll .pager{position:static}
     /* the table's head stays as its rows go by, in a frame that scrolls cards */
     .frame-scroll .card > table > thead th{position:sticky;top:0;z-index:2;background:var(--panel)}
-    /* a section of Settings keeps its title while its body scrolls */
-    body.ctl-shell .ctl-main > .ctl-head{position:sticky;top:0;z-index:4;background:var(--bg);padding-top:2px}
+    /* (5.47.8) a section of Settings scrolls whole, its title with it */
   }
   /* Control on a desk is an application, not a document: the browser's page
      never scrolls. The header, the tabs, the Editing bar and the rail stay
@@ -9763,7 +9764,12 @@ function buildDeviceCard(d, st) {
     var card = el('div', 'card dev ' + d.level + (stale ? ' stale' : ''));
     var head = el('div', 'head');
     var nm = el('div');
-    var nmName = el('div', 'name', d.name);
+    var nmName = el('div', 'name');
+    // (5.47.8) the card says what kind of thing it is before its name - the
+    // same mark the lists to pick it from wear
+    var ic = el('span', 'dev-ic', deviceIcon(d));
+    nmName.appendChild(ic);
+    nmName.appendChild(document.createTextNode(d.name));
     nmName.appendChild(objMark(devRef(d), d.name));
     nm.appendChild(nmName);
     nm.appendChild(el('div', 'model', [[d.vendor, d.model].filter(Boolean).join(' '), d.description, gatewayFirmware(d)].filter(Boolean).join(' · ')));
@@ -10399,9 +10405,8 @@ function buildProxyTileCard(t) {
   card.dataset.tile = PROXY_TILE_ID;
   var head = el('div', 'head'), nm = el('div');
   var name = el('div', 'name');
-  var icon = el('span', 'pt-icon');
-  icon.innerHTML = iconMarkup('sslproxy', 17);          // the page's own drawing, nothing of the remote's
-  name.appendChild(icon);
+  // (5.47.8) the shield its option in the picker wears, as every card's mark is
+  name.appendChild(el('span', 'dev-ic', ICON.sslproxy));
   // (5.46) a device like the others: its name as given under Devices, its
   // object, and the way to its charts
   var dev = deviceById(PROXY_TILE_ID);
@@ -19227,6 +19232,7 @@ function buildPlugCard(plug, compact) {
   var txt = el('div');
   var sockLabel = el('div', 'socket-label');
   plugLabel(sockLabel, plug, !plug.online ? (plug.optional ? 'unplugged' : 'unreachable') : (on ? 'on' : 'off'));
+  sockLabel.insertBefore(el('span', 'dev-ic', ICON[plugRoleKind(plug)] || ICON.plug), sockLabel.firstChild);
   txt.appendChild(sockLabel);
   // on a phone the big name has no width to spare: its mark waits in the
   // card's bottom corner instead, where nothing else is
