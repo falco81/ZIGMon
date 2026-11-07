@@ -7670,7 +7670,12 @@ function preqKey() {
 function loadProxyRequests(older) {
   var card = $('preq-card'); if (!card) return;
   card.hidden = !isAdmin();
-  if (card.hidden || PREQ.busy) return;
+  if (card.hidden) return;
+  // (pass 3) one at a time - but what was asked meanwhile is not dropped: an
+  // address typed and Enter pressed while the half-minute look was on its
+  // way did nothing, and the table went on showing every address under a box
+  // that named one
+  if (PREQ.busy) { if (!older) PREQ.again = true; return; }
   var ip = $('preq-ip').value.trim(), q = $('preq-q').value.trim();
   if (ip && !/^[0-9A-Fa-f.:]{2,45}$/.test(ip)) { $('preq-note').textContent = 'that is not an address'; return; }
   var key = preqKey();
@@ -7690,7 +7695,9 @@ function loadProxyRequests(older) {
   }, function (e) {
     PREQ.at = Date.now();                    // a failure waits its half minute too
     $('preq-note').textContent = 'could not ask the daemon' + (e && e.message ? ': ' + e.message : '');
-  }).then(function () { PREQ.busy = false; }, function () { PREQ.busy = false; });
+  }).then(function () { PREQ.busy = false; }, function () { PREQ.busy = false; }).then(function () {
+    if (PREQ.again) { PREQ.again = false; loadProxyRequests(false); }
+  });
 }
 function preqFields(one) {
   var box = el('div', 'preq-fields');
@@ -7883,8 +7890,12 @@ function renderApprovals() {
   paintApprovals();
   if (Date.now() - APPROVALS.at > 2000) loadApprovals(true);
   // (5.46) the requests: once on opening, and every half minute after on the
-  // tab's clock, unless a row is open or the reader is further back in time
-  loadProxyRequests(false);
+  // tab's clock, unless a row is open or the reader is further back in time.
+  // (pass 3) ...on opening: showTab asks for them, and the clock below
+  // whenever they were never asked. This drawing is called with every
+  // status, and asking here fetched up to a hundred requests with all their
+  // headers once a second in a house that reports (eight in eight seconds,
+  // measured), and drew the table again under the reader each time
   clearInterval(APPROVALS.timer);
   // the countdown has to move on its own, and a press may be approved by
   // somebody else while this is open
@@ -17120,7 +17131,15 @@ $('pw-change').onclick = function () { passwordChange(false); };
 // dismissed means nothing was sent, and the card must go back to what it was.
 function withPin(title, text, action, danger, otherwise) {
   function run() {
-    action('').then(function (msg) { toast(msg, true); tick(true); }, function (e) {
+    action('').then(function (msg) {
+      // (pass 3) an action may say how its result shows in a status
+      // ({text, shown}); the page then fetches only when the status it holds,
+      // or the one on its way, does not show it yet
+      var shown = msg && typeof msg === 'object' ? msg.shown : null;
+      if (msg && typeof msg === 'object') msg = msg.text;
+      toast(msg, true);
+      refreshAfterAction(shown);
+    }, function (e) {
       var message = e.message || String(e);
       if (signInNeeded(message)) { setLocked('Signed out: ' + message); if (otherwise) otherwise(); return; }
       toast(message, false);
@@ -17135,6 +17154,33 @@ function withPin(title, text, action, danger, otherwise) {
     if (ok === null) { if (otherwise) otherwise(); return; }
     if (signedIn()) run(); else if (otherwise) otherwise();
   });
+}
+// The status after an action. A socket switched woke the long poll the moment
+// the box had answered, and its status was already on its way - or drawn -
+// when the answer to the press came back; the tick here was then a second
+// quarter-megabyte fetched and the whole tab drawn again for nothing, on
+// every press (two status fetches within 50 ms of one press, measured with
+// 30 sockets and 60 devices). Without a way to tell, or with the long poll
+// not getting through, it is fetched as before.
+//
+// The answer often beats the wake to the page (both come through the relay,
+// in either order), so a status that does not show it yet is waited for a
+// moment: the wake's own fetch is the one that shows it. Should none come,
+// the status is fetched a quarter of a second later; the card was painted as
+// asked the moment it was pressed, so nobody waits on that.
+var AFTER_ACTION_MS = 250;
+function refreshAfterAction(shown) {
+  if (typeof shown !== 'function' || WAIT.failures > 0 || !STATE.status) { tick(true); return; }
+  var ok = false;
+  try { ok = !STATE.busy && !!shown(STATE.status); } catch (e) { ok = false; }
+  if (ok) return;
+  STATE.awaitShown = shown;                 // looked at when the next status lands
+  setTimeout(function () {
+    if (STATE.awaitShown !== shown) return;   // a status came and was looked at
+    if (STATE.busy) return;                   // one is on its way: it is looked at when it lands
+    STATE.awaitShown = null;
+    tick(true);
+  }, AFTER_ACTION_MS);
 }
 // The socket buttons on the Overview: the same now - a sign-in, then the switch.
 function withPinAlways(title, text, action, danger, otherwise) {
@@ -18965,8 +19011,12 @@ function switchPlug(plug, on, button, mode) {
       // No tick here: withPin/withPinAlways refreshes on success, and the
       // answer this returns already carries the socket's new state. Both
       // asking was one press costing two fetches and, with the daemon's own
-      // wake, three.
-      return r.message || 'done';
+      // wake, three. (pass 3) ...and withPin's own is left out too when the
+      // status the daemon's wake brought already shows the socket as asked
+      var want = r && r.plug && typeof r.plug.output === 'number' ? r.plug.output : (on ? 1 : 0);
+      return {text: r.message || 'done', shown: function (st) {
+        return ((st && st.plugs) || []).some(function (x) { return x.name === plug.name && x.output === want; });
+      }};
     }, function (e) {
       free();
       throw e;                                     // withPin hands it to putBack: the real state back
@@ -20736,7 +20786,11 @@ var WAKE_GAP = 40;
 function wakeTick() {
   // "Paused" pauses: a change in the house woke a forced tick, and forced
   // ticks went past the pause, so a paused page went on fetching and drawing
-  if (STATE.paused) return;
+  // ...and (pass 3) out of sight: the wait already asked for when the tab was
+  // put away answered with the next change, and a hidden page fetched the
+  // whole status, drew its tab and, on the Overview, asked for its charts;
+  // coming back draws it at once (the visibilitychange below)
+  if (STATE.paused || document.hidden) return;
   if (STATE.busy) { STATE.pendingForce = true; return; }
   var now = Date.now(), since = now - (WAIT.lastTick || 0);
   if (since >= WAKE_GAP) { WAIT.lastTick = now; tick(true); return; }
@@ -29007,6 +29061,14 @@ function tick(force) {
     setFavicon('crit');
   }).then(function () {
     STATE.busy = false;
+    // an action answered while this status was on its way, and this status
+    // does not show it yet: one more, as the action would have asked
+    if (STATE.awaitShown) {
+      var shown = STATE.awaitShown, ok = false;
+      STATE.awaitShown = null;
+      try { ok = !!(STATE.status && shown(STATE.status)); } catch (e) { ok = false; }
+      if (!ok) STATE.pendingForce = true;
+    }
     // The refresh that arrived mid-flight - through wakeTick, so a burst of
     // them is one trailing fetch rather than a chain of one each. Five wakes
     // 20 ms apart used to be five fetches and five repaints: each arrived
@@ -34426,6 +34488,7 @@ function showTab(name) {
   });
   Array.prototype.forEach.call(document.querySelectorAll('.panel'), function (p) { p.hidden = p.id !== 'tab-' + name; });
   if (TAB_STALE[name] !== false) renderTab(name, STATE.status);   // catch up on what changed while hidden
+  if (name === 'approvals') loadProxyRequests(false);   // (pass 3) once on opening; the tab's clock after
   var arriving = $('tab-' + name);
   if (arriving && PANEL_SCROLL['tab-' + name]) arriving.scrollTop = PANEL_SCROLL['tab-' + name];
   if (name === 'history') { renderHistoryControls(); loadHistory(); }
