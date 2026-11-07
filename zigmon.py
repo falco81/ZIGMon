@@ -25861,6 +25861,12 @@ class Daemon(object):
             ip = str(ipaddress.ip_address(ip))
         except ValueError:
             return None
+        # (pass 3) What was asked for, as every reader of an anomaly sees it -
+        # the list, the reasons of a block, the events, the notifications -
+        # without the secrets it carried: the access log's line is the
+        # request line as it came, and "POST /tap/<a link's secret>" or
+        # "GET /?auth=<ntfy's login>" went in whole
+        detail = mask_detail(detail)
         # Somebody who pressed a link and was let in within the last two days
         # is the house, whatever the front server made of the next few
         # requests. The owner's own watch, on the mobile network, collected
@@ -30537,7 +30543,9 @@ class Daemon(object):
             seen.setdefault(ip, 0)
             seen[ip] += 1
             when = self._log_moment(found.group('when')) or time.time()
-            kept.append((when, 'tap', ip, method, path[:200], status, kind))
+            # (pass 3) kept and shown as an administrator's address story:
+            # the request line's secrets masked, as the full logs' are
+            kept.append((when, 'tap', ip, method, mask_detail(path[:200], 200), status, kind))
             self.note_anomaly(ip, kind, '%s %s' % (method, path), source='proxy', at=when)
             if kind in self.SWARM_KINDS and status not in (400, 444):
                 # (5.45) Not closed with a 444, so it was asked for at the
@@ -43472,12 +43480,8 @@ VALUE_LOOKS = (
                          r'|/bin/(?:sh|bash)|cmd\.exe|powershell', re.I)),
     ('template', re.compile(r'\{\{.*?\}\}|\$\{[^}]{0,80}\}|#\{[^}]{0,80}\}|<%=')),
 )
-# Keys in a body, a query or a form whose value is a secret, wherever they
-# stand. Bounded in front so "spin=" is not "pin=".
-_SECRET_PAIR = re.compile(
-    r'''(?i)((?:^|[?&;\s{,"'])"?(?:pass(?:word|wd)?|pwd|passcode|pin|otp|token|secret|api[_-]?key|apikey'''
-    r'''|access[_-]?token|refresh[_-]?token|auth|session|sessionid|sid|code|key)"?\s*[:=]\s*"?)'''
-    r'''([^&"',}\s]+)''')
+# Keys in a body, a query or a form whose value is a secret: see _PAIR_KEY
+# and _key_is_secret below (pass 3), which took the place of one pattern.
 # The road whose path carries a link's own secret, while the address form of
 # the links is still accepted
 _SECRET_PATH = re.compile(r'^(/(?:api/)?tap/)([^/?#]+)')
@@ -43564,7 +43568,13 @@ def mask_auth(value):
         if colon and (user, word) in DEFAULT_LOGINS:
             said['authk'] = '%s:%s' % (user, word)
         name = re.sub(r'[^A-Za-z0-9_.@-]', '?', user)[:40]
-        out = 'Basic ' + ('user:%s ' % name if colon and name else '') + FULL_MASK + _last_two(word, 8)
+        if colon and not word and 'authk' not in said:
+            # (pass 3) a key sent as the name with nothing after the colon -
+            # "sk_live_...:" is how half the APIs there are take theirs: the
+            # name IS the secret then, and is masked as one
+            out = 'Basic ' + FULL_MASK + _last_two(user, 8)
+        else:
+            out = 'Basic ' + ('user:%s ' % name if colon and name else '') + FULL_MASK + _last_two(word, 8)
     else:
         jwt = re.match(r'^(eyJ[A-Za-z0-9_-]{2,160})\.([A-Za-z0-9_-]*)\.(\S*)$', cred)
         if jwt:
@@ -43616,12 +43626,146 @@ def mask_cookie(value):
     return ('names: ' + ' '.join(names)) if names else 'odd', said
 
 
+# (pass 3) A key and what follows it, wherever it stands: "password=",
+# "&x-zigmon-tap=", '{"user":{"password": ', "user[password]=". Whether
+# the key names a secret is _key_is_secret's to say, by its words - a list of
+# spellings in one pattern missed pass%77ord, client_secret, id_token, jwt=,
+# Passwort, the link's own X-Zigmon-Tap in a query, a password in a list, a
+# passphrase with a space in it and a key in single quotes.
+_PAIR_KEY = re.compile(r'''(?:^|(?<=[?&;\s{,"'#\[(/]))(?P<q>["']?)(?P<key>[\w.\-\[\]%$@\\]{1,80})(?P=q)'''
+                       r'''\s*[:=]\s*''')
+_PAIR_BARE = re.compile(r'''[^&"',;}\]\s#)]+''')
+_SECRET_WORDS = frozenset((
+    'password', 'passwd', 'pwd', 'pw', 'pass', 'passcode', 'passphrase', 'pin', 'otp', 'totp', 'token',
+    'secret', 'key', 'apikey', 'auth', 'authorization', 'session', 'sessionid', 'sid', 'code', 'jwt',
+    'bearer', 'signature', 'sig', 'credential', 'credentials', 'cred', 'creds', 'csrf', 'xsrf', 'tap',
+    'cookie', 'ticket', 'assertion', 'phpsessid', 'jsessionid'))
+_SECRET_PARTS = (
+    'password', 'passwd', 'passwort', 'wachtwoord', 'contrasena', 'contraseña', 'senha', 'motdepasse',
+    'parola', 'haslo', 'hasło', 'heslo', 'jelszo', 'jelszó', 'salasana', 'losenord', 'lösenord',
+    'adgangskode', 'passord', 'sifre', 'şifre', 'kennwort', 'пароль',
+    '密码', 'パスワード', '비밀번호', 'token', 'secret', 'apikey',
+    'credential', 'sessionid', 'passcode', 'passphrase', 'privatekey')
+# ...and what is a secret by its shape alone, whatever it is called
+_JWT_ANY = re.compile(r'\b(eyJ[A-Za-z0-9_-]{4,400})\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.-]*')
+_USERINFO = re.compile(r'''(://)[^/@\s"'?#]+@''')
+_KNOWN_TOKEN = re.compile(r'\b(?:tk_[A-Za-z0-9]{29}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}'
+                          r'|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}'
+                          r'|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b')
+
+
+def _key_is_secret(key):
+    """(pass 3) Whether a key - of a query, a form, a JSON body - names a
+    secret: by its words, whatever it is wrapped in (client_secret,
+    user[password], X-Zigmon-Tap, accessToken), however it was escaped
+    (pass%77ord, pass\\u0077ord), and in the languages a login form is
+    written in."""
+    text = str(key or '')[:120]
+    for _ in range(2):
+        if '%' not in text:
+            break
+        text = unquote(text)
+    text = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), text)
+    text = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', text)
+    words = [w for w in re.split(r'[^0-9a-zÀ-￿]+', text.lower()) if w]
+    if any(w in _SECRET_WORDS for w in words):
+        return True
+    flat = ''.join(words)
+    return any(part in flat for part in _SECRET_PARTS)
+
+
+def _value_end(text, at):
+    """Where a value that starts at `at` ends: a quoted one at its closing
+    quote, an object or a list at its closing bracket, a bare one at the
+    first character that ends a value - or at the end of what there is,
+    which is where a value cut off mid-way ends."""
+    n = len(text)
+    if at >= n:
+        return at
+    first = text[at]
+    if first in '"\'':
+        i = at + 1
+        while i < n:
+            if text[i] == '\\':
+                i += 2
+                continue
+            if text[i] == first:
+                return i + 1
+            i += 1
+        return n
+    if first in '[{':
+        depth, i, inq = 0, at, ''
+        while i < n:
+            ch = text[i]
+            if inq:
+                if ch == '\\':
+                    i += 2
+                    continue
+                if ch == inq:
+                    inq = ''
+            elif ch in '"\'':
+                inq = ch
+            elif ch in '[{':
+                depth += 1
+            elif ch in ']}':
+                depth -= 1
+                if depth <= 0:
+                    return i + 1
+            i += 1
+        return n
+    m = _PAIR_BARE.match(text, at)
+    return m.end() if m else at
+
+
+def mask_loose(text):
+    """(pass 3) What is a secret by its shape alone, wherever it stands and
+    whatever it is called: a JWT's claims and signature (its header, which
+    says its algorithm, stays), a name and a password in front of a host,
+    the tokens that say whose they are by how they begin (ntfy's tk_...)."""
+    text = _JWT_ANY.sub(lambda m: m.group(1) + '.' + FULL_MASK, str(text or ''))
+    text = _USERINFO.sub(lambda m: m.group(1) + FULL_MASK + '@', text)
+    return _KNOWN_TOKEN.sub(lambda m: FULL_MASK + _last_two(m.group(0), 8), text)
+
+
 def mask_pairs(text, most=2000):
     """A body, a query, an address: every value whose key says it is a
     secret, masked, wherever it stands - and a link's secret in its path."""
     text = str(text or '')[:most * 2]
     text = _SECRET_PATH.sub(lambda m: m.group(1) + FULL_MASK + _last_two(m.group(2), 12), text)
-    return _SECRET_PAIR.sub(lambda m: m.group(1) + FULL_MASK, text)[:most]
+    out, pos = [], 0
+    while True:
+        m = _PAIR_KEY.search(text, pos)
+        if not m:
+            break
+        start = m.end()
+        if _key_is_secret(m.group('key')):
+            end = _value_end(text, start)
+            if end > start:
+                first = text[start]
+                if first in '"\'':
+                    masked = first + FULL_MASK + (first if end - start >= 2 and text[end - 1] == first else '')
+                else:
+                    masked = FULL_MASK
+                out.append(text[pos:start] + masked)
+                pos = end
+                continue
+        out.append(text[pos:start])
+        pos = start
+    out.append(text[pos:])
+    return mask_loose(''.join(out))[:most]
+
+
+_SECRET_PATH_ANY = re.compile(r'(/(?:api/)?tap/)(?!•)([^/?#\s"]+)')
+
+
+def mask_detail(text, most=400):
+    """(pass 3) A line of words about a request - "POST /tap/<secret>",
+    "GET /x?token=..." - with its secrets masked as the full logs' are."""
+    text = str(text or '')
+    if not text:
+        return text
+    text = _SECRET_PATH_ANY.sub(lambda m: m.group(1) + FULL_MASK + _last_two(m.group(2), 12), text[:most * 2])
+    return mask_pairs(text, most)
 
 
 def full_mask(one):
@@ -43649,18 +43793,29 @@ def full_mask(one):
         elif key == 'code':
             out[key] = 'none' if str(value or '') in ('', '-', 'none') else 'sent'
         elif key in _FULL_SAID:
-            if re.match(_FULL_SAID[key], str(value or '')):
+            # (pass 3) the login everybody knows only when it IS one of
+            # them: a config of somebody's own writing a field by this name
+            # with the house's login in it kept it whole
+            if re.match(_FULL_SAID[key], str(value or '')) and (
+                    key != 'authk' or tuple(str(value).split(':', 1)) in DEFAULT_LOGINS):
                 out[key] = str(value)
         elif key in ('s', 'bytes', 'reqlen') and isinstance(value, (int, float)):
             out[key] = value
+        elif isinstance(value, bool) or value is None:
+            out[key] = value
+        elif isinstance(value, (dict, list)):
+            # (pass 3) a field of somebody's own format holding an object -
+            # the headers as a map - was written as its repr, keys and all
+            out[key] = mask_pairs(json.dumps(value, ensure_ascii=False), 600)
         elif key in ('u', 'ref', 'body', 'xou', 'xru', 'origin'):
             out[key] = mask_pairs(value, 2000 if key == 'body' else 600)
         elif key in _FULL_PLAIN:
-            out[key] = _plain(value, 600) if not isinstance(value, (int, float)) else value
-        elif re.search(r'auth|token|secret|pass|key|cookie|session|sig', key):
+            out[key] = mask_loose(_plain(value, 600)) if not isinstance(value, (int, float)) else value
+        elif re.search(r'auth|token|secret|pass|key|cookie|session|sig|tap|code|pin|otp|csrf|xsrf|jwt|cred'
+                       r'|pwd|bearer|sid|ticket', key):
             out[key] = mask_token(value)       # a field of somebody's own log format
         else:
-            out[key] = _plain(value, 300) if not isinstance(value, (int, float)) else value
+            out[key] = mask_pairs(_plain(value, 300), 300) if not isinstance(value, (int, float)) else value
     for k, v in said.items():
         out.setdefault(k, v)
     return out
@@ -50417,6 +50572,13 @@ def proxy_tile_parse(text, marker):
     # a name, never an address: whoever sees the card is not told where it is
     out['hostname'] = (host if re.match(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$', host)
                        and not _tile_ip(host) else '')
+    # (pass 3) ...nor its name in the DNS: a machine whose hostname is its
+    # FQDN gave the device - which viewers and the public view see - the very
+    # name it is reached by (proxy_host, an administrator's). Its first label
+    # only, and not even that where it is the first label of proxy_host.
+    short = out['hostname'].split('.')[0]
+    front = str(CONFIG.get('proxy_host') or '').strip().lower()
+    out['hostname'] = '' if short and front and short.lower() in (front, front.split('.')[0]) else short
     units = {}
     for line in parts.get('svc') or []:
         bits = line.split()
