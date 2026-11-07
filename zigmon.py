@@ -6432,11 +6432,19 @@ class Storage(object):
             where.append('state = ?')
             args.append(str(state))
         clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+        limit = max(1, min(int(limit or 200), 2000))
+        if where:
+            # a search reads every row: on a reader of its own (5.46.1)
+            total = self._read_rows('SELECT COUNT(*) AS n FROM taps_log')[0]['n']
+            matched = self._read_rows('SELECT COUNT(*) AS n FROM taps_log' + clause, args)[0]['n']
+            rows = self._read_rows('SELECT * FROM taps_log' + clause + ' ORDER BY ts DESC LIMIT ?',
+                                   args + [limit])
+            return [dict(r) for r in rows], int(matched or 0), int(total or 0)
         with self.lock:
             total = self.db.execute('SELECT COUNT(*) AS n FROM taps_log').fetchone()['n']
             matched = self.db.execute('SELECT COUNT(*) AS n FROM taps_log' + clause, args).fetchone()['n']
             rows = self.db.execute('SELECT * FROM taps_log' + clause + ' ORDER BY ts DESC LIMIT ?',
-                                   args + [max(1, min(int(limit or 200), 2000))]).fetchall()
+                                   args + [limit]).fetchall()
         return [dict(r) for r in rows], int(matched or 0), int(total or 0)
 
     def forget_tap_log(self):
@@ -6611,13 +6619,42 @@ class Storage(object):
             where.append('(ip LIKE ? OR what LIKE ? OR why LIKE ? OR by LIKE ?)')
             args.extend(['%%%s%%' % word] * 4)
         clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+        limit = max(1, min(int(limit or 200), 2000))
+        if where:
+            # LIKE over the whole story (the router's page asks it once per
+            # address shown): on a reader of its own (5.46.1)
+            total = self._read_rows('SELECT COUNT(*) AS n FROM block_events')[0]['n']
+            matched = self._read_rows('SELECT COUNT(*) AS n FROM block_events' + clause, args)[0]['n']
+            rows = self._read_rows('SELECT * FROM block_events' + clause + ' ORDER BY ts DESC LIMIT ?',
+                                   args + [limit])
+            return [dict(r) for r in rows], int(matched or 0), int(total or 0)
         with self.lock:
             total = self.db.execute('SELECT COUNT(*) AS n FROM block_events').fetchone()['n']
             matched = self.db.execute('SELECT COUNT(*) AS n FROM block_events' + clause,
                                       args).fetchone()['n']
             rows = self.db.execute('SELECT * FROM block_events' + clause + ' ORDER BY ts DESC LIMIT ?',
-                                   args + [max(1, min(int(limit or 200), 2000))]).fetchall()
+                                   args + [limit]).fetchall()
         return [dict(r) for r in rows], int(matched or 0), int(total or 0)
+
+    def block_events_of(self, ips, limit=200, prefix=''):
+        """(5.46.1) The story of these addresses exactly (and, with prefix,
+        of any subnet written as that address and a mask), newest first, by
+        the index on the address. block_events(text=) is a search: an address
+        as its words matched 1.2.3.4 inside 11.2.3.45, and the router's page
+        and a folded subnet's members asked it once per address - a read of
+        the whole story each time."""
+        ips = [str(x) for x in ips if x]
+        if not ips and not prefix:
+            return []
+        where = ['ip IN (%s)' % ','.join('?' * len(ips))] if ips else []
+        args = list(ips)
+        if prefix:
+            where.append('(ip >= ? AND ip < ?)')
+            args += [str(prefix) + '/', str(prefix) + '0']      # '0' is the character after '/'
+        with self.lock:
+            rows = self.db.execute('SELECT * FROM block_events WHERE %s ORDER BY ts DESC LIMIT ?'
+                                   % ' OR '.join(where), args + [max(1, int(limit or 200))]).fetchall()
+        return [dict(r) for r in rows]
 
     def block(self, ip, until=None, why='', auto=True, by=''):
         self.note_block_event(ip, 'blocked', why, auto, by)
@@ -7107,13 +7144,13 @@ class Storage(object):
         asking about somebody who came knocking."""
         if not days:
             return 0
-        with self.lock:
-            done = self.db.execute('DELETE FROM proxy_lines WHERE ts < ?',
-                                   (time.time() - days * 86400,))
-            self.db.commit()
-        return done.rowcount or 0
+        # (5.46.1) in pieces, as every retention: asked after every reading
+        # of the log, and the first after the days were shortened in
+        # Settings went in one statement - 135 000 lines, 229 ms under the lock
+        return self._drop_older('proxy_lines', time.time() - days * 86400)
 
     PROXY_REQUESTS_MOST = 200000      # rows kept at most, whatever the days say
+    PROXY_REQUESTS_CHUNK = 1000       # (5.46.1) a row is a request's headers and body: 1 000 is ~10 ms
 
     def keep_proxy_requests(self, rows):
         """(5.46) The full logs' requests, masked already (Daemon.full_mask).
@@ -7135,15 +7172,30 @@ class Storage(object):
         """As the lines go: after the same days, and never more than
         PROXY_REQUESTS_MOST of them whatever the days say."""
         gone = 0
+        if days:
+            gone += self._drop_older('proxy_requests', time.time() - days * 86400, self.PROXY_REQUESTS_CHUNK)
+        # (5.46.1) How many are kept, from the ids rather than by counting:
+        # they are handed out in order and only the oldest ever go, so the
+        # rows above max - MOST are the newest MOST. "The id MOST rows down"
+        # walked 200 000 entries of the index under the lock after every
+        # reading of the log (40 ms), and what went over went in one
+        # statement - 113 000 rows with their headers and bodies, a second.
         with self.lock:
-            if days:
-                gone += self.db.execute('DELETE FROM proxy_requests WHERE ts < ?',
-                                        (time.time() - days * 86400,)).rowcount or 0
-            row = self.db.execute('SELECT id FROM proxy_requests ORDER BY id DESC LIMIT 1 OFFSET ?',
-                                  (self.PROXY_REQUESTS_MOST,)).fetchone()
-            if row:
-                gone += self.db.execute('DELETE FROM proxy_requests WHERE id <= ?', (row['id'],)).rowcount or 0
-            self.db.commit()
+            # two seeks: MIN and MAX in one SELECT is a walk of the table
+            row = self.db.execute('SELECT (SELECT MIN(id) FROM proxy_requests), '
+                                  '(SELECT MAX(id) FROM proxy_requests)').fetchone()
+        low, high = (row[0], row[1]) if row else (None, None)
+        if low is None or high - low + 1 <= self.PROXY_REQUESTS_MOST:
+            return gone
+        last = high - self.PROXY_REQUESTS_MOST
+        pace = self._pacer()
+        while low <= last:
+            upto = min(last, low + self.PROXY_REQUESTS_CHUNK - 1)
+            with self.lock:
+                gone += max(0, self.db.execute('DELETE FROM proxy_requests WHERE id >= ? AND id <= ?',
+                                               (low, upto)).rowcount or 0)
+            low = upto + 1
+            pace()
         return gone
 
     def proxy_requests_list(self, ip='', q='', which='', found=False, before=0, limit=100):
@@ -7170,9 +7222,15 @@ class Storage(object):
         limit = max(1, min(int(limit or 100), 200))
         sql = 'SELECT * FROM proxy_requests' + (' WHERE ' + ' AND '.join(where) if where else '') + \
             ' ORDER BY id DESC LIMIT ?'
-        with self.lock:
-            rows = self.db.execute(sql, args + [limit + 1]).fetchall()
-            total = self.db.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
+        if q:
+            # (5.46.1) "contains" over every header and body kept: on a reader
+            # of its own, not under the lock
+            rows = self._read_rows(sql, args + [limit + 1])
+            total = self._read_rows('SELECT COUNT(*) FROM proxy_requests')[0][0]
+        else:
+            with self.lock:
+                rows = self.db.execute(sql, args + [limit + 1]).fetchall()
+                total = self.db.execute('SELECT COUNT(*) FROM proxy_requests').fetchone()[0]
         out = []
         for r in rows[:limit]:
             one = dict(r)
@@ -7321,6 +7379,11 @@ class Storage(object):
             sql += ' WHERE ' + ' AND '.join(where)
         sql += ' ORDER BY ts DESC, id DESC LIMIT ?'
         args.append(int(limit))
+        if text and str(text).split():
+            # words looked for anywhere in a row read every row: on a reader
+            # of its own (5.46.1), 26 ms of a year of events under the lock
+            # on every keystroke of the search box
+            return [dict(r) for r in self._read_rows(sql, args)]
         with self.lock:
             rows = self.db.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
@@ -7357,8 +7420,11 @@ class Storage(object):
             got = getattr(self, '_events_total', None)
             if got and time.time() - got[0] < 30:
                 return got[1]
-        with self.lock:
-            n = int(self.db.execute(sql, args).fetchone()[0])
+        if text and str(text).split():
+            n = int(self._read_rows(sql, args)[0][0])     # see events()
+        else:
+            with self.lock:
+                n = int(self.db.execute(sql, args).fetchone()[0])
         if not where:
             self._events_total = (time.time(), n)
         return n
@@ -7442,6 +7508,110 @@ class Storage(object):
         except sqlite3.Error:
             return None
 
+    def _read_rows(self, sql, args=()):
+        """(5.46.1) A search over a whole table, on a reader of its own and
+        without the lock. The searches of the Events tab, the blocked story,
+        the presses and the full proxy logs are LIKE over every row - no
+        index can answer "contains" - and under the lock a word matching
+        nothing in 200 000 kept requests held every reader and the writer
+        for 117 ms, in a year of events 26 ms, again on every keystroke. A
+        reader in WAL sees the last commit and waits for nobody; opening one
+        is a third of a millisecond. Under the lock, as before, where one
+        cannot be opened."""
+        reader = self._reader(timeout=5)
+        if reader is not None:
+            try:
+                reader.row_factory = sqlite3.Row
+                return reader.execute(sql, list(args)).fetchall()
+            except sqlite3.Error:
+                pass
+            finally:
+                reader.close()
+        with self.lock:
+            return self.db.execute(sql, list(args)).fetchall()
+
+    # (5.46.1) A thread that takes the lock again the moment it let it go
+    # gets it back: the waiting thread is woken, but this one is already
+    # running and holding the interpreter (see put_geo). A long job cut into
+    # short turns of the lock was still one long wait for everybody else -
+    # the hourly fold's 200 series held a reading's write out for 0.8 s
+    # though no one turn was over 100 ms. So every so often the job naps.
+    BREATH_EVERY_S = 0.010
+    BREATH_S = 0.002
+    FOLD_WAL_EVERY_S = 0.1
+
+    def _pacer(self):
+        """A callable for a long job's loop: called after each turn of the
+        lock, it naps BREATH_S once BREATH_EVERY_S has gone by since the
+        last nap, so nobody waits much longer than that behind the job."""
+        last = [time.perf_counter(), time.perf_counter()]
+
+        def breathe():
+            now = time.perf_counter()
+            if now - last[1] >= self.FOLD_WAL_EVERY_S:
+                # A big delete writes the write-ahead log full in a second
+                # or two, and the write that fills it (WAL_PAGES) folds it
+                # back itself - in its COMMIT, under the lock, fsync and all:
+                # 340 ms of one 20 ms piece, measured. Folded here, on a
+                # connection of its own and outside the lock, the log starts
+                # over before it gets there.
+                self.checkpoint()
+                last[1] = last[0] = time.perf_counter()
+                return
+            if now - last[0] >= self.BREATH_EVERY_S:
+                time.sleep(self.BREATH_S)
+                last[0] = time.perf_counter()
+        return breathe
+
+    def _drop_series(self, table, device_id, key, before=None, pace=None):
+        """The rows of one series (samples or samples_hourly) - all, or those
+        older than `before` - AGGREGATE_CHUNK at a time by the table's own key,
+        the lock let go in between (5.46.1). Rows gone."""
+        gone = 0
+        cond = 'device=? AND key=?' + (' AND ts<?' if before is not None else '')
+        args = (device_id, key) + ((int(before),) if before is not None else ())
+        pace = pace or self._pacer()
+        while True:
+            with self.lock:
+                n = self.db.execute('DELETE FROM %s WHERE %s AND ts IN (SELECT ts FROM %s WHERE %s '
+                                    'ORDER BY ts LIMIT ?)' % (table, cond, table, cond),
+                                    args + args + (self.AGGREGATE_CHUNK,)).rowcount or 0
+            gone += max(0, n)
+            pace()
+            if n < self.AGGREGATE_CHUNK:
+                return gone
+
+    def _drop_device_rows(self, device_id, tables=('samples', 'samples_hourly', 'events', 'snapshots'),
+                          before=None):
+        """Everything one device has in these tables (the readings older than
+        `before` only, when given), in pieces: in one statement, a socket's
+        fortnight - 160 000 rows - went under the lock in one go, and a
+        group of sensors taken away, or a device's own shorter retention,
+        held every reader and the writer for as long (5.46.1)."""
+        gone = 0
+        pace = self._pacer()
+        for table in tables:
+            if table in ('samples', 'samples_hourly'):
+                with self.lock:
+                    keys = self._distinct_keys(table, device_id)
+                for key in keys:
+                    gone += self._drop_series(table, device_id, key, before, pace)
+            elif table == 'events':
+                while True:
+                    with self.lock:
+                        n = self.db.execute('DELETE FROM events WHERE rowid IN (SELECT rowid FROM events '
+                                            'WHERE device=? LIMIT ?)',
+                                            (device_id, self.AGGREGATE_CHUNK)).rowcount or 0
+                    gone += max(0, n)
+                    pace()
+                    if n < self.AGGREGATE_CHUNK:
+                        break
+            else:
+                with self.lock:
+                    gone += max(0, self.db.execute('DELETE FROM %s WHERE device=?' % table,
+                                                   (device_id,)).rowcount or 0)
+        return gone
+
     def integrity_check(self):
         # (5.44) on a reader of its own: under the lock, the check of a
         # year-old 690 MB file held every reader and the writer for 8.9 s
@@ -7512,13 +7682,10 @@ class Storage(object):
         found = self.stale_data()['devices']
         wanted = [x for x in found if only is None or x['device'] == only]
         removed = 0
-        with self.lock:
-            for entry in wanted:
-                for table in ('samples', 'samples_hourly', 'events', 'snapshots'):
-                    cur = self.db.execute('DELETE FROM %s WHERE device=?' % table, (entry['device'],))
-                    removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        for entry in wanted:
+            removed += self._drop_device_rows(entry['device'])      # in pieces (5.46.1)
+            with self.lock:
                 self.db.execute('DELETE FROM devices WHERE id=? AND removed=1', (entry['device'],))
-            self.db.commit()
         self._forget_device()
         # Only the snapshots of the devices erased went, so only theirs are
         # forgotten - and nothing of the settings, which this does not touch.
@@ -7553,16 +7720,22 @@ class Storage(object):
         bookkeeping keys, and gateway values written again unchanged. Counts
         what it would remove unless asked to actually do it."""
         noise = flat = 0
-        with self.lock:
-            for table in ('samples', 'samples_hourly'):
-                for row in self.db.execute('SELECT DISTINCT key FROM %s' % table).fetchall():
-                    key = row[0] or ''
-                    if not NOISE_KEY.search(key):
-                        continue
-                    noise += self.db.execute('SELECT COUNT(*) FROM %s WHERE key=?' % table,
-                                             (key,)).fetchone()[0]
-                    if apply:
-                        self.db.execute('DELETE FROM %s WHERE key=?' % table, (key,))
+        # (5.46.1) Read on a reader of its own and dropped in pieces: all of
+        # it was one turn of the lock - every reading of the house walked in
+        # Python, two million rows, 1.6 s with every reader and the writer
+        # behind it (and 1.5 s again when applied), and a bookkeeping key
+        # deleted by its name alone, which no index of the table has.
+        pace = self._pacer()
+        for table in ('samples', 'samples_hourly'):
+            for device, key in [(r[0], r[1] or '') for r in
+                                self._read_rows('SELECT DISTINCT device, key FROM %s' % table)]:
+                if not NOISE_KEY.search(key):
+                    continue
+                if apply:
+                    noise += self._drop_series(table, device, key, None, pace)
+                else:
+                    noise += self._read_rows('SELECT COUNT(*) FROM %s WHERE device=? AND key=?' % table,
+                                             (device, key))[0][0]
             # The same value stored over and over - by a gateway poll, by a
             # plug's own counters, by a modem reporting its IMEI every few
             # seconds. On a real house a fortnight old this was eighteen per
@@ -7572,28 +7745,27 @@ class Storage(object):
             # first and its last - which is what a flat line on a chart is
             # made of - plus one anchor every so often so a long flat stretch
             # still has points in it.
-            pairs = self.db.execute(
-                "SELECT DISTINCT device, key FROM samples").fetchall()
-            for device, key in [(r[0], r[1]) for r in pairs]:
-                if NOISE_KEY.search(key):
-                    continue
-                drop, last = [], None
-                for r in self.db.execute(
-                        'SELECT ts, value FROM samples WHERE device=? AND key=? ORDER BY ts',
-                        (device, key)):
-                    if last is not None and r[1] == last[0] and r[0] - last[1] < GATEWAY_ANCHOR_S:
-                        drop.append(r[0])
-                    else:
-                        last = (r[1], r[0])
-                flat += len(drop)
-                if apply and drop:
-                    for i in range(0, len(drop), 400):
-                        chunk = drop[i:i + 400]
-                        self.db.execute(
-                            'DELETE FROM samples WHERE device=? AND key=? AND ts IN (%s)'
-                            % ','.join('?' * len(chunk)), [device, key] + chunk)
-            if apply:
-                self.db.commit()
+        pairs = self._read_rows("SELECT DISTINCT device, key FROM samples")
+        for device, key in [(r[0], r[1]) for r in pairs]:
+            if NOISE_KEY.search(key or ''):
+                continue
+            drop, last = [], None
+            for r in self._read_rows('SELECT ts, value FROM samples WHERE device=? AND key=? ORDER BY ts',
+                                     (device, key)):
+                if last is not None and r[1] == last[0] and r[0] - last[1] < GATEWAY_ANCHOR_S:
+                    drop.append((device, key, r[0], r[1]))
+                else:
+                    last = (r[1], r[0])
+            flat += len(drop)
+            if apply and drop:
+                for i in range(0, len(drop), 1000):
+                    with self.lock:
+                        # the value as it was read: a row the writer has
+                        # written over since (the sample interval's update
+                        # of the newest one) is not a repeat any more
+                        self._bulk('DELETE FROM samples WHERE device=? AND key=? AND ts=? AND value IS ?',
+                                   drop[i:i + 1000])
+                    pace()
         before = self.stats().get('bytes') or 0
         if apply:
             self._stats_cache = None
@@ -8126,20 +8298,23 @@ class Storage(object):
 
     AGGREGATE_CHUNK = 5000       # rows a retention delete takes under one turn of the lock (5.44)
 
-    def _drop_older(self, table, before):
+    def _drop_older(self, table, before, chunk=None):
         """DELETE FROM table WHERE ts < before, a few thousand rows at a time
         with the lock let go in between (5.44): a retention shortened in
         Settings (two years of events down to one month) went in one
         statement under the lock, every reader and the writer behind it for
         as long as half a million rows took."""
         gone = 0
+        chunk = int(chunk or self.AGGREGATE_CHUNK)
+        pace = self._pacer()
         while True:
             with self.lock:
                 n = self.db.execute('DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE ts<? LIMIT ?)'
-                                    % (table, table), (before, self.AGGREGATE_CHUNK)).rowcount or 0
+                                    % (table, table), (before, chunk)).rowcount or 0
             gone += max(0, n)
-            if n < self.AGGREGATE_CHUNK:
+            if n < chunk:
                 return gone
+            pace()          # (5.46.1) and a breath between the pieces: see _pacer
 
     def aggregate(self):
         """Roll full-resolution rows older than two hours into hourly buckets.
@@ -8169,26 +8344,14 @@ class Storage(object):
         # be folded again from its second half and replace the whole hour
         drop_before = ((now - full_days * 86400) // 3600) * 3600
         series = None
+        pace = self._pacer()
         while True:
             with self.lock:
                 series = self._series_after(series)
-                if series is None:
-                    break
-                series = (series[0], series[1])
-                self.db.execute('BEGIN')
-                try:
-                    cur = self.db.execute(
-                        'INSERT OR REPLACE INTO samples_hourly (ts,device,key,n,avg,min,max) '
-                        'SELECT (ts/3600)*3600, device, key, COUNT(*), AVG(value), MIN(value), MAX(value) '
-                        'FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? GROUP BY ts/3600',
-                        series + (start, cutoff))
-                    done += max(0, cur.rowcount or 0)
-                    self.db.execute('DELETE FROM samples WHERE device=? AND key=? AND ts<?',
-                                    series + (drop_before,))
-                    self.db.execute('COMMIT')
-                except Exception:
-                    self.db.execute('ROLLBACK')
-                    raise
+            if series is None:
+                break
+            series = (series[0], series[1])
+            done += self._fold_series(series, start, cutoff, drop_before, pace)
         self._drop_older('samples_hourly', now - hourly_days * 86400)
         self._drop_older('events', now - event_days * 86400)
         # The two that came with the one-tap roads. Nothing trimmed
@@ -8212,19 +8375,23 @@ class Storage(object):
                 # thousands, every one of them held in memory as well. They go
                 # when the address is neither on the list nor anywhere in the
                 # history, which is exactly when nothing can ask about it.
-                still = set()
-                for row in self.db.execute('SELECT ip FROM blocked'):
-                    still.add(str(row[0]))
-                for row in self.db.execute('SELECT DISTINCT ip FROM block_events'):
-                    still.add(str(row[0]))
+                # (5.46.1) each address asked of the two indexes, rather than
+                # every address of the whole story read into a set: DISTINCT
+                # over 100 000 rows of it, inside this transaction, every hour
                 stale = []
                 for row in self.db.execute(
                         "SELECT key FROM meta WHERE key LIKE 'blocked!_%' ESCAPE '!' "
-                        "OR key LIKE 'ids!_about!_%' ESCAPE '!'"):
+                        "OR key LIKE 'ids!_about!_%' ESCAPE '!'").fetchall():
                     key = str(row[0])
                     who = key.split('_', 2)[-1]
-                    if who and who not in still:
-                        stale.append((key,))
+                    if not who:
+                        continue
+                    if self.db.execute('SELECT 1 FROM blocked WHERE ip=?', (who,)).fetchone() is not None:
+                        continue
+                    if self.db.execute('SELECT 1 FROM block_events WHERE ip=? LIMIT 1',
+                                       (who,)).fetchone() is not None:
+                        continue
+                    stale.append((key,))
                 if stale:
                     self.db.executemany('DELETE FROM meta WHERE key=?', stale)
                     for key, in stale:
@@ -8237,6 +8404,51 @@ class Storage(object):
                 raise
         return done
 
+    def _fold_series(self, series, start, cutoff, drop_before, pace):
+        """One series' readings from `start` to `cutoff` folded into hours,
+        and those before `drop_before` dropped (5.46.1). A few thousand
+        readings to a turn of the lock, each turn whole hours folded and
+        dropped in one transaction: a fold interrupted part way leaves every
+        hour either folded and gone or untouched, and folding it again from
+        `start` folds only what is left. In one turn, a series never folded
+        before (the first start, a restore, Erase history) was the whole
+        fortnight - 40 000 readings of a socket, every reader and the writer
+        behind them, and again for the next series. Hourly rows made."""
+        done = 0
+        at = start
+        while at < cutoff:
+            with self.lock:
+                row = self.db.execute('SELECT ts FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? '
+                                      'ORDER BY ts LIMIT 1', series + (at, cutoff)).fetchone()
+                if row is None:
+                    break
+                lo = max(at, (int(row[0]) // 3600) * 3600)
+                far = self.db.execute('SELECT ts FROM samples WHERE device=? AND key=? AND ts>=? '
+                                      'ORDER BY ts LIMIT 1 OFFSET ?',
+                                      series + (lo, self.AGGREGATE_CHUNK)).fetchone()
+                hi = cutoff if far is None else min(cutoff, (int(far[0]) // 3600 + 1) * 3600)
+                self.db.execute('BEGIN')
+                try:
+                    cur = self.db.execute(
+                        'INSERT OR REPLACE INTO samples_hourly (ts,device,key,n,avg,min,max) '
+                        'SELECT (ts/3600)*3600, device, key, COUNT(*), AVG(value), MIN(value), MAX(value) '
+                        'FROM samples WHERE device=? AND key=? AND ts>=? AND ts<? GROUP BY ts/3600',
+                        series + (lo, hi))
+                    done += max(0, cur.rowcount or 0)
+                    if lo < drop_before:
+                        self.db.execute('DELETE FROM samples WHERE device=? AND key=? AND ts>=? AND ts<?',
+                                        series + (lo, min(hi, drop_before)))
+                    self.db.execute('COMMIT')
+                except Exception:
+                    self.db.execute('ROLLBACK')
+                    raise
+            at = hi
+            pace()
+        # what was folded before (or lies past the fold, with no fortnight
+        # kept at all) and is older than the fortnight
+        self._drop_series('samples', series[0], series[1], drop_before, pace)
+        return done
+
     def forget_devices(self, ids):
         """Take a handful of devices out in one go. reset('device') is the
         thorough version, with a vacuum behind it; this is for housekeeping,
@@ -8245,11 +8457,12 @@ class Storage(object):
         if not ids:
             return 0
         marks = ','.join('?' for _ in ids)
+        # (5.46.1) their rows in pieces, the lock let go between them: one
+        # statement per table was every row of every one of them in one go
+        for device_id in ids:
+            self._drop_device_rows(device_id)
         with self.lock:
-            for table in ('samples', 'samples_hourly', 'events', 'snapshots'):
-                self.db.execute('DELETE FROM %s WHERE device IN (%s)' % (table, marks), ids)
             self.db.execute('DELETE FROM devices WHERE id IN (%s)' % marks, ids)
-            self.db.commit()
         gone = set(ids)
         for device_id in ids:
             self._snap_cache.pop(device_id, None)
@@ -8277,14 +8490,18 @@ class Storage(object):
             elif scope == 'events':
                 self.db.execute('DELETE FROM events')
             elif scope == 'device' and device_id:
-                for table in ('samples', 'samples_hourly', 'events', 'snapshots'):
-                    self.db.execute('DELETE FROM %s WHERE device=?' % table, (device_id,))
-                self.db.execute('DELETE FROM devices WHERE id=?', (device_id,))
+                pass                       # below, in pieces (5.46.1)
             else:
                 raise ValueError('unknown scope %r' % scope)
             self.last_sample.clear()
             self.last_written.clear()      # or a flat series is not written again for a quarter of an hour
-        self._forget_device()            # rows and whole tables just went away
+        if scope == 'device' and device_id:
+            # one device's rows a few thousand at a time, the lock let go in
+            # between: in one statement a socket's fortnight held it 200 ms
+            self._drop_device_rows(device_id)
+            with self.lock:
+                self.db.execute('DELETE FROM devices WHERE id=?', (device_id,))
+        self._forget_device()           # rows and whole tables just went away
         self._stats_cache = None         # the counts changed; refreshed below, before the VACUUM
         if scope == 'device' and device_id:
             for cache in (self._snap_cache, self._actions_cache, self._last_action):
@@ -8319,8 +8536,14 @@ class Storage(object):
             self._warm_actions()
         self.stats(wait=True)            # the header's counts, while the file is still free
         try:
-            self.db.execute('VACUUM')
-            self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')   # or the file still looks as big
+            # (5.46.1) under the lock, as every use of the shared connection
+            # (see drop_stale): run bare, it ran beside the writer thread's
+            # own statements - and a VACUUM that met the writer's batch in
+            # the middle of its transaction was refused ("cannot VACUUM from
+            # within a transaction") and quietly not done
+            with self.lock:
+                self.db.execute('VACUUM')
+                self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')   # or the file still looks as big
         except sqlite3.OperationalError:
             pass
         self._stats_cache = None
@@ -17100,10 +17323,10 @@ class Daemon(object):
             if not days or days <= 0:
                 continue
             cutoff = int(time.time() - days * 86400)
-            with self.store.lock:
-                gone = self.store.db.execute('DELETE FROM samples WHERE device=? AND ts<?',
-                                             (p.device_id, cutoff)).rowcount
-                self.store.db.commit()
+            # (5.46.1) key by key, by the table's own key, in pieces: "device
+            # and ts" alone read every reading the socket has, under the
+            # lock, every hour - and dropped the first days in one go
+            gone = self.store._drop_device_rows(p.device_id, ('samples',), before=cutoff)
             if gone:
                 log('%s: %d old sample(s) dropped (retain %g d)' % (p.name, gone, days), 'debug')
 
@@ -31095,7 +31318,7 @@ class Daemon(object):
                 proof = json.loads(self.store.get_meta('blocked_proof_%s' % ip) or '[]')
             except (ValueError, TypeError):
                 proof = []
-            story = [h for h in self.store.block_events(60, text=ip)[0] if h.get('ip') == ip]
+            story = self.store.block_events_of([ip], 60)       # see block_events_of
             out.append(dict(m, ids=self._ids_about(ip),
                             evidence=[{'when': w, 'kind': k, 'words': self.ANOMALY_WORDS.get(k, k),
                                        'detail': dd} for w, k, dd in proof[-6:]],
@@ -31120,10 +31343,11 @@ class Daemon(object):
         for one in entries:
             plain = one['address'].split('/')[0]
             mine = here.get(plain) or here.get(one['address']) or {}
-            story, _more, _total = self.store.block_events(200, text=plain)
-            # the search matches the text anywhere - 1.2.3.4 finds 11.2.3.45
-            # and a reason that mentions it - so only this address's own lines
-            story = [h for h in story if str(h.get('ip') or '').split('/')[0] in (plain, one['address'])]
+            # only this address's own lines, by the index on the address
+            # (5.46.1): a search for the text matched it anywhere - 1.2.3.4
+            # found 11.2.3.45 and a reason that mentions it - and read the
+            # whole story under the lock once for every entry on the router
+            story = self.store.block_events_of([plain, one['address']], 200, prefix=plain)
             # What earned it, as it was at the moment: kept with the block.
             # What it has done since is a different thing and is said so.
             proof = []
@@ -31190,7 +31414,7 @@ class Daemon(object):
                                    'detail': det}
                                   for w, k, det in list(self._anomaly.get(r['ip']) or [])[-8:]],
                         story=[{'ts': h['ts'], 'what': h['what'], 'why': h['why'], 'by': h['by']}
-                               for h in self.store.block_events(200, text=r['ip'])[0][:8]])
+                               for h in self.store.block_events_of([r['ip']], 8)])
                    for r in here.values()
                    if self.same_address(r['ip']) not in carried and not r.get('spared')]
         return {'list': self.mikrotik_name(CONFIG.get('mikrotik_list')),
@@ -31226,7 +31450,23 @@ class Daemon(object):
         # six of these, and every one of them read the router before any of
         # them had written to it, so each decided the same address was missing
         # and added it. The router answered "already have such entry" to five.
-        with self._mikrotik_lock:
+        # (5.46.1) ...and one waiting is enough. Every change starts one of
+        # these, and with the router slow or away (each talk waits out its
+        # timeout) they queued on the lock by the dozen - a scanner read out
+        # of the proxy log is a dozen blocks - each to run a whole sync of
+        # its own once its turn came. The one waiting reads the list when it
+        # gets the router, so it carries every change made before that.
+        guard = self.__dict__.setdefault('_mikrotik_wait_guard', threading.Lock())
+        with guard:
+            if getattr(self, '_mikrotik_waiting', False):
+                return
+            self._mikrotik_waiting = True
+        try:
+            self._mikrotik_lock.acquire()
+        finally:
+            with guard:
+                self._mikrotik_waiting = False
+        try:
             try:
                 self.mikrotik_sync('a change here')
                 self._router_said = False
@@ -31242,6 +31482,8 @@ class Daemon(object):
                                 'refused here, but nothing else on the network is refusing them.'
                                 % str(e)[:120], 'warn', dedup='router-out-of-step',
                                 title='The router is out of step', about='router')
+        finally:
+            self._mikrotik_lock.release()
 
     def blocked_mikrotik(self):
         """The same list as lines a Mikrotik takes, so the firewall can be
