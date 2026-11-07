@@ -5500,6 +5500,9 @@ class StorageError(Exception):
     pass
 
 
+_NO_ROW = object()              # Storage.device: not in memory (None is "no such device")
+
+
 class Storage(object):
     def __init__(self, path=None):
         self.path = Path(path) if path else db_path()
@@ -5691,47 +5694,58 @@ class Storage(object):
         cached = self._dev_cache.get(dev['id'])
         if cached is not None and not cached.get('removed') and self._same_cached(cached, dev):
             return 'known'
+        wrote = False
         with self.lock:
-            row = self.db.execute('SELECT * FROM devices WHERE id=?', (dev['id'],)).fetchone()
-            if row is not None and not row['removed'] and self._same_device(row, dev):
-                return 'known'               # nothing to write, nothing to forget
-            self._forget_device(dev['id'])   # every path below changes the row
-            if row is None:
+            try:
+                row = self.db.execute('SELECT * FROM devices WHERE id=?', (dev['id'],)).fetchone()
+                if row is not None and not row['removed'] and self._same_device(row, dev):
+                    return 'known'               # nothing to write, nothing to forget
+                self._forget_device(dev['id'])   # every path below changes the row
+                wrote = True
+                if row is None:
+                    self.db.execute(
+                        'INSERT INTO devices (id,name,source,kind,model,vendor,description,'
+                        'exposes,first_seen,last_seen,removed) VALUES (?,?,?,?,?,?,?,?,?,?,0)',
+                        (dev['id'], dev['name'], dev['source'], dev.get('kind'), dev.get('model'),
+                         dev.get('vendor'), dev.get('description'),
+                         json.dumps(dev.get('exposes') or {}), now, dev.get('last_seen')))
+                    # a name given by hand on the old machine, waiting in a
+                    # restored export for this device to turn up here
+                    pending = self.get_meta('pending_aliases')
+                    if pending:
+                        try:
+                            waiting = json.loads(pending)
+                        except ValueError:
+                            waiting = {}
+                        if isinstance(waiting, dict) and dev['id'] in waiting:
+                            self.db.execute('UPDATE devices SET alias=? WHERE id=?',
+                                            (str(waiting.pop(dev['id']))[:80] or None, dev['id']))
+                            self.set_meta('pending_aliases', json.dumps(waiting))
+                    return 'new'
+                changed = 'renamed' if row['name'] != dev['name'] else None
                 self.db.execute(
-                    'INSERT INTO devices (id,name,source,kind,model,vendor,description,'
-                    'exposes,first_seen,last_seen,removed) VALUES (?,?,?,?,?,?,?,?,?,?,0)',
-                    (dev['id'], dev['name'], dev['source'], dev.get('kind'), dev.get('model'),
-                     dev.get('vendor'), dev.get('description'),
-                     json.dumps(dev.get('exposes') or {}), now, dev.get('last_seen')))
-                # a name given by hand on the old machine, waiting in a
-                # restored export for this device to turn up here
-                pending = self.get_meta('pending_aliases')
-                if pending:
-                    try:
-                        waiting = json.loads(pending)
-                    except ValueError:
-                        waiting = {}
-                    if isinstance(waiting, dict) and dev['id'] in waiting:
-                        self.db.execute('UPDATE devices SET alias=? WHERE id=?',
-                                        (str(waiting.pop(dev['id']))[:80] or None, dev['id']))
-                        self.set_meta('pending_aliases', json.dumps(waiting))
-                return 'new'
-            changed = 'renamed' if row['name'] != dev['name'] else None
-            self.db.execute(
-                'UPDATE devices SET name=?,source=?,kind=COALESCE(?,kind),model=COALESCE(?,model),'
-                'vendor=COALESCE(?,vendor),description=COALESCE(?,description),'
-                'exposes=CASE WHEN ? THEN ? ELSE exposes END,removed=0 WHERE id=?',
-                (dev['name'], dev['source'], dev.get('kind'), dev.get('model'), dev.get('vendor'),
-                 dev.get('description'), 1 if dev.get('exposes') else 0,
-                 json.dumps(dev.get('exposes') or {}), dev['id']))
-            if changed:
-                return changed
-            return 'known'
+                    'UPDATE devices SET name=?,source=?,kind=COALESCE(?,kind),model=COALESCE(?,model),'
+                    'vendor=COALESCE(?,vendor),description=COALESCE(?,description),'
+                    'exposes=CASE WHEN ? THEN ? ELSE exposes END,removed=0 WHERE id=?',
+                    (dev['name'], dev['source'], dev.get('kind'), dev.get('model'), dev.get('vendor'),
+                     dev.get('description'), 1 if dev.get('exposes') else 0,
+                     json.dumps(dev.get('exposes') or {}), dev['id']))
+                if changed:
+                    return changed
+                return 'known'
+            finally:
+                # ...and the row as it now is read back into memory
+                # while the lock is still in hand: forgotten, the next to ask
+                # for it was a sensor's report or a switch on its way to a
+                # light, waiting behind whatever held the database next
+                if wrote:
+                    self._reload_device(dev['id'])
 
     def mark_removed(self, device_id):
         with self.lock:
             self.db.execute('UPDATE devices SET removed=1 WHERE id=?', (device_id,))
-        self._forget_device(device_id)
+            self._forget_device(device_id)
+            self._reload_device(device_id)
 
     def touch_device(self, device_id, ts):
         self._defer(self._write_touch, device_id, ts)
@@ -5781,21 +5795,39 @@ class Storage(object):
     def device(self, device_id):
         """Kept in memory: this is read on the path a person is waiting on
         (a switch resolves its target here), and the row changes rarely."""
-        if device_id in self._dev_cache:
-            row = self._dev_cache[device_id]
+        # one look, not "in" and then [ ]: the copy may be swapped whole or
+        # have this row taken out on another thread between the two
+        row = self._dev_cache.get(device_id, _NO_ROW)
+        if row is not _NO_ROW:
             return dict(row) if row is not None else None
-        with self.lock:
-            r = self.db.execute('SELECT * FROM devices WHERE id=?', (device_id,)).fetchone()
-        if r is None:
-            self._dev_cache[device_id] = None
-            return None
+        row = self._reload_device(device_id)
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _device_row(r):
         d = dict(r)
         try:
             d['exposes'] = json.loads(d.get('exposes') or '{}')
         except ValueError:
             d['exposes'] = {}
-        self._dev_cache[device_id] = d
-        return dict(d)
+        return d
+
+    def _reload_device(self, device_id):
+        """One row read into memory as it is now (None: there is none).
+
+        Put in its place under the lock it was read under: put there after
+        letting go, a write and its own read-back landing in between were
+        undone by this older copy, and kept until the next change of the row.
+        Every writer of a row calls this before it lets go of the lock, so the
+        copy in memory is never cold: forgotten, the next to ask for the row
+        was a sensor's report (its name for an event), a rule's label or a
+        Zigbee switch on its way to a light, each waiting on the database
+        behind a backup, a VACUUM or a sweep writing thousands of rows."""
+        with self.lock:
+            r = self.db.execute('SELECT * FROM devices WHERE id=?', (device_id,)).fetchone()
+            row = self._device_row(r) if r is not None else None
+            self._dev_cache[device_id] = row
+        return row
 
     @staticmethod
     def _same_device(row, dev):
@@ -5939,11 +5971,17 @@ class Storage(object):
         self._dev_list = None
         self._dev_forgets = self.__dict__.get('_dev_forgets', 0) + 1
         if device_id is None:
-            self._dev_cache.clear()
-            # ...and read back at once, on a thread of its own, rather than one
-            # row at a time by whatever asks next - which after a restore or a
-            # sweep of stale devices was a sensor on its way to a light
-            threading.Thread(target=self._warm_devices, name='warm-devices', daemon=True).start()
+            # ...and read back at once, here, by whoever changed the rows - not
+            # emptied and left to a thread of its own: that thread asked for
+            # the lock like anybody else, and the VACUUM an erase starts the
+            # moment it lets go got it first. Every report in the house then
+            # read its device's row on the broker's thread behind the VACUUM
+            # (a sensor's name for its events): no report and no light for as
+            # long as the VACUUM took. Swapped whole, so a reader never finds
+            # it empty in between.
+            with self.lock:
+                rows = self.db.execute('SELECT * FROM devices').fetchall()
+                self._dev_cache = {r['id']: self._device_row(r) for r in rows}
         else:
             self._dev_cache.pop(device_id, None)
 
@@ -5970,7 +6008,8 @@ class Storage(object):
     def set_alias(self, device_id, alias):
         with self.lock:
             self.db.execute('UPDATE devices SET alias=? WHERE id=?', (alias or None, device_id))
-        self._forget_device(device_id)
+            self._forget_device(device_id)
+            self._reload_device(device_id)
 
     # -- readings -------------------------------------------------------------
     def store_sample(self, device_id, ts, values):
@@ -10738,6 +10777,9 @@ class Daemon(object):
             self.store.last_written.clear()
         self.store._forget_device(old_id)
         self.store._forget_device(new_id)
+        # read back now, not by the next report of the device on the broker's thread
+        self.store._reload_device(old_id)
+        self.store._reload_device(new_id)
         # its snapshot row went with it (above), and so does the copy in
         # memory: a device the copy has not got is taken to have no row
         moved = self.store._snap_cache.pop(old_id, None)
@@ -10803,34 +10845,87 @@ class Daemon(object):
 
     HEAT_KEYS = ('current_heating_setpoint', 'occupied_heating_setpoint', 'system_mode')
 
-    def _heat_watch(self, device_id, payload):
-        """A head has just said what it is set to. If the house is told to put
-        its setting back at once, this is the moment - waiting for the next
-        half-minute round would leave a hand-turned knob in charge for as long
-        as thirty seconds, which is not what "at once" means to anybody."""
-        if not any(k in payload for k in self.HEAT_KEYS):
-            return
-        _, at_once = self.heating_enforce()
-        if not at_once:
-            return
-        for room in (self.heating_state().get('rooms') or []):
-            if room.get('mode') == 'manual':
-                continue
-            if any(device_id in str(v.get('target') or '') for v in (room.get('valves') or [])):
-                # one at a time: most reports of a head carry its setpoint, and
-                # each started a run of its own - several racing over what was
-                # last told to which head, and telling it twice
-                if getattr(self, '_heat_now_running', False):
-                    return
-                self._heat_now_running = True
+    # what a window or a door says about itself, as room_window_open reads it
+    WINDOW_KEYS = ('contact', 'window', 'window_open', 'open_window')
 
-                def apply_now():
-                    try:
+    def _heat_watch(self, device_id, payload, before=None):
+        """A head has just said what it is set to, or a window has opened or
+        shut. If the house is told to put a head's setting back at once, this
+        is the moment - waiting for the next half-minute round would leave a
+        hand-turned knob in charge for as long as thirty seconds, which is not
+        what "at once" means to anybody - and a window that opens shuts its
+        room's heads now, not up to half a minute later.
+
+        Only noted here: this runs on the broker's own thread, and working out
+        the rooms (every room, every valve, the device list - read from the
+        database after any change to a device row, behind whatever held it)
+        is the heating worker's to do, not the thread every report and every
+        press in the house goes through."""
+        if not isinstance(payload, dict):
+            return
+        why = None
+        if any(k in payload for k in self.HEAT_KEYS):
+            why = 'head'
+        elif any(k in payload and (before or {}).get(k) != payload[k] for k in self.WINDOW_KEYS):
+            why = 'window'
+        if why is None or not (self.store.meta_json('rooms') or []):
+            return
+        pending = self.__dict__.setdefault('_heat_pending', {})
+        if pending.get(device_id) != 'head':     # a head's own word is the stronger reason
+            pending[device_id] = why
+        wake = self.__dict__.get('_heat_wake')
+        if wake is None:
+            wake = self._heat_wake = threading.Event()
+            threading.Thread(target=self._heat_worker, name='heating-now', daemon=True).start()
+        wake.set()
+
+    def _heat_worker(self):
+        """The heating's own thread for what _heat_watch noted: one at a time,
+        so two reports of a head never race over what was last told to which."""
+        while not self._stop.is_set():
+            self._heat_wake.wait(1.0)
+            self._heat_wake.clear()
+            pending = self.__dict__.get('_heat_pending') or {}
+            while pending:
+                try:
+                    device_id = next(iter(pending))
+                    why = pending.pop(device_id)
+                except (StopIteration, KeyError, RuntimeError):
+                    break
+                try:
+                    if self._heat_wanted_now(device_id, why):
+                        # every other device noted meanwhile is answered by
+                        # this same round
+                        pending.clear()
+                        self._heat_state_cache = None    # the report just taken in is in it
                         self.heating_apply()
-                    finally:
-                        self._heat_now_running = False
-                threading.Thread(target=apply_now, name='heating-now', daemon=True).start()
-                return
+                except Exception as e:                    # noqa: BLE001
+                    log('the heating, after %s spoke: %s' % (device_id, e), 'warn')
+
+    def _heat_wanted_now(self, device_id, why):
+        """Does what this device said call for a round of the heating now?"""
+        if why == 'head':
+            _, at_once = self.heating_enforce()
+            if not at_once:
+                return False
+            for room in (self.heating_state().get('rooms') or []):
+                if room.get('mode') == 'manual':
+                    continue
+                if any(device_id in str(v.get('target') or '') for v in (room.get('valves') or [])):
+                    return True
+            return False
+        cfg = self.heating_config()
+        if not cfg.get('enabled'):
+            return False
+        for room in self.rooms():
+            settings = (cfg.get('rooms') or {}).get(room['id']) or {}
+            if not settings.get('window_stop', True) or settings.get('mode') == 'manual':
+                continue
+            chosen = settings.get('windows') or []
+            ids = [self.store.resolve(w) or w for w in chosen] if chosen else self.room_member_ids(room['id'])
+            if device_id in ids:
+                return True
+        return False
 
     # What a device says that needs nobody to have written a rule for it:
     # water on the floor, smoke, a case prised open. Only rules could tell
@@ -10890,7 +10985,11 @@ class Daemon(object):
         """Tell the edges of what a device reports - a leak starting and
         ending, a battery going under a line, a room leaving its range - once
         each, never every report that repeats them."""
-        label = self.device_label(device_id) or name
+        # what the device is called is asked only when there is something to
+        # say: asked for every report, it was the one look at the device rows
+        # on the broker's thread between a report and the next one
+        def label_of():
+            return self.device_label(device_id) or name
         for key, (about, level, bad, good) in self.DANGER_KEYS.items():
             if key not in said:
                 continue
@@ -10898,6 +10997,7 @@ class Daemon(object):
             was = self._truthy(before[key]) if key in before else None
             if on == was or (not on and was is None):
                 continue
+            label = label_of()
             self.say_event('device', bad if on else good, level if on else 'info', device_id, about=about,
                            title=('%s: %s' % (self.DANGER_TITLES[about], label)) if on else '%s: %s' % (label, good),
                            message='%s: %s' % (label, bad if on else good),
@@ -10936,6 +11036,7 @@ class Daemon(object):
             if stage > had:
                 told[device_id] = stage
                 words = ('battery %d%%' % battery) if battery is not None else 'says its battery is low'
+                label = label_of()
                 self.say_event('device', words + (' - change it soon' if stage == 2 else ''),
                                'crit' if stage == 2 else 'warn', device_id, about='battery',
                                title='Battery %s: %s' % ('nearly flat' if stage == 2 else 'low', label),
@@ -10972,11 +11073,11 @@ class Daemon(object):
             if gone_out and not out.get(key):
                 out[key] = True
                 self.say_event('device', words, 'warn', device_id, about='climate',
-                               title='Out of range: %s' % label, dedup='climate|%s|%s|out' % key)
+                               title='Out of range: %s' % label_of(), dedup='climate|%s|%s|out' % key)
             elif back_in and out.get(key):
                 out[key] = False
                 self.say_event('device', 'back within its range (%s)' % words.split(',')[0], 'info', device_id,
-                               about='climate', title='Back in range: %s' % label,
+                               about='climate', title='Back in range: %s' % label_of(),
                                dedup='climate|%s|%s|in' % key)
 
     def record(self, device_id, name, payload):
@@ -11008,7 +11109,6 @@ class Daemon(object):
         if device_id == 'gw:coordinator' and self.store.device(device_id) is None:
             self.store.upsert_device({'id': device_id, 'name': name, 'source': 'gateway',
                                       'kind': 'Coordinator', 'vendor': None, 'last_seen': now})
-        self._heat_watch(device_id, payload)
         if device_id in self._binding_waiting:
             # it is awake for a second or two: now or not at all
             threading.Thread(target=self.maybe_reconfigure, args=(device_id,),
@@ -11054,6 +11154,8 @@ class Daemon(object):
         before = entry.get('payload') or {}
         entry['payload'] = merged
         entry['ts'] = heard_at or now
+        # after the report is in the house's memory: the heating reads it there
+        self._heat_watch(device_id, payload, before)
         try:
             self.watch_states(device_id, name, before, flat)
         except Exception as e:
@@ -31577,7 +31679,10 @@ class Daemon(object):
         """
         rest = [dict(t, used=int(time.time()), uses=(t.get('uses') or 0) + 1, way=way)
                 if t['id'] == found['id'] else t for t in self.taps()]
-        self.store.set_meta('taps', json.dumps(rest))
+        # on the writer's queue: the copy in memory is the new one at once, and
+        # the press's answer - the watch on a wrist waiting for its tick - no
+        # longer stands behind a backup or a sweep writing thousands of rows
+        self.store.set_meta('taps', json.dumps(rest), deferred=True)
 
     def tap_state(self, targets):
         """Whether the things a link acts on are on, off, or a mix of both.
