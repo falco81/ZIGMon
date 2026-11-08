@@ -651,6 +651,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/osup');
         exit;
     }
+    if ($what === 'selinux' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // SELinux on this machine: the mode, what zigmon needs of it, what it
+        // refused - an administrator's, behind the sign-in in the daemon
+        zigmon_relay('/api/selinux');
+        exit;
+    }
     if ($what === 'webproxy' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // the way out to the web through a proxy (5.35): how it is set, the
         // password only as there or not - an administrator's, in the daemon
@@ -1009,7 +1015,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do',
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do',
                        'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
@@ -1065,6 +1071,7 @@ if (isset($_GET['api'])) {
                   'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy',
                   'acmepush-do' => '/api/acmepush',
                   'osroots-do' => '/api/osroots',   /* the system's trusted roots: check, add, remove, refresh */
+                  'selinux-do' => '/api/selinux',   /* a look, a step, the report: root does it */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -5304,6 +5311,44 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .hl-panel .hp-core-bot{font-size:11px;white-space:nowrap;gap:4px}
   .hl-panel .hp-core-top{white-space:nowrap}
   /* ---- the end of the performance meter (5.43) ---- */
+  /* ---- Settings - Security - SELinux (otp 1.0.233's card, one machine) ---- */
+  .se-card .se-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .se-card .se-lede{max-width:900px}
+  .se-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:14px;margin-top:12px}
+  .se-node{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:14px 16px;display:flex;
+           flex-direction:column;gap:10px;min-width:0;max-width:880px}
+  .se-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .se-name{display:flex;align-items:center;gap:8px;font-size:15px;min-width:0}
+  .se-mode{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:4px 11px;border-radius:999px;
+           border:1px solid var(--line);background:var(--panel);color:var(--tx-dim)}
+  .se-enforcing .se-mode{color:var(--ok);border-color:rgba(63,185,80,.5);background:var(--ok-bg)}
+  .se-permissive .se-mode{color:var(--warn);border-color:rgba(210,153,34,.5);background:var(--warn-bg)}
+  .se-next{margin:0;font-size:13px;color:var(--warn)}
+  .se-wait{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--info)}
+  .se-wait .se-spin{width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--info);border-radius:50%;
+                    animation:upspin .9s linear infinite;flex:0 0 auto}
+  .se-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+  .se-row{display:flex;gap:10px;align-items:flex-start;padding:8px 12px;border-bottom:1px solid var(--line);font-size:13.5px}
+  .se-row:last-child{border-bottom:0}
+  .se-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:0 0 auto;background:var(--warn)}
+  .se-dot.ok{background:var(--ok)} .se-dot.bad{background:var(--crit)}
+  .se-row-t{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .se-what{color:var(--tx-dim);overflow-wrap:anywhere;font-size:12.5px}
+  .se-avc summary{cursor:pointer;font-size:13.5px}
+  .se-avc-wrap{overflow-x:auto}
+  .se-avc-t{width:100%;border-collapse:collapse;margin-top:6px}
+  .se-avc-t td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere;font-size:12.5px}
+  .se-avc-t td.se-n{white-space:nowrap;text-align:right;color:var(--crit);font-family:ui-monospace,Menlo,Consolas,monospace}
+  .se-verdict{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);
+              background:var(--panel);font-size:13.5px}
+  .se-verdict.good{border-color:rgba(63,185,80,.5);background:var(--ok-bg)}
+  .se-verdict.ready{border-color:rgba(88,166,255,.5);background:var(--info-bg)}
+  .se-verdict.bad{border-color:rgba(210,153,34,.5);background:var(--warn-bg)}
+  .se-said{margin:0;list-style:none;padding:8px 12px;display:flex;flex-direction:column;gap:2px;border-radius:10px;
+           background:var(--ok-bg);color:var(--ok);font-size:13px}
+  .se-err{margin:0;padding:8px 12px;border-radius:10px;background:var(--crit-bg);color:var(--crit);font-size:13px}
+  .se-btns{margin-top:auto;padding-top:4px}
+  .se-rep{margin:0 0 8px}
 </style>
 </head>
 <body class="app-shell">
@@ -5759,6 +5804,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="sec-front" data-icon="router">Front server &amp; router</button>
     <button type="button" data-sec="sec-access" data-icon="lock">Access</button>
     <button type="button" data-sec="sec-firewall" data-icon="net">Firewall</button>
+    <button type="button" data-sec="sec-selinux" data-icon="selinux" title="How SELinux guards this machine, what zigmon needs of it and what it refused - and the way to enforcing, a step at a time. Nothing changes unless asked.">SELinux</button>
     <div class="ctl-group">Server</div>
     <button type="button" data-sec="sys-network" data-icon="net">Network</button>
     <button type="button" data-sec="sys-proxy" data-icon="globe" title="An HTTP proxy for what zigmon asks of the web - each use chosen by itself, none by default. The house's own devices never go through it.">Proxy</button>
@@ -6299,6 +6345,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <button class="btn cmd primary needs-unlock" id="fw-save" type="button">Save the firewall</button>
         <span class="muted small" id="fw-note" style="align-self:center"></span>
       </div>
+    </div>
+    <!-- SELinux (otp 1.0.233 - 1.0.265, one machine): the mode, what zigmon
+         needs of it, what it refused, and the steps to enforcing - each one
+         asked of root's helper, nothing done by itself. Drawn by drawSelinux. -->
+    <div class="card full ot se-card" data-sec="sec-selinux" id="se-card">
+      <div id="se-host"></div>
     </div>
     <div class="card full ot" data-sec="sys-network" id="net-now-card">
       <h2>As it is now <span class="right" id="net-read"></span></h2>
@@ -6902,7 +6954,7 @@ function api(what, options) {
       // repaint of the page waited for it.
       // The panes root looks after (firewall, certificates, upgrades, the whole
       // backup) ask every few seconds too, and say "locked" in place.
-      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|osroots|webproxy|secret-hints|perf)(&|$)/.test(String(what));
+      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|osroots|selinux|webproxy|secret-hints|perf)(&|$)/.test(String(what));
       if (r.status === 403 && data && /view locked/.test(data.error || '')
           && !VIEWLOCK.asking && !VIEWLOCK.declined && !quiet) {
         VIEWLOCK.asking = true;
@@ -18783,6 +18835,8 @@ var ICONS = {
   code: '<path d="M9 8l-5 4 5 4"/><path d="M15 8l5 4-5 4"/>',
   sms: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  // a shield with a tick: SELinux guarding the machine
+  selinux: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.6 12.2l2.4 2.4 4.4-4.8"/>',
   db: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   pin: '<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>',
@@ -35124,6 +35178,289 @@ function drawConsoleSwitch(cs) {
   host.appendChild(said);
   host.appendChild(bar);
 }
+/* ---- Settings - Security - SELinux (otp 1.0.233 - 1.0.265, for one machine) -------------
+   How SELinux is on this machine now and after a restart, what zigmon needs of it (its
+   module, the labels of its files, a boolean, the ports nginx listens on) and what SELinux
+   refused. The steps - made ready and permissive, what zigmon needs put in, enforcing,
+   permissive again - are asked of root's helper; nothing happens by itself. While a step is
+   asked and not done, the card asks again every two seconds. */
+var SE = {d: null, poll: null, rep: null, first: false};
+function loadSelinux(quiet) {
+  var host = $('se-host');
+  if (!host) return;
+  rootTimer('sec-selinux', function () { if (!SE.poll) loadSelinux(true); }, 30000);
+  if (!isUnlocked()) {
+    sePoll(false);
+    rootLocked(host, 'An administrator’s to see. How SELinux guards this machine, and each step on the way to enforcing, are root’s to take, asked for by an administrator.', loadSelinux);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('selinux').then(function (d) {
+    SE.d = d;
+    /* never looked at yet (the first look is two minutes after the daemon starts): asked now, once */
+    if (d.helper && !(d.state && d.state.mode) && !d.pending && !d.error && !SE.first) {
+      SE.first = true;
+      return post('selinux-do', {action: 'check'}).then(function (x) { SE.d = x; }, function () {});
+    }
+  }).then(function () { drawSelinux(); sePoll(seBusy()); })
+    .catch(function (e) { if (!quiet) zoops(e); });
+}
+function seBusy(d) {
+  d = d || SE.d || {};
+  return !!d.pending;
+}
+function sePoll(on) {
+  if (on && !SE.poll) {
+    SE.poll = setInterval(function () {
+      if (STATE.tab !== 'control' || CONTROL_SEC !== 'sec-selinux') { sePoll(false); return; }
+      if (document.hidden) return;
+      api('selinux').then(function (d) { SE.d = d; drawSelinux(); if (!seBusy(d)) sePoll(false); }).catch(function () {});
+    }, 2000);
+  }
+  if (!on && SE.poll) { clearInterval(SE.poll); SE.poll = null; }
+}
+function seAsk(action, b) {
+  if (b) zbusy(b, true);
+  return post('selinux-do', {action: action}).then(function (x) {
+    if (b) zbusy(b, false);
+    if (x.message) toast(x.message, true);
+    SE.d = x;
+    drawSelinux();
+    sePoll(true);
+    return x;
+  }, function (e) { if (b) zbusy(b, false); zoops(e); });
+}
+/* The report: asked of root, waited for (every 3 s, up to 3 minutes) until one newer than
+   the one before is there, by the daemon's own clock - then handed over as one file. */
+function seReport(btn) {
+  var before = Number(((SE.d || {}).report || {}).at) || 0, end = Date.now() + 180000;
+  zbusy(btn, true);
+  SE.rep = {words: 'asking root for the report…'};
+  drawSelinux();
+  post('selinux-do', {action: 'report'}).then(function (x) {
+    SE.d = x;
+    return new Promise(function (done, no) {
+      (function tick() {
+        api('selinux').then(function (d) {
+          SE.d = d;
+          var r = d.report || {};
+          if (r.at && Number(r.at) > before) {
+            if (r.error) return no(new Error(r.error));
+            return done();
+          }
+          if (Date.now() > end) return no(new Error('root made no report in three minutes - zigmon --selinux-report on the server'));
+          SE.rep = {words: 'root is making the report - ausearch and semanage take a minute…'};
+          drawSelinux();
+          setTimeout(tick, 3000);
+        }).catch(function () { setTimeout(tick, 3000); });
+      })();
+    });
+  }).then(function () {
+    return post('selinux-do', {action: 'download'});
+  }).then(function (x) {
+    var bin = atob(x.file), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var a = el('a');
+    a.href = URL.createObjectURL(new Blob([bytes], {type: x.mime || 'application/gzip'}));
+    a.download = x.name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    SE.rep = {words: 'Downloaded: ' + x.name + '. Look through avc*.txt in it before sending it on - the refusals name other programs’ files too.'};
+  }).catch(function (e) {
+    SE.rep = {words: String((e && e.message) || e), bad: true};
+  }).then(function () { zbusy(btn, false); drawSelinux(); });
+}
+function seModeWords(m) {
+  return {Enforcing: 'enforcing', Permissive: 'permissive', Disabled: 'disabled', absent: 'not on this machine'}[m] || 'not looked at yet';
+}
+function seRow(list, good, words, more) {
+  var r = el('div', 'se-row');
+  r.appendChild(el('span', 'se-dot' + (good === true ? ' ok' : good === false ? ' bad' : '')));
+  var t = el('div', 'se-row-t');
+  t.appendChild(el('span', '', words));
+  if (more) t.appendChild(el('span', 'mono se-what', more));
+  r.appendChild(t);
+  list.appendChild(r);
+}
+function drawSelinux() {
+  var host = $('se-host');
+  if (!host || !SE.d || host.dataset.locked === '1') return;
+  var d = SE.d;
+  host.innerHTML = '';
+  var h = el('h2', '', 'SELinux');
+  var top = el('span', 'se-top');
+  var look = cmdButton('Look again', 'refresh', 'small');
+  look.id = 'se-look';
+  look.disabled = !!d.pending;
+  look.onclick = function () { seAsk('check', look); };
+  top.appendChild(look);
+  /* what whoever writes zigmon's module needs - nothing is changed to make it */
+  var rep = cmdButton('Download the report', 'download', 'small');
+  rep.id = 'se-report';
+  rep.disabled = !!d.pending;
+  rep.onclick = function () { seReport(rep); };
+  top.appendChild(rep);
+  h.appendChild(top);
+  host.appendChild(h);
+  host.appendChild(el('p', 'note se-lede', 'What SELinux refuses to the web server, php-fpm, systemd and the rest when it is enforcing - and what zigmon needs of it on this machine. Nothing changes here unless asked: disabled stays disabled. On the server: zigmon --selinux-check.'));
+  if (SE.rep) host.appendChild(el('p', 'note small se-rep' + (SE.rep.bad ? ' bad' : ''), SE.rep.words));
+  if (!d.helper) rootNotInstalled(host);
+  var grid = el('div', 'se-grid');
+  grid.appendChild(seNode(d));
+  host.appendChild(grid);
+}
+function seNode(n) {
+  var s = n.state || {};
+  var m = s.mode || '';
+  var box = el('div', 'se-node se-' + (m || 'unknown').toLowerCase());
+  box.id = 'se-node';
+  var head = el('div', 'se-head');
+  var nm = el('div', 'se-name');
+  nm.appendChild(el('b', '', n.node || 'this machine'));
+  nm.appendChild(el('span', 'tag info', 'this one'));
+  head.appendChild(nm);
+  head.appendChild(el('span', 'se-mode', seModeWords(m)));
+  box.appendChild(head);
+  var cfg = String(s.config || '');
+  if (cfg && m && m !== 'absent' && cfg.toLowerCase() !== m.toLowerCase() && (m !== 'Disabled' || s.relabel_pending))
+    box.appendChild(el('p', 'se-next', 'After the next restart of the machine: ' + cfg.toLowerCase()));
+  if (s.relabel_pending) box.appendChild(el('p', 'se-next', 'Every file is labelled at the next start - it takes a few minutes before the machine answers.'));
+  if (s.cmdline_off) box.appendChild(el('p', 'note bad small', 'The kernel’s command line has selinux=0 - SELinux stays off whatever the configuration says.'));
+  if (n.pending) {
+    var w = el('div', 'se-wait');
+    w.id = 'se-wait';
+    w.appendChild(el('span', 'se-spin'));
+    w.appendChild(el('span', '', {check: 'looking…', prepare: 'root is at it…', enforce: 'switching to enforcing…',
+      permissive: 'switching to permissive…', report: 'making the report…'}[n.pending] || 'asked…'));
+    box.appendChild(w);
+  }
+  if (!m) {
+    box.appendChild(el('p', 'muted small', n.helper ? 'Not looked at yet - root looks within a minute.' : 'Root cannot be asked on this machine yet.'));
+    if (n.error) box.appendChild(el('p', 'se-err', n.error));
+    return box;
+  }
+  if (m === 'absent') {
+    box.appendChild(el('p', 'note', 'There is no SELinux on this machine (Debian and Ubuntu use AppArmor) - nothing to do.'));
+    if (n.at) box.appendChild(el('p', 'muted small', 'Looked at ' + new Date(n.at * 1000).toLocaleString()));
+    return box;
+  }
+  var made = m === 'Disabled' && /^(permissive|enforcing)$/i.test(cfg) && !!s.relabel_pending;
+  var d = s.denials || {};
+  var probs = s.problems || [];
+  if (made) {
+    var v0 = el('div', 'se-verdict ready');
+    v0.appendChild(el('b', '', 'Made ready - waiting for a restart of the machine'));
+    v0.appendChild(el('span', 'small', 'Restart it when it suits (Settings → Restart and power off). It comes up permissive; then look here again.'));
+    box.appendChild(v0);
+  } else if (m === 'Disabled') {
+    if (/^(permissive|enforcing)$/i.test(cfg) && !s.cmdline_off)
+      box.appendChild(el('p', 'note small', 'The configuration says ' + cfg.toLowerCase() + ', but the kernel does not start SELinux.'));
+    box.appendChild(el('p', 'note', 'Disabled - zigmon runs as always. Made ready, it comes up permissive at the next restart of the machine: nothing is refused yet, only written down, and zigmon’s own needs are put in. Enforcing comes after, once nothing was refused.'));
+  } else {
+    var list = el('div', 'se-list');
+    list.id = 'se-list';
+    seRow(list, s.module === true ? true : s.module === false ? false : null,
+          s.module === false ? 'zigmon’s module (zigmon_server) is not installed' : 'zigmon’s module (zigmon_server) installed');
+    (s.labels || []).forEach(function (x) {
+      seRow(list, x.ok, x.why, x.path + '  ' + (x.label || '?') + (x.ok ? '' : '  →  ' + x.want));
+    });
+    (s.booleans || []).forEach(function (x) {
+      seRow(list, x.on, x.why, x.name + ' = ' + (x.on ? 'on' : 'off'));
+    });
+    (s.ports || []).forEach(function (x) {
+      seRow(list, x.labelled, x.why, x.port + '/' + x.proto + '  ' + x.type);
+    });
+    seRow(list, d.tool ? !d.total : null, !d.tool ? 'What SELinux refused cannot be read: ausearch is not on this machine (dnf install audit)'
+      : d.since ? (d.total ? 'SELinux refused ' + d.total + ' thing(s) since zigmon’s needs were put in' : 'Nothing refused since zigmon’s needs were put in')
+      : d.total ? 'SELinux refused ' + d.total + ' thing(s) since the machine started' : 'Nothing refused since the machine started');
+    /* refused once, allowed by the policy loaded now - a newer module, a boolean: not counted */
+    if (d.tool && d.settled) seRow(list, true, d.settled + ' refused before, allowed now - by a newer zigmon_server or a boolean put in since; not counted');
+    if (s.auditd === false) seRow(list, false, 'auditd does not run - what SELinux refuses is not written down (systemctl enable --now auditd)');
+    box.appendChild(list);
+    (s.left_out || []).forEach(function (x) { box.appendChild(el('p', 'note small', x)); });
+    if ((d.groups || []).length) {
+      var det = el('details', 'se-avc');
+      det.id = 'se-avc';
+      det.appendChild(el('summary', '', 'What was refused (' + d.groups.length + ')'));
+      var wrap = el('div', 'se-avc-wrap');
+      var t = el('table', 'se-avc-t');
+      d.groups.forEach(function (g) {
+        var tr = el('tr', '');
+        tr.appendChild(el('td', 'se-n', g.count + '×'));
+        tr.appendChild(el('td', 'mono', g.source + ' → ' + g.target + ' ' + g['class'] + ' { ' + g.perms + ' }'));
+        tr.appendChild(el('td', 'mono muted', g.what || ''));
+        t.appendChild(tr);
+      });
+      wrap.appendChild(t);
+      det.appendChild(wrap);
+      box.appendChild(det);
+    }
+    /* refused, and nothing zigmon knows to put in: "Put in" changes nothing then - the report
+       is what tells how */
+    var known = s.module !== false && !(s.labels || []).some(function (x) { return x.ok === false; }) &&
+      !(s.booleans || []).some(function (x) { return x.on === false; }) &&
+      !(s.ports || []).some(function (x) { return x.labelled === false; });
+    if (d.total && known) {
+      var hint = el('div', 'se-verdict bad');
+      hint.appendChild(el('b', '', 'zigmon does not know this one yet'));
+      hint.appendChild(el('span', 'small', 'Everything zigmon knows it needs is in place - what was refused is something its module does not cover yet. "Put in what zigmon needs" changes nothing for it: download the report (top right) and send it, so that the module learns it.'));
+      box.appendChild(hint);
+    }
+    var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'ready' : 'bad'));
+    verdict.id = 'se-verdict';
+    verdict.appendChild(el('b', '', m === 'Enforcing' ? (probs.length ? 'Enforcing - but something is not as zigmon needs it' : 'Enforcing - and everything zigmon needs is there')
+      : s.ready ? 'Ready for enforcing' : 'Not ready for enforcing yet'));
+    if (m === 'Permissive' && !s.ready) verdict.appendChild(el('span', 'small', 'Let it run a day or two as it is used - sign-ins, the pages, the one-tap links, a backup, an upgrade - then look again.'));
+    if (m === 'Enforcing' && probs.length) verdict.appendChild(el('span', 'small', probs.slice(0, 3).join('; ')));
+    box.appendChild(verdict);
+  }
+  if (n.error) box.appendChild(el('p', 'se-err', n.error));
+  else if ((n.said || []).length && n.action !== 'check') {
+    var sd = el('ul', 'se-said');
+    sd.id = 'se-said';
+    n.said.forEach(function (x) { sd.appendChild(el('li', '', x)); });
+    box.appendChild(sd);
+  }
+  if (n.at) box.appendChild(el('p', 'muted small', 'Looked at ' + new Date(n.at * 1000).toLocaleString()));
+  var row = el('div', 'btnrow se-btns');
+  if ((m === 'Disabled' && !made) || m === 'Permissive') {
+    var prep = cmdButton(m === 'Disabled' ? 'Make it ready (permissive)' : 'Put in what zigmon needs', 'shield', m === 'Disabled' ? 'primary' : '');
+    prep.id = 'se-prepare';
+    prep.disabled = !!n.pending;
+    prep.onclick = function () {
+      zconfirm(m === 'Disabled' ? 'Make SELinux ready on ' + (n.node || 'this machine') + '?' : 'Put in what zigmon needs on ' + (n.node || 'this machine') + '?',
+        m === 'Disabled'
+          ? 'The configuration says permissive and every file is labelled at the next start of the machine; zigmon’s module goes in. Nothing is refused while permissive - SELinux only writes down what it would refuse. The machine is not restarted now: restart it when it suits (Settings → Restart and power off).'
+          : 'zigmon’s module, the labels of its files, the boolean and the ports it needs are put in. Still permissive: nothing is refused.',
+        m === 'Disabled' ? 'Make it ready' : 'Put it in', function () { seAsk('prepare', prep); });
+    };
+    row.appendChild(prep);
+  }
+  if (m === 'Permissive') {
+    var enf = cmdButton('Switch to enforcing', 'lock', s.ready ? 'primary' : '');
+    enf.id = 'se-enforce';
+    enf.disabled = !!n.pending || !s.ready;
+    if (!s.ready) enf.title = 'Once nothing is missing and nothing was refused';
+    enf.onclick = function () {
+      zconfirm('Switch ' + (n.node || 'this machine') + ' to enforcing?', 'From now on SELinux refuses what its policy does not allow - and stays enforcing after a restart. Nothing zigmon needs is missing and nothing was refused. If something stops working, "Back to permissive" here (or setenforce 0 on the machine) undoes it at once.',
+        'Switch to enforcing', function () { seAsk('enforce', enf); });
+    };
+    row.appendChild(enf);
+  }
+  if (m === 'Enforcing') {
+    var back = cmdButton('Back to permissive', 'undo', '');
+    back.id = 'se-permissive';
+    back.disabled = !!n.pending;
+    back.onclick = function () {
+      zconfirm('Switch ' + (n.node || 'this machine') + ' back to permissive?', 'SELinux no longer refuses anything - it only writes down what it would refuse - now and after a restart.',
+        'Back to permissive', function () { seAsk('permissive', back); });
+    };
+    row.appendChild(back);
+  }
+  if (row.childNodes.length) box.appendChild(row);
+  return box;
+}
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -35136,6 +35473,7 @@ function rootPaneShown(sec) {
   if (sec === 'sec-access') { loadAccounts(); renderSessions.at = 0; renderSessions(); }
   if (sec === 'sys-upgrade') { upgradeWire(); loadUpgrade(); }
   if (sec === 'sys-osup') loadOsup(); else ouPoll(false);
+  if (sec === 'sec-selinux') loadSelinux(); else sePoll(false);
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-proxy') drawProxy();
@@ -35163,6 +35501,7 @@ var CONTROL_SECTIONS = {
   'sec-front': ['Front server & router', 'The server in front of the house, and the router that carries the list of addresses kept out.'],
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
   'sec-firewall': ['Firewall', 'Who may reach the pages, and what the firewall lets in - put in by root, checked first, never shutting you out.'],
+  'sec-selinux': ['SELinux', 'What SELinux refuses to the web server, php-fpm, systemd and the rest when it is enforcing - and what zigmon needs of it on this machine: its module, the labels of its files, a boolean, the ports nginx listens on. Nothing changes unless asked: disabled stays disabled, and the way to enforcing goes through permissive.'],
   'sys-network': ['Network', 'The machine\u2019s address, gateway, DNS servers and name - put in by root with a restart, and on trial: not kept within minutes of coming back, the old network returns by itself.'],
   'sys-proxy': ['Proxy', 'An HTTP proxy for what zigmon asks of the web, each use chosen by itself - the new versions, the system updates, the certificates, the alerts by ntfy and Telegram, the weather, the lists, Shodan, Duo - and none until chosen. The house itself never goes through it - the plugs, the sensors, Zigbee2MQTT, the broker, the SMS gateway, the router, the server in front, the Wi-Fi controller - nor mail, so a proxy that is slow or down cannot touch the house.'],
   'sys-time': ['Time', 'The machine\u2019s clock as chrony keeps it, the time servers it follows, and its time zone - every schedule, sunrise scene and one-tap code runs on it.'],

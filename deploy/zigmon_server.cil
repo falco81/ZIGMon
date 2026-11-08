@@ -1,0 +1,28 @@
+; zigmon - what SELinux needs for zigmon that the system's policy does not say.
+; Installed by install.sh at every install and upgrade (semodule -i zigmon_server.cil) and by
+; root's helper when "Put in what zigmon needs" is pressed; taken away by
+; install.sh --uninstall (semodule -r zigmon_server). Labels first; a narrow rule only where
+; no label and no boolean does it, each in a block of its own.
+;
+; /run/zigmon holds the daemon's API token. The pages (php-fpm, httpd_t) read it on every
+; request; systemd makes the folder (RuntimeDirectory=zigmon) as var_run_t, which httpd_t
+; may not read - under enforcing every page said "the daemon is not responding". Labelled
+; as the web server's own run files, which httpd_t reads; the daemon (unconfined_service_t)
+; writes it as before.
+;
+; Both spellings: the policy reads a path through file_contexts.subs_dist first - on RHEL 8
+; "/run" is looked up as "/var/run", on newer policies the other way round - so a rule for
+; one of them alone may never be matched. The one never looked up does nothing.
+(filecon "/run/zigmon" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/run/zigmon/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/zigmon" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/zigmon/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+
+; systemd hands /run/zigmon back to the service's account before every command of the unit -
+; ExecReload too (systemctl reload zigmon, and logrotate's HUP): it may change the owner and
+; the mode of what is in it - "init_t -> httpd_var_run_t file { setattr }". Only that: no
+; read, no write. In a block of its own, so that a policy without one of the types still
+; takes the labels above.
+(optional zigmon_server_systemd_runtime
+    (allow init_t httpd_var_run_t (dir (getattr setattr search open read)))
+    (allow init_t httpd_var_run_t (file (getattr setattr))))

@@ -25,6 +25,8 @@ PathExists=/var/lib/zigmon/root/osup.ask
 # the system's trusted roots: certificate authorities of one's own put beside
 # the distribution's list (update-ca-trust, update-ca-certificates)
 PathExists=/var/lib/zigmon/root/osroots.ask
+# SELinux: a look, a step on the way to enforcing, a report
+PathExists=/var/lib/zigmon/root/selinux.ask
 Unit=zigmon-root.service
 
 [Install]
