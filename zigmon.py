@@ -21122,6 +21122,9 @@ class Daemon(object):
                               # what root's job of dnf says, and the schedule
                               # of the updates (5.34): files read, threads started
                               ('updates of the system', lambda: osup_tick(self)),
+                              # SELinux: a step asked, and a look every half
+                              # hour - root's work on a thread of its own
+                              ('SELinux', lambda: selinux_tick(self)),
                               # in maintenance by itself while one of those
                               # goes on, and back in service after it
                               ('maintenance', self.maint_follow)):
@@ -45021,7 +45024,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # Certificates from acme (5.40): its card
                      '/api/acmepush',
                      # every request the server in front wrote down (5.46)
-                     '/api/proxy/requests')
+                     '/api/proxy/requests',
+                     # SELinux: how the machine is guarded, its steps and its report
+                     '/api/selinux')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -46263,6 +46268,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # the updates of the system (5.34): what dnf has waiting, the
                 # update going on and what dnf says
                 return self._send(200, osup_view(d))
+            if path == '/api/selinux':
+                # SELinux: how it is on this machine, what zigmon needs of it and
+                # what it refused - an administrator's (ALWAYS_LOCKED), asked
+                # again here so a road moved out of that list never opens
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send(200, selinux_view(d))
             if path == '/api/webproxy':
                 # Control - Proxy (5.35): how the way out is set, the password
                 # only as there or not
@@ -47967,6 +47979,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e)[:400])
                 out.setdefault('ok', True)
+                return self._send(200, out)
+            if path == '/api/selinux':
+                # SELinux: a look, a step on the way to enforcing, the report - an
+                # administrator's, every action; root's helper does the work
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = selinux_post(d, body, by)
+                except ValueError as e:
+                    return self._error(400, str(e)[:600])
                 return self._send(200, out)
             if path == '/api/osup':
                 # the updates of the system (5.34): an administrator's, every action
@@ -55236,6 +55262,225 @@ def osup_post(d, b, by):
     raise ValueError('check, start, reboot, clear, hide or log')
 
 
+# ---- SELinux (otp 1.0.233 - 1.0.265, one machine) -----------------------------------------
+# Settings - Security - SELinux: how SELinux is on this machine, what zigmon needs of it (its
+# module, the labels of its files, a boolean, the ports nginx listens on) and what it refused.
+# The page (or the command line) writes 'selinux:want' {id, do, by, at}; the tick has root's
+# helper do it (selinux.ask) and keeps what came back in 'selinux:now' - looked at again every
+# half hour. Nothing changes unless somebody asks: a machine with SELinux disabled stays so.
+SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive', 'report')
+SE_STEPS = ('prepare', 'enforce', 'permissive')
+SE_EVERY_S = float(os.environ.get('ZIGMON_SELINUX_EVERY_S') or 1800)
+# The first look two minutes after the start, not at once: root's semanage and ausearch take a
+# core for seconds, beside a daemon that has only just begun to answer.
+SE_FIRST_S = float(os.environ.get('ZIGMON_SELINUX_FIRST_S') or 120)
+SE_ASK_LIVE_S = 3600            # a step not done in an hour is not waited for any more
+SE_REPORT_KEEP_S = 3600         # the report handed over by root, kept an hour at most
+SE_REPORT_MOST = 16 * 1024 * 1024
+SE_REPORT_FILE = 'selinux-report.tar.gz'
+SE_WORK = {'busy': False, 'seen': None, 'tried': ''}
+
+
+def se_row(d, key):
+    got = d._mj(key)
+    return got if isinstance(got, dict) else {}
+
+
+def selinux_facts():
+    """What zigmon uses on this machine, for the report: switches and ports only - nothing
+    secret, no address either."""
+    def on(k):
+        return bool(CONFIG.get(k))
+    return {'zigmon': __version__, 'api_port': int(CONFIG.get('api_port') or 9849),
+            'mqtt_local': str(CONFIG.get('mqtt_host') or '127.0.0.1') in ('127.0.0.1', 'localhost', '::1'),
+            'mqtt_port': CONFIG.get('mqtt_port'), 'mqtt_tls': on('mqtt_tls'),
+            'sensor_listen': on('sensor_listen'), 'sensor_listen_port': CONFIG.get('sensor_listen_port'),
+            'sms_enabled': on('sms_enabled'), 'public_view': on('public_view')}
+
+
+def selinux_want(d=None):
+    """What zigmon needs of SELinux here, as this configuration has it - sent with every
+    request, so root's helper checks exactly that (and nothing it does not allow). The ports
+    nginx listens on root reads from nginx's own file."""
+    try:
+        port = int(CONFIG.get('api_port') or 9849)
+    except (TypeError, ValueError):
+        port = 9849
+    return {'booleans': [{'name': 'httpd_can_network_connect',
+                          'why': 'the pages ask the daemon on 127.0.0.1:%d' % port}],
+            'ports': [], 'facts': selinux_facts()}
+
+
+def selinux_pending(want, now):
+    if not want.get('id') or want.get('id') == now.get('done') or want.get('do') not in SE_ACTIONS:
+        return ''
+    try:
+        if time.time() - float(want.get('at') or 0) > SE_ASK_LIVE_S:
+            return ''
+    except (TypeError, ValueError):
+        return ''
+    return want['do']
+
+
+def selinux_view(d):
+    now, want, rep = se_row(d, 'selinux:now'), se_row(d, 'selinux:want'), se_row(d, 'selinux:report')
+    return {'ok': True, 'node': socket.gethostname().split('.')[0] or 'this machine',
+            'helper': d.root_installed(), 'state': now.get('data') if isinstance(now.get('data'), dict) else {},
+            'at': now.get('at'), 'error': now.get('error') or '', 'said': now.get('said') or [],
+            'action': now.get('action') or '', 'pending': selinux_pending(want, now),
+            'report': {k: rep.get(k) for k in ('id', 'at', 'bytes', 'error')} if rep else {}}
+
+
+def selinux_ask(d, action, by):
+    """A step, a look or a report asked for: done by the tick, at once."""
+    if action not in SE_ACTIONS:
+        raise ValueError('check, prepare, enforce, permissive, report or download')
+    was, now = se_row(d, 'selinux:want'), se_row(d, 'selinux:now')
+    # A step asked and not done yet is not put aside by a look or a report: its one row was
+    # written over, and "enforcing" never happened - said nowhere.
+    if selinux_pending(was, now) in SE_STEPS:
+        if action == 'check':
+            return False                    # the step looks again when it is done
+        raise ValueError('the step asked a moment ago (%s) is not done yet - ask again after it'
+                         % was.get('do'))
+    d._mj_put('selinux:want', {'id': secrets.token_hex(6), 'do': action, 'by': str(by)[:80], 'at': time.time()},
+              bump=True)
+    if action == 'report':
+        d.store.add_event('control', '%s asked for the SELinux report' % by, 'info')
+    elif action in SE_STEPS:
+        d.store.add_event('control', '%s asked SELinux: %s' % (by, {
+            'prepare': 'made ready (permissive) / what zigmon needs put in', 'enforce': 'enforcing',
+            'permissive': 'permissive again'}[action]), 'warn')
+    kick = getattr(d, '_net_kick', None)
+    if kick is not None:
+        kick.set()                          # the tick looks now, not in five seconds
+    return True
+
+
+def selinux_tidy(d):
+    """The report root handed over, taken away once it is an hour old."""
+    rep = se_row(d, 'selinux:report')
+    p = d.root_dir(SE_REPORT_FILE)
+    try:
+        old = time.time() - p.stat().st_mtime > SE_REPORT_KEEP_S
+    except OSError:
+        old = False
+    if old:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    if rep and time.time() - float(rep.get('at') or 0) > SE_REPORT_KEEP_S:
+        d.store.set_meta('selinux:report', '')
+
+
+def selinux_tick(d):
+    """From the system loop every few seconds: a step asked done at once, and how SELinux is
+    looked at now and then. The work on a thread of its own at the lowest priority - never on
+    the clock thread or the broker's."""
+    if SE_WORK['seen'] is None:
+        SE_WORK['seen'] = time.time() - SE_EVERY_S + SE_FIRST_S
+    try:
+        selinux_tidy(d)
+    except Exception:                                   # noqa: BLE001
+        pass
+    if SE_WORK['busy'] or not d.root_installed():
+        return
+    want, now = se_row(d, 'selinux:want'), se_row(d, 'selinux:now')
+    # A step tried is not tried again: with its answer not written down it would run again
+    # every five seconds - "enforce" and "prepare" over and over.
+    asked = bool(selinux_pending(want, now)) and want.get('id') != SE_WORK['tried']
+    if not (asked or time.time() - SE_WORK['seen'] >= SE_EVERY_S):
+        return
+    SE_WORK.update(busy=True, seen=time.time())
+    if asked:
+        SE_WORK['tried'] = want.get('id') or ''
+    do = want['do'] if asked else 'check'
+    threading.Thread(target=selinux_work, args=(d, do, want if asked else {}, now),
+                     name='zigmon-selinux', daemon=True).start()
+
+
+def selinux_work(d, do, want, now):
+    background_thread(19)
+    try:
+        err, said = '', []
+        old = now.get('data') if isinstance(now.get('data'), dict) else {}
+        data = old
+        try:
+            got = d.root_call('selinux.ask', 'selinux.json', dict(selinux_want(d), do=do),
+                              180 if do in ('check', 'report') else 600)
+            if not isinstance(got, dict):
+                raise ValueError('root\'s helper answered with no object - is it of the same version as '
+                                 'zigmon? install.sh --upgrade puts it in')
+            said = [str(x)[:300] for x in (got.pop('said', None) or [])][:20]
+            if do != 'report':
+                data = got
+        except ValueError as e:
+            err = str(e)[:400]
+        if do == 'report':
+            rep = {'id': want.get('id'), 'at': time.time(), 'error': err, 'bytes': 0}
+            if not err:
+                try:
+                    rep['bytes'] = d.root_dir(SE_REPORT_FILE).stat().st_size
+                except OSError as e:
+                    rep['error'] = 'root made no report: %s' % e
+            d._mj_put('selinux:report', rep)
+        if do in SE_STEPS:
+            d.store.add_event('control', 'SELinux: %s' % (err or '; '.join(said) or 'done'),
+                              'bad' if err else 'warn')
+            log('SELinux %s: %s' % (do, err or '; '.join(said) or 'done'), 'warn')
+        d._mj_put('selinux:now', {'data': data, 'at': time.time(), 'done': want.get('id') or now.get('done'),
+                                  'error': err, 'said': said, 'action': do}, bump=True)
+        if not err and do != 'report':
+            selinux_notice(d, data)
+    except Exception as e:                              # noqa: BLE001 - the next look still comes
+        log('SELinux: %s' % e, 'debug')
+    finally:
+        SE_WORK['busy'] = False
+
+
+def selinux_notice(d, data):
+    """Enforcing with something zigmon needs missing, or refused: that is the pages, the
+    reload or the time servers not working - said on every page until it is right. Nothing
+    at all where SELinux is permissive, disabled or not there (as before)."""
+    probs = data.get('problems') or []
+    if data.get('mode') == 'Enforcing' and probs:
+        d.notice_raise('selinux', 'warn', 'SELinux refuses something zigmon needs', '; '.join(probs[:3]),
+                       action='Settings - Security - SELinux says what, and puts it in; or, as root:',
+                       command='zigmon --selinux-check', link='#control/sec-selinux')
+    else:
+        d.notice_clear('selinux')
+
+
+def selinux_download(d, by):
+    p = d.root_dir(SE_REPORT_FILE)
+    try:
+        if p.stat().st_size > SE_REPORT_MOST:
+            raise ValueError('the report is too large to hand over here: zigmon --selinux-report on '
+                             'the server')
+        raw = p.read_bytes()
+    except OSError:
+        raise ValueError('there is no report yet - ask for it first')
+    host = re.sub(r'[^A-Za-z0-9._-]', '', socket.gethostname().split('.')[0])[:60] or 'zigmon'
+    d.store.add_event('control', '%s took the SELinux report' % by, 'info')
+    return {'name': 'zigmon-selinux-report-%s-%s.tar.gz' % (host, time.strftime('%Y%m%d-%H%M')),
+            'file': base64.b64encode(raw).decode('ascii'), 'mime': 'application/gzip', 'bytes': len(raw)}
+
+
+def selinux_post(d, b, by):
+    """POST /api/selinux: an administrator's, every action."""
+    act = str(b.get('action') or '')
+    if act == 'download':
+        return dict(selinux_download(d, by), ok=True)
+    asked = selinux_ask(d, act, by)
+    words = {'check': 'asked: SELinux is looked at within seconds',
+             'prepare': 'asked: root makes SELinux ready, or puts in what zigmon needs',
+             'enforce': 'asked: root switches SELinux to enforcing',
+             'permissive': 'asked: root switches SELinux to permissive',
+             'report': 'asked: root makes the report - within a minute'}[act]
+    return dict(selinux_view(d), message=words if asked else 'a step is going on - it looks again after it')
+
+
 # ---- mDNS discovery -------------------------------------------------------
 def local_ipv4_addresses():
     """Every IPv4 address this machine holds, one per interface.
@@ -57773,6 +58018,18 @@ def build_parser():
                    help='(root) the system\u2019s updates (Control - System updates): show what dnf has '
                         'waiting, look for updates now, update the system now (--security for the '
                         'security updates only, --reboot ask|auto), log: what dnf said in the last update')
+    a.add_argument('--selinux-check', action='store_true',
+                   help='(root) SELinux on this machine (Settings - Security - SELinux): the mode, '
+                        'zigmon\'s module, the labels of its files, the boolean and the ports it '
+                        'needs, what was refused; exit 1 when something is missing (--json)')
+    a.add_argument('--selinux', choices=('check', 'prepare', 'enforce', 'permissive'), metavar='STEP',
+                   help='(root) a step on the way to enforcing: prepare (disabled: permissive at the next '
+                        'start; permissive: what zigmon needs put in), enforce, permissive - asks first '
+                        '(--yes not to)')
+    a.add_argument('--selinux-report', nargs='?', const='', metavar='FILE',
+                   help='(root) what SELinux says here, for whoever writes zigmon\'s module - nothing '
+                        'changed, no password, key or token in it (default '
+                        '/root/zigmon-selinux-report-HOST-DATE.tar.gz)')
     a.add_argument('--webproxy-test', nargs='?', const='', metavar='URL',
                    help='(root) the way out to the web tried (Control - Proxy): through the proxy, or '
                         'straight where none is set or the address is in the list - each step with its '
@@ -60371,6 +60628,63 @@ def cmd_webproxy_test(args, pal):
     return 1
 
 
+def cmd_selinux(args, pal):
+    """zigmon --selinux-check, --selinux STEP, --selinux-report [FILE]: as root, root's helper
+    run here and now - what this configuration needs handed to it, checked there as a request
+    from the dashboard is. The daemon is told to look again after a step, so the page says it."""
+    if os.geteuid() != 0:
+        print(pal.crit('SELinux is root\'s: sudo zigmon %s' % ' '.join(sys.argv[1:])))
+        return 2
+    helper = Daemon.helper_file('zigmon_root.py')
+    if not helper.is_file():
+        print(pal.crit('root\'s helper (zigmon_root.py) is not installed - install.sh --upgrade'))
+        return 2
+    want = json.dumps(selinux_want())
+    js = ['--json'] if args.json else []
+
+    def helper_run(extra, timeout=900):
+        return subprocess.run([sys.executable, '-I', str(helper)] + extra, input=want,
+                              capture_output=True, text=True, timeout=timeout)
+    if args.selinux_report is not None:
+        host = re.sub(r'[^A-Za-z0-9._-]', '', socket.gethostname().split('.')[0])[:60] or 'zigmon'
+        out = args.selinux_report or '/root/zigmon-selinux-report-%s-%s.tar.gz' % (host, time.strftime('%Y%m%d-%H%M'))
+        if not args.json:
+            print(pal.dim('gathering what SELinux says here - a minute or two (ausearch, semanage)...'))
+        got = helper_run(['--selinux-report', out] + js, 1800)
+        sys.stdout.write(got.stdout)
+        sys.stderr.write(got.stderr)
+        if got.returncode == 0 and not args.json:
+            print('  nothing was changed to make it, and no password, key or token of zigmon\'s is in it;')
+            print('  look through avc*.txt before sending it on: the refusals name other programs\' files too')
+        return got.returncode
+    step = args.selinux or 'check'
+    if step != 'check' and not args.yes:
+        words = {'prepare': 'SELinux made ready - permissive at the next start of this machine, every file '
+                            'labelled then (nothing restarted now); or, permissive already, what zigmon needs '
+                            'put in (its module, the labels, the boolean, the ports)',
+                 'enforce': 'SELinux ENFORCING on this machine, now and after a restart',
+                 'permissive': 'SELinux permissive on this machine, now and after a restart'}[step]
+        if not sys.stdin.isatty():
+            print(pal.crit('%s - add --yes to do it without a terminal' % words))
+            return 2
+        try:
+            answer = input('%s. Go on? [y/N] ' % words)
+        except EOFError:
+            answer = ''
+        if answer.strip().lower() not in ('y', 'yes'):
+            print('nothing done')
+            return 1
+    got = helper_run(['--selinux-check'] + js if step == 'check' else ['--selinux-do', step] + js)
+    sys.stdout.write(got.stdout)
+    sys.stderr.write(got.stderr)
+    if step != 'check':
+        try:                                # the page says it at once; nothing lost when it cannot
+            api_call('/api/selinux', method='POST', payload={'action': 'check'}, timeout=5.0)
+        except Exception:                               # noqa: BLE001
+            pass
+    return got.returncode
+
+
 def cmd_updates(args, pal):
     """zigmon --updates [show|look|update|log]: the system's updates through
     the daemon - root's command line, as on the page (otp 1.0.168). dnf is
@@ -62960,6 +63274,9 @@ def _dispatch(args, pal):
         return cmd_acme_push(args, pal)
     if getattr(args, 'acme', False) or getattr(args, 'acme_order', None):
         return cmd_acme(args, pal)
+    if getattr(args, 'selinux_check', False) or getattr(args, 'selinux', None) or \
+            getattr(args, 'selinux_report', None) is not None:
+        return cmd_selinux(args, pal)
     if getattr(args, 'updates', None):
         return cmd_updates(args, pal)
     if getattr(args, 'webproxy_test', None) is not None:

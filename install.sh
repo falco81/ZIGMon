@@ -26,6 +26,9 @@ CERT_DIR="/etc/nginx/certs"
 NGINX_CONF="/etc/nginx/conf.d/zigmon.conf"
 UNIT_FILE="/etc/systemd/system/zigmon.service"
 LOGROTATE_FILE="/etc/logrotate.d/zigmon"
+# SELinux: where the policy lives, and the folder of the API token the pages read
+SELINUX_ETC="/etc/selinux"
+SELINUX_RUN_DIR="/run/zigmon"
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=""
@@ -1204,17 +1207,135 @@ EOF
     good "$NGINX_CONF, reloaded"
 }
 
-configure_selinux() {
-    command -v getenforce >/dev/null || return 0
-    [[ "$(getenforce)" == "Disabled" ]] && { note "SELinux is disabled; nothing to do"; return 0; }
-    step "SELinux"
-    # PHP talks to the daemon on 127.0.0.1:9849, which is not a labelled http port.
-    [[ -n "$WITH_WEB" ]] && run setsebool -P httpd_can_network_connect 1
-    if command -v semanage >/dev/null; then
-        run semanage fcontext -a -t httpd_sys_content_t "$WEB_DIR(/.*)?" 2>/dev/null || true
-        run restorecon -R "$WEB_DIR" 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# SELinux (otp 1.0.233 - 1.0.265). Nothing here changes the mode: a machine
+# with SELinux disabled stays so, and runs exactly as before. What is done is
+# getting ready - the tools, zigmon's module where SELinux is on - and what the
+# pages and nginx need. The way to enforcing is Settings - Security - SELinux,
+# or zigmon --selinux-check / --selinux STEP as root.
+# ---------------------------------------------------------------------------
+selinux_tools() {
+    # on dnf systems with SELinux there (disabled too: "Make it ready" and
+    # --selinux-check need them); offline, said and gone on
+    command -v dnf >/dev/null 2>&1 || return 0
+    [[ -d "$SELINUX_ETC" ]] || command -v getenforce >/dev/null 2>&1 || return 0
+    local want=() p
+    for p in policycoreutils libselinux-utils policycoreutils-python-utils audit selinux-policy-targeted; do
+        rpm -q "$p" >/dev/null 2>&1 || want+=("$p")
+    done
+    if (( ${#want[@]} )); then
+        if run dnf install -y "${want[@]}" >/dev/null 2>&1; then
+            good "SELinux: put in ${want[*]}"
+        else
+            warn "SELinux: ${want[*]} could not be put in (no repository reached?) - dnf install -y ${want[*]}"
+        fi
     fi
-    good "done"
+    # where SELinux is on, what it refuses must be written down - without
+    # auditd nothing is, and enforcing would be switched on on no evidence.
+    # Some releases refuse systemctl for auditd: service(8) then.
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] \
+            && command -v auditd >/dev/null 2>&1 && ! systemctl is-active --quiet auditd 2>/dev/null; then
+        if { run systemctl enable --now auditd >/dev/null 2>&1 || run service auditd start >/dev/null 2>&1; }; then
+            good "SELinux: auditd started - what SELinux refuses is written down"
+        else
+            warn "SELinux: auditd could not be started - systemctl enable --now auditd"
+        fi
+    fi
+    return 0
+}
+
+selinux_module() {
+    # zigmon's module (deploy/zigmon_server.cil): /run/zigmon labelled for the
+    # pages, systemd's chown of it. Copied beside the program always; put into
+    # the policy only where SELinux is on, and only when it changed - compared
+    # with the copy last put in (.in-policy), never with the one beside the
+    # program: one semodule that failed would leave that new and the policy old
+    # for good.
+    [[ -f "$SOURCE_DIR/deploy/zigmon_server.cil" ]] || return 0
+    local had="" want=""
+    if cmp -s "$SOURCE_DIR/deploy/zigmon_server.cil" "$LIB_DIR/zigmon_server.cil.in-policy" 2>/dev/null; then
+        had=1
+    fi
+    run install -D -m 0644 "$SOURCE_DIR/deploy/zigmon_server.cil" "$LIB_DIR/zigmon_server.cil"
+    command -v getenforce >/dev/null 2>&1 || return 0
+    command -v semodule >/dev/null 2>&1 || return 0
+    [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] || return 0
+    if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '$1=="zigmon_server"{f=1} END{exit !f}'; then
+        if run semodule -i "$LIB_DIR/zigmon_server.cil" >/dev/null 2>&1; then
+            run install -m 0644 "$LIB_DIR/zigmon_server.cil" "$LIB_DIR/zigmon_server.cil.in-policy"
+            good "SELinux: zigmon's module (zigmon_server) is in the policy"
+        else
+            warn "SELinux: zigmon's module could not be put in: semodule -i $LIB_DIR/zigmon_server.cil"
+        fi
+    fi
+    if [[ -d "$SELINUX_RUN_DIR" ]] && command -v restorecon >/dev/null 2>&1; then
+        run restorecon -R "$SELINUX_RUN_DIR" >/dev/null 2>&1 || true
+    fi
+    # said when the policy does not label it: under enforcing the pages could
+    # not read the API token - Settings - Security - SELinux says what else
+    if command -v matchpathcon >/dev/null 2>&1 && [[ -z "$DRY_RUN" ]]; then
+        want="$(matchpathcon "$SELINUX_RUN_DIR" 2>/dev/null || true)"
+        case "$want" in
+            *httpd_var_run_t*|*httpd_runtime_t*) ;;
+            *) warn "SELinux: the policy does not label $SELINUX_RUN_DIR for the pages (${want:-nothing}) - zigmon --selinux-check" ;;
+        esac
+    fi
+    return 0
+}
+
+selinux_nginx_ports() {
+    # nginx on a port of no type it may bind (http_port_t, http_cache_port_t)
+    # does not start under enforcing: such a port labelled http_port_t - with
+    # -a only, never -m, which would take it from the service it belongs to
+    [[ -f "$NGINX_CONF" ]] || return 0
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] || return 0
+    local port ports
+    ports="$(sed -E 's/#.*//' "$NGINX_CONF" | sed -nE 's/^[[:space:]]*listen[[:space:]]+([^;[:space:]]+).*$/\1/p' \
+             | sed -nE 's/^(.*:)?([0-9]{1,5})$/\2/p' | sort -un)"
+    for port in $ports; do
+        if [[ "$port" == 80 || "$port" == 443 ]]; then continue; fi
+        if ! command -v semanage >/dev/null 2>&1; then
+            warn "SELinux: semanage is not here, so nginx's port $port may be shut to it (dnf install policycoreutils-python-utils)"
+            return 0
+        fi
+        if semanage port -l 2>/dev/null | awk -v p="$port" '
+                ($1 == "http_port_t" || $1 == "http_cache_port_t") && $2 == "tcp" {
+                    for (i = 3; i <= NF; i++) { v = $i; gsub(/,/, "", v); n = split(v, r, "-")
+                        if (p + 0 >= r[1] + 0 && p + 0 <= (n > 1 ? r[2] : r[1]) + 0) f = 1 } }
+                END { exit f ? 0 : 1 }'; then
+            continue
+        fi
+        if run semanage port -a -t http_port_t -p tcp "$port" >/dev/null 2>&1; then
+            good "SELinux: nginx may listen on $port"
+        else
+            warn "SELinux: port $port could not be labelled http_port_t (another service's?) - choose another port for nginx"
+        fi
+    done
+    return 0
+}
+
+configure_selinux() {
+    [[ -d "$SELINUX_ETC" ]] || command -v getenforce >/dev/null 2>&1 || return 0
+    step "SELinux"
+    selinux_tools
+    selinux_module
+    if ! command -v getenforce >/dev/null 2>&1 || [[ "$(getenforce 2>/dev/null)" == "Disabled" ]]; then
+        note "SELinux is disabled: nothing changed. Settings - Security - SELinux makes it ready, a step at a time."
+        return 0
+    fi
+    # PHP talks to the daemon on 127.0.0.1:9849, which is not a labelled http port.
+    if [[ -n "$WITH_WEB" ]] && ! getsebool httpd_can_network_connect 2>/dev/null | grep -q -- '--> on'; then
+        run setsebool -P httpd_can_network_connect 1
+    fi
+    if [[ -n "$WITH_WEB" ]] && [[ -d "$WEB_DIR" ]] && command -v restorecon >/dev/null 2>&1; then
+        if command -v semanage >/dev/null 2>&1 && ! semanage fcontext -l 2>/dev/null | grep -qF "$WEB_DIR(/.*)?"; then
+            run semanage fcontext -a -t httpd_sys_content_t "$WEB_DIR(/.*)?" >/dev/null 2>&1 || true
+        fi
+        run restorecon -R "$WEB_DIR" >/dev/null 2>&1 || true
+    fi
+    selinux_nginx_ports
+    good "done - Settings - Security - SELinux says what else, and takes it to enforcing"
 }
 
 configure_firewall() {
@@ -1425,7 +1546,7 @@ write_system_stamp() {
     # what root's parts are as this install.sh left them, each with its hash:
     # the daemon says so on every page when they drift from it, or when the
     # program runs a version this stamp was not written for
-    local parts=("$LIB_DIR/zigmon_root.py" "$LIB_DIR/zigmon_upgrade.py" "$UNIT_FILE"
+    local parts=("$LIB_DIR/zigmon_root.py" "$LIB_DIR/zigmon_upgrade.py" "$LIB_DIR/zigmon_server.cil" "$UNIT_FILE"
                  /etc/systemd/system/zigmon-root.path /etc/systemd/system/zigmon-root.service
                  /etc/systemd/system/zigmon-upgrade.path /etc/systemd/system/zigmon-upgrade.service
                  "$LOGROTATE_FILE" /etc/profile.d/zz-zigmon-console.sh)
@@ -1462,6 +1583,7 @@ do_upgrade() {
     ensure_python            # 5.31: the newest python3.X of the repositories
     install_service          # the unit changes with the program; a reload is cheap
     install_helpers
+    configure_selinux        # the module, the tools, nginx's ports - before nginx is reloaded
     install_time_tools
     install_console
     console_quiet
@@ -1665,6 +1787,15 @@ do_uninstall() {
     run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login "$CONSOLE_SYSCTL"
     run rm -f "$SYSTEM_STAMP"
     run rm -f "$UNIT_FILE" "$LOGROTATE_FILE" "$BIN_LINK"
+    # zigmon's SELinux module goes with it; the mode, the booleans and the
+    # ports are the machine's and stay as they are
+    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="zigmon_server"{f=1} END{exit !f}'; then
+        if run semodule -r zigmon_server; then
+            good "SELinux: zigmon's module (zigmon_server) taken out of the policy"
+        else
+            warn "SELinux: zigmon's module could not be taken out: semodule -r zigmon_server"
+        fi
+    fi
     run rm -rf "$LIB_DIR" "$WEB_DIR"
     if [[ -f "$NGINX_CONF" ]]; then
         run rm -f "$NGINX_CONF"

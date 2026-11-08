@@ -25,7 +25,12 @@ root. Four kinds of thing can be asked for, and nothing else:
                    (dnf), started as a job of its own that outlives this
                    service and writes how it goes into osup.json and osup.log;
                    the proxy of Control - Proxy, when one is handed over, kept
-                   for dnf in a file only root reads, never on a command line.
+                   for dnf in a file only root reads, never on a command line;
+  * selinux.ask  - how SELinux is here, the way to enforcing a step at a time
+                   (made ready, what zigmon needs put in, enforcing,
+                   permissive again) and a report for whoever writes
+                   zigmon's module - booleans and port types only from
+                   an allow-list, a port never taken from another service.
 
 Nothing in a request is trusted: every value is checked against the one shape
 it may have before it goes into a file, certificates and keys are read by
@@ -45,6 +50,9 @@ a path it could swap for a link.
                                           what a backup holds
   zigmon_root.py --os-job ID check|upgrade [security]
                                           the system's updates (started by itself)
+  zigmon_root.py --selinux-check [--json] | --selinux-do STEP [--json] | --selinux-report FILE
+                                          SELinux (from zigmon --selinux-check, --selinux,
+                                          --selinux-report; what is needed on stdin)
 """
 import calendar
 import fcntl
@@ -3963,6 +3971,789 @@ def osup_job(job, kind, security=False):
     return 0
 
 
+# ---- SELinux (otp 1.0.233 - 1.0.265) ----------------------------------------------------
+# Asked in selinux.ask, answered in selinux.json: how SELinux is on this machine (check), the
+# way to enforcing a step at a time - made ready and permissive from disabled, what zigmon
+# needs put in (prepare), enforcing, permissive again - and a report for whoever writes
+# zigmon's module. Nothing changes unless one of those is asked: disabled stays disabled.
+#
+#   absent (no getenforce: Debian, Ubuntu) - nothing to do
+#   Disabled --prepare--> SELINUX=permissive, /.autorelabel, selinux=0 off the kernel's
+#                         command line, the module tried (the machine is NOT restarted)
+#   Permissive --prepare--> the module, the labels, the booleans, the ports; "applied at"
+#              --enforce--> the same again, checked, refused while anything is missing or
+#                           was refused; setenforce 1 and SELINUX=enforcing
+#   Enforcing --permissive--> setenforce 0 and SELINUX=permissive
+#
+# The daemon says what this configuration needs (booleans, ports); every word of it is
+# checked here against what may be set - an allow-list of booleans and of port types - and
+# what nginx listens on is read here, from nginx's own file, not taken from the daemon.
+SELINUX_ASK = 'selinux.ask'
+SELINUX_FILE = 'selinux.json'
+SE_CONFIG = os.environ.get('ZIGMON_SELINUX_CONFIG', '/etc/selinux/config')
+SE_RELABEL = os.environ.get('ZIGMON_SELINUX_RELABEL', '/.autorelabel')
+SE_CMDLINE = os.environ.get('ZIGMON_SELINUX_CMDLINE', '/proc/cmdline')
+SE_CIL = os.environ.get('ZIGMON_SELINUX_CIL', '/usr/local/lib/zigmon/zigmon_server.cil')
+SE_RUN = os.environ.get('ZIGMON_SELINUX_RUN', '/run/zigmon')
+SE_WEB = os.environ.get('ZIGMON_SELINUX_WEB', '/var/www/zigmon')
+# tests: a folder holding getenforce, semanage, semodule, ausearch ... - looked in alone
+SE_BIN = os.environ.get('ZIGMON_SELINUX_BIN', '')
+SE_MODULE = 'zigmon_server'
+SE_APPLIED = 'selinux-applied'      # when zigmon's needs were last put in: root's own folder
+SE_REPORT_FILE = 'selinux-report.tar.gz'
+SE_REPORT_MOST = 2 * 1024 * 1024    # each part of the report at most, before it is packed
+# What zigmon's files should be labelled (the third field of the context), and why.
+SE_LABELS = ((SE_RUN, 'httpd_var_run_t', 'the folder of the API token'),
+             (SE_RUN + '/api-token', 'httpd_var_run_t', 'the API token the pages read'),
+             (SE_WEB, 'httpd_sys_content_t', 'the pages'))
+# What may be switched on, and the port types that may be given - nothing else, whatever
+# the request says. The pages ask the daemon on 127.0.0.1:9849; nginx on a port of its own.
+SE_BOOLEANS = ('httpd_can_network_connect',)
+SE_PORT_TYPES = ('http_port_t',)
+# The TCP ports a type nginx may bind already has (http_port_t, http_cache_port_t): a port
+# of either is never asked for, and is no problem.
+SE_HTTPD_TYPES = ('http_port_t', 'http_cache_port_t')
+# The programs whose refusals are zigmon's business: the web server and php-fpm, systemd
+# (its RuntimeDirectory), logrotate (the HUP), chronyd (the time servers set from the pages),
+# the journal, and zigmon itself (unconfined, but what touches its files says its name).
+SE_DOMAINS = ('httpd_t', 'init_t', 'logrotate_t', 'chronyd_t', 'syslogd_t', 'unconfined_service_t',
+              'system_cronjob_t')
+
+
+class SeRefused(Refused):
+    pass
+
+
+def se_tool(name):
+    if SE_BIN:
+        p = os.path.join(SE_BIN, name)
+        return p if os.access(p, os.X_OK) else None
+    return shutil.which(name)
+
+
+def se_run(cmd, timeout=120, light=False, data=None):
+    """A tool of SELinux's, or None when it is not on this machine. `light`: the heavy ones
+    (semanage loads the whole policy, ausearch reads the audit log since the start) at the
+    lowest priority - looked at every half hour beside the house's own work."""
+    exe = se_tool(cmd[0])
+    if not exe:
+        return None
+    cmd = [exe] + list(cmd[1:])
+    if light:
+        if shutil.which('ionice'):
+            cmd = [shutil.which('ionice'), '-c', '3'] + cmd
+        if shutil.which('nice'):
+            cmd = [shutil.which('nice'), '-n', '19'] + cmd
+    try:
+        return subprocess.run(cmd, input=data, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def se_said(got):
+    return ((got.stderr or got.stdout or '') if got is not None else 'not on this machine').strip()[-200:]
+
+
+def se_read(path):
+    try:
+        with open(path, errors='replace') as f:
+            return f.read(1 << 20)
+    except OSError:
+        return None
+
+
+def se_applied_at():
+    """When zigmon's needs were last put in - in root's own folder: in the service's, a time
+    ahead written there would have hidden every refusal from the check before enforcing."""
+    got = own_read(SE_APPLIED)
+    try:
+        return float((got or {}).get('at') or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def se_auditd():
+    """Whether what SELinux refuses is written down at all: auditd running."""
+    fake = os.environ.get('ZIGMON_SELINUX_AUDITD')
+    if fake:
+        return fake == 'active'
+    if NO_SERVICES:
+        return True
+    got = service('is-active', 'auditd')
+    return (got.stdout or '').strip() == 'active'
+
+
+def se_mode():
+    got = se_run(['getenforce'], 20)
+    if got is None:
+        return 'absent'
+    m = (got.stdout or '').strip()
+    return m if m in ('Enforcing', 'Permissive', 'Disabled') else 'Disabled'
+
+
+def se_config():
+    text = se_read(SE_CONFIG) or ''
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r'^\s*(SELINUX|SELINUXTYPE)\s*=\s*([A-Za-z0-9_-]+)\s*$', line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return {'mode': out.get('SELINUX', ''), 'type': out.get('SELINUXTYPE', ''), 'there': bool(text)}
+
+
+def se_config_set(mode):
+    """SELINUX= in /etc/selinux/config, the rest of the file as it is."""
+    if mode not in ('permissive', 'enforcing'):
+        raise SeRefused('permissive or enforcing')
+    text = se_read(SE_CONFIG)
+    if text is None:
+        raise SeRefused('%s is not there - is the SELinux policy installed? '
+                        '(dnf install selinux-policy-targeted)' % SE_CONFIG)
+    if re.search(r'(?m)^\s*SELINUX\s*=', text):
+        new = re.sub(r'(?m)^(\s*)SELINUX\s*=.*$', r'\g<1>SELINUX=%s' % mode, text)
+    else:
+        new = text.rstrip('\n') + '\nSELINUX=%s\n' % mode
+    if new != text:
+        write_root(SE_CONFIG, new, 0o644)
+
+
+def se_cmdline_off():
+    """selinux=0 on the kernel's command line: the configuration alone does not switch it on."""
+    return bool(re.search(r'(?:^|\s)selinux=0(?:\s|$)', se_read(SE_CMDLINE) or ''))
+
+
+def se_label(path):
+    fake = os.environ.get('ZIGMON_SELINUX_LABELS')         # tests: {path: label}
+    if fake:
+        try:
+            with open(fake) as f:
+                return (json.load(f) or {}).get(path)
+        except (OSError, ValueError, AttributeError):
+            return None
+    try:
+        raw = os.getxattr(path, 'security.selinux', follow_symlinks=False)
+    except (OSError, AttributeError):
+        return None
+    parts = raw.decode('utf-8', 'replace').rstrip('\0').split(':')
+    return parts[2] if len(parts) >= 3 else None
+
+
+def se_label_ok(got, want):
+    # newer policies call the run files' types *_runtime_t (the old name an alias)
+    return got in (want, want.replace('_var_run_t', '_runtime_t'))
+
+
+def se_module_in():
+    got = se_run(['semodule', '-l'], 120, light=True)
+    if got is None or got.returncode != 0:
+        return None
+    return any(line.split()[:1] == [SE_MODULE] for line in got.stdout.splitlines())
+
+
+def se_bool(name):
+    got = se_run(['getsebool', name], 20)
+    if got is None or got.returncode != 0:
+        return None
+    return bool(re.search(r'-->\s*on\s*$', got.stdout.strip()))
+
+
+def se_ports():
+    """semanage port -l: {(type, proto): [(lo, hi), ...]}; None without semanage."""
+    got = se_run(['semanage', 'port', '-l'], 120, light=True)
+    if got is None or got.returncode != 0:
+        return None
+    out = {}
+    for line in got.stdout.splitlines():
+        m = re.match(r'^(\S+_port_t)\s+(tcp|udp|sctp|dccp)\s+(.+)$', line.strip())
+        if not m:
+            continue
+        for p in m.group(3).split(','):
+            a, _, b = p.strip().partition('-')
+            try:
+                out.setdefault((m.group(1), m.group(2)), []).append((int(a), int(b or a)))
+            except ValueError:
+                continue
+    return out
+
+
+def se_port_has(ports, kind, proto, port):
+    kinds = SE_HTTPD_TYPES if kind == 'http_port_t' else (kind,)
+    return any(lo <= port <= hi for k in kinds for lo, hi in (ports or {}).get((k, proto), []))
+
+
+def se_nginx_ports():
+    """The ports nginx listens on for the pages, read from its own file here: one that is not
+    a port nginx may bind keeps nginx from starting under enforcing. 80 and 443 are always."""
+    text = se_read(nginx_conf()) or ''
+    seen = []
+    for line in text.splitlines():
+        line = line.split('#', 1)[0]
+        m = re.match(r'^\s*listen\s+([^;\s]+)', line)
+        if not m or m.group(1).startswith('unix:'):
+            continue
+        p = re.search(r'(?:^|:)(\d{1,5})$', m.group(1))
+        if not p:
+            continue
+        n = int(p.group(1))
+        if 1 <= n <= 65535 and n not in (80, 443) and n not in seen:
+            seen.append(n)
+    return [{'port': n, 'proto': 'tcp', 'type': 'http_port_t', 'why': 'nginx serves the pages on it'}
+            for n in seen[:8]]
+
+
+def se_denials(since=0.0):
+    """What SELinux refused since the machine started - or since zigmon's needs were last put
+    in (what was refused before that is what they put right) - for the programs zigmon works
+    with, grouped by what was refused, the most first; and those the policy loaded now allows
+    (audit2why: a newer module, a boolean switched on since) told apart, not counted."""
+    got = se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot'], 120, light=True)
+    if got is None:
+        return {'tool': False, 'total': 0, 'groups': [], 'since': since, 'settled': 0}
+    groups, lines, total = {}, {}, 0
+    for line in (got.stdout or '').splitlines():
+        if 'avc:' not in line or 'denied' not in line:
+            continue
+        when = re.search(r'msg=audit\((\d+)(?:\.\d+)?:', line)
+        if since and when and int(when.group(1)) < since:
+            continue
+        perms = re.search(r'denied\s+\{([^}]*)\}', line)
+        sc = re.search(r'scontext=(\S+)', line)
+        tc = re.search(r'tcontext=(\S+)', line)
+        cl = re.search(r'tclass=(\S+)', line)
+        if not (perms and sc and tc and cl):
+            continue
+        st = (sc.group(1).split(':') + ['', '', ''])[2]
+        tt = (tc.group(1).split(':') + ['', '', ''])[2]
+        if st not in SE_DOMAINS and 'zigmon' not in line:
+            continue
+        comm = re.search(r'\bcomm=(\S+)', line)
+        name = re.search(r'\bname=(\S+)', line)
+        what = ' '.join(x for x in (comm.group(1) if comm else '', name.group(1) if name else '') if x)
+        total += 1
+        key = (st, tt, cl.group(1), perms.group(1).strip())
+        lines[key] = line
+        g = groups.setdefault(key, {'source': st, 'target': tt, 'class': cl.group(1),
+                                    'perms': perms.group(1).strip(), 'count': 0, 'what': ''})
+        g['count'] += 1
+        g['what'] = re.sub(r'[^\w./@:+-]+', ' ', what)[:120].strip() or g['what']
+    settled = 0
+    for key in se_allowed_now(lines):
+        settled += groups[key]['count']
+        total -= groups.pop(key)['count']
+    out = sorted(groups.values(), key=lambda g: -g['count'])[:30]
+    return {'tool': True, 'total': total, 'groups': out, 'since': since, 'settled': settled}
+
+
+def se_allowed_now(lines):
+    """Which kinds of refusal (one line of each) the policy loaded now allows, as audit2why
+    says: "would be allowed by active policy". None when it is not there or says nothing."""
+    by_id = {}
+    for key, line in lines.items():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', line)
+        if m:
+            by_id[m.group(1)] = key
+    if not by_id:
+        return []
+    got = se_run(['audit2why'], 300, light=True, data=''.join(lines[k] + '\n' for k in by_id.values()))
+    if got is None or got.returncode != 0:
+        return []
+    now, cur = set(), None
+    for line in (got.stdout or '').splitlines():
+        m = re.search(r'msg=audit\(([0-9.]+:\d+)\)', line)
+        if m and 'avc:' in line:
+            cur = by_id.get(m.group(1))
+            continue
+        if cur is not None and 'would be allowed by active policy' in line:
+            now.add(cur)
+    return sorted(now)
+
+
+def se_want_checked(r, left_out):
+    """What the daemon says zigmon needs here, checked against what may be set: a boolean of
+    another name refuses the request; a port of a type this helper does not set (a newer
+    daemon, an older helper, in the middle of an upgrade) is left out with a word, so that the
+    booleans and the other ports still go in. nginx's ports are read here, last."""
+    bools = []
+    for b in (r.get('booleans') or [])[:8]:
+        if not isinstance(b, dict) or b.get('name') not in SE_BOOLEANS:
+            raise SeRefused('a boolean zigmon does not set')
+        bools.append({'name': b['name'], 'why': str(b.get('why') or '')[:120]})
+    ports = []
+    for p in (r.get('ports') or [])[:16]:
+        if not isinstance(p, dict) or p.get('proto') not in ('tcp', 'udp'):
+            raise SeRefused('a port is tcp or udp')
+        if p.get('type') not in SE_PORT_TYPES:
+            if re.match(r'^[a-z][a-z0-9_]{0,40}_port_t\Z', str(p.get('type') or '')):
+                left_out.append('port %s/%s left out: this helper does not set %s - install.sh of the '
+                                'daemon\'s version puts in one that does'
+                                % (str(p.get('port'))[:6], p['proto'], p['type']))
+                continue
+            raise SeRefused('a port type zigmon does not set')
+        try:
+            n = int(p.get('port'))
+        except (TypeError, ValueError):
+            raise SeRefused('a port is a number')
+        if isinstance(p.get('port'), bool) or not 1 <= n <= 65535:
+            raise SeRefused('a port is 1 to 65535')
+        ports.append({'port': n, 'proto': p['proto'], 'type': p['type'], 'why': str(p.get('why') or '')[:120]})
+    for p in se_nginx_ports():
+        if not any(x['port'] == p['port'] and x['proto'] == 'tcp' for x in ports):
+            ports.append(p)
+    return bools, ports
+
+
+def se_check(r):
+    left = []
+    bools, ports = se_want_checked(r, left)
+    mode = se_mode()
+    conf = se_config()
+    out = {'mode': mode, 'config': conf['mode'], 'policy': conf['type'],
+           'relabel_pending': os.path.exists(SE_RELABEL), 'cmdline_off': se_cmdline_off(),
+           'tools': {t: bool(se_tool(t)) for t in ('semanage', 'semodule', 'ausearch', 'audit2why')},
+           'module': None, 'labels': [], 'booleans': [], 'ports': [],
+           'denials': {'tool': False, 'total': 0, 'groups': [], 'since': 0, 'settled': 0},
+           'problems': [], 'left_out': left}
+    if mode == 'absent':
+        out['ready'] = False
+        return out
+    on = mode in ('Enforcing', 'Permissive')
+    out['module'] = se_module_in()
+    for path, want, why in SE_LABELS:
+        if not os.path.exists(path):
+            continue
+        got = se_label(path) if on else None
+        out['labels'].append({'path': path, 'label': got, 'want': want, 'why': why,
+                              'ok': se_label_ok(got, want) if on else None})
+    for b in bools:
+        out['booleans'].append(dict(b, on=se_bool(b['name']) if on else None))
+    known = se_ports() if on else None
+    for p in ports:
+        out['ports'].append(dict(p, labelled=(se_port_has(known, p['type'], p['proto'], p['port'])
+                                             if known is not None else None)))
+    probs = out['problems']
+    if on:
+        out['denials'] = se_denials(se_applied_at())
+        out['auditd'] = se_auditd()
+        if out['module'] is False:
+            probs.append('zigmon\'s module (%s) is not installed' % SE_MODULE)
+        probs.extend('%s is labelled %s, not %s (%s)' % (x['path'], x['label'] or '?', x['want'], x['why'])
+                     for x in out['labels'] if x['ok'] is False)
+        probs.extend('the boolean %s is off (%s)' % (x['name'], x['why'])
+                     for x in out['booleans'] if x['on'] is False)
+        probs.extend('port %d/%s is not labelled %s (%s)' % (x['port'], x['proto'], x['type'], x['why'])
+                     for x in out['ports'] if x['labelled'] is False)
+        if known is None and ports:
+            probs.append('semanage is not on this machine - the ports cannot be checked '
+                         '(dnf install policycoreutils-python-utils)')
+        d = out['denials']
+        if d['total']:
+            probs.append(('SELinux refused %d thing(s) since zigmon\'s needs were put in' if d.get('since')
+                          else 'SELinux refused %d thing(s) since the machine started') % d['total'])
+        if not out['auditd']:
+            # nothing written down, nothing counted: enforcing let through on no word
+            probs.append('auditd does not run - what SELinux refuses is not written down '
+                         '(systemctl enable --now auditd)')
+        if not d['tool']:
+            probs.append('ausearch is not on this machine - what SELinux refused cannot be read '
+                         '(dnf install audit)')
+    out['ready'] = mode == 'Permissive' and not probs
+    return out
+
+
+def se_restorecon(said):
+    paths = [p for p in (SE_RUN, SE_WEB) if os.path.exists(p)]
+    if not paths:
+        return False
+    got = se_run(['restorecon', '-R', '-v'] + paths, 300)
+    if got is not None and re.search(r'(?i)relabel', (got.stdout or '') + (got.stderr or '')):
+        said.append('zigmon\'s files labelled again')
+        return True
+    return False
+
+
+def se_apply(bools, ports, said, mark=True):
+    """zigmon's module, the labels of its files, the booleans and the ports - on a machine
+    where SELinux is on. `mark`: when anything was changed, what SELinux refused before no
+    longer counts (it is what this put right) - never on the way to enforcing."""
+    changed = False
+    inpol = se_read(SE_CIL + '.in-policy')
+    if os.path.exists(SE_CIL) and se_tool('semodule') and (
+            se_module_in() is not True or inpol != se_read(SE_CIL)):
+        got = se_run(['semodule', '-i', SE_CIL], 300)
+        if got is None or got.returncode != 0:
+            raise SeRefused('semodule -i %s: %s' % (SE_CIL, se_said(got)))
+        said.append('zigmon\'s module (%s) installed' % SE_MODULE)
+        changed = True
+        try:
+            shutil.copyfile(SE_CIL, SE_CIL + '.in-policy')
+        except OSError:
+            pass
+    for b in bools:
+        if se_bool(b['name']) is False:
+            got = se_run(['setsebool', '-P', b['name'], 'on'], 300)
+            if got is None or got.returncode != 0:
+                raise SeRefused('setsebool -P %s on: %s' % (b['name'], se_said(got)))
+            said.append('%s on' % b['name'])
+            changed = True
+    known = se_ports() if ports else {}
+    for p in ports:
+        if known is None:
+            raise SeRefused('semanage is not on this machine (dnf install policycoreutils-python-utils)')
+        if se_port_has(known, p['type'], p['proto'], p['port']):
+            continue
+        # -a only, never -m: a port of another type is that service's, and taken from it
+        # the service could not bind it at its next start
+        got = se_run(['semanage', 'port', '-a', '-t', p['type'], '-p', p['proto'], str(p['port'])], 300)
+        if got is not None and got.returncode != 0 and 'already defined' in (got.stderr or '') + (got.stdout or ''):
+            raise SeRefused('port %d/%s is another service\'s in the SELinux policy - choose another '
+                            'port for it (%s)' % (p['port'], p['proto'], p['why']))
+        if got is None or got.returncode != 0:
+            raise SeRefused('semanage port -a %d/%s: %s' % (p['port'], p['proto'], se_said(got)))
+        said.append('port %d/%s labelled %s' % (p['port'], p['proto'], p['type']))
+        changed = True
+    if se_restorecon(said):
+        changed = True
+    if mark and changed:
+        own_write(SE_APPLIED, {'at': time.time()})
+
+
+def se_do(r):
+    do = r.get('do')
+    left = []
+    bools, ports = se_want_checked(r, left)
+    said = list(left)
+    if do == 'check':
+        return se_check(r)
+    if do == 'report':
+        data = se_report_bytes(r)
+        write_here(SE_REPORT_FILE, data)
+        return {'report': SE_REPORT_FILE, 'bytes': len(data), 'at': time.time()}
+    mode = se_mode()
+    if mode == 'absent':
+        raise SeRefused('there is no SELinux on this machine')
+    if do == 'prepare':
+        if mode == 'Enforcing':
+            raise SeRefused('SELinux is enforcing already')
+        se_config_set('permissive')
+        said.append('%s: SELINUX=permissive' % SE_CONFIG)
+        if mode == 'Disabled':
+            # every file labelled at the next start, before anything runs (minutes); the
+            # booleans and the ports go in once it is permissive ("Put in what zigmon needs")
+            with open(SE_RELABEL, 'a'):
+                pass
+            said.append('the files are labelled at the next start of the machine')
+            if se_cmdline_off() and se_tool('grubby'):
+                got = se_run(['grubby', '--update-kernel', 'ALL', '--remove-args', 'selinux'], 120)
+                if got is None or got.returncode != 0:
+                    raise SeRefused('grubby: %s' % se_said(got))
+                said.append('selinux=0 taken off the kernel\'s command line')
+            elif se_cmdline_off():
+                said.append('the kernel\'s command line has selinux=0: take it away '
+                            '(grubby --update-kernel ALL --remove-args selinux)')
+            if os.path.exists(SE_CIL) and se_tool('semodule'):
+                got = se_run(['semodule', '-i', SE_CIL], 300)      # into the store; may not work
+                if got is not None and got.returncode == 0:        # while disabled
+                    said.append('zigmon\'s module (%s) installed' % SE_MODULE)
+                    try:
+                        shutil.copyfile(SE_CIL, SE_CIL + '.in-policy')
+                    except OSError:
+                        pass
+            said.append('restart the machine - it comes up permissive')
+        else:
+            se_apply(bools, ports, said)
+    elif do == 'enforce':
+        if mode != 'Permissive':
+            raise SeRefused('SELinux is %s - it goes to enforcing from permissive only' % mode.lower())
+        se_apply(bools, ports, said, mark=False)
+        c = se_check(r)
+        if c['problems']:
+            raise SeRefused('not yet: ' + '; '.join(c['problems'][:4]))
+        got = se_run(['setenforce', '1'], 60)
+        if got is None or got.returncode != 0:
+            raise SeRefused('setenforce 1: %s' % se_said(got))
+        se_config_set('enforcing')
+        said.append('SELinux is enforcing, and stays so after a restart')
+    elif do == 'permissive':
+        if mode == 'Disabled':
+            raise SeRefused('SELinux is disabled - "prepare" makes it permissive')
+        if mode == 'Enforcing':
+            got = se_run(['setenforce', '0'], 60)
+            if got is None or got.returncode != 0:
+                raise SeRefused('setenforce 0: %s' % se_said(got))
+        se_config_set('permissive')
+        said.append('SELinux is permissive, and stays so after a restart')
+    else:
+        raise SeRefused('check, prepare, enforce, permissive or report')
+    out = se_check(r)
+    out['said'] = said
+    return out
+
+
+def selinux_part():
+    ask_part(SELINUX_ASK, SELINUX_FILE, se_do, 16384)
+
+
+# ---- the report, for whoever writes zigmon's module: nothing is changed to make it ------
+SE_REPORT_PATHS = ('/run/zigmon', '/run/zigmon/api-token', '/var/lib/zigmon', '/var/lib/zigmon/root',
+                   '/etc/zigmon', '/var/www/zigmon', '/usr/local/lib/zigmon', '/var/log/zigmon',
+                   '/etc/nginx/conf.d', '/etc/nginx/certs', '/etc/mosquitto', '/etc/chrony.conf',
+                   '/run/php-fpm', '/etc/logrotate.d/zigmon', '/etc/systemd/system/zigmon.service')
+SE_REPORT_COMMS = ('python', 'zigmon', 'nginx', 'php-fpm', 'mosquitto', 'chronyd', 'auditd', 'systemd',
+                   'zigbee2mqtt', 'node')
+SE_REPORT_PORT_TYPES = ('http_port_t', 'http_cache_port_t', 'unreserved_port_t', 'ntp_port_t')
+# Audit records that hold a command line or the arguments a program was given - the place a
+# secret of another program could be: never in the report, whatever else is.
+SE_AUDIT_KEEP = re.compile(r'^(----|time->|type=(AVC|USER_AVC|SELINUX_ERR|USER_SELINUX_ERR|SYSCALL|PATH|'
+                           r'CWD|SOCKADDR)\b)')
+SE_SECRET_WORDS = re.compile(r'(?i)(pass(word|wd|phrase)?|token|secret|key|pin|psk|auth|cookie|session)'
+                             r'([\'"]?\s*[=:]\s*)[^\s,;&\'"]+')
+
+
+def se_secrets():
+    """Every secret of zigmon's this machine holds, to be blotted out of the report wherever it
+    turns up: the API token, and each password, key, token and PIN in its configuration."""
+    out = set()
+    tok = se_read(os.path.join(SE_RUN, 'api-token'))
+    if tok and tok.strip():
+        out.add(tok.strip())
+    try:
+        with open(CONFIG_FILE) as f:
+            conf = json.load(f)
+    except (OSError, ValueError):
+        conf = {}
+
+    def walk(v, secret=False):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, secret or bool(re.search(r'(?i)pass|token|secret|key|pin|psk|auth|cookie', str(k))))
+        elif isinstance(v, list):
+            for x in v:
+                walk(x, secret)
+        elif secret and isinstance(v, str) and len(v.strip()) >= 4:
+            out.add(v.strip())
+    walk(conf)
+    return sorted(out, key=len, reverse=True)
+
+
+def se_blot(text, secrets_):
+    for s in secrets_:
+        text = text.replace(s, '(left out)')
+    return SE_SECRET_WORDS.sub(lambda m: m.group(1) + m.group(3) + '(left out)', text)
+
+
+def se_cut(text):
+    b = text.encode('utf-8', 'replace')
+    if len(b) <= SE_REPORT_MOST:
+        return text
+    # the newest kept: the end of the audit log is what came last
+    return '(the first %d bytes left out - too long)\n' % (len(b) - SE_REPORT_MOST) + \
+        b[-SE_REPORT_MOST:].decode('utf-8', 'replace')
+
+
+def se_out(cmd, timeout=120, data=None, light=True, tool=True):
+    """A command's words for the report - what it said, or why it said nothing."""
+    exe = se_tool(cmd[0]) if tool else shutil.which(cmd[0])
+    if not exe:
+        return '(%s is not on this machine)\n' % cmd[0]
+    full = [exe] + list(cmd[1:])
+    if light:
+        if shutil.which('ionice'):
+            full = [shutil.which('ionice'), '-c', '3'] + full
+        if shutil.which('nice'):
+            full = [shutil.which('nice'), '-n', '19'] + full
+    try:
+        got = subprocess.run(full, input=data, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return '(%s: %s)\n' % (cmd[0], e)
+    return se_cut((got.stdout or '') + (('\n--- stderr ---\n' + got.stderr) if (got.stderr or '').strip() else ''))
+
+
+def se_audit_only(text):
+    return '\n'.join(x for x in text.splitlines() if SE_AUDIT_KEEP.match(x) or x.startswith('(')) + '\n'
+
+
+def se_report_parts(r):
+    parts = {}
+    parts['check.json'] = json.dumps(se_check(r), indent=1, sort_keys=True)
+    facts = r.get('facts') if isinstance(r.get('facts'), dict) else {}
+    parts['zigmon.json'] = json.dumps({'facts': facts, 'want': {'booleans': r.get('booleans') or [],
+                                                                'ports': r.get('ports') or []}},
+                                      indent=1, sort_keys=True, default=str)
+    raw = se_audit_only(se_out(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR', '-ts', 'boot'], 300))
+    parts['avc-raw.txt'] = raw
+    parts['avc.txt'] = se_audit_only(se_out(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR',
+                                             '-ts', 'boot', '-i'], 300))
+    if raw.startswith('('):
+        parts['audit2why.txt'] = parts['audit2allow.te'] = raw
+    else:
+        parts['audit2why.txt'] = se_out(['audit2why'], 300, data=raw)
+        parts['audit2allow.te'] = se_out(['audit2allow', '-m', 'zigmon_local'], 300, data=raw)
+    sysw = []
+    for name, cmd, tool in (('os-release', ['cat', '/etc/os-release'], False),
+                            ('kernel', ['uname', '-r'], False), ('started', ['uptime', '-s'], False),
+                            ('getenforce', ['getenforce'], True), ('sestatus', ['sestatus', '-v'], True),
+                            ('packages', ['rpm', '-q', 'selinux-policy', 'selinux-policy-targeted',
+                                          'policycoreutils', 'policycoreutils-python-utils',
+                                          'libselinux-utils', 'audit', 'nginx', 'php-fpm', 'mosquitto',
+                                          'chrony'], False),
+                            ('kernel command line', ['cat', SE_CMDLINE], False),
+                            ('selinux config', ['cat', SE_CONFIG], False)):
+        sysw.append('==== %s\n%s' % (name, se_out(cmd, 60, light=False, tool=tool)))
+    sysw.append('==== auditd\n%s\n' % ('active' if se_auditd() else 'not running'))
+    parts['system.txt'] = '\n'.join(sysw)
+    lab = []
+    for p in SE_REPORT_PATHS:
+        if os.path.lexists(p):
+            lab.append('%s  %s' % (p, se_label(p) or '?'))
+            if os.path.isdir(p):
+                try:
+                    for n in sorted(os.listdir(p))[:60]:
+                        lab.append('    %s  %s' % (n, se_label(os.path.join(p, n)) or '?'))
+                except OSError:
+                    pass
+            lab.append('  policy says: ' + se_out(['matchpathcon', p], 20, light=False).strip())
+    parts['labels.txt'] = '\n'.join(lab) + '\n'
+    # the domains the programs run in - their names, never their arguments
+    ps = se_out(['ps', '-eZo', 'label,user,pid,comm'], 60, light=False, tool=False)
+    parts['processes.txt'] = '\n'.join(x[:200] for x in ps.splitlines() if x.startswith('LABEL') or
+                                       any(c in x for c in SE_REPORT_COMMS)) + '\n'
+    ports = se_out(['semanage', 'port', '-l'], 300)
+    parts['ports.txt'] = '==== labelled\n' + '\n'.join(
+        x for x in ports.splitlines() if x.split()[:1] and x.split()[0] in SE_REPORT_PORT_TYPES) + \
+        '\n\n==== listening\n' + se_out(['ss', '-lntuZ'], 60, light=False, tool=False)
+    bools = se_out(['getsebool', '-a'], 60, light=False)
+    parts['booleans.txt'] = '\n'.join(x for x in bools.splitlines() if re.match(
+        r'^(httpd_|daemons_|logging_|domain_can|nis_enabled|use_nfs)', x)) + '\n'
+    mods = se_out(['semodule', '-l'], 300)
+    parts['modules.txt'] = '==== zigmon\n' + '\n'.join(x for x in mods.splitlines() if 'zigmon' in x.lower()) + \
+        '\n\n==== %s\n%s\n==== in the policy\n%s\n' % (SE_CIL, se_read(SE_CIL) or '(not there)',
+                                                       se_read(SE_CIL + '.in-policy') or '(none put in yet)')
+    parts['README.txt'] = (
+        'zigmon - what SELinux says on this machine, for whoever writes zigmon\'s module (%s).\n'
+        'Made %s. Nothing was changed to make it.\n\n'
+        'check.json      the card: mode, module, labels, booleans, ports, refusals\n'
+        'avc*.txt        what SELinux refused since the machine started (raw and readable)\n'
+        'audit2why.txt   why; audit2allow.te: what would allow it - a hint, never to be loaded\n'
+        'labels.txt      the labels of zigmon\'s files and what the policy says they should be\n'
+        'processes.txt   the domains the programs run in; ports.txt, booleans.txt, modules.txt\n'
+        'system.txt      the system, the policy and the packages; zigmon.json: what zigmon uses\n\n'
+        'No password, key or token is in it: zigmon\'s own are blotted out wherever they turn up,\n'
+        'and the audit records that hold a command line (PROCTITLE, EXECVE) are left out. The\n'
+        'refusals still name the programs and files of others on this machine: look through\n'
+        'avc*.txt before sending it on.\n' % (SE_MODULE, time.strftime('%Y-%m-%d %H:%M:%S')))
+    return parts
+
+
+def se_report_bytes(r):
+    secrets_ = se_secrets()
+    top = re.sub(r'[^A-Za-z0-9._-]', '', hostname())[:60] or 'zigmon'
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w:gz') as tf:
+        for name, text in se_report_parts(r).items():
+            data = se_blot(text, secrets_).encode('utf-8', 'replace')
+            info = tarfile.TarInfo('zigmon-selinux-%s/%s' % (top, name))
+            info.size, info.mtime, info.mode = len(data), int(time.time()), 0o600
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def se_words(c):
+    """zigmon --selinux-check: what se_check found, for a person."""
+    lines = ['SELinux: %s (config: %s%s)' % (c['mode'], c.get('config') or '?',
+                                            ', %s' % c['policy'] if c.get('policy') else '')]
+    if c['mode'] == 'absent':
+        lines.append('  no SELinux on this machine - nothing to do')
+        return '\n'.join(lines)
+    if c.get('relabel_pending'):
+        lines.append('  every file is labelled at the next start of the machine')
+    if c.get('cmdline_off'):
+        lines.append('  the kernel\'s command line has selinux=0')
+    if c['mode'] == 'Disabled':
+        lines.append('  disabled - zigmon runs as always; zigmon --selinux prepare (or "Make it ready" in '
+                     'Settings - SELinux) makes it permissive at the next start')
+        return '\n'.join(lines)
+    lines.append('  module %s: %s' % (SE_MODULE, {True: 'installed', False: 'NOT installed', None: '?'}[c['module']]))
+    for x in c['labels']:
+        lines.append('  %s %s: %s%s' % ('ok  ' if x['ok'] else 'FAIL', x['path'], x['label'] or '?',
+                                        '' if x['ok'] else ' (want %s)' % x['want']))
+    for x in c['booleans']:
+        lines.append('  %s boolean %s: %s - %s' % ('ok  ' if x['on'] else 'FAIL', x['name'],
+                                                   'on' if x['on'] else 'off', x['why']))
+    for x in c['ports']:
+        lines.append('  %s port %d/%s %s - %s' % ('ok  ' if x['labelled'] else 'FAIL', x['port'], x['proto'],
+                                                 x['type'], x['why']))
+    for x in c.get('left_out') or []:
+        lines.append('  note: %s' % x)
+    d = c['denials']
+    lines.append('  refused since %s: %s' % ('zigmon\'s needs were put in' if d.get('since') else 'the start',
+                                             d['total'] if d['tool'] else '? (ausearch is not there)'))
+    if d.get('settled'):
+        lines.append('  refused before, allowed now (not counted): %d' % d['settled'])
+    for g in d['groups'][:15]:
+        lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'], g['class'],
+                                                         g['perms'], g['what']))
+    if c.get('auditd') is False:
+        lines.append('  FAIL auditd does not run')
+    if c.get('ready'):
+        lines.append('ready for enforcing')
+    elif c['mode'] == 'Enforcing' and not c['problems']:
+        lines.append('enforcing - and everything zigmon needs is there')
+    elif c['problems']:
+        lines.append('not ready: ' + '; '.join(c['problems'][:6]))
+    return '\n'.join(lines)
+
+
+def se_cli(argv):
+    """zigmon_root.py --selinux-check [--json] | --selinux-do STEP [--json] |
+    --selinux-report FILE: as root, from the zigmon command - what this configuration needs
+    given on stdin (JSON), checked here as a request from the dashboard is."""
+    want = {}
+    if not sys.stdin.isatty():
+        try:
+            want = json.loads(sys.stdin.read(65536) or '{}')
+        except ValueError:
+            want = {}
+    if not isinstance(want, dict):
+        want = {}
+    if argv[0] == '--selinux-report':
+        if len(argv) < 2:
+            print('--selinux-report FILE', file=sys.stderr)
+            return 2
+        data = se_report_bytes(want)
+        path = os.path.abspath(argv[1])
+        fd, tmp = tempfile.mkstemp(prefix='.zigmon-selinux-', dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+                os.fchmod(f.fileno(), 0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        print(json.dumps({'report': path, 'bytes': len(data)}) if '--json' in argv else
+              '%s (%d kB)' % (path, len(data) >> 10))
+        return 0
+    step = 'check' if argv[0] == '--selinux-check' else (argv[1] if len(argv) > 1 else '')
+    try:
+        c = se_do(dict(want, do=step))
+    except Refused as e:
+        print(json.dumps({'ok': False, 'said': str(e)}) if '--json' in argv else 'refused: %s' % e,
+              file=sys.stdout if '--json' in argv else sys.stderr)
+        return 1
+    if '--json' in argv:
+        print(json.dumps(dict(c, ok=True), indent=1, sort_keys=True))
+    else:
+        for x in c.get('said') or []:
+            print('  ' + x)
+        print(se_words(c))
+    if step == 'check':
+        return 0 if c['mode'] in ('absent', 'Disabled') or not c['problems'] else 1
+    return 0
+
+
 # ---- the requests ---------------------------------------------------------------
 def status_read():
     try:
@@ -4153,7 +4944,7 @@ def serve():
     # the network, the clock and switching off first, and the updates of the
     # system, each answered on its own: none of them waits behind a backup
     # laid down in request.json
-    for part in (net_part, ntp_part, osup_part):
+    for part in (net_part, ntp_part, osup_part, selinux_part):
         try:
             part()
         except Exception as e:                          # noqa: BLE001
@@ -4291,6 +5082,10 @@ def main(argv):
                         return 1
                 full_restore(path, parts, from_page=False, say=print)
             return 0
+        if argv[:1] in (['--selinux-check'], ['--selinux-do'], ['--selinux-report']):
+            # SELinux, from the zigmon command as root: what the
+            # configuration needs on stdin, checked here as the dashboard's is
+            return se_cli(argv)
         if argv[:1] == ['--os-job'] and len(argv) >= 3 and argv[2] in OSUP_KINDS:
             # started by osup_launch, never by the dashboard's words
             if not OSUP_JOB_RE.match(argv[1]):

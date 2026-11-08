@@ -22,6 +22,8 @@ PathExists=/var/lib/zigmon/root/ntp.ask
 # the updates of the system (5.34): only started here - the job runs in a
 # unit of its own, and never holds anything else up
 PathExists=/var/lib/zigmon/root/osup.ask
+# SELinux: a look, a step on the way to enforcing, a report
+PathExists=/var/lib/zigmon/root/selinux.ask
 Unit=zigmon-root.service
 
 [Install]
