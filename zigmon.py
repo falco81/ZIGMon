@@ -53242,7 +53242,7 @@ def osr_start(d):
             return False
         OSR_WORK.update(busy=True, since=time.time())
 
-    def work():
+    def osr_work():
         background_thread()
         try:
             for _ in range(3):
@@ -53257,7 +53257,7 @@ def osr_start(d):
         finally:
             with OSR_LOCK:
                 OSR_WORK['busy'] = False
-    threading.Thread(target=work, name='osroots', daemon=True).start()
+    threading.Thread(target=osr_work, name='osroots', daemon=True).start()
     return True
 
 
