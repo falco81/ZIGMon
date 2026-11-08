@@ -2083,7 +2083,33 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.47.8**
+Current version: **5.48.0**
+
+5.48.0 — SELinux, and the system's own trusted roots.
+
+* Settings - Security - SELinux: how SELinux is on this machine and the way
+  to enforcing a step at a time - made ready from disabled (permissive after
+  the next restart), what zigmon needs put in (its module
+  `deploy/zigmon_server.cil` labelling `/run/zigmon` for php-fpm, the
+  boolean `httpd_can_network_connect`, nginx's own ports), enforcing only
+  when nothing is missing and auditd runs, permissive again. What SELinux
+  refused since then is counted on the card, and a report with no password,
+  key or token in it can be downloaded. Root does every step
+  (`selinux.ask`); a boolean or a port type only from an allow-list, a port
+  never taken from another service. Administrators only. The installer
+  puts the module in on dnf systems where SELinux is on and takes it out on
+  `--uninstall`; a disabled machine is left alone. Also as root:
+  `zigmon --selinux-check`, `--selinux STEP`, `--selinux-report`.
+* Settings - Security - Trusted roots of the system: certificate authorities
+  of one's own (a company's root, an intermediate) added to the trust of the
+  whole machine the system's own way (update-ca-trust,
+  update-ca-certificates), checked before they go in, downloaded or removed
+  again; what somebody else added there is shown and left alone.
+  Administrators only. Also `zigmon --os-roots`, `--os-roots-add`,
+  `--os-roots-remove`.
+
+`test/review548_selinux.py`, `test/review548_osroots.py`; these checks fail
+on 5.47.8.
 
 5.47.8 — a card says what it is; a Settings section scrolls whole.
 
