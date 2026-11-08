@@ -2083,7 +2083,18 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.48.0**
+Current version: **5.48.1**
+
+5.48.1 — the SELinux report lists the processes again.
+
+* The report's processes.txt was empty on AlmaLinux 9: procps refuses
+  `ps -eZo` ("output modifiers with user-defined output"); it is
+  `ps -eo label,...` now, and when ps gives no list the report says so.
+* Where the API token lies (`token_file`) is a path, not a secret: the report
+  no longer blots it out of check.json and labels.txt. What is in the file is
+  still left out.
+
+`test/review548_selinux.py`; these checks fail on 5.48.0.
 
 5.48.0 — SELinux, and the system's own trusted roots.
 

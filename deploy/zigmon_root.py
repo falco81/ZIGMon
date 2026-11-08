@@ -5023,6 +5023,10 @@ def se_secrets():
     def walk(v, secret=False):
         if isinstance(v, dict):
             for k, x in v.items():
+                # where a file is (token_file: /run/zigmon/api-token) is no secret - what is in it is,
+                # and that is read above; a path left out made the report's labels say "(left out)"
+                if re.search(r'(?i)_(file|path|dir)$', str(k)) and isinstance(x, str) and x.startswith('/'):
+                    continue
                 walk(x, secret or bool(re.search(r'(?i)pass|token|secret|key|pin|psk|auth|cookie', str(k))))
         elif isinstance(v, list):
             for x in v:
@@ -5112,9 +5116,12 @@ def se_report_parts(r):
             lab.append('  policy says: ' + se_out(['matchpathcon', p], 20, light=False).strip())
     parts['labels.txt'] = '\n'.join(lab) + '\n'
     # the domains the programs run in - their names, never their arguments
-    ps = se_out(['ps', '-eZo', 'label,user,pid,comm'], 60, light=False, tool=False)
-    parts['processes.txt'] = '\n'.join(x[:200] for x in ps.splitlines() if x.startswith('LABEL') or
-                                       any(c in x for c in SE_REPORT_COMMS)) + '\n'
+    # (-o label, not -Z with -o: procps refuses "output modifiers with user-defined output",
+    # and the list came out empty - zigmon 5.48.0)
+    ps = se_out(['ps', '-eo', 'label,user,pid,comm'], 60, light=False, tool=False)
+    kept = [x[:200] for x in ps.splitlines() if x.startswith('LABEL') or any(c in x for c in SE_REPORT_COMMS)]
+    parts['processes.txt'] = '\n'.join(kept) + '\n' if kept else \
+        '(ps gave no list of processes)\n' + '\n'.join(x[:200] for x in ps.splitlines()[:5]) + '\n'
     ports = se_out(['semanage', 'port', '-l'], 300)
     parts['ports.txt'] = '==== labelled\n' + '\n'.join(
         x for x in ports.splitlines() if x.split()[:1] and x.split()[0] in SE_REPORT_PORT_TYPES) + \

@@ -427,12 +427,13 @@ out = W / 'report.tar.gz'
 rc, c, g = helper(['--selinux-report', str(out), '--json'])
 check(rc == 0 and out.is_file() and out.stat().st_mode & 0o777 == 0o600, 'the report was not written 0600: %s'
       % g.stderr[-300:])
-names, blob = [], ''
+names, blob, part = [], '', {}
 try:
     with tarfile.open(str(out)) as tf:
         for m in tf.getmembers():
             names.append(m.name.split('/', 1)[-1])
-            blob += tf.extractfile(m).read().decode('utf-8', 'replace')
+            part[names[-1]] = tf.extractfile(m).read().decode('utf-8', 'replace')
+            blob += part[names[-1]]
 except (OSError, tarfile.TarError) as e:
     check(False, 'the report does not open: %s' % e)
 for want in ('check.json', 'avc-raw.txt', 'audit2why.txt', 'labels.txt', 'processes.txt', 'ports.txt',
@@ -440,6 +441,12 @@ for want in ('check.json', 'avc-raw.txt', 'audit2why.txt', 'labels.txt', 'proces
     check(want in names, 'the report has no %s: %r' % (want, names))
 for secret in (TOKEN, SMS_PASSWORD, 'hunter2', TOKEN.encode().hex()[:24]):
     check(secret not in blob, 'the report holds a secret: %s...' % secret[:6])
+# 5.48.1: the list of processes was empty on AlmaLinux 9 (ps -eZo is refused by procps), and
+# the place of the API token - a path, no secret - was blotted out of the labels
+check('LABEL' in part.get('processes.txt', ''), 'the report lists no processes: %r'
+      % part.get('processes.txt', '')[:200])
+check(str(RUN / 'api-token') in part.get('check.json', ''),
+      'the place of the API token is left out of the report')
 check('type=PROCTITLE' not in blob and 'type=EXECVE' not in blob, 'command lines in the report')
 check('denied  { read }' in blob and 'php-fpm' in blob, 'the refusals are not in the report')
 check(not any(x.startswith(('setenforce', 'semodule -i', 'setsebool', 'semanage port -a', 'restorecon'))
