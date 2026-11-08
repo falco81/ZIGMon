@@ -58298,6 +58298,9 @@ HELP_LINES = [
     ('sudo zigmon --os-roots', 'the system\u2019s trusted roots: the authorities zigmon added, the machine\u2019s list'),
     ('sudo zigmon --os-roots-add FILE', 'add a company\u2019s root or intermediate to the trust of the whole machine'),
     ('sudo zigmon --os-roots-remove SHA256', 'take one zigmon added out of it again'),
+    ('sudo zigmon --selinux-check', 'SELinux here: the mode, zigmon\u2019s module, its labels, boolean and ports, what was refused'),
+    ('sudo zigmon --selinux STEP', 'a step on the way to enforcing: prepare, enforce, permissive (asks first)'),
+    ('sudo zigmon --selinux-report [FILE]', 'what SELinux says here, for whoever writes zigmon\u2019s module - no secret in it'),
     ('sudo zigmon --updates', 'the system\u2019s updates: what dnf has waiting, the security ones, a restart'),
     ('sudo zigmon --updates look', 'look for updates now (nothing put in), followed here'),
     ('sudo zigmon --updates update --security', 'update the system now - all, or the security ones only; '
