@@ -22,6 +22,9 @@ PathExists=/var/lib/zigmon/root/ntp.ask
 # the updates of the system (5.34): only started here - the job runs in a
 # unit of its own, and never holds anything else up
 PathExists=/var/lib/zigmon/root/osup.ask
+# the system's trusted roots: certificate authorities of one's own put beside
+# the distribution's list (update-ca-trust, update-ca-certificates)
+PathExists=/var/lib/zigmon/root/osroots.ask
 Unit=zigmon-root.service
 
 [Install]

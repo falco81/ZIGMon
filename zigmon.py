@@ -19926,7 +19926,10 @@ class Daemon(object):
                           # thread of its own (5.30)
                           ('certificates by ACME', lambda: acme_tick(self)),
                           # the same certificate on the server in front (5.33)
-                          ('the server in front', lambda: proxy_tls_tick(self))):
+                          ('the server in front', lambda: proxy_tls_tick(self)),
+                          # the system's trusted roots: put in again when they
+                          # drifted, in a thread of its own (otp 1.0.265)
+                          ("the system's trusted roots", lambda: osr_tick(self))):
             try:
                 job()
             except Exception as e:                       # noqa: BLE001 - the next one still runs
@@ -45021,7 +45024,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # Certificates from acme (5.40): its card
                      '/api/acmepush',
                      # every request the server in front wrote down (5.46)
-                     '/api/proxy/requests')
+                     '/api/proxy/requests',
+                     # the system's trusted roots: what is added to the
+                     # trust of the whole machine (otp 1.0.265)
+                     '/api/osroots')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -46259,6 +46265,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # Certificates from acme (5.40): the card - the pairings, the
                 # slots acme sees; never a private key, never the code again
                 return self._send(200, push_view(d))
+            if path == '/api/osroots':
+                # the system's trusted roots (otp 1.0.265): the authorities
+                # added, what root found on the machine - nothing secret, but
+                # an administrator's, as everything root does is
+                return self._send(200, osr_view(d))
             if path == '/api/osup':
                 # the updates of the system (5.34): what dnf has waiting, the
                 # update going on and what dnf says
@@ -47951,6 +47962,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                 try:
                     out = acme_post(d, body, by)
                 except (ValueError, AcmeError) as e:
+                    return self._error(400, str(e)[:600])
+                out.setdefault('ok', True)
+                return self._send(200, out)
+            if path == '/api/osroots':
+                # the system's trusted roots (otp 1.0.265): an administrator's,
+                # every action - a check of a text while it is typed too
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = osr_post(d, body, by)
+                except (ValueError, OSError, subprocess.SubprocessError) as e:
                     return self._error(400, str(e)[:600])
                 out.setdefault('ok', True)
                 return self._send(200, out)
@@ -52804,6 +52830,524 @@ def acme_put_back(d, by):
     return ident
 
 
+# ---------------------------------------------------------------------------
+# The system's trusted roots (otp 1.0.265)
+# ---------------------------------------------------------------------------
+# Control - Certificates - Trusted roots of the system: certificate
+# authorities of one's own (a company's root, an intermediate) put into the
+# trust of the operating system as a whole - curl, dnf, LDAPS to a domain
+# controller, mail, syslog over TLS and zigmon's own connections. Root's
+# helper (deploy/zigmon_root.py, osroots.ask) puts them where the system
+# itself takes local additions from (the anchors folder of RHEL,
+# /usr/local/share/ca-certificates of Debian) and runs the system's own tool;
+# the distribution's list is never touched and keeps coming with the system's
+# updates, these beside it.
+#
+# What is wanted is a row of its own, 'osroots:want' = {v, certs, by, at,
+# what}; the daemon has root bring the machine to it - at its start, every
+# half hour, at once when it changes, again ten minutes after it failed - in
+# a thread of its own at a low priority, never on the way of a light, and
+# says how it went, with what the machine has, in 'osroots:now'.
+OSR_MAX = 50
+OSR_PEM_MAX = 16384
+OSR_RESYNC_S = 1800
+OSR_RETRY_S = 600
+OSR_LATE_S = 300
+OSR_WANT_KEY = 'osroots:want'
+OSR_NOW_KEY = 'osroots:now'
+OSR_WORK = {'busy': False, 'since': 0.0, 'done_hash': None, 'done_at': 0.0, 'fail_hash': None,
+            'fail_at': 0.0, 'again': False, 'force': False, 'said_error': ''}
+OSR_LOCK = threading.Lock()
+OSR_BLOCK_RE = re.compile(r'-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*?)-----END CERTIFICATE-----')
+OSR_FORBIDDEN_RE = re.compile(r'PRIVATE KEY|BEGIN ENCRYPTED|BEGIN PKCS7|BEGIN TRUSTED CERTIFICATE')
+OSR_PY = {'fixed': ''}
+OSR_SYSTEM_BUNDLES = ['/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+                      '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt']
+
+
+# -- zigmon's own connections and the system's trust -------------------------
+def osr_python_fix():
+    """zigmon's own TLS clients (mail, ntfy, Telegram, ACME, the new versions,
+    the backups to other machines, the server in front) make their contexts
+    with ssl.create_default_context(): OpenSSL's default places - the system's
+    list on a Python of the distribution. A Python built with an OpenSSL of
+    its own may look where there is nothing: every connection that checks a
+    certificate failed, and the system's trusted roots never reached zigmon.
+    Pointed at the system's list then, and only then; an SSL_CERT_FILE or
+    SSL_CERT_DIR given stays as given."""
+    if os.environ.get('SSL_CERT_FILE') or os.environ.get('SSL_CERT_DIR'):
+        return ''
+    try:
+        p = ssl.get_default_verify_paths()
+    except Exception:                                   # noqa: BLE001
+        return ''
+    if p.cafile and os.path.isfile(p.cafile):
+        return ''
+    try:
+        if p.capath and os.path.isdir(p.capath) and any(n.endswith('.0') for n in os.listdir(p.capath)):
+            return ''
+    except OSError:
+        pass
+    for f in OSR_SYSTEM_BUNDLES:
+        if os.path.isfile(f):
+            os.environ['SSL_CERT_FILE'] = f
+            OSR_PY['fixed'] = f
+            return f
+    return ''
+
+
+osr_python_fix()
+
+
+def osr_python_trust():
+    """Where zigmon's own connections look for the authorities they trust,
+    and whether that is the system's list - the one these go into."""
+    try:
+        p = ssl.get_default_verify_paths()
+    except Exception:                                   # noqa: BLE001
+        return {}
+    cafile = os.environ.get('SSL_CERT_FILE') or p.cafile or ''
+    capath = os.environ.get('SSL_CERT_DIR') or p.capath or ''
+    real = os.path.realpath(cafile) if cafile and os.path.isfile(cafile) else ''
+    system = bool(real and any(os.path.isfile(f) and os.path.realpath(f) == real for f in OSR_SYSTEM_BUNDLES)) \
+        or bool(not real and capath and os.path.isdir(capath) and
+                os.path.realpath(capath) in ('/etc/ssl/certs', '/etc/pki/tls/certs'))
+    return {'cafile': cafile, 'capath': capath, 'system': system, 'fixed': OSR_PY['fixed'],
+            'openssl': getattr(ssl, 'OPENSSL_VERSION', '')}
+
+
+# -- a certificate read: the same words as root's helper (osroots_facts) -----
+def osr_blocks(text):
+    """Each certificate of a text as (pem, der); a private key, or no
+    certificate at all, refused whole."""
+    text = str(text or '')
+    if OSR_FORBIDDEN_RE.search(text):
+        raise ValueError('no private key and nothing but certificates (-----BEGIN CERTIFICATE-----)')
+    out = []
+    for body in OSR_BLOCK_RE.findall(text):
+        try:
+            der = base64.b64decode(re.sub(r'\s+', '', body), validate=True)
+        except ValueError:
+            raise ValueError('a certificate that is not base64')
+        if not der or len(der) > OSR_PEM_MAX * 3 // 4:
+            raise ValueError('a certificate of %d bytes - one is a few kB at most' % len(der))
+        enc = base64.b64encode(der).decode('ascii')
+        out.append(('-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' % '\n'.join(
+            enc[i:i + 64] for i in range(0, len(enc), 64)), der))
+    if not out:
+        raise ValueError('no certificate in it (-----BEGIN CERTIFICATE-----)')
+    return out
+
+
+def osr_text(raw):
+    """A file as it came - PEM, or one certificate in DER (.cer) - as PEM text."""
+    if isinstance(raw, str):
+        raw = raw.encode('utf-8', 'replace')
+    if b'-----BEGIN' in raw:
+        return raw.decode('ascii', 'replace')
+    if raw[:1] == b'\x30' and len(raw) <= OSR_PEM_MAX:
+        try:
+            return Daemon._openssl(['x509', '-inform', 'DER'], data=raw,
+                                   what='not a certificate in DER').decode('ascii')
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass
+    raise ValueError('neither PEM (-----BEGIN CERTIFICATE-----) nor one certificate in DER')
+
+
+def _osr_time(s):
+    try:
+        return calendar.timegm(time.strptime(re.sub(r'\s+', ' ', s.strip()), '%b %d %H:%M:%S %Y %Z'))
+    except ValueError:
+        return 0
+
+
+def osr_facts(pem, der):
+    """What one certificate is, as openssl reads it - `refused` what stands
+    against it, `warn` what is to be known. Word for word root's helper's
+    osroots_facts: what the page says before is what root says after."""
+    txt = Daemon._openssl(['x509', '-noout', '-text', '-nameopt', 'RFC2253'], data=pem.encode('ascii'),
+                          what='not a certificate openssl reads').decode('utf-8', 'replace')
+
+    def one(rx):
+        m = re.search(rx, txt, re.M)
+        return m.group(1).strip() if m else ''
+    f = {'fp': hashlib.sha256(der).hexdigest(), 'subject': one(r'^\s*Subject: ?(.*)$')[:400],
+         'issuer': one(r'^\s*Issuer: ?(.*)$')[:400],
+         'not_before': _osr_time(one(r'Not Before\s*: (.*)$')),
+         'not_after': _osr_time(one(r'Not After\s*: (.*)$')),
+         'sig': one(r'Signature Algorithm: (\S+)')[:60]}
+    cn = re.search(r'(?:^|,)CN=((?:\\.|[^,])*)', f['subject'])
+    f['cn'] = (cn.group(1) if cn else f['subject'])[:200]
+    alg = one(r'Public Key Algorithm: (\S+)')
+    bits = one(r'Public-Key: \((\d+) bit\)')
+    curve = one(r'NIST CURVE: (\S+)') or one(r'ASN1 OID: (\S+)')
+    f['key'] = ('RSA %s' % bits) if alg == 'rsaEncryption' else \
+        ('EC %s' % (curve or bits)) if alg == 'id-ecPublicKey' else \
+        (alg.replace('ED25519', 'Ed25519').replace('ED448', 'Ed448')[:40] if alg else '?')
+    f['bits'] = int(bits) if bits.isdigit() else 0
+    bc = re.search(r'X509v3 Basic Constraints:.*\n\s*(CA:(TRUE|FALSE))', txt)
+    f['ca'] = bool(bc and bc.group(2) == 'TRUE')
+    ku = re.search(r'X509v3 Key Usage:.*\n\s*(.*)', txt)
+    f['ku_sign'] = None if not ku else ('Certificate Sign' in ku.group(1))
+    f['root'] = f['subject'] == f['issuer']
+    f['kind'] = 'root' if f['root'] else 'intermediate'
+    refused, warn = [], []
+    now = time.time()
+    if not bc:
+        refused.append('it says nothing of being an authority (no basicConstraints CA:TRUE) - '
+                       'only a certificate authority goes here')
+    elif not f['ca']:
+        refused.append('it is not a certificate authority (CA:FALSE) - a server\'s own certificate '
+                       'does not go here')
+    if f['ku_sign'] is False:
+        refused.append('its key usage does not let it sign certificates (no keyCertSign)')
+    if f['not_after'] and f['not_after'] < now:
+        warn.append('it ran out on %s - nothing it signed is trusted' % time.strftime(
+            '%Y-%m-%d', time.gmtime(f['not_after'])))
+    if f['not_before'] and f['not_before'] > now + 300:
+        warn.append('it is valid only from %s' % time.strftime('%Y-%m-%d', time.gmtime(f['not_before'])))
+    if not f['root'] and re.match(r'(?i)(sha1|md5|md2)', f['sig']):
+        warn.append('it is signed with %s - the system\'s crypto policy (DEFAULT) refuses it, and '
+                    'every chain through it' % f['sig'])
+    if f['key'].startswith('RSA') and 0 < f['bits'] < 2048:
+        warn.append('its key has %d bits - the system\'s crypto policy (DEFAULT) refuses fewer '
+                    'than 2048' % f['bits'])
+    f['refused'], f['warn'] = refused, warn
+    return f
+
+
+OSR_NO_ROOT_WARN = ('an intermediate without its root here: programs that take a partial chain (curl, '
+                    'Python 3.13 on) trust it by itself, others want its root too - add the root as '
+                    'well, unless the system\'s list has it')
+
+
+# -- the set wanted ---------------------------------------------------------
+def osr_hash(certs):
+    return hashlib.sha256(','.join(sorted(str(c.get('fp') or '') for c in certs or [])).encode()).hexdigest()[:24]
+
+
+def _osr_meta(d, key):
+    try:
+        got = json.loads(d.store.get_meta(key) or 'null')
+    except (ValueError, TypeError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def osr_want(d):
+    """The set wanted - or None while none was ever written (then root is
+    only asked to read what the machine has)."""
+    got = _osr_meta(d, OSR_WANT_KEY)
+    if not got or not isinstance(got.get('certs'), list):
+        return None
+    certs = [c for c in got['certs'] if isinstance(c, dict) and isinstance(c.get('pem'), str)
+             and re.match(r'^[0-9a-f]{64}\Z', str(c.get('fp') or ''))][:OSR_MAX]
+    try:
+        v = int(got.get('v') or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return {'v': v, 'certs': certs, 'by': str(got.get('by') or ''), 'at': float(got.get('at') or 0),
+            'what': str(got.get('what') or ''), 'hash': osr_hash(certs)}
+
+
+def osr_save(d, certs, by, what):
+    old = osr_want(d) or {}
+    v = max(int(time.time() * 1000), int(old.get('v') or 0) + 1)
+    row = {'v': v, 'certs': certs, 'by': by, 'at': time.time(), 'what': what}
+    d.store.set_meta(OSR_WANT_KEY, json.dumps(row))
+    d.store.add_event('control', '%s %s - the system\'s trusted roots' % (by, what), 'warn')
+    log('the system\'s trusted roots: %s %s' % (by, what))
+    osr_kick(d)
+    return row
+
+
+def osr_read_text(text):
+    """Every certificate of a text (one, or a chain file of several), read:
+    [facts with pem]."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError('the certificates: PEM text, or a file')
+    if len(text) > OSR_MAX * OSR_PEM_MAX:
+        raise ValueError('that is far more than %d certificates' % OSR_MAX)
+    blocks = osr_blocks(osr_text(text))
+    if len(blocks) > OSR_MAX:
+        raise ValueError('%d certificates in it - %d at most' % (len(blocks), OSR_MAX))
+    return [dict(osr_facts(pem, der), pem=pem) for pem, der in blocks]
+
+
+def osr_check(d, text):
+    """What adding this text would do - nothing written."""
+    want = osr_want(d) or {'certs': []}
+    have = {c['fp'] for c in want['certs']}
+    subjects = {osr_facts_kept(c['pem']).get('subject') for c in want['certs']}
+    got = osr_read_text(text)
+    subjects |= {f['subject'] for f in got if not f['refused']}
+    for f in got:
+        f['already'] = f['fp'] in have
+        # an intermediate whose root is nowhere here: trusted by itself only
+        # where a partial chain is taken - most other programs want its root
+        if not f['root'] and not f['refused'] and f['issuer'] not in subjects:
+            f['warn'] = f['warn'] + [OSR_NO_ROOT_WARN]
+    return got
+
+
+def osr_add(d, text, by):
+    got = osr_check(d, text)
+    want = osr_want(d) or {'certs': []}
+    certs = list(want['certs'])
+    seen = set()
+    added = [f for f in got if not f['refused'] and not f['already']
+             and not (f['fp'] in seen or seen.add(f['fp']))]
+    refused = [{'cn': f['cn'], 'fp': f['fp'], 'why': '; '.join(f['refused'])} for f in got if f['refused']]
+    if not added:
+        if refused:
+            raise ValueError('nothing added: %s' % '; '.join('%s - %s' % (r['cn'], r['why']) for r in refused))
+        raise ValueError('nothing added: every certificate in it is there already')
+    if len(certs) + len(added) > OSR_MAX:
+        raise ValueError('%d certificates at most - %d are there, %d more asked' % (
+            OSR_MAX, len(certs), len(added)))
+    for f in added:
+        certs.append({'pem': f['pem'], 'fp': f['fp'], 'cn': f['cn'], 'kind': f['kind'],
+                      'by': by, 'at': time.time()})
+    osr_save(d, certs, by, 'added %s' % ', '.join('%s (%s, SHA-256 %s)' % (f['cn'], f['kind'], f['fp'][:16])
+                                                  for f in added))
+    return {'added': [{k: f[k] for k in ('cn', 'fp', 'kind', 'warn')} for f in added],
+            'refused': refused, 'already': [f['cn'] for f in got if f['already']],
+            'message': 'added %d - root puts %s into the system\'s trust within a minute' % (
+                len(added), 'it' if len(added) == 1 else 'them')}
+
+
+def osr_find(certs, fp):
+    fp = re.sub(r'[^0-9a-f]', '', str(fp or '').lower())
+    if len(fp) < 12:
+        raise ValueError('the SHA-256 fingerprint - 12 characters of it at least')
+    hit = [c for c in certs if c['fp'].startswith(fp)]
+    if not hit:
+        raise ValueError('zigmon has added no certificate with that fingerprint')
+    if len(hit) > 1:
+        raise ValueError('more than one certificate begins with that - give more of it')
+    return hit[0]
+
+
+def osr_remove(d, fp, by):
+    want = osr_want(d) or {'certs': []}
+    c = osr_find(want['certs'], fp)
+    certs = [x for x in want['certs'] if x['fp'] != c['fp']]
+    osr_save(d, certs, by, 'took away %s (SHA-256 %s)' % (c.get('cn') or '?', c['fp'][:16]))
+    return {'message': 'taken away - root takes it out of the system\'s trust within a minute'}
+
+
+# -- this machine: root asked, in a thread of its own ------------------------
+def _osr_state(data):
+    """What root said of the machine, as it is kept: no PEMs."""
+    keep = {k: data[k] for k in ('ours', 'others', 'system', 'flavour', 'dir', 'tool', 'tool_there')
+            if k in data}
+    keep['ours'] = [x for x in (keep.get('ours') or []) if isinstance(x, dict)][:OSR_MAX + 10]
+    keep['others'] = [x for x in (keep.get('others') or []) if isinstance(x, dict)][:200]
+    return keep
+
+
+def osr_due(now=None, want=None):
+    now = time.time() if now is None else now
+    h = want['hash'] if want else None
+    if OSR_WORK['again'] or now - OSR_WORK['done_at'] > OSR_RESYNC_S:
+        return True
+    if want is not None and h != OSR_WORK['done_hash']:
+        return not (h == OSR_WORK['fail_hash'] and now - OSR_WORK['fail_at'] < OSR_RETRY_S)
+    return False
+
+
+def osr_round(d):
+    """Root asked once: the whole set put in (sync), or - while nothing was
+    ever wanted - only read. The row 'osroots:now' written either way."""
+    want = osr_want(d)
+    h = want['hash'] if want else None
+    force = bool(OSR_WORK['force'])
+    OSR_WORK['again'] = False
+    row = {'at': time.time(), 'v': want['v'] if want else 0, 'hash': h or '', 'ok': False, 'error': '',
+           'said': [], 'refused': [], 'not_in_bundle': [], 'python': osr_python_trust()}
+    old = _osr_meta(d, OSR_NOW_KEY) or {}
+    try:
+        if want is None:
+            data = d.root_call('osroots.ask', 'osroots.json', {'do': 'list'}, 120)
+        else:
+            data = d.root_call('osroots.ask', 'osroots.json',
+                               {'do': 'sync', 'certs': [c['pem'] for c in want['certs']], 'force': force}, 300)
+        miss = [str(x)[:64] for x in data.get('not_in_bundle') or [] if isinstance(x, str)][:OSR_MAX]
+        row.update(ok=True, said=[str(x)[:200] for x in data.get('said') or []][:120],
+                   refused=[x for x in data.get('refused') or [] if isinstance(x, dict)][:OSR_MAX],
+                   not_in_bundle=miss, state=_osr_state(data))
+        if miss and want is not None:
+            # the files are there, the tool ran - and the list it made has
+            # not one of them: run again (forced) after the retry time
+            names = [c.get('cn') or c['fp'][:16] for c in want['certs'] if c['fp'] in miss]
+            row['error'] = ('not in the system\'s list after %s: %s' % (
+                (row['state'].get('tool') or 'its tool'), ', '.join(names) or ', '.join(m[:16] for m in miss)))
+            OSR_WORK.update(done_hash=None, done_at=time.time(), fail_hash=h, fail_at=time.time(), force=True)
+        else:
+            OSR_WORK.update(done_hash=h, done_at=time.time(), fail_hash=None, force=False, said_error='')
+        if row['said']:
+            log('the system\'s trusted roots: %s' % '; '.join(row['said']))
+            d.store.add_event('control', 'the system\'s trusted roots: %s' % '; '.join(row['said']), 'info')
+    except Exception as e:                              # noqa: BLE001 - said, never lost
+        row.update(error=str(e)[:400] or e.__class__.__name__, state=old.get('state') or {})
+        # the files may be in already and the tool what failed: the next try
+        # runs it whatever it finds changed (forced)
+        OSR_WORK.update(done_hash=None, done_at=time.time(), fail_hash=h, fail_at=time.time(),
+                        force=want is not None)
+    if row['error'] and row['error'] != OSR_WORK['said_error']:
+        # once per new reason, not every ten minutes; only read (nothing
+        # wanted) said quietly - there is nothing of zigmon's to put in
+        OSR_WORK['said_error'] = row['error']
+        log('the system\'s trusted roots: %s' % row['error'], 'warn' if want else 'debug')
+        if want is not None:
+            d.store.add_event('control', 'the system\'s trusted roots: %s' % row['error'], 'warn')
+    try:
+        d.store.set_meta(OSR_NOW_KEY, json.dumps(row))
+    except Exception as e:                              # noqa: BLE001
+        log('the system\'s trusted roots: %s' % e, 'warn')
+    return row
+
+
+def osr_start(d):
+    """The work in a thread of its own, at a low priority; one at a time. A
+    change made while it ran is put in by the same thread right after."""
+    with OSR_LOCK:
+        if OSR_WORK['busy'] and time.time() - OSR_WORK['since'] < 900:
+            return False
+        OSR_WORK.update(busy=True, since=time.time())
+
+    def work():
+        background_thread()
+        try:
+            for _ in range(3):
+                was = (osr_want(d) or {}).get('hash')
+                row = osr_round(d)
+                if (osr_want(d) or {}).get('hash') == was and not OSR_WORK['again']:
+                    break
+                if row.get('error'):
+                    break
+        except Exception as e:                          # noqa: BLE001
+            log('the system\'s trusted roots: %s' % e, 'warn')
+        finally:
+            with OSR_LOCK:
+                OSR_WORK['busy'] = False
+    threading.Thread(target=work, name='osroots', daemon=True).start()
+    return True
+
+
+def osr_kick(d):
+    """At once: a change, or Read it again."""
+    OSR_WORK['again'] = True
+    if d.root_installed():
+        osr_start(d)
+
+
+def osr_tick(d):
+    """From root's chores, every half minute: due at the start, every half
+    hour, when what is wanted is not what was put in, ten minutes after it
+    failed."""
+    if not d.root_installed():
+        return False
+    with OSR_LOCK:
+        if OSR_WORK['busy'] and time.time() - OSR_WORK['since'] < 900:
+            return False
+    if not osr_due(want=osr_want(d)):
+        return False
+    return osr_start(d)
+
+
+# -- the card ---------------------------------------------------------------
+def osr_status(want, row, busy):
+    """(status, words): applied, waiting, failed - or none while nothing
+    was ever asked."""
+    if want is None:
+        if row.get('error'):
+            return 'failed', str(row['error'])
+        return 'none', ''
+    if row.get('at') and row.get('hash') == want['hash']:
+        if not row.get('ok'):
+            return 'failed', str(row.get('error') or 'root said no')
+        if row.get('refused'):
+            return 'failed', '; '.join('%s - %s' % (r.get('cn') or '?', r.get('why') or '?')
+                                       for r in row['refused'])
+        if row.get('error'):
+            return 'failed', str(row['error'])
+        return 'applied', ''
+    if time.time() - float(want.get('at') or 0) > OSR_LATE_S and not busy:
+        return 'waiting', ('asked more than five minutes ago and not done - is zigmon-root.path running? '
+                           'systemctl status zigmon-root.path') + (
+                               (' (last: %s)' % row['error']) if row.get('error') else '')
+    return 'waiting', ''
+
+
+OSR_FACTS = {}
+
+
+def osr_facts_kept(pem):
+    """A certificate of the set read once (the card is asked every few seconds)."""
+    key = hashlib.sha256(pem.encode('utf-8', 'replace')).hexdigest()
+    got = OSR_FACTS.get(key)
+    if got is None:
+        try:
+            p, der = osr_blocks(pem)[0]
+            got = osr_facts(p, der)
+        except (ValueError, OSError, subprocess.SubprocessError) as e:
+            got = {'cn': '?', 'warn': [], 'refused': [str(e)]}
+        if len(OSR_FACTS) > 400:
+            OSR_FACTS.clear()
+        OSR_FACTS[key] = got
+    return got
+
+
+def osr_view(d):
+    want = osr_want(d)
+    row = _osr_meta(d, OSR_NOW_KEY) or {}
+    busy = bool(OSR_WORK['busy'])
+    status, why = osr_status(want, row, busy)
+    st = row.get('state') if isinstance(row.get('state'), dict) else {}
+    ours = {x.get('fp'): x for x in st.get('ours') or [] if isinstance(x, dict) and x.get('fp')}
+    facts = [(c, osr_facts_kept(c['pem'])) for c in (want or {}).get('certs') or []]
+    subjects = {f.get('subject') for _c, f in facts}
+    certs = []
+    for c, f in facts:
+        warn = list(f.get('warn') or [])
+        if f.get('kind') == 'intermediate' and f.get('issuer') not in subjects:
+            warn.append('its root is not among these - trusted by itself only where a partial chain '
+                        'is taken (curl, Python 3.13 on), unless the system\'s list has the root')
+        hit = ours.get(c['fp'])
+        certs.append({'fp': c['fp'], 'pem': c['pem'], 'cn': f.get('cn'), 'subject': f.get('subject'),
+                      'issuer': f.get('issuer'), 'not_before': f.get('not_before'),
+                      'not_after': f.get('not_after'), 'key': f.get('key'), 'kind': f.get('kind'),
+                      'sig': f.get('sig'), 'warn': warn, 'by': c.get('by') or '', 'at': c.get('at'),
+                      'file': (hit or {}).get('file') or '',
+                      'in_bundle': bool(hit and hit.get('in_bundle'))})
+    node = {'name': socket.gethostname().split('.')[0] or 'this server', 'status': status, 'why': why,
+            'busy': busy, 'at': row.get('at'), 'said': row.get('said') or [], 'error': row.get('error') or '',
+            'ours': list(ours.values()), 'others': st.get('others') or [], 'system': st.get('system') or {},
+            'flavour': st.get('flavour') or '', 'dir': st.get('dir') or '', 'tool': st.get('tool') or '',
+            'tool_there': st.get('tool_there'), 'helper': d.root_installed()}
+    return {'ok': True, 'certs': certs, 'node': node, 'max': OSR_MAX,
+            'want': {k: want[k] for k in ('v', 'by', 'at', 'what', 'hash')} if want else None,
+            'python': osr_python_trust()}
+
+
+def osr_post(d, body, by):
+    act = str(body.get('action') or '')
+    if act == 'check':
+        got = osr_check(d, body.get('text'))
+        return {'certs': [{k: f[k] for k in ('fp', 'cn', 'subject', 'issuer', 'not_before', 'not_after',
+                                              'key', 'kind', 'sig', 'warn', 'refused', 'already')}
+                          for f in got]}
+    if act == 'add':
+        return osr_add(d, body.get('text'), by)
+    if act == 'remove':
+        return osr_remove(d, body.get('fp'), by)
+    if act == 'refresh':
+        osr_kick(d)
+        return {'message': 'asked: root reads the system\'s trusted roots again now'}
+    raise ValueError('check, add, remove or refresh')
+
+
 def acme_tick(d):
     """Every half minute from root's chores; at most once an hour a look at
     what is due, and the ordering in a thread of its own."""
@@ -57506,6 +58050,9 @@ HELP_LINES = [
     ('sudo zigmon --acme', 'the certificate by ACME: its name, its end, who renews it, its last order'),
     ('sudo zigmon --acme-order', 'order it from the ACME CA now, followed here'),
     ('sudo zigmon --acme-push', 'Certificates from acme: on or off, the acmes paired, the slots, the last push'),
+    ('sudo zigmon --os-roots', 'the system\u2019s trusted roots: the authorities zigmon added, the machine\u2019s list'),
+    ('sudo zigmon --os-roots-add FILE', 'add a company\u2019s root or intermediate to the trust of the whole machine'),
+    ('sudo zigmon --os-roots-remove SHA256', 'take one zigmon added out of it again'),
     ('sudo zigmon --updates', 'the system\u2019s updates: what dnf has waiting, the security ones, a restart'),
     ('sudo zigmon --updates look', 'look for updates now (nothing put in), followed here'),
     ('sudo zigmon --updates update --security', 'update the system now - all, or the security ones only; '
@@ -57769,6 +58316,15 @@ def build_parser():
     a.add_argument('--acme-order', nargs='?', const='all', metavar='web|all',
                    help='(root) order the certificate from the ACME CA now and follow it here; '
                         'ACME looks after it from then on')
+    a.add_argument('--os-roots', action='store_true',
+                   help='(root) the system\u2019s trusted roots (Control - Certificates): the authorities '
+                        'zigmon added to the trust of the whole machine, and what the machine has')
+    a.add_argument('--os-roots-add', metavar='FILE',
+                   help='(root) add the certificate authorities of a file (PEM, a chain, or one in DER) '
+                        'to the system\u2019s trust - read here, shown, asked before it is added')
+    a.add_argument('--os-roots-remove', metavar='SHA256',
+                   help='(root) take one zigmon added out of the system\u2019s trust, by its SHA-256 '
+                        'fingerprint (12 characters of it at least)')
     a.add_argument('--updates', nargs='?', const='show', choices=('show', 'look', 'update', 'log'),
                    help='(root) the system\u2019s updates (Control - System updates): show what dnf has '
                         'waiting, look for updates now, update the system now (--security for the '
@@ -60259,6 +60815,120 @@ def cmd_acme_push(args, pal):
     return 0
 
 
+def cmd_os_roots(args, pal):
+    """zigmon --os-roots, --os-roots-add FILE, --os-roots-remove SHA256 (otp
+    1.0.265): Control - Certificates - Trusted roots of the system, on the
+    command line, through the daemon as the page asks it. The file is read
+    here, by whoever runs this (root: a file in /root is read), and only its
+    text goes on - the daemon, which runs as zigmon, never opens it."""
+    def day(ts):
+        return time.strftime('%Y-%m-%d', time.localtime(float(ts))) if ts else '?'
+    if getattr(args, 'os_roots_add', None):
+        try:
+            with open(args.os_roots_add, 'rb') as f:
+                raw = f.read(OSR_MAX * OSR_PEM_MAX + 1)
+        except OSError as e:
+            print(pal.crit('%s: %s' % (args.os_roots_add, e.strerror or e)))
+            return 2
+        try:
+            text = osr_text(raw)
+        except ValueError as e:
+            print(pal.crit('%s: %s' % (args.os_roots_add, e)))
+            return 2
+        code, out = api_call('/api/osroots', method='POST', payload={'action': 'check', 'text': text},
+                             timeout=60.0)
+        if code != 200 or not isinstance(out, dict):
+            print(pal.crit('refused: %s' % (out or {}).get('error', code)))
+            return 1
+        got = out.get('certs') or []
+        for c in got:
+            print('  %s  %s  %s' % (pal.bold(c.get('cn') or '?'), c.get('kind'), pal.dim('SHA-256 ' + c['fp'])))
+            print(pal.dim('    issued by %s; valid %s - %s; %s' % (
+                c.get('issuer') or '?', day(c.get('not_before')), day(c.get('not_after')), c.get('key') or '?')))
+            for w in c.get('refused') or []:
+                print(pal.crit('    not taken: %s' % w))
+            for w in c.get('warn') or []:
+                print(pal.warn('    %s' % w))
+            if c.get('already'):
+                print(pal.dim('    there already'))
+        if not any(not c.get('refused') and not c.get('already') for c in got):
+            print(pal.crit('nothing to add'))
+            return 1
+        if not getattr(args, 'yes', False):
+            if not sys.stdin.isatty():
+                print(pal.crit('asked before it is added: run it at a terminal, or with --yes'))
+                return 2
+            answer = input('Every program of this machine will trust what these sign. Add them? [y/N] ')
+            if answer.strip().lower() not in ('y', 'yes'):
+                print('nothing added')
+                return 1
+        code, out = api_call('/api/osroots', method='POST', payload={'action': 'add', 'text': text},
+                             timeout=60.0)
+        if code != 200 or not isinstance(out, dict) or not out.get('ok'):
+            print(pal.crit('refused: %s' % (out or {}).get('error', code)))
+            return 1
+        print(json.dumps(out, indent=2, ensure_ascii=False) if getattr(args, 'json', False)
+              else pal.ok(out.get('message') or 'added'))
+        return 0
+    if getattr(args, 'os_roots_remove', None):
+        if not getattr(args, 'yes', False):
+            if not sys.stdin.isatty():
+                print(pal.crit('asked before it is taken away: run it at a terminal, or with --yes'))
+                return 2
+            answer = input('What %s signs will no longer be trusted by this machine. Take it away? [y/N] '
+                           % args.os_roots_remove)
+            if answer.strip().lower() not in ('y', 'yes'):
+                print('nothing taken away')
+                return 1
+        code, out = api_call('/api/osroots', method='POST',
+                             payload={'action': 'remove', 'fp': args.os_roots_remove}, timeout=60.0)
+        if code != 200 or not isinstance(out, dict) or not out.get('ok'):
+            print(pal.crit('refused: %s' % (out or {}).get('error', code)))
+            return 1
+        print(json.dumps(out, indent=2, ensure_ascii=False) if getattr(args, 'json', False)
+              else pal.ok(out.get('message') or 'taken away'))
+        return 0
+    code, v = api_call('/api/osroots', timeout=20.0)
+    if code != 200 or not isinstance(v, dict):
+        print(pal.crit('the daemon said: %s' % (v or {}).get('error', code)))
+        return 2
+    if getattr(args, 'json', False):
+        print(json.dumps(v, indent=2, ensure_ascii=False))
+        return 0
+    certs, n = v.get('certs') or [], v.get('node') or {}
+    print(pal.title('the system\'s trusted roots - added by zigmon (%d of %d at most)' % (len(certs), v.get('max') or 50)))
+    for c in certs:
+        print('  %-36s %-12s %s  until %s  %-8s %s' % (
+            (c.get('cn') or '?')[:36], c.get('kind') or '?', c['fp'][:16], day(c.get('not_after')),
+            c.get('key') or '?', pal.ok('in the system\'s list') if c.get('in_bundle') else pal.warn('not in it yet')))
+        for w in c.get('warn') or []:
+            print(pal.warn('    %s' % w))
+    if not certs:
+        print(pal.dim('  none - the machine trusts its system\'s own list alone'))
+    words = {'applied': pal.ok('as wanted'), 'waiting': pal.warn('waiting'), 'failed': pal.crit('failed'),
+             'none': 'nothing added by zigmon'}.get(n.get('status'), n.get('status'))
+    print(pal.title('%s (this machine)' % (n.get('name') or '?')))
+    print('  %s%s' % (words, (': ' + n['why']) if n.get('why') else ''))
+    if n.get('dir'):
+        print(pal.dim('  local additions in %s, made into the system\'s list by %s%s' % (
+            n['dir'], n.get('tool') or '?', '' if n.get('tool_there') is not False else ' (not on this machine)')))
+    s = n.get('system') or {}
+    if s:
+        print(pal.dim('  the system\'s own list: %s certificates in %s%s' % (
+            s.get('count', '?'), s.get('path', '?'), ('; package %s' % s['package']) if s.get('package') else '')))
+    if n.get('others'):
+        print(pal.dim('  added by somebody else (zigmon leaves them as they are):'))
+        for o in n['others']:
+            cs = o.get('certs') or []
+            print('    %s  %s' % (o.get('file'), ', '.join('%s (%s)' % (x.get('cn'), x.get('kind')) for x in cs)
+                                  or ('a link to %s' % o['link'] if o.get('link') else 'no certificate read')))
+    py = v.get('python') or {}
+    if py and not py.get('system'):
+        print(pal.warn('  zigmon\'s own connections trust %s - not the system\'s list' % (
+            py.get('cafile') or py.get('capath') or '?')))
+    return 0
+
+
 def cmd_acme(args, pal):
     """zigmon --acme, and --acme-order: the certificate by ACME, through the
     daemon - root's command line, as on the page (otp 1.0.168)."""
@@ -62695,6 +63365,18 @@ def _console_acme_push(c):
 CONSOLE_MORE['main'].append(('Certificates from acme', _console_acme_push))
 
 
+def _console_os_roots(c):
+    """The system's trusted roots from the console: what zigmon added and
+    what the machine has - adding and taking away on the page, or with
+    zigmon --os-roots-add FILE / --os-roots-remove SHA256."""
+    return c.sub('The system\'s trusted roots', [
+        ('What is added, and the machine\'s list', lambda: c.act('--os-roots')),
+    ])
+
+
+CONSOLE_MORE['main'].append(("The system's trusted roots", _console_os_roots))
+
+
 def _console_updates(c):
     """System updates from the console (otp 1.0.168): how they stand, a look
     and an update - each followed, as on the page."""
@@ -62958,6 +63640,9 @@ def _dispatch(args, pal):
         return cmd_rbackup(args, pal)
     if getattr(args, 'acme_push', False):
         return cmd_acme_push(args, pal)
+    if getattr(args, 'os_roots', False) or getattr(args, 'os_roots_add', None) or \
+            getattr(args, 'os_roots_remove', None):
+        return cmd_os_roots(args, pal)
     if getattr(args, 'acme', False) or getattr(args, 'acme_order', None):
         return cmd_acme(args, pal)
     if getattr(args, 'updates', None):

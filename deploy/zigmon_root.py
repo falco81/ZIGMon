@@ -26,6 +26,10 @@ root. Four kinds of thing can be asked for, and nothing else:
                    service and writes how it goes into osup.json and osup.log;
                    the proxy of Control - Proxy, when one is handed over, kept
                    for dnf in a file only root reads, never on a command line.
+  * osroots.ask  - the system's trusted roots: certificate authorities of
+                   one's own put beside the distribution's list, in its folder
+                   of local additions (zigmon-<sha256>.pem|.crt only), and the
+                   system's own tool run when anything changed.
 
 Nothing in a request is trusted: every value is checked against the one shape
 it may have before it goes into a file, certificates and keys are read by
@@ -46,7 +50,9 @@ a path it could swap for a link.
   zigmon_root.py --os-job ID check|upgrade [security]
                                           the system's updates (started by itself)
 """
+import base64
 import calendar
+import errno
 import fcntl
 import grp
 import hashlib
@@ -3963,6 +3969,498 @@ def osup_job(job, kind, security=False):
     return 0
 
 
+# ---- the system's trusted roots (otp 1.0.265) -------------------------------------
+# Certificate authorities of one's own - a company's root, an intermediate -
+# put into the trust of the whole operating system: curl, dnf, LDAPS to a
+# domain controller, mail, syslog over TLS and zigmon's own connections. Only
+# by the system's own way of adding to it, never by touching the
+# distribution's list:
+#   RHEL / AlmaLinux / Rocky: /etc/pki/ca-trust/source/anchors/*.pem, then update-ca-trust extract
+#   Debian / Ubuntu:          /usr/local/share/ca-certificates/*.crt, then update-ca-certificates
+# Both tools merge that folder with the distribution's list every time they
+# run - also when an update of the ca-certificates package runs them - so the
+# distribution's list keeps coming with the system's updates and these stay
+# beside it. zigmon's files are named zigmon-<first 16 hex of the SHA-256>.pem
+# (.crt): only those are ever written or removed; anything else in the folder
+# was put there by somebody else and is only shown, a link never followed.
+# Asked in osroots.ask: what is there (list), what a text holds (check), the
+# whole set wanted (sync). Every certificate is read by openssl here again -
+# nothing of the request is trusted. The words are the daemon's (osr_facts).
+OSROOTS_ASK = 'osroots.ask'
+OSROOTS_FILE = 'osroots.json'
+OSROOTS_MAX = 50                    # zigmon's certificates at most
+OSROOTS_PEM_MAX = 16384             # one certificate, as PEM
+OSROOTS_FILE_MAX = 1048576          # a file of somebody else's, read
+OSROOTS_OTHERS_READ = 60            # others' files parsed (each one an openssl run)
+OSROOTS_OTHERS_NAMED = 200
+OSROOTS_NAME_RE = re.compile(r'^zigmon-[0-9a-f]{16}\.(pem|crt)\Z')
+OSROOTS_BLOCK_RE = re.compile(r'-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*?)-----END CERTIFICATE-----')
+OSROOTS_FORBIDDEN_RE = re.compile(r'PRIVATE KEY|BEGIN ENCRYPTED|BEGIN PKCS7|BEGIN TRUSTED CERTIFICATE')
+OSROOTS_FLAVOURS = {
+    'rhel': {'dir': '/etc/pki/ca-trust/source/anchors', 'ext': '.pem',
+             'tool': ['update-ca-trust', 'extract'],
+             'bundle': '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+             'pkg': ['rpm', '-q', 'ca-certificates']},
+    'debian': {'dir': '/usr/local/share/ca-certificates', 'ext': '.crt',
+               'tool': ['update-ca-certificates'],
+               'bundle': '/etc/ssl/certs/ca-certificates.crt',
+               'pkg': ['dpkg-query', '-W', '-f=ca-certificates ${Version}', 'ca-certificates']}}
+
+
+def osroots_where():
+    """Which way this system adds to its trust, or None. Each part can be
+    pointed elsewhere for the checks - by the environment of the unit, which
+    is root's alone (ZIGMON_OSROOTS_FLAVOUR, _DIR, _BUNDLE, _TOOL, _PKG)."""
+    env = os.environ
+    fl = env.get('ZIGMON_OSROOTS_FLAVOUR', '')
+    if fl not in OSROOTS_FLAVOURS:
+        fl = ''
+        if os.path.isdir(FS_ROOT + '/etc/pki/ca-trust/source') or shutil.which('update-ca-trust'):
+            fl = 'rhel'
+        elif os.path.isdir(FS_ROOT + '/usr/local/share/ca-certificates') or \
+                shutil.which('update-ca-certificates'):
+            fl = 'debian'
+    if not fl:
+        return None
+    w = dict(OSROOTS_FLAVOURS[fl], flavour=fl)
+    w['dir'] = env.get('ZIGMON_OSROOTS_DIR') or (FS_ROOT + w['dir'])
+    w['bundle'] = env.get('ZIGMON_OSROOTS_BUNDLE') or (FS_ROOT + w['bundle'])
+    if env.get('ZIGMON_OSROOTS_TOOL'):
+        w['tool'] = shlex.split(env['ZIGMON_OSROOTS_TOOL'])
+    if 'ZIGMON_OSROOTS_PKG' in env:
+        w['pkg'] = shlex.split(env['ZIGMON_OSROOTS_PKG'])
+    return w
+
+
+def osroots_blocks(text):
+    """Each certificate of a text as (pem, der) - nothing but certificates: a
+    private key, or a text with no certificate in it, refused whole."""
+    text = str(text or '')
+    if OSROOTS_FORBIDDEN_RE.search(text):
+        raise Refused('no private key and nothing but certificates (-----BEGIN CERTIFICATE-----)')
+    out = []
+    for body in OSROOTS_BLOCK_RE.findall(text):
+        try:
+            der = base64.b64decode(re.sub(r'\s+', '', body), validate=True)
+        except ValueError:
+            raise Refused('a certificate that is not base64')
+        if not der or len(der) > OSROOTS_PEM_MAX * 3 // 4:
+            raise Refused('a certificate of %d bytes - one is a few kB at most' % len(der))
+        enc = base64.b64encode(der).decode('ascii')
+        out.append(('-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n' % '\n'.join(
+            enc[i:i + 64] for i in range(0, len(enc), 64)), der))
+    if not out:
+        raise Refused('no certificate in it (-----BEGIN CERTIFICATE-----)')
+    return out
+
+
+def _osroots_time(s):
+    try:
+        return calendar.timegm(time.strptime(re.sub(r'\s+', ' ', s.strip()), '%b %d %H:%M:%S %Y %Z'))
+    except ValueError:
+        return 0
+
+
+def osroots_facts(pem, der):
+    """What one certificate is, as openssl reads it - and what stands against
+    it (`refused`) or is to be known (`warn`). The same words as the daemon's
+    osr_facts."""
+    txt = openssl(['x509', '-noout', '-text', '-nameopt', 'RFC2253'], 'not a certificate openssl reads',
+                  data=pem)
+
+    def one(rx):
+        m = re.search(rx, txt, re.M)
+        return m.group(1).strip() if m else ''
+    f = {'fp': hashlib.sha256(der).hexdigest(), 'subject': one(r'^\s*Subject: ?(.*)$')[:400],
+         'issuer': one(r'^\s*Issuer: ?(.*)$')[:400],
+         'not_before': _osroots_time(one(r'Not Before\s*: (.*)$')),
+         'not_after': _osroots_time(one(r'Not After\s*: (.*)$')),
+         'sig': one(r'Signature Algorithm: (\S+)')[:60]}
+    cn = re.search(r'(?:^|,)CN=((?:\\.|[^,])*)', f['subject'])
+    f['cn'] = (cn.group(1) if cn else f['subject'])[:200]
+    alg = one(r'Public Key Algorithm: (\S+)')
+    bits = one(r'Public-Key: \((\d+) bit\)')
+    curve = one(r'NIST CURVE: (\S+)') or one(r'ASN1 OID: (\S+)')
+    f['key'] = ('RSA %s' % bits) if alg == 'rsaEncryption' else \
+        ('EC %s' % (curve or bits)) if alg == 'id-ecPublicKey' else \
+        (alg.replace('ED25519', 'Ed25519').replace('ED448', 'Ed448')[:40] if alg else '?')
+    f['bits'] = int(bits) if bits.isdigit() else 0
+    bc = re.search(r'X509v3 Basic Constraints:.*\n\s*(CA:(TRUE|FALSE))', txt)
+    f['ca'] = bool(bc and bc.group(2) == 'TRUE')
+    ku = re.search(r'X509v3 Key Usage:.*\n\s*(.*)', txt)
+    f['ku_sign'] = None if not ku else ('Certificate Sign' in ku.group(1))
+    f['root'] = f['subject'] == f['issuer']
+    f['kind'] = 'root' if f['root'] else 'intermediate'
+    refused, warn = [], []
+    now = time.time()
+    if not bc:
+        refused.append('it says nothing of being an authority (no basicConstraints CA:TRUE) - '
+                       'only a certificate authority goes here')
+    elif not f['ca']:
+        refused.append('it is not a certificate authority (CA:FALSE) - a server\'s own certificate '
+                       'does not go here')
+    if f['ku_sign'] is False:
+        refused.append('its key usage does not let it sign certificates (no keyCertSign)')
+    if f['not_after'] and f['not_after'] < now:
+        warn.append('it ran out on %s - nothing it signed is trusted' % time.strftime(
+            '%Y-%m-%d', time.gmtime(f['not_after'])))
+    if f['not_before'] and f['not_before'] > now + 300:
+        warn.append('it is valid only from %s' % time.strftime('%Y-%m-%d', time.gmtime(f['not_before'])))
+    if not f['root'] and re.match(r'(?i)(sha1|md5|md2)', f['sig']):
+        warn.append('it is signed with %s - the system\'s crypto policy (DEFAULT) refuses it, and '
+                    'every chain through it' % f['sig'])
+    if f['key'].startswith('RSA') and 0 < f['bits'] < 2048:
+        warn.append('its key has %d bits - the system\'s crypto policy (DEFAULT) refuses fewer '
+                    'than 2048' % f['bits'])
+    f['refused'], f['warn'] = refused, warn
+    return f
+
+
+def osroots_dir_fd(d, make=False):
+    """The folder of local additions, opened without following a link, and
+    only when it is root's alone - or None where it is not there (made 0755
+    only when something is to be written into it)."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        fd = os.open(d, flags)
+    except FileNotFoundError:
+        if not make:
+            return None
+        os.makedirs(d, 0o755, exist_ok=True)
+        fd = os.open(d, flags)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise Refused('%s is not a folder (a link?) - nothing is written there' % d)
+        raise
+    st = os.fstat(fd)
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        os.close(fd)
+        raise Refused('%s is not root\'s alone (owner %d, mode %o) - nothing is written there'
+                      % (d, st.st_uid, stat.S_IMODE(st.st_mode)))
+    return fd
+
+
+def _osroots_read_at(dir_fd, name, most):
+    """A plain file's bytes - None for a link (never followed), a folder, a
+    pipe; a file bigger than `most` is read no further than that."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.EISDIR, errno.ENXIO, errno.ENOENT):
+            return None
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        out, left = [], most
+        while left > 0:
+            got = os.read(fd, min(left, 65536))
+            if not got:
+                break
+            out.append(got)
+            left -= len(got)
+        return b''.join(out)
+    finally:
+        os.close(fd)
+
+
+def osroots_scan(dfd):
+    """[(relative name, link target or None, dir_fd, name)] of the folder, one
+    level of subfolders too (Debian reads them) - a link to a folder is not
+    gone into. The subfolders' descriptors come back to be closed."""
+    out, subs = [], []
+    try:
+        top = sorted(os.listdir(dfd))
+    except OSError:
+        return out, subs
+    for n in top[:500]:
+        try:
+            st = os.lstat(n, dir_fd=dfd)
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                to = os.readlink(n, dir_fd=dfd)[:300]
+            except OSError:
+                to = '?'
+            out.append((n, to, dfd, n))
+        elif stat.S_ISDIR(st.st_mode):
+            try:
+                sfd = os.open(n, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+            except OSError:
+                continue
+            subs.append(sfd)
+            try:
+                inner = sorted(os.listdir(sfd))[:200]
+            except OSError:
+                inner = []
+            for m in inner:
+                try:
+                    lnk = os.readlink(m, dir_fd=sfd)[:300]
+                except OSError:
+                    lnk = None
+                out.append((n + '/' + m, lnk, sfd, m))
+        else:
+            out.append((n, None, dfd, n))
+    return out, subs
+
+
+def osroots_cert_of(raw):
+    """The certificates of a file somebody else put there - PEM or DER - with
+    their facts; [] when none reads."""
+    text = raw.decode('ascii', 'replace')
+    if '-----BEGIN CERTIFICATE-----' not in text:
+        got = subprocess.run(['openssl', 'x509', '-inform', 'DER'], input=raw, capture_output=True,
+                             timeout=30)
+        if got.returncode != 0:
+            return []
+        text = got.stdout.decode('ascii', 'replace')
+    try:
+        blocks = osroots_blocks('\n'.join(m.group(0) for m in OSROOTS_BLOCK_RE.finditer(text)))
+    except Refused:
+        return []
+    out = []
+    for pem, der in blocks[:20]:
+        try:
+            f = osroots_facts(pem, der)
+        except Refused:
+            continue
+        out.append({k: f[k] for k in ('fp', 'cn', 'subject', 'issuer', 'not_before', 'not_after',
+                                      'key', 'kind', 'ca')})
+    return out
+
+
+def _osroots_bundle_bytes(w):
+    """The system's list as its tool made it last - read as a plain file, a
+    link in its place not followed."""
+    d, name = os.path.split(w['bundle'])
+    try:
+        dfd = os.open(d or '/', os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return None
+    try:
+        return _osroots_read_at(dfd, name, 64 * 1048576)
+    finally:
+        os.close(dfd)
+
+
+def osroots_bundle(w, raw=None):
+    """How many the system's own list holds, how large, when it was made -
+    and the package that brings it, so it is seen the system's updates keep
+    it coming."""
+    out = {'path': w['bundle'], 'count': 0, 'bytes': 0, 'at': 0}
+    raw = _osroots_bundle_bytes(w) if raw is None else raw
+    if raw is None:
+        out['missing'] = True
+    else:
+        out['count'] = raw.count(b'-----BEGIN CERTIFICATE-----')
+        out['bytes'] = len(raw)
+        try:
+            out['at'] = os.stat(w['bundle'], follow_symlinks=False).st_mtime
+        except OSError:
+            pass
+    pkg = ''
+    if w.get('pkg'):
+        try:
+            got = subprocess.run(w['pkg'], capture_output=True, text=True, timeout=30)
+            if got.returncode == 0 and got.stdout.strip():
+                pkg = got.stdout.strip().splitlines()[0][:120]
+        except (OSError, subprocess.SubprocessError):
+            pkg = ''
+    out['package'] = pkg
+    return out
+
+
+def osroots_in_bundle(raw, ders):
+    """Which of these the tool put into the system's list: each one's base64
+    found in it."""
+    if raw is None:
+        return {}
+    flat = re.sub(rb'\s+', b'', raw)
+    return {hashlib.sha256(x).hexdigest(): base64.b64encode(x) in flat for x in ders}
+
+
+def osroots_read(w):
+    """zigmon's own files, the others', the system's list."""
+    ours, others = [], []
+    dfd = None
+    if w:
+        try:
+            dfd = osroots_dir_fd(w['dir'])
+        except Refused:
+            dfd = None
+    subs = []
+    try:
+        entries, subs = osroots_scan(dfd) if dfd is not None else ([], [])
+        parsed = 0
+        for rel, lnk, pfd, name in entries:
+            if OSROOTS_NAME_RE.match(rel) and lnk is None:
+                raw = _osroots_read_at(pfd, name, OSROOTS_PEM_MAX * 2)
+                try:
+                    (pem, der), = osroots_blocks((raw or b'').decode('ascii', 'replace'))
+                    f = osroots_facts(pem, der)
+                    f.pop('refused', None)
+                    f.update(file=rel, der=der)
+                    ours.append(f)
+                except (Refused, ValueError):
+                    ours.append({'file': rel, 'broken': True})
+                continue
+            if len(others) >= OSROOTS_OTHERS_NAMED:
+                continue
+            if lnk is not None:
+                others.append({'file': rel, 'link': lnk, 'certs': []})
+                continue
+            certs = []
+            if parsed < OSROOTS_OTHERS_READ:
+                raw = _osroots_read_at(pfd, name, OSROOTS_FILE_MAX)
+                if raw:
+                    parsed += 1
+                    try:
+                        certs = osroots_cert_of(raw)
+                    except (OSError, subprocess.SubprocessError):
+                        certs = []
+            others.append({'file': rel, 'certs': certs})
+    finally:
+        for fd in subs:
+            os.close(fd)
+        if dfd is not None:
+            os.close(dfd)
+    raw = _osroots_bundle_bytes(w) if w else None
+    inb = osroots_in_bundle(raw, [f['der'] for f in ours if f.get('der')])
+    for f in ours:
+        f.pop('der', None)
+        if f.get('fp'):
+            f['in_bundle'] = inb.get(f['fp'], False)
+    return {'ours': ours, 'others': others, 'system': osroots_bundle(w, raw) if w else {},
+            'flavour': (w or {}).get('flavour', ''), 'dir': (w or {}).get('dir', ''),
+            'tool': ' '.join((w or {}).get('tool') or []),
+            'tool_there': bool(w and shutil.which(w['tool'][0]))}
+
+
+def osroots_selinux():
+    if os.environ.get('ZIGMON_OSROOTS_SELINUX') == '1':
+        return True
+    return not NO_SERVICES and os.path.exists('/sys/fs/selinux/enforce')
+
+
+def _osroots_put(dfd, name, pem):
+    """Written beside it under a name of its own - root's, 0644 - and renamed
+    into place in the same folder."""
+    for n in range(50):
+        tmp = '.zigmon-osroot.%d.%d' % (os.getpid(), n)
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(pem.encode('ascii'))
+                f.flush()
+                os.fchmod(f.fileno(), 0o644)
+                os.fchown(f.fileno(), 0, 0)
+            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+            raise
+        return
+    raise OSError('could not write %s' % name)
+
+
+def osroots_sync(w, certs, force=False):
+    """The folder brought to hold exactly zigmon's certificates wanted - the
+    others' left as they are - and the system's tool run when anything
+    changed. (said, refused [{fp, cn, why}])."""
+    if not w:
+        raise Refused('this system has neither update-ca-trust (RHEL, AlmaLinux, Rocky) nor '
+                      'update-ca-certificates (Debian, Ubuntu)')
+    if not isinstance(certs, list) or len(certs) > OSROOTS_MAX:
+        raise Refused('the certificates wanted: a list of %d at most' % OSROOTS_MAX)
+    want, refused = {}, []
+    for c in certs:
+        if not isinstance(c, str) or len(c) > OSROOTS_PEM_MAX:
+            raise Refused('each certificate as PEM text of %d bytes at most' % OSROOTS_PEM_MAX)
+        blocks = osroots_blocks(c)
+        if len(blocks) != 1:
+            raise Refused('one certificate in each')
+        pem, der = blocks[0]
+        f = osroots_facts(pem, der)
+        if f['refused']:
+            refused.append({'fp': f['fp'], 'cn': f['cn'], 'why': '; '.join(f['refused'])})
+            continue
+        want['zigmon-%s%s' % (f['fp'][:16], w['ext'])] = pem
+    dfd = osroots_dir_fd(w['dir'], make=bool(want))
+    said, changed = [], False
+    if dfd is not None:
+        try:
+            have = {}
+            for n in os.listdir(dfd):
+                if OSROOTS_NAME_RE.match(n):
+                    have[n] = os.lstat(n, dir_fd=dfd)
+            for name, pem in sorted(want.items()):
+                st = have.get(name)
+                if st is not None:
+                    if stat.S_ISREG(st.st_mode):
+                        raw = _osroots_read_at(dfd, name, OSROOTS_PEM_MAX * 2)
+                        if raw is not None and raw == pem.encode('ascii'):
+                            continue
+                    # changed by somebody, or a link: put back as it is wanted
+                    if stat.S_ISDIR(st.st_mode):
+                        raise Refused('%s/%s is a folder - nothing is written over it' % (w['dir'], name))
+                    os.unlink(name, dir_fd=dfd)
+                _osroots_put(dfd, name, pem)
+                said.append('added %s' % name)
+                changed = True
+                if osroots_selinux():
+                    # the anchors folder is cert_t: the new file labelled as the folder wants
+                    subprocess.run([os.environ.get('ZIGMON_OSROOTS_RESTORECON') or 'restorecon', '-F',
+                                    os.path.join(w['dir'], name)], capture_output=True)
+            for name, st in sorted(have.items()):
+                if name not in want and not stat.S_ISDIR(st.st_mode):
+                    os.unlink(name, dir_fd=dfd)
+                    said.append('removed %s' % name)
+                    changed = True
+        finally:
+            os.close(dfd)
+    if changed or force:
+        if not shutil.which(w['tool'][0]):
+            raise Refused('%s is not on this machine - the files are in %s, the system\'s list is '
+                          'not made again until it runs' % (w['tool'][0], w['dir']))
+        got = subprocess.run(w['tool'], capture_output=True, text=True, timeout=300)
+        if got.returncode != 0:
+            raise Refused('%s ended with %d: %s' % (' '.join(w['tool']), got.returncode,
+                                                    ((got.stderr or got.stdout).strip() or '-')[-300:]))
+        said.append('%s run' % ' '.join(w['tool']))
+    return said, refused
+
+
+def osroots_one(r):
+    w = osroots_where()
+    do = r.get('do')
+    if do == 'list':
+        return dict(osroots_read(w), said=[], refused=[], not_in_bundle=[])
+    if do == 'check':
+        # a text read for the pages: what each certificate in it is - nothing written
+        text = r.get('text')
+        if not isinstance(text, str) or len(text) > OSROOTS_MAX * OSROOTS_PEM_MAX:
+            raise Refused('the certificates as PEM text')
+        return {'certs': [dict(osroots_facts(pem, der), pem=pem)
+                          for pem, der in osroots_blocks(text)[:OSROOTS_MAX + 1]]}
+    if do == 'sync':
+        said, refused = osroots_sync(w, r.get('certs'), r.get('force') is True)
+        got = osroots_read(w)
+        # each of ours wanted, looked for in the list the tool made
+        missing = [f['fp'] for f in got['ours'] if f.get('fp') and not f.get('in_bundle')]
+        return dict(got, said=said, refused=refused, not_in_bundle=missing)
+    raise Refused('list, check or sync')
+
+
+def osroots_part():
+    ask_part(OSROOTS_ASK, OSROOTS_FILE, osroots_one, most=OSROOTS_MAX * OSROOTS_PEM_MAX * 2 + 65536)
+
+
 # ---- the requests ---------------------------------------------------------------
 def status_read():
     try:
@@ -4153,7 +4651,7 @@ def serve():
     # the network, the clock and switching off first, and the updates of the
     # system, each answered on its own: none of them waits behind a backup
     # laid down in request.json
-    for part in (net_part, ntp_part, osup_part):
+    for part in (net_part, ntp_part, osup_part, osroots_part):
         try:
             part()
         except Exception as e:                          # noqa: BLE001

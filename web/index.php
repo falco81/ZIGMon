@@ -619,6 +619,13 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/acmepush');
         exit;
     }
+    if ($what === 'osroots' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // the system's trusted roots (otp 1.0.265): the authorities added to
+        // the trust of the whole machine - an administrator's, behind the
+        // sign-in in the daemon
+        zigmon_relay('/api/osroots');
+        exit;
+    }
     if ($what === 'perf' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // the performance meter (5.43): how busy the machine is - an
         // administrator's, behind the sign-in in the daemon, and nothing at
@@ -1002,7 +1009,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do',
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do',
                        'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
@@ -1057,6 +1064,7 @@ if (isset($_GET['api'])) {
                   'change-do' => '/api/change', 'rbackup-do' => '/api/rbackup', 'about-do' => '/api/about',
                   'acme-do' => '/api/acme', 'osup-do' => '/api/osup', 'webproxy-do' => '/api/webproxy',
                   'acmepush-do' => '/api/acmepush',
+                  'osroots-do' => '/api/osroots',   /* the system's trusted roots: check, add, remove, refresh */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -1066,7 +1074,7 @@ if (isset($_GET['api'])) {
         // with openssl: longer than an ordinary save
         $slow = strpos($what, 'db-') === 0 || in_array($what, ['upgrade-upload', 'fullbackup-upload', 'tls-do', 'firewall-do', 'upgrade-do', 'fullbackup-do',
                                                                     'net-do', 'ntp-do', 'power-do', 'rbackup-do', 'acme-do', 'osup-do',
-                                                                    'webproxy-do', 'acmepush-do'], true);
+                                                                    'webproxy-do', 'acmepush-do', 'osroots-do'], true);
         zigmon_relay($paths[$what], 'POST', $body, $slow ? 180.0 : 30.0);
         exit;
     }
@@ -4597,6 +4605,26 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   @media (max-width:700px){.ot .pw-grid,.ot .ntp-grid{grid-template-columns:minmax(0,1fr)}.ot .ntp-node .net-fact .k,.ot .pw-node .net-fact .k{width:120px}}
   @media (max-width:760px){.ot .tls-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ot .tls-rows .arow{flex-direction:column;align-items:flex-start}}
   .ot .cert-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  /* the system's trusted roots (otp 1.0.265): the authorities added, this machine's box, the dialog */
+  .ot .osr-tools{margin:0 0 12px;flex-wrap:wrap}
+  .ot .osr-auth b{margin-right:6px}
+  .ot .osr-auth .tag{margin-right:4px}
+  .ot .osr-w{font-size:12.5px;color:var(--warn);margin-top:4px;line-height:1.4}
+  .ot .osr-r{font-size:12.5px;color:var(--crit);margin-top:4px;line-height:1.4}
+  .ot .osr-fp{cursor:copy;white-space:nowrap}
+  .ot .osr-act{white-space:nowrap;text-align:right}
+  .ot .osr-act .btn + .btn{margin-left:6px}
+  .ot .osr-py{margin:12px 0 0}
+  .ot .osr-grid{margin-top:16px}
+  .ot .osr-others{margin:12px 0 0;font-size:12.5px;color:var(--tx-dim)}
+  .ot .osr-others ul{margin:6px 0 0 18px;padding:0;display:flex;flex-direction:column;gap:3px;color:var(--tx)}
+  .ot .osr-others li .tag{margin-left:4px}
+  #zmodal textarea.osr-text{width:100%;box-sizing:border-box;min-height:150px;font-size:12.5px;resize:vertical}
+  #zmodal .osr-pick{margin:8px 0 4px}
+  #zmodal .osr-seen{display:flex;flex-direction:column;gap:12px;margin-top:10px}
+  #zmodal .osr-one{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel2);min-width:0}
+  #zmodal .osr-one .osr-fpline{color:var(--tx-mut);font-size:12px;overflow-wrap:anywhere;margin-top:2px}
+  #zmodal .osr-one .osr-when{font-size:13px;margin-top:2px}
   /* the certificate's download (5.30): a format chosen from cards, then a password */
   .ot .fmt-group{margin:2px 0 14px}
   .ot .fmt-group > h4{margin:0 0 8px;font-size:11px;letter-spacing:.8px;text-transform:uppercase;color:var(--tx-dim);font-weight:700}
@@ -6373,6 +6401,15 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small set-note-alt"></span>
       </div>
     </div>
+    <!-- The system's trusted roots (otp 1.0.265): certificate authorities of
+         one's own put into the trust of the whole machine, beside the
+         distribution's list - root puts them where the system itself takes
+         local additions (osroots.ask) and runs the system's own tool. -->
+    <div class="card full ot" data-sec="sys-certs" id="osr-card">
+      <h2>Trusted roots of the system</h2>
+      <p class="note">Certificate authorities of your own &ndash; your company&rsquo;s root, an intermediate &ndash; trusted by the operating system of this machine as a whole: curl, dnf, LDAPS to a domain controller, mail, syslog over TLS and zigmon&rsquo;s own connections &ndash; every program that uses the system&rsquo;s trust. The distribution&rsquo;s own list stays as it is and keeps coming with the system&rsquo;s updates; these are added beside it, the way the system itself takes local additions (<code>update-ca-trust</code> on RHEL, AlmaLinux and Rocky, <code>update-ca-certificates</code> on Debian and Ubuntu), and stay there through those updates. Only files named <code>zigmon-&hellip;</code> are ever written or removed; what somebody else put there is only shown.</p>
+      <div id="osr-host"></div>
+    </div>
     <div class="full ot pw-wrap" data-sec="sys-acme" id="acme-card">
       <div id="ac-host"></div>
     </div>
@@ -6865,7 +6902,7 @@ function api(what, options) {
       // repaint of the page waited for it.
       // The panes root looks after (firewall, certificates, upgrades, the whole
       // backup) ask every few seconds too, and say "locked" in place.
-      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|webproxy|secret-hints|perf)(&|$)/.test(String(what));
+      var quiet = /^(approvals|blocked|log|firewall|tls|upgrade|fullbackup|rbackup|osup|osroots|webproxy|secret-hints|perf)(&|$)/.test(String(what));
       if (r.status === 403 && data && /view locked/.test(data.error || '')
           && !VIEWLOCK.asking && !VIEWLOCK.declined && !quiet) {
         VIEWLOCK.asking = true;
@@ -30634,6 +30671,265 @@ function drawPush(d) {
   pushWanted();
 }
 
+/* ==== Trusted roots of the system (otp 1.0.265) ==================================
+   Certificate authorities of one's own put into the trust of the whole
+   machine - by the system's own way of adding to it (update-ca-trust,
+   update-ca-certificates), the distribution's list left as it is and kept
+   coming with its updates. One row an authority zigmon added; under them
+   this machine: whether it has what is wanted, its system's own list and
+   package, and what somebody else added there. Asked every 5 s while root
+   is still at it or for 90 s after a change, else every 30 s. */
+var OSR = {d: null, at: 0, until: 0};
+function loadOsr(quiet) {
+  var host = $('osr-host');
+  if (!host) return;
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see: what the whole machine trusts.', loadOsr);
+    return;
+  }
+  rootUnlockedHost(host);
+  OSR.at = Date.now();
+  api('osroots').then(drawOsr).catch(function (e) { if (!quiet) zoops(e); });
+}
+setInterval(function () {
+  if (STATE.tab !== 'control' || CONTROL_SEC !== 'sys-certs' || document.hidden || !OSR.d) return;
+  if ($('zmodal') && !$('zmodal').hidden) return;
+  var n = OSR.d.node || {};
+  var hurry = n.busy || n.status === 'waiting' || Date.now() < OSR.until;
+  if (Date.now() - OSR.at >= (hurry ? 5000 : 30000)) loadOsr(true);
+}, 1000);
+function osrDay(ts) { return ts ? localDay(new Date(ts * 1000)) : '?'; }
+function osrStatusTag(n) {
+  var w = {applied: ['ok', 'as wanted'], waiting: ['warn', n.busy ? 'root is at it' : 'waiting'],
+           failed: ['crit', 'failed'], none: ['dim', 'nothing added by zigmon']}[n.status] || ['dim', n.status || '?'];
+  var t = el('span', 'tag ' + w[0], w[1]);
+  t.id = 'osr-status';
+  return t;
+}
+function osrIssuerCn(c) {
+  if (c.kind === 'root') return '';
+  var m = /(?:^|,)CN=((?:\\.|[^,])*)/.exec(String(c.issuer || ''));
+  return m ? m[1] : String(c.issuer || '');
+}
+function drawOsr(d) {
+  var host = $('osr-host');
+  if (!host || !d) return;
+  OSR.d = d;
+  var certs = d.certs || [], n = d.node || {};
+  var box = el('div', 'osr-box');
+  box.id = 'osr-box';
+  var tools = el('div', 'btnrow osr-tools');
+  var add = cmdButton('Add an authority', 'upload', 'primary');
+  add.id = 'osr-add';
+  explain(add, 'A root or an intermediate certificate authority of your own - pasted as PEM, or a .pem, .crt or .cer file; a file with a chain adds each authority in it.');
+  add.disabled = certs.length >= (d.max || 50);
+  add.onclick = osrAdd;
+  tools.appendChild(add);
+  var again = cmdButton('Read it again', 'refresh', '');
+  again.id = 'osr-again';
+  again.onclick = function () {
+    zbusy(again, true);
+    rootPost('osroots-do', {action: 'refresh'}).then(function (x) {
+      toast(x.message, true);
+      OSR.until = Date.now() + 90000;
+      setTimeout(function () { loadOsr(true); }, 1500);
+    }).catch(zoops).then(function () { zbusy(again, false); });
+  };
+  tools.appendChild(again);
+  box.appendChild(tools);
+  if (!certs.length) {
+    box.appendChild(el('p', 'note', 'zigmon has added none - this machine trusts its system’s own list alone.'));
+  } else {
+    box.appendChild(zTable(['Authority', 'Issued by', 'Valid', 'Key', 'SHA-256', ''], certs, function (c) {
+      var tr = el('tr');
+      tr.dataset.fp = c.fp;
+      var t = el('td', 'osr-auth');
+      t.appendChild(el('b', '', c.cn || '?'));
+      t.appendChild(el('span', 'tag ' + (c.kind === 'root' ? 'info' : 'dim'), c.kind === 'root' ? 'root' : 'intermediate'));
+      var days = daysLeft(c.not_after);
+      if (days !== null && days < 0) t.appendChild(el('span', 'tag crit', 'ran out'));
+      else if (days !== null && days < 60) t.appendChild(el('span', 'tag warn', days + ' days left'));
+      if (n.status === 'applied' && !c.in_bundle) t.appendChild(el('span', 'tag warn', 'not in the system’s list'));
+      (c.warn || []).forEach(function (w) { t.appendChild(el('div', 'osr-w', w)); });
+      tr.appendChild(t);
+      tr.appendChild(el('td', 'small', osrIssuerCn(c)));
+      tr.appendChild(el('td', 'small', osrDay(c.not_before) + ' – ' + osrDay(c.not_after)));
+      tr.appendChild(el('td', 'small', c.key || '?'));
+      var fp = el('td', 'mono small osr-fp', String(c.fp || '').slice(0, 16) + '…');
+      fp.title = 'SHA-256 ' + c.fp + ' - a click copies it';
+      fp.onclick = function () { copyText(c.fp); };
+      tr.appendChild(fp);
+      var act = el('td', 'osr-act');
+      var dl = iconButton('download', 'Download it (PEM)');
+      dl.classList.add('osr-dl');
+      dl.onclick = function () { saveText(String(c.cn || 'ca').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) + '.pem', c.pem); };
+      act.appendChild(dl);
+      var rm = iconButton('trash', 'Take it out of the system’s trust');
+      rm.classList.add('osr-rm');
+      rm.onclick = function () { osrRemove(c); };
+      act.appendChild(rm);
+      tr.appendChild(act);
+      return tr;
+    }));
+  }
+  var py = d.python || {};
+  if (py.cafile || py.capath) {
+    var pl = el('p', 'note osr-py' + (py.system ? '' : ' warn'), py.system
+      ? 'zigmon’s own connections (mail, ntfy, Telegram, ACME, new versions, the backups to other machines, the server in front) use the system’s list too - what is added here reaches them at their next connection.'
+      : 'zigmon’s own connections do not use the system’s list here (' + (py.cafile || py.capath) + ') - what is added here does not reach them.');
+    pl.id = 'osr-py';
+    box.appendChild(pl);
+  }
+  var grid = el('div', 'pw-grid osr-grid');
+  var c = el('div', 'card pw-node osr-node');
+  c.id = 'osr-node';
+  var hd = el('div', 'pw-head');
+  hd.appendChild(el('span', 'dot ' + ({applied: 'ok', waiting: 'warn', failed: 'bad'}[n.status] || '')));
+  hd.appendChild(el('b', '', n.name || 'This server'));
+  hd.appendChild(el('span', 'tag info', 'this server'));
+  hd.appendChild(osrStatusTag(n));
+  c.appendChild(hd);
+  if (n.why) c.appendChild(el('p', 'note ' + (n.status === 'failed' ? 'bad' : 'warn'), n.why));
+  if (n.helper === false) c.appendChild(el('p', 'note warn', 'Root has not been given this to do on this machine yet: run install.sh --upgrade once, which installs zigmon-root.path.'));
+  var s = n.system || {};
+  c.appendChild(otFacts([
+    ['The system’s own list', s.count ? s.count + ' authorities' : (s.missing ? 'not there' : '?')],
+    ['Its package', s.package || '', 'mono'],
+    ['Made last', s.at ? ago(s.at) : ''],
+    ['Local additions in', n.dir || '', 'mono'],
+    ['Made by', n.tool ? n.tool + (n.tool_there === false ? ' (not on this machine)' : '') : '', 'mono'],
+    ['zigmon’s additions there', String((n.ours || []).length)],
+    ['Read', n.at ? ago(n.at) : 'not yet']
+  ]));
+  var others = n.others || [];
+  if (others.length) {
+    var ob = el('div', 'osr-others');
+    ob.id = 'osr-others';
+    ob.appendChild(el('div', '', 'Added by somebody else - zigmon leaves them as they are:'));
+    var ul = el('ul');
+    others.slice(0, 60).forEach(function (o) {
+      var li = el('li');
+      li.dataset.file = o.file || '';
+      li.appendChild(el('span', 'mono', o.file || '?'));
+      var cs = o.certs || [];
+      if (cs.length) {
+        li.appendChild(el('span', '', ' - ' + cs.map(function (x) { return x.cn || '?'; }).join(', ')));
+        cs.forEach(function (x) {
+          li.appendChild(el('span', 'tag dim', x.kind === 'root' ? 'root' : (x.ca ? 'intermediate' : 'not an authority')));
+        });
+      } else if (o.link) {
+        li.appendChild(el('span', 'muted', ' - a link (not followed)'));
+      } else {
+        li.appendChild(el('span', 'muted', ' - no certificate read'));
+      }
+      ul.appendChild(li);
+    });
+    ob.appendChild(ul);
+    if (others.length > 60) ob.appendChild(el('div', 'muted', 'and ' + (others.length - 60) + ' more'));
+    c.appendChild(ob);
+  }
+  grid.appendChild(c);
+  box.appendChild(grid);
+  host.innerHTML = '';
+  host.appendChild(box);
+}
+/* A file as it comes: PEM as it is; DER (.cer) made PEM here, its bytes base64'd. */
+function osrFileText(buf) {
+  var bytes = new Uint8Array(buf);
+  var head = '';
+  for (var i = 0; i < Math.min(bytes.length, 4096); i++) head += String.fromCharCode(bytes[i]);
+  if (head.indexOf('-----BEGIN') >= 0) return new TextDecoder('ascii').decode(bytes);
+  var bin = '';
+  for (var j = 0; j < bytes.length; j++) bin += String.fromCharCode(bytes[j]);
+  var b64 = btoa(bin).replace(/(.{64})/g, '$1\n').replace(/\n$/, '');
+  return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----\n';
+}
+function osrAdd() {
+  var area, seen, timer = null, checked = '', look;
+  zmodal('Add to the system’s trust', function (body) {
+    var p = el('p', 'note');
+    p.innerHTML = 'A certificate authority of your own - a root, or an intermediate - as PEM (<code>-----BEGIN CERTIFICATE-----</code>), or a <code>.pem</code>, <code>.crt</code> or <code>.cer</code> file. A chain adds every authority in it. Only authorities are taken (CA:TRUE), never a private key.';
+    body.appendChild(p);
+    body.appendChild(el('p', 'note', 'Every program of this server trusts what they sign from then on.'));
+    area = el('textarea', 'mono osr-text');
+    area.id = 'osr-text';
+    area.rows = 8; area.spellcheck = false; area.placeholder = '-----BEGIN CERTIFICATE-----';
+    body.appendChild(area);
+    var fr = el('div', 'btnrow osr-pick');
+    var pick = cmdButton('Read a file…', 'upload', 'small');
+    pick.id = 'osr-pick';
+    var input = el('input'); input.type = 'file'; input.hidden = true; input.id = 'osr-file';
+    input.accept = '.pem,.crt,.cer,.der,.cert,.ca-bundle';
+    pick.onclick = function () { input.click(); };
+    input.onchange = function () {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      if (f.size > 1048576) { toast('that file is far bigger than certificates are', false); return; }
+      var r = new FileReader();
+      r.onload = function () { area.value = osrFileText(r.result); look(); };
+      r.readAsArrayBuffer(f);
+      input.value = '';
+    };
+    fr.appendChild(pick); fr.appendChild(input);
+    body.appendChild(fr);
+    seen = el('div', 'osr-seen');
+    seen.id = 'osr-seen';
+    body.appendChild(seen);
+    look = function () {
+      var text = area.value.trim();
+      if (text === checked) return;
+      checked = text;
+      seen.innerHTML = '';
+      if (!text) return;
+      rootPost('osroots-do', {action: 'check', text: text}).then(function (x) {
+        if (area.value.trim() !== text) return;
+        seen.innerHTML = '';
+        (x.certs || []).forEach(function (c) {
+          var one = el('div', 'osr-one');
+          one.dataset.fp = c.fp;
+          one.appendChild(el('b', '', c.cn || '?'));
+          one.appendChild(document.createTextNode(' '));
+          var refused = (c.refused || []).length;
+          one.appendChild(el('span', 'tag ' + (refused ? 'crit' : (c.already ? 'dim' : (c.kind === 'root' ? 'info' : 'dim'))),
+            refused ? 'not taken' : (c.already ? 'there already' : (c.kind === 'root' ? 'root' : 'intermediate'))));
+          one.appendChild(el('div', 'mono osr-fpline', 'SHA-256 ' + c.fp));
+          one.appendChild(el('div', 'osr-when', 'valid ' + osrDay(c.not_before) + ' – ' + osrDay(c.not_after) + ' · ' + (c.key || '?')));
+          (c.refused || []).forEach(function (w) { one.appendChild(el('div', 'osr-r', w)); });
+          (c.warn || []).forEach(function (w) { one.appendChild(el('div', 'osr-w', w)); });
+          seen.appendChild(one);
+        });
+      }).catch(function (e) {
+        if (area.value.trim() !== text) return;
+        seen.innerHTML = '';
+        seen.appendChild(el('p', 'note bad', (e && e.message) || String(e)));
+      });
+    };
+    area.oninput = function () { clearTimeout(timer); timer = setTimeout(look, 400); };
+  }, [{words: 'Cancel', close: true},
+      {words: 'Add them', cls: 'primary', icon: 'add', go: function (b) {
+        var gen = ZM.gen;
+        zbusy(b, true);
+        rootPost('osroots-do', {action: 'add', text: area.value.trim()}).then(function (x) {
+          zbusy(b, false);
+          if (gen === ZM.gen) closeZModal();
+          toast(x.message, true);
+          OSR.until = Date.now() + 90000;
+          loadOsr(true);
+        }).catch(function (e) { zbusy(b, false); zmodalSaid(e, gen); });
+      }}], 'medium');
+}
+function osrRemove(c) {
+  zconfirm('Take it out of the system’s trust',
+    'What ' + (c.cn || '?') + ' (SHA-256 ' + String(c.fp).slice(0, 16) + '…) signs is no longer trusted by this server - unless the system’s own list has it. Connections that rely on it (LDAPS, mail, syslog…) fail from their next start.',
+    'Take it away', function () {
+      rootPost('osroots-do', {action: 'remove', fp: c.fp}).then(function (x) {
+        toast(x.message, true);
+        OSR.until = Date.now() + 90000;
+        loadOsr(true);
+      }).catch(zoops);
+    }, true);
+}
+
 /* ==== Certificates and TLS ===================================================== */
 var WEB = {last: null};
 /* Which card a button belongs to (5.33): this machine, or the server in
@@ -34835,7 +35131,7 @@ function rootPaneShown(sec) {
     fwBar();
     loadFw();
   }
-  if (sec === 'sys-certs') loadWeb();
+  if (sec === 'sys-certs') { loadWeb(); loadOsr(); }
   if (sec === 'sys-acme') loadAcme(); else acPoll(false);
   if (sec === 'sec-access') { loadAccounts(); renderSessions.at = 0; renderSessions(); }
   if (sec === 'sys-upgrade') { upgradeWire(); loadUpgrade(); }

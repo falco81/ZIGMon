@@ -8,7 +8,7 @@
 # reached by a few backups deleted one after another on the dashboard, and
 # then nothing more was taken until somebody ran systemctl reset-failed
 StartLimitIntervalSec=0
-Description=zigmon - TLS, page access, the firewall and whole backups, as asked on the dashboard
+Description=zigmon - TLS, page access, the firewall, whole backups and the system's trusted roots, as asked on the dashboard
 After=network-online.target
 
 [Service]
