@@ -2083,7 +2083,15 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.51.0**
+Current version: **5.51.1**
+
+5.51.1 — a box too old for the backup says so.
+
+* The backup of a box's configuration came with Shelly firmware 2.2.0. A box
+  on an older one (a Mini 1PM Gen4 on 2.1.1) now says that its firmware is
+  older than 2.2.0 and how to put in a newer one, not a list of models.
+
+`test/review5511_sbkwhy.py`; these checks fail on 5.51.0.
 
 5.51.0 — Shelly configuration backups, and HTTPS to a box when wanted.
 

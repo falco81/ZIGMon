@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.51.0'
+__version__ = '5.51.1'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -57752,6 +57752,19 @@ def sbk_strip(v):
     return v
 
 
+SBK_SINCE = '2.2.0'          # Sys.CreateBackup and the rest: Shelly's changelog, 2.2.0
+
+
+def sbk_older_than(ver, since):
+    """Whether a firmware version ('2.1.1', '1.7.1-beta2', '2.2.0') is older than `since`;
+    False when it does not read as one."""
+    def parts(v):
+        m = re.match(r'^\s*(\d+)\.(\d+)(?:\.(\d+))?', str(v or ''))
+        return tuple(int(x or 0) for x in m.groups()) if m else None
+    a, b = parts(ver), parts(since)
+    return bool(a and b and a < b)
+
+
 def sbk_look(rpc):
     """What a box is, whether it can make and take a backup, and its fingerprint now."""
     info = sbk_call(rpc, 'Shelly.GetDeviceInfo') or {}
@@ -57777,8 +57790,15 @@ def sbk_look(rpc):
     supported = all(m in methods for m in SBK_NEEDS)
     why = ''
     if not supported:
-        why = ('its firmware (%s) has no backup - Sys.CreateBackup is not among its methods; not on Plus Uni, '
-               'Plus RGBW PM and some Zigbee-firmware Gen4 at all' % (info.get('ver') or '?'))
+        ver = str(info.get('ver') or '')
+        if sbk_older_than(ver, SBK_SINCE):
+            # (5.51.1) the plain reason: the backup came with firmware 2.2.0 (Shelly's changelog)
+            why = ('its firmware %s is older than %s, the first with the backup of its configuration - put in '
+                   'a newer one (the socket\'s fold: The box itself - Firmware, or zigmon shelly NAME firmware) '
+                   'and look again' % (ver, SBK_SINCE))
+        else:
+            why = ('its firmware (%s) has no backup - Sys.CreateBackup is not among its methods; not on Plus Uni, '
+                   'Plus RGBW PM and some Zigbee-firmware Gen4 at all' % (ver or '?'))
     elif provision in SBK_GATED:
         why = 'it is in its setup window (provisioning %s) - a backup is allowed once that is over' % provision
     initial = {k: str(v.get('initial_state') or '') for k, v in cfg.items()
