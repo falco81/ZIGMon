@@ -2083,7 +2083,38 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.50.0**
+Current version: **5.51.0**
+
+5.51.0 — Shelly configuration backups, and HTTPS to a box when wanted.
+
+* Settings - Devices - Device backups: the whole configuration of each Shelly
+  socket and light (its settings, schedules, webhooks, scripts, Wi-Fi) backed
+  up by the box itself (Sys.CreateBackup) into this dashboard's database, and
+  put back when needed (Sys.UploadBackup, Sys.RestoreBackup). The firmware
+  makes a backup as it starts: each backup restarts the box, and a restore
+  wipes its files and restarts it - both asked first, naming every box and
+  what its restart does. A change since the last backup is noticed without a
+  restart (the revisions of its configuration and a fingerprint of
+  Shelly.GetConfig), told once, and shown per box. Back up one, or all that
+  differ; the newest 5 kept (1-50). A scheduler, off until switched on, backs
+  up at 03:40 only the boxes that differ, one at a time, and skips (saying
+  why) a box whose output is on and would not come back on after a restart.
+  A restore refuses another model's backup. Boxes whose firmware cannot
+  (Plus Uni, Plus RGBW PM, older firmware) say so - asked of the box, never
+  guessed from its model. Administrators only; an archive holds the box's
+  Wi-Fi password and cloud token, is never written into the log, and is
+  downloaded only after a question. Also `zigmon --shelly-backup ...` and
+  the console. Note: zigmon's own database backups now carry these archives.
+* HTTPS to a Shelly box, per box and off unless switched on: boxes from
+  firmware 2.0.0 on can speak only HTTPS. The box's certificate is kept the
+  first time (or checked against a CA pasted in); another certificate later is
+  refused and told once, until "Trust the new certificate". A box that sends
+  plain HTTP on to HTTPS says so in plain words and on its card - never
+  switched on by itself. In the socket's fold, `zigmon shelly NAME tls` and
+  the console; `zigmon shelly https://HOST ...` for a one-off.
+
+`test/review551_shellybackup.py`, `test/review552_shellytls.py`; these checks
+fail on 5.50.0.
 
 5.50.0 — Shelly boxes checked against their API; their firmware and relay settings.
 
