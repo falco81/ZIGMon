@@ -57753,6 +57753,9 @@ def sbk_strip(v):
 
 
 SBK_SINCE = '2.2.0'          # Sys.CreateBackup and the rest: Shelly's changelog, 2.2.0
+# never on these, whatever their firmware (Sys.md: not enough flash) - only the words
+# depend on it; whether a box can is still asked of the box itself
+SBK_NEVER_APPS = ('PlusUni', 'PlusRGBWPM')
 
 
 def sbk_older_than(ver, since):
@@ -57791,7 +57794,7 @@ def sbk_look(rpc):
     why = ''
     if not supported:
         ver = str(info.get('ver') or '')
-        if sbk_older_than(ver, SBK_SINCE):
+        if sbk_older_than(ver, SBK_SINCE) and str(info.get('app') or '') not in SBK_NEVER_APPS:
             # (5.51.1) the plain reason: the backup came with firmware 2.2.0 (Shelly's changelog)
             why = ('its firmware %s is older than %s, the first with the backup of its configuration - put in '
                    'a newer one (the socket\'s fold: The box itself - Firmware, or zigmon shelly NAME firmware) '

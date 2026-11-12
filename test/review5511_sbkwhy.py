@@ -44,6 +44,12 @@ OLD = ['Shelly.GetDeviceInfo', 'Shelly.ListMethods', 'Shelly.GetConfig', 'Sys.Ge
 got = zigmon.sbk_look(Box('2.1.1', OLD))
 check(got['supported'] is False and '2.1.1 is older than 2.2.0' in got['why'] and 'Firmware' in got['why'],
       'a box on 2.1.1 does not say its firmware is too old: %r' % got['why'])
+uni = Box('1.4.4', OLD)
+uni.call = (lambda f: lambda m, p=None: dict(f(m, p), app='PlusUni', model='SNSN-0043X')
+            if m == 'Shelly.GetDeviceInfo' else f(m, p))(uni.call)
+got = zigmon.sbk_look(uni)
+check(got['supported'] is False and 'Plus Uni' in got['why'] and 'older than' not in got['why'],
+      'a Plus Uni is told to update a firmware that will never have it: %r' % got['why'])
 got = zigmon.sbk_look(Box('2.2.0', OLD))
 check(got['supported'] is False and 'not among its methods' in got['why'],
       'a 2.2.0 box without the methods (Plus Uni and the like): %r' % got['why'])
