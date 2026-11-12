@@ -1196,10 +1196,126 @@ def tls_now():
     names = directive(block, 'server_name')
     out['server_name'] = (names or '').split()[0] if names else ''
     if out['info'] and os.path.exists(files['root']):
+        # kept as it was: the first certificate of the file against the
+        # trusted file - which holds the chain too, so it says nothing of
+        # what nginx sends; chain_check does
         got = subprocess.run(['openssl', 'verify', '-CAfile', files['root'], files['cert']],
                              capture_output=True, text=True)
         out['verify'] = 'ok' if got.returncode == 0 else (
             (got.stdout + got.stderr).strip().splitlines() or ['does not verify'])[-1][:200]
+    if out['info']:
+        out['chain_check'] = chain_check(files['cert'], files['root'])
+    if out['alt_info']:
+        out['alt_chain_check'] = chain_check(files['alt_cert'], files['root'])
+    return out
+
+
+CA_BUNDLES = ('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', '/etc/ssl/certs/ca-certificates.crt',
+              '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem')
+PEM_CERT_RE = re.compile(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----')
+
+
+def ca_bundle():
+    """The file of the roots this system trusts - what clients here check
+    against. ZIGMON_TEST_CA_BUNDLE stands in for it in the checks."""
+    f = os.environ.get('ZIGMON_TEST_CA_BUNDLE')
+    if f:
+        return f
+    for f in CA_BUNDLES:
+        if os.path.isfile(f):
+            return f
+    return ''
+
+
+def cert_names(pem):
+    """(subject, issuer) of one certificate, RFC 2253; ('', '') unread."""
+    try:
+        out = openssl(['x509', '-noout', '-subject', '-issuer', '-nameopt', 'RFC2253'], 'a certificate',
+                      pem.strip() + '\n')
+    except Refused:
+        return '', ''
+    s = re.search(r'(?m)^subject=\s*(.*)$', out)
+    i = re.search(r'(?m)^issuer=\s*(.*)$', out)
+    return (s.group(1).strip() if s else ''), (i.group(1).strip() if i else '')
+
+
+def dn_cn(dn):
+    m = re.search(r'(?:^|,)CN=([^,]+)', dn or '')
+    return (m.group(1) if m else dn or '').strip()[:120]
+
+
+def chain_check(cert_file, root_file):
+    """What nginx sends, checked as a client checks it: the first certificate
+    of the file, the rest as the chain sent (untrusted), against the
+    system's roots and - from the trusted file - only the self-signed ones (a
+    company root). The trusted file holds the chain too: checked against it
+    a certificate sent without its intermediate looked whole. {ok, sent,
+    up_to, missing, self_signed}; None when it cannot be read."""
+    try:
+        with open(cert_file) as f:
+            blocks = PEM_CERT_RE.findall(f.read())
+    except OSError:
+        return None
+    if not blocks:
+        return None
+    leaf, rest = blocks[0], blocks[1:]
+    subj, iss = cert_names(leaf)
+    out = {'ok': True, 'sent': len(rest), 'up_to': '', 'missing': '', 'self_signed': bool(subj) and subj == iss}
+    if out['self_signed']:
+        out['up_to'] = dn_cn(subj)
+        return out
+    trust = ''
+    bundle = ca_bundle()
+    if bundle:
+        try:
+            with open(bundle) as f:
+                trust = f.read()
+        except OSError:
+            trust = ''
+    try:
+        with open(root_file) as f:
+            for c in PEM_CERT_RE.findall(f.read()):
+                s, i = cert_names(c)
+                if s and s == i:
+                    trust += '\n' + c + '\n'
+    except OSError:
+        pass
+    with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
+        for n, v in (('trust.pem', trust), ('leaf.pem', leaf + '\n'), ('rest.pem', '\n'.join(rest) + '\n')):
+            with open(os.path.join(t, n), 'w') as fh:
+                fh.write(v)
+        args = ['openssl', 'verify', '-show_chain']
+        if 'BEGIN CERTIFICATE' in trust:
+            args += ['-CAfile', os.path.join(t, 'trust.pem')]
+        if os.environ.get('ZIGMON_TEST_CA_BUNDLE'):
+            args.append('-no-CApath')
+        if rest:
+            args += ['-untrusted', os.path.join(t, 'rest.pem')]
+        got = subprocess.run(args + [os.path.join(t, 'leaf.pem')], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=60)
+    if got.returncode == 0:
+        deep = re.findall(r'(?m)^depth=\d+:\s*(.*?)(?:\s*\(untrusted\))?\s*$', got.stdout)
+        top = deep[-1] if deep else ''
+        m = re.search(r'(?:^|[,/]\s*)CN\s*=\s*([^,/]+)', top)
+        out['up_to'] = (m.group(1).strip() if m else top)[:120]
+        return out
+    # where the chain sent stops: the issuer of the last link found
+    out['ok'] = False
+    names = [cert_names(c) for c in rest]
+    at, seen = iss, set()
+    while at and at not in seen:
+        seen.add(at)
+        nxt = next((n for n in names if n[0] == at), None)
+        if nxt and nxt[0] == nxt[1]:
+            # all there, up to a root sent with it that is not trusted here
+            out['untrusted'] = dn_cn(at)
+            at = ''
+            break
+        if not nxt:
+            break
+        at = nxt[1]
+    out['missing'] = dn_cn(at)
+    out['said'] = ((got.stdout + got.stderr).strip().splitlines() or ['does not verify'])[-1][:200]
     return out
 
 

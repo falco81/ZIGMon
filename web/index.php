@@ -4429,6 +4429,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .cert-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:5px 14px;margin:8px 0 0;font-size:13px}
   .ot .cert-kv dt{color:var(--tx-dim);font-weight:600;white-space:nowrap}
   .ot .cert-kv dd{margin:0;overflow-wrap:anywhere;font-weight:600}
+  .ot .cert-kv dd.good{color:var(--ok)} .ot .cert-kv dd.bad{color:var(--crit)}
   .ot .tls-h{margin:4px 0 10px;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-dim)}
   .ot .tls-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
   .ot .tls-tile{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;gap:4px;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);transition:border-color .15s,background .15s}
@@ -31114,14 +31115,25 @@ function certCard(d) {
     if (now.alt_info) facts.push(['And', (now.alt_info.key || 'a second key') + ' - sent to clients that take ECDSA'
       + (now.alt_info.not_after ? ', until ' + stamp(now.alt_info.not_after) : '')]);
     if ((info.san || []).length) facts.push(['Names', info.san.join(', ')]);
-    facts.push(['Chain', info.chain ? info.chain + ' between it and the root' : 'none sent with it']);
+    /* the chain as nginx sends it, checked as a client checks it against
+       the system's roots: one without its intermediate verified against the
+       trusted file (which holds it) and looked whole */
+    var cc = now.chain_check;
+    if (cc && cc.self_signed) facts.push(['Chain', 'self-signed - no chain', '']);
+    else if (cc && cc.ok) facts.push(['Chain', 'complete (' + (cc.sent + 1) + ' certificate' + (cc.sent ? 's' : '')
+      + (cc.up_to ? ' up to ' + cc.up_to : '') + ')', 'good']);
+    else if (cc) facts.push(['Chain', cc.missing
+      ? 'incomplete - the intermediate ' + cc.missing + ' is not sent. Upload it again: zigmon fetches the missing link itself'
+      : 'does not lead to a root this system trusts' + (cc.untrusted ? ' (' + cc.untrusted + ')' : ''), 'bad']);
+    else facts.push(['Chain', info.chain ? info.chain + ' between it and the root' : 'none sent with it']);
     facts.push(['Root', now.root_info ? (now.root_info.cn || 'given') : 'not given']);
-    if (now.verify) facts.push(['Checked', now.verify === 'ok' ? 'the chain leads to the root' : now.verify]);
+    if (now.verify && !cc) facts.push(['Checked', now.verify === 'ok' ? 'the chain leads to the root' : now.verify,
+      now.verify === 'ok' ? 'good' : 'bad']);
     if ((now.files || {}).cert) facts.push(['Files', now.files.cert + ', ' + now.files.key]);
     var kv = el('dl', 'cert-kv');
     facts.forEach(function (f) {
       kv.appendChild(el('dt', '', f[0]));
-      var dd = el('dd', f[0] === 'Checked' ? (now.verify === 'ok' ? 'good' : 'bad') : '', f[1]);
+      var dd = el('dd', f[2] || '', f[1]);
       kv.appendChild(dd);
     });
     b.appendChild(kv);
@@ -31564,7 +31576,7 @@ function certUpload(prof, asked, card) {
         zbusy(b, true);
         tlsDo({action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '', pfx2: pfx.length > 1 ? pfx[1].pfx : '',
                password: ids.pw.value || '', pfx2_password: pfx.length > 1 ? (ids.pw2.value || '') : ''}).then(function (x) {
-          toast(x.message, true); closeZModal(); loadWeb();
+          toast(x.message, !x.warn); closeZModal(); loadWeb();
         }, function (e) { ids.said.className = 'said bad'; ids.said.textContent = e.message; }).then(function () { zbusy(b, false); });
       }}], 'medium');
 }
@@ -31637,7 +31649,7 @@ function certSelf(d, asked) {
       {words: 'Make it and put it in', cls: 'primary', icon: 'key', go: function (b) {
         zbusy(b, true);
         tlsDo(Object.assign({action: 'tls_selfsigned'}, certSubjectValues(f))).then(function (x) {
-          toast(x.message, true); closeZModal(); loadWeb();
+          toast(x.message, !x.warn); closeZModal(); loadWeb();
         }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }
@@ -31722,7 +31734,7 @@ function certPolicy(prof, d) {
         zbusy(b, true);
         tlsDo({action: 'tls_policy', preset: st.preset, protocols: st.protocols,
                             ciphers: String(st.ciphers || '').trim(), dh: st.dh, prefer: st.prefer ? 1 : 0, hsts: st.hsts}).then(function (x) {
-          toast(x.message, true); closeZModal(); loadWeb();
+          toast(x.message, !x.warn); closeZModal(); loadWeb();
         }, function (e) { zmodalSaid(e); }).then(function () { zbusy(b, false); });     // (5.44.1) in the popup
       }}], 'medium');
 }

@@ -18054,7 +18054,9 @@ class Daemon(object):
     def root_apply(self, pem=None, quiet=False):
         body, digest = self.apply_body()
         if pem:
-            body['tls'] = dict(body['tls'] or {}, **pem)
+            # what tls_sort found of the chain is the daemon's, not root's
+            body['tls'] = dict(body['tls'] or {}, **{k: v for k, v in pem.items()
+                                                      if k not in ('fetched', 'chain_warn')})
         return self.root_ask('apply', dict(body, hash=digest), quiet=quiet)
 
     def root_drift(self):
@@ -18338,14 +18340,220 @@ class Daemon(object):
                 at = info[nxt][1]
             if not root:
                 root = next((c for c in others if info[c][0] == info[c][1]), '')
+            # an intermediate not given is fetched where the
+            # certificate says it is (AIA), as browsers do: nginx sends only
+            # what it has, and apps, curl and MQTT clients do not fetch it
+            chain, got, warn = self.tls_chain_complete(leaf, chain, [root] if root else [])
+            fetched.extend(got)
+            if warn:
+                warns.append(warn)
             return {'cert': leaf + '\n', 'chain': '\n'.join(chain) + ('\n' if chain else ''),
                     'root': (root + '\n') if root else ''}
+        fetched, warns = [], []
         out = dict(up(leaves[0]), key=keys[0][0])
         if len(leaves) == 2:
             # (5.42) the EC one with a chain and root of its own: its CA may
             # sign with intermediates of their own (Let's Encrypt's E-series)
             out['alt'] = dict(up(leaves[1]), key=keys[1][0])
+        # for tls_chain_said(), never sent to root
+        if fetched:
+            out['fetched'] = list(dict.fromkeys(fetched))
+        if warns:
+            out['chain_warn'] = list(dict.fromkeys(warns))
         return out
+
+    # ---- the chain up to a root ----------------------------------------------
+    TLS_AIA_STEPS = 4
+    TLS_AIA_TIMEOUT_S = 10
+    TLS_AIA_MAX = 65536
+
+    @staticmethod
+    def tls_system_bundle():
+        """The file of the roots this system trusts - what curl, Python and
+        the broker's clients here check against; '' when none is found.
+        ZIGMON_TEST_CA_BUNDLE stands in for it in the checks."""
+        f = os.environ.get('ZIGMON_TEST_CA_BUNDLE')
+        if f:
+            return f
+        cands = [os.environ.get('SSL_CERT_FILE') or '']
+        try:
+            cands.append(ssl.get_default_verify_paths().cafile or '')
+        except Exception:                               # noqa: BLE001
+            pass
+        for f in cands + OSR_SYSTEM_BUNDLES:
+            if f and os.path.isfile(f):
+                return f
+        return ''
+
+    def _tls_names(self, c):
+        """(subject, issuer) of a certificate, RFC 2253."""
+        out = self._openssl(['x509', '-noout', '-subject', '-issuer', '-nameopt', 'RFC2253'],
+                            data=c.encode(), what='a certificate').decode('utf-8', 'replace')
+        s = re.search(r'(?m)^subject=\s*(.*)$', out)
+        i = re.search(r'(?m)^issuer=\s*(.*)$', out)
+        return (s.group(1).strip() if s else ''), (i.group(1).strip() if i else '')
+
+    @staticmethod
+    def _tls_cn(dn):
+        m = re.search(r'(?:^|,)CN=([^,]+)', dn or '')
+        return (m.group(1) if m else dn or '?').strip()[:120]
+
+    def tls_chain_verifies(self, leaf, chain, roots=()):
+        """Whether a certificate with this chain (untrusted, as nginx sends
+        it) leads to a root the system trusts, or to one of `roots` (a
+        company root given with it). None: no list of roots to go by."""
+        bundle = self.tls_system_bundle()
+        trust = ''
+        if bundle:
+            try:
+                with open(bundle) as f:
+                    trust = f.read()
+            except OSError:
+                trust = ''
+        trust += ''.join(r.strip() + '\n' for r in roots if r and r.strip())
+        if 'BEGIN CERTIFICATE' not in trust:
+            return None
+        with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
+            for n, v in (('trust.pem', trust), ('leaf.pem', leaf.strip() + '\n'),
+                         ('chain.pem', ''.join(c.strip() + '\n' for c in chain))):
+                with open(os.path.join(t, n), 'w') as fh:
+                    fh.write(v)
+            args = ['openssl', 'verify', '-CAfile', os.path.join(t, 'trust.pem')]
+            if os.environ.get('ZIGMON_TEST_CA_BUNDLE'):
+                args.append('-no-CApath')
+            if chain:
+                args += ['-untrusted', os.path.join(t, 'chain.pem')]
+            got = subprocess.run(args + [os.path.join(t, 'leaf.pem')], capture_output=True,
+                                 stdin=subprocess.DEVNULL, timeout=60)
+        return got.returncode == 0
+
+    def tls_aia_url(self, c):
+        """Where a certificate says its issuer can be fetched (Authority
+        Information Access, CA Issuers): http or https only, else ''."""
+        try:
+            out = self._openssl(['x509', '-noout', '-ext', 'authorityInfoAccess'], data=c.encode(),
+                                what='a certificate').decode('utf-8', 'replace')
+        except ValueError:
+            return ''
+        for m in re.finditer(r'CA Issuers\s*-\s*URI:(\S+)', out):
+            url = m.group(1).strip()
+            if re.match(r'^https?://[^\s/]+', url, re.I):
+                return url[:500]
+        return ''
+
+    def tls_aia_fetch(self, url):
+        """The certificates at an AIA address - DER, PEM or PKCS#7 (.p7c) -
+        as PEM; [] for anything else. 64 KB at most, ten seconds; through the
+        proxy as the ACME CA is, when it is set so."""
+        req = urllib.request.Request(url, headers={'User-Agent': 'zigmon/%s' % __version__})
+        with web_open(req, timeout=self.TLS_AIA_TIMEOUT_S, purpose='acme') as r:
+            raw = r.read(self.TLS_AIA_MAX + 1)
+        if not raw or len(raw) > self.TLS_AIA_MAX:
+            return []
+        if b'-----BEGIN CERTIFICATE-----' in raw:
+            text = raw.decode('ascii', 'replace')
+        else:
+            text = ''
+            for args in (['x509', '-inform', 'DER'], ['pkcs7', '-inform', 'DER', '-print_certs'],
+                         ['pkcs7', '-print_certs']):
+                try:
+                    text = self._openssl(args, data=raw, what='what was fetched').decode('ascii', 'replace')
+                    break
+                except ValueError:
+                    continue
+        return re.findall(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----', text)[:8]
+
+    def _tls_issued_by(self, c, issuer):
+        """Whether `issuer` signed `c` (its name and the signature; no root
+        needed)."""
+        try:
+            if self._tls_names(issuer)[0] != self._tls_names(c)[1]:
+                return False
+        except ValueError:
+            return False
+        with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
+            for n, v in (('ca.pem', issuer), ('c.pem', c)):
+                with open(os.path.join(t, n), 'w') as fh:
+                    fh.write(v.strip() + '\n')
+            got = subprocess.run(['openssl', 'verify', '-no-CApath', '-partial_chain', '-CAfile',
+                                  os.path.join(t, 'ca.pem'), os.path.join(t, 'c.pem')],
+                                 capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        return got.returncode == 0
+
+    def tls_chain_complete(self, leaf, chain, roots=()):
+        """(chain, fetched, warning) - the chain given, and when it does not
+        lead to a trusted root, made whole with the intermediates the
+        certificates name in their AIA (four at most). What was fetched is
+        taken only if the whole then verifies against the system's roots
+        (and a company root given): a link, never trust of its own. A root
+        is never added - clients have their own. A self-signed certificate
+        has no chain: nothing fetched, nothing said."""
+        chain = [c.strip() for c in chain if c and c.strip()]
+        try:
+            subj, iss = self._tls_names(leaf)
+        except ValueError:
+            return chain, [], ''
+        if subj == iss:
+            return chain, [], ''
+        ok = self.tls_chain_verifies(leaf, chain, roots)
+        if ok is None or ok:
+            return chain, [], ''
+        top = chain[-1] if chain else leaf
+        added, why = [], ''
+        for _ in range(self.TLS_AIA_STEPS):
+            t_subj, t_iss = self._tls_names(top)
+            if t_subj == t_iss:
+                why = 'it ends in %s, a root this system does not trust' % self._tls_cn(t_subj)
+                break
+            url = self.tls_aia_url(top)
+            if not url:
+                why = '%s does not say where its issuer is (no AIA)' % self._tls_cn(t_subj)
+                break
+            try:
+                got = self.tls_aia_fetch(url)
+            except Exception as e:                      # noqa: BLE001
+                why = '%s did not answer: %s' % (url, str(getattr(e, 'reason', '') or e)[:120])
+                break
+            nxt = next((c for c in got if self._tls_issued_by(top, c)), None)
+            if not nxt:
+                why = '%s does not hold the issuer of %s' % (url, self._tls_cn(t_subj))
+                break
+            n_subj, n_iss = self._tls_names(nxt)
+            if n_subj == n_iss:
+                why = '%s holds a root (%s) this system does not trust' % (url, self._tls_cn(n_subj))
+                break
+            added.append(nxt.strip())
+            if self.tls_chain_verifies(leaf, chain + added, roots):
+                return chain + added, [self._tls_cn(self._tls_names(c)[0]) for c in added], ''
+            top = nxt
+        else:
+            why = 'no trusted root after %d steps' % self.TLS_AIA_STEPS
+        return chain, [], ('%s: its chain does not lead to a root this system trusts (%s) - fine for a '
+                           'company authority whose root the clients have; otherwise upload the whole '
+                           'chain' % (self._tls_cn(subj), why))
+
+    def tls_chain_said(self, pem, name=''):
+        """What tls_sort found of the chain, taken out of what goes to root:
+        a list of words, told with tls_chain_tell() once it is put in."""
+        fetched = pem.pop('fetched', None) or []
+        warns = pem.pop('chain_warn', None) or []
+        if not name:
+            try:
+                name = self._tls_cn(self._tls_names(pem.get('cert') or '')[0])
+            except ValueError:
+                name = 'the certificate'
+        words = []
+        if fetched:
+            words.append('%s came without its intermediate authority - zigmon fetched it (%s), as browsers do; '
+                         'better: upload the whole chain' % (name, ', '.join(fetched)))
+        return words + list(warns)
+
+    def tls_chain_tell(self, words):
+        """Each of tls_chain_said()'s words a warning event; the words for
+        the answer ('' with none)."""
+        for w in words or []:
+            self.say_event('control', 'certificate: %s' % w, 'warn', about='certificate')
+        return '; '.join(words or [])
 
     def _tls_key_kind(self, pub):
         """'rsa', 'ec', or '' for another kind - of a public key in PEM (5.42)."""
@@ -18685,8 +18893,11 @@ class Daemon(object):
 
     def check_certificate(self):
         """The certificate running out is said at 21 days, at 7, and the day
-        before - once each, for that certificate."""
-        info = ((self.root_read('look.json').get('tls') or {}).get('info') or {})
+        before - once each, for that certificate. And a chain nginx sends
+        without its intermediate: told once for that certificate."""
+        tls = self.root_read('look.json').get('tls') or {}
+        info = tls.get('info') or {}
+        self.check_chain(tls)
         ends = info.get('not_after')
         if not ends:
             return
@@ -18705,6 +18916,26 @@ class Daemon(object):
                 self.notify(words + ' A new one is put in on the dashboard: Control - Certificates and TLS.',
                             'crit' if days < 7 else 'warn', dedup=key, about='certificate')
                 return
+
+    def check_chain(self, tls):
+        """root's chain_check of what nginx sends: an intermediate missing is
+        said once for that certificate (and the second one beside it) -
+        browsers fetch it themselves and say nothing, apps do not."""
+        for which, info in (('chain_check', tls.get('info')), ('alt_chain_check', tls.get('alt_info'))):
+            got = tls.get(which)
+            if not isinstance(got, dict) or got.get('ok') is not False or got.get('self_signed') or \
+                    not isinstance(info, dict):
+                continue
+            key = 'chain-%s-%s-%s' % (which, info.get('subject') or info.get('cn'), info.get('not_after'))
+            key = 'chain-' + hashlib.sha256(key.encode()).hexdigest()[:24]
+            told = self.store.get_meta('chain_told') or ''
+            if key in told.split():
+                continue
+            self.store.set_meta('chain_told', ' '.join((told.split() + [key])[-6:]))
+            self.notify('%s: the server does not send the intermediate authority (%s) - browsers manage, apps '
+                        'and MQTT clients refuse. Control - Certificates and TLS: upload it again.' % (
+                            info.get('cn') or 'the certificate', got.get('missing') or 'its issuer'),
+                        'warn', dedup=key, about='certificate')
 
     # ---- a new version ----------------------------------------------------------
     def upgrade_package(self):
@@ -45150,10 +45381,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 pem = d.tls_sort(str(body.get('cert') or ''), str(body.get('pfx') or ''),
                                  str(body.get('password') or ''), pfx_more=[str(body.get('pfx2') or '')],
                                  password_more=[str(body.get('pfx2_password') or '')])
+                chain_said = d.tls_chain_said(pem)
                 d.tls_put(pem, 'two uploaded, RSA and EC side by side' if pem.get('alt') else 'one uploaded')
                 # one put in by hand is kept (otp 1.0.170): ACME does not
                 # replace it at its next renewal - Look after it gives it back
                 acme_care_set(d, False, who, 'a certificate was put in by hand')
+                chain_said = d.tls_chain_tell(chain_said)
+                if chain_said:
+                    return {'message': 'checked - root is putting it in; but ' + chain_said, 'warn': chain_said}
                 return {'message': 'checked - root is putting it in'}
             if act == 'tls_csr':
                 return {'message': 'the request is made', 'csr': d.tls_csr(body)}
@@ -51834,6 +52069,7 @@ def proxy_tls_post(d, act, body, who, w='front'):
                          str(body.get('password') or ''), target=W['target'],
                          pfx_more=[str(body.get('pfx2') or '')],
                                  password_more=[str(body.get('pfx2_password') or '')])
+        chain_said = d.tls_chain_said(pem)
         conf['how'] = 'uploaded'
         # one put in by hand: its own Automatic certificates leave it alone
         if conf.get('acme_care'):
@@ -51847,6 +52083,9 @@ def proxy_tls_post(d, act, body, who, w='front'):
             _proxy_conf_back(d, w, was)
             raise
         d.tls_csr_drop(target=W['target'], only_if_key=pem['key'])
+        chain_said = d.tls_chain_tell(chain_said)
+        if chain_said:
+            return {'message': 'checked - root is putting it there; but ' + chain_said, 'warn': chain_said}
         return {'message': 'checked - root is putting it there'}
     if act == 'tls_csr':
         return {'message': 'the request is made', 'csr': d.tls_csr(body, target=W['target'])}
@@ -55098,6 +55337,20 @@ def push_cert_in(d, part, priv, app_id, what):
         raise PushRefused(422, 'not_yet_valid', '%s is not valid yet' % what)
     if not info.get('not_after') or info['not_after'] < now:
         raise PushRefused(422, 'expired', '%s has run out' % what)
+    # a chain_pem without the intermediate (or none): made whole where the
+    # certificate says its issuer is, as for an upload - said, never refused
+    try:
+        roots = [b for b in blocks if len(set(d._tls_names(b))) == 1]
+        _whole, fetched, warn = d.tls_chain_complete(cert, [b for b in blocks if b not in roots], roots)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        fetched, warn = [], ''
+    if fetched:
+        chain += ''.join(c + '\n' for c in _whole[len(blocks) - len(roots):])
+        d.say_event('control', 'certificate: acme push - %s came without its intermediate authority - zigmon '
+                    'fetched it (%s), as browsers do; better: push the whole chain' % (
+                        info.get('cn') or what, ', '.join(fetched)), 'warn', about='certificate')
+    elif warn:
+        d.say_event('control', 'certificate: acme push - %s' % warn, 'warn', about='certificate')
     return {'cert': cert, 'chain': chain, 'key': key, 'fingerprint': fp, 'info': info,
             'key_type': _push_key_type(info)}
 
