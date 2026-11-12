@@ -18445,11 +18445,24 @@ class Daemon(object):
         """The certificates at an AIA address - DER, PEM or PKCS#7 (.p7c) -
         as PEM; [] for anything else. 64 KB at most, ten seconds; through the
         proxy as the ACME CA is, when it is set so."""
+        cache = self.__dict__.setdefault('_tls_aia_cache', {})
+        was = cache.get(url)
+        if was and time.time() - was[0] < 86400:
+            return list(was[1])
         req = urllib.request.Request(url, headers={'User-Agent': 'zigmon/%s' % __version__})
         with web_open(req, timeout=self.TLS_AIA_TIMEOUT_S, purpose='acme') as r:
             raw = r.read(self.TLS_AIA_MAX + 1)
         if not raw or len(raw) > self.TLS_AIA_MAX:
             return []
+        got = self._tls_aia_read(raw)
+        if got:
+            # kept a day, by its address: an authority does not change
+            cache[url] = (time.time(), got)
+            while len(cache) > 32:
+                cache.pop(next(iter(cache)))
+        return got
+
+    def _tls_aia_read(self, raw):
         if b'-----BEGIN CERTIFICATE-----' in raw:
             text = raw.decode('ascii', 'replace')
         else:
@@ -18554,6 +18567,353 @@ class Daemon(object):
         for w in words or []:
             self.say_event('control', 'certificate: %s' % w, 'warn', about='certificate')
         return '; '.join(words or [])
+
+    # ---- the chain of the certificate in place: checked, completed, by hand -------
+    PEM_CERT = re.compile(r'-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----')
+
+    def _tls_fp(self, c):
+        der = self._openssl(['x509', '-outform', 'DER'], data=c.strip().encode() + b'\n', what='a certificate')
+        return hashlib.sha256(der).hexdigest()
+
+    def tls_chain_state(self, leaf, chain, roots=()):
+        """(chain, state) - the chain checked as a client that fetches
+        nothing checks it (the system's roots, and a company root given), and
+        where it does not reach one completed from the CA Issuers addresses
+        (four steps). A root is never put in the chain. state: {ok: True |
+        False | None (self-signed), words, fetched, missing, private_root,
+        untrusted}."""
+        chain = [c.strip() for c in chain if c and c.strip()]
+        roots = [r.strip() for r in roots if r and r.strip()]
+        subj, iss = self._tls_names(leaf)
+        if subj == iss:
+            return chain, {'ok': None, 'fetched': [], 'words': 'self-signed - no chain; whoever connects must '
+                                                                'trust this certificate itself'}
+        fetched, out, why, root_seen = [], list(chain), '', ''
+        ok = bool(self.tls_chain_verifies(leaf, out, roots))
+        for _ in range(self.TLS_AIA_STEPS):
+            if ok:
+                break
+            top = out[-1] if out else leaf
+            t_subj, t_iss = self._tls_names(top)
+            if t_subj == t_iss:
+                break
+            url = self.tls_aia_url(top)
+            if not url:
+                why = '%s names no CA Issuers address to fetch it from' % self._tls_cn(t_subj)
+                break
+            try:
+                got = self.tls_aia_fetch(url)
+            except Exception as e:                      # noqa: BLE001
+                why = 'it could not be fetched from %s: %s' % (url, str(getattr(e, 'reason', '') or e)[:120])
+                break
+            nxt = next((c for c in got if self._tls_issued_by(top, c)), None)
+            if not nxt:
+                why = '%s does not hold %s' % (url, self._tls_cn(t_iss))
+                break
+            n_subj, n_iss = self._tls_names(nxt)
+            if n_subj == n_iss:
+                root_seen = self._tls_cn(n_subj)       # a root: never sent - the clients' own
+                break
+            out.append(nxt.strip())
+            fetched.append(self._tls_cn(n_subj))
+            ok = bool(self.tls_chain_verifies(leaf, out, roots))
+        n = len(out)
+        if ok:
+            top = self._tls_cn(self._tls_names(out[-1] if out else leaf)[1])
+            st = {'ok': True, 'fetched': fetched, 'up_to': top,
+                  'words': 'complete - %d certificate%s up to %s' % (n + 1, '' if n == 0 else 's', top)}
+            if fetched:
+                st['words'] += ' (fetched: %s - it was not sent with the certificate)' % ', '.join(fetched)
+            if roots and not self.tls_chain_verifies(leaf, out):
+                st['private_root'] = top
+                st['words'] += ' - a private root: only clients that trust it take it'
+            return out, st
+        if root_seen:
+            return out, {'ok': False, 'fetched': fetched, 'missing': root_seen, 'untrusted': root_seen,
+                         'words': 'it leads to %s, a root the system does not trust (a private CA?) - the chain '
+                                  'is complete; the clients must trust that root: upload it as the missing '
+                                  'authority, and give it to the clients' % root_seen}
+        last = self._tls_names(out[-1] if out else leaf)
+        if last[0] == last[1]:
+            # a root that came with it, not one this system trusts
+            return out, {'ok': False, 'fetched': fetched, 'missing': self._tls_cn(last[0]),
+                         'untrusted': self._tls_cn(last[0]),
+                         'words': 'it leads to %s, a root the system does not trust (a private CA?)'
+                                  % self._tls_cn(last[0])}
+        missing = self._tls_cn(last[1])
+        return out, {'ok': False, 'fetched': fetched, 'missing': missing,
+                     'words': 'incomplete - the authority %s is not sent and could not be completed (%s); '
+                              'phone apps, curl and MQTT clients refuse it - only browsers fetch it '
+                              'themselves; send the certificate with its chain, or, for a private CA, its '
+                              'root to the clients' % (missing, why or 'no trusted root after %d steps'
+                                                      % self.TLS_AIA_STEPS)}
+
+    def tls_chain_given(self, text, leaf, chain, roots):
+        """(chain, roots, added) - the missing authority by hand: only
+        certificates (a key refused), the self-signed ones beside the chain
+        as roots to check with, the rest into the chain in order from the
+        certificate. ValueError when none of them signs the chain's last."""
+        text = str(text or '')
+        if re.search(r'PRIVATE KEY', text):
+            raise ValueError('only the certificates of the authorities - never a private key')
+        given = self.PEM_CERT.findall(text)
+        if not given:
+            raise ValueError('no certificate in it (-----BEGIN CERTIFICATE-----, or a .cer / .crt file)')
+        if len(given) > 8:
+            raise ValueError('%d certificates - the chain of one certificate is a few' % len(given))
+        have = set()
+        for c in [leaf] + chain + roots:
+            have.add(self._tls_fp(c))
+        new_roots, new_inter = [], []
+        for c in given:
+            fp = self._tls_fp(c)
+            if fp in have:
+                continue
+            have.add(fp)
+            c_subj, c_iss = self._tls_names(c)
+            if c_subj == c_iss and self.tls_chain_verifies(c, []):
+                continue                                # one of the system's own roots: the clients have it
+            (new_roots if c_subj == c_iss else new_inter).append(c.strip())
+        if not new_roots and not new_inter:
+            raise ValueError('every certificate in it is there already')
+        # in order from the certificate: each the issuer of the one before
+        pool, ordered, at = list(chain) + new_inter, [], leaf
+        while pool:
+            nxt = next((c for c in pool if self._tls_issued_by(at, c)), None)
+            if not nxt:
+                break
+            ordered.append(nxt)
+            pool.remove(nxt)
+            at = nxt
+        useful = [c for c in new_inter if c in ordered] + \
+            [c for c in new_roots if self._tls_issued_by(at, c)]
+        if not useful:
+            raise ValueError('none of these is the authority that signed the chain\'s last certificate (%s)'
+                             % self._tls_cn(self._tls_names(at)[1]))
+        return ordered, list(roots) + new_roots, [self._tls_cn(self._tls_names(c)[0]) for c in useful]
+
+    def tls_chain_check(self, blocks, roots=()):
+        """root's chain_check of a file nginx sends, made here of its
+        certificates (the server in front, read over SSH): {ok, sent, up_to,
+        missing, self_signed, untrusted, private_root}; None for none."""
+        if not blocks:
+            return None
+        leaf, rest = blocks[0], list(blocks[1:])
+        subj, iss = self._tls_names(leaf)
+        out = {'ok': True, 'sent': len(rest), 'up_to': '', 'missing': '', 'self_signed': bool(subj) and subj == iss}
+        if out['self_signed']:
+            out['up_to'] = self._tls_cn(subj)
+            return out
+        if self.tls_chain_verifies(leaf, rest, roots):
+            out['up_to'] = self._tls_cn(self._tls_names(rest[-1] if rest else leaf)[1])
+            for c in rest:                              # a root sent along: it is the top
+                n = self._tls_names(c)
+                if n[0] == n[1]:
+                    out['up_to'] = self._tls_cn(n[0])
+            if roots and not self.tls_chain_verifies(leaf, rest):
+                out['private_root'] = out['up_to']
+            return out
+        out['ok'] = False
+        names = [self._tls_names(c) for c in rest]
+        at, seen = iss, set()
+        while at and at not in seen:
+            seen.add(at)
+            nxt = next((n for n in names if n[0] == at), None)
+            if nxt and nxt[0] == nxt[1]:
+                out['untrusted'] = self._tls_cn(at)
+                at = ''
+                break
+            if not nxt:
+                break
+            at = nxt[1]
+        out['missing'] = self._tls_cn(at) if at else ''
+        return out
+
+    def _tls_chain_meta(self, what, w):
+        return what if w == 'here' else '%s_%s' % (what, w)
+
+    def tls_chain_kept(self, w='here', fp=None):
+        """What Complete the chain found last for that card - for the
+        certificate in place only."""
+        try:
+            got = json.loads(self.store.get_meta(self._tls_chain_meta('tls_chain_state', w)) or 'null')
+        except (ValueError, TypeError):
+            return None
+        if isinstance(got, dict) and got.get('fp') and got.get('fp') == fp:
+            return got.get('state')
+        return None
+
+    def tls_self_check_kept(self, w='here', fp=None):
+        """The last check as a client that fetches nothing - of the
+        certificate in place only."""
+        try:
+            got = json.loads(self.store.get_meta(self._tls_chain_meta('tls_self_check', w)) or 'null')
+        except (ValueError, TypeError):
+            return None
+        return got if isinstance(got, dict) and got.get('fp') and got.get('fp') == fp else None
+
+    def _tls_chain_now(self, w):
+        """(leaf, chain, roots, alt leaf, alt chain) as nginx sends them now:
+        here from root's look, there from a look over SSH - public, never a key."""
+        if w == 'here':
+            look = self.root_look(fresh=True).get('tls') or {}
+            pems = look.get('pems') or {}
+            alt = str(pems.get('alt_cert') or '') if look.get('dual') else ''
+            return (str(pems.get('cert') or ''), [str(c) for c in pems.get('chain') or []],
+                    [str(c) for c in pems.get('roots') or []], alt,
+                    [str(c) for c in pems.get('alt_chain') or []] if alt else [])
+        look = proxy_tls_read(self, w)
+        setattr(self, PROXY_W[w]['look'], look)
+        if look.get('none'):
+            raise ValueError('nginx on the server in front has no HTTPS server of ntfy\'s own')
+        sent = self.PEM_CERT.findall(look.get('pem') or '')
+        alt = self.PEM_CERT.findall(look.get('alt_pem') or '') if look.get('alt_info') else []
+        return ((sent or [''])[0], sent[1:], [str(c) for c in look.get('roots') or []],
+                (alt or [''])[0], alt[1:])
+
+    def tls_chain_post(self, body, who, add=False, w='here'):
+        """Complete / Check the chain of the certificate nginx sends - here,
+        or on the server in front (w 'front' or 'ntfy') - or (add) the
+        missing authority uploaded by hand: the chain made whole as far as it
+        can be, and when it changed root asked to put the new chain beside
+        the same certificate (the key never leaves root). The answer says
+        complete: true | false, never ok: false (the page would take that for
+        an error without words)."""
+        leaf, chain0, roots0, alt_leaf, alt0 = self._tls_chain_now(w)
+        if not leaf:
+            raise ValueError('nginx sends no certificate there that could be read')
+        name = self._tls_cn(self._tls_names(leaf)[0])
+        chain, roots, added = chain0, roots0, []
+        if add:
+            chain, roots, added = self.tls_chain_given(body.get('text'), leaf, chain0, roots0)
+        chain, st = self.tls_chain_state(leaf, chain, roots)
+        if st['ok'] is None:
+            return {'message': st['words'], 'complete': None, 'chain_state': st}
+        ask = {'fp': self._tls_fp(leaf), 'chain': chain, 'root': ''.join(r + '\n' for r in roots)}
+        changed = chain != chain0 or roots != roots0
+        alt_st = None
+        if alt_leaf:
+            alt_chain = alt0
+            if add:
+                try:
+                    alt_chain = self.tls_chain_given(body.get('text'), alt_leaf, alt0, roots0)[0]
+                except ValueError:
+                    alt_chain = alt0                    # what was given was for the first one
+            alt_chain, alt_st = self.tls_chain_state(alt_leaf, alt_chain, roots)
+            ask['alt'] = {'fp': self._tls_fp(alt_leaf), 'chain': alt_chain}
+            changed = changed or alt_chain != alt0
+        complete = st['ok'] is True and (alt_st is None or alt_st['ok'] is not False)
+        words = st['words']
+        if alt_st and alt_st['ok'] is False:
+            words += '; the second (EC) one: ' + alt_st['words']
+        self.store.set_meta(self._tls_chain_meta('tls_chain_state', w),
+                            json.dumps({'fp': ask['fp'], 'state': st, 'at': int(time.time())}))
+        if changed:
+            if w == 'here':
+                ident = self.root_ask('tls_chain', ask)
+            else:
+                ask.update(ssh=proxy_tls_ssh(self), name=proxy_tls_name(self, w), op='chain')
+                if w == 'ntfy':
+                    ask['front_name'] = proxy_tls_name(self)
+                ident = self.root_ask(PROXY_W[w]['kind'], ask)
+                setattr(self, PROXY_W[w]['asked'], ident)
+            self.tls_self_check_later(ident, roots, w)
+            words += ' - root is putting the chain in'
+        where = '' if w == 'here' else ' (%s)' % PROXY_W[w]['words']
+        self.say_event('control', 'certificate%s: %s %s %s: %s' % (
+            where, who or 'the dashboard',
+            'added %s to the chain of' % ', '.join(added) if add else 'checked the chain of', name, words),
+            'info' if complete else 'warn', about='certificate')
+        return {'message': words, 'complete': complete, 'chain_state': st, 'fetched': st.get('fetched') or [],
+                'added': added}
+
+    # ---- what nginx sends, checked as a client that fetches nothing -------------
+    def tls_self_check(self, name='', port=443, roots=(), host='127.0.0.1', w='here'):
+        """After a certificate or its chain changed and nginx reloaded:
+        zigmon connects to nginx as a client that fetches nothing (phone
+        apps, curl, MQTT clients) - the system's roots and a company root
+        kept with it - and says whether what it is sent is enough. Here on
+        127.0.0.1, the server in front on its address. ZIGMON_TEST_SELF_CHECK
+        (host:port) stands in for nginx in the checks."""
+        alt = os.environ.get('ZIGMON_TEST_SELF_CHECK') or ''
+        if alt:
+            host, _, p = alt.rpartition(':')
+            port = int(p)
+        ctx = ssl.create_default_context()
+        bundle = self.tls_system_bundle()
+        if bundle:
+            ctx.load_verify_locations(cafile=bundle)
+        for r in roots or ():
+            if r and r.strip():
+                ctx.load_verify_locations(cadata=r.strip() + '\n')
+        ctx.check_hostname = False
+        out = {'at': int(time.time())}
+
+        def leaf_fp(c):
+            # which certificate was sent: the check is told of that one only
+            der = c.getpeercert(binary_form=True)
+            return hashlib.sha256(der).hexdigest() if der else ''
+        try:
+            with socket.create_connection((host, int(port or 443)), timeout=5) as raw:
+                raw.settimeout(8)
+                with ctx.wrap_socket(raw, server_hostname=name or None) as c:
+                    out['fp'] = leaf_fp(c)
+            out.update(ok=True, words='checked as a client that fetches nothing: the whole chain is sent')
+        except ssl.SSLCertVerificationError as e:
+            out.update(ok=False, words='a client that fetches nothing (phone apps, curl, MQTT clients) refuses '
+                                       'what nginx sends: %s' % (getattr(e, 'verify_message', '') or e))
+            where = '' if w == 'here' else ' (%s)' % PROXY_W[w]['words']
+            self.say_event('control', 'certificate%s: %s' % (where, out['words']), 'warn', about='certificate')
+        except (OSError, ssl.SSLError, ValueError) as e:
+            out.update(ok=None, words='what nginx sends could not be checked: %s' % str(e)[:160])
+        if 'fp' not in out and out['ok'] is False:
+            try:
+                bare = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                bare.check_hostname, bare.verify_mode = False, ssl.CERT_NONE
+                with socket.create_connection((host, int(port or 443)), timeout=5) as raw:
+                    raw.settimeout(8)
+                    with bare.wrap_socket(raw, server_hostname=name or None) as c:
+                        out['fp'] = leaf_fp(c)
+            except (OSError, ssl.SSLError, ValueError):
+                pass
+        self.store.set_meta(self._tls_chain_meta('tls_self_check', w), json.dumps(out))
+        return out
+
+    def tls_self_check_later(self, ident, roots=(), w='here', wait_s=180):
+        """tls_self_check() once root has done request `ident` - in a short
+        thread of its own, never in the request's or the sensors' way."""
+        if os.environ.get('ZIGMON_NO_SERVICES') and not os.environ.get('ZIGMON_TEST_SELF_CHECK'):
+            return None                                 # the checks of other things: no nginx here
+
+        def run():
+            end = time.time() + wait_s
+            while time.time() < end:
+                st = self.root_read('status.json')
+                if st.get('id') == ident and st.get('state') in ('done', 'failed'):
+                    break
+                time.sleep(0.5)
+            else:
+                return
+            if st.get('state') != 'done':
+                return
+            time.sleep(0 if os.environ.get('ZIGMON_ROOT_RUN') else 1.5)    # nginx's reload
+            try:
+                if w == 'here':
+                    look = self.root_read('look.json').get('tls') or {}
+                    self.tls_self_check(look.get('server_name') or '', look.get('port') or 443, roots)
+                else:
+                    try:
+                        setattr(self, PROXY_W[w]['look'], proxy_tls_read(self, w))   # the card: what is there now
+                    except Exception:                   # noqa: BLE001 - the next look says it
+                        pass
+                    look = self.__dict__.get(PROXY_W[w]['look']) or {}
+                    self.tls_self_check(proxy_tls_name(self, w), look.get('port') or 443, roots,
+                                        host=str(CONFIG.get('proxy_host') or '').strip(), w=w)
+            except Exception as e:                      # noqa: BLE001
+                log('the check of what nginx sends: %s' % e, 'warn')
+        t = threading.Thread(target=run, name='tls-self-check', daemon=True)
+        t.start()
+        return t
 
     def _tls_key_kind(self, pub):
         """'rsa', 'ec', or '' for another kind - of a public key in PEM (5.42)."""
@@ -18734,6 +19094,13 @@ class Daemon(object):
                 pass
         self.say_event('control', 'certificate: %s - root is putting it in' % words, 'warn',
                        about='root')
+        if pem.get('cert'):
+            try:
+                own = len(set(self._tls_names(pem['cert']))) == 1
+            except ValueError:
+                own = True
+            if not own:
+                self.tls_self_check_later(ident, self.PEM_CERT.findall(pem.get('root') or ''))
         return ident
 
     def tls_policy(self, v):
@@ -18801,7 +19168,13 @@ class Daemon(object):
                 'how': acme_how(self), 'before': acme_before(self),
                 'failed': bool(st_acme.get('ok') is False and st_acme.get('said')),
                 'said': st_acme.get('said') if st_acme.get('ok') is False else ''}
+        now = {k: v for k, v in now.items() if k != 'pems'}
+        # what Complete the chain found last, for the certificate it was for;
+        # and what a client that fetches nothing was sent after the last change
+        chain_state, self_check = self.tls_chain_kept('here', now.get('fp')), \
+            self.tls_self_check_kept('here', now.get('fp'))
         return {'ok': True, 'conf': conf, 'now': now, 'node': node, 'presets': presets,
+                'chain_state': chain_state, 'self_check': self_check,
                 'dh': self.TLS_DH, 'helper': st['helper'], 'may': True,
                 'server_name': now.get('server_name') or '', 'export': export, 'ready': ready,
                 'acme': acme, 'proxy': proxy_tls_state(self, fresh=fresh),
@@ -18898,6 +19271,11 @@ class Daemon(object):
         tls = self.root_read('look.json').get('tls') or {}
         info = tls.get('info') or {}
         self.check_chain(tls)
+        # the server in front's two (front, ntfy): from their last look over SSH
+        for w in ('front', 'ntfy'):
+            look = self.__dict__.get(PROXY_W[w]['look']) or {}
+            if look.get('ok') and not (w == 'front' and proxy_tls_conf(self, w).get('follow')):
+                self.check_chain(look, where=w)
         ends = info.get('not_after')
         if not ends:
             return
@@ -18917,24 +19295,26 @@ class Daemon(object):
                             'crit' if days < 7 else 'warn', dedup=key, about='certificate')
                 return
 
-    def check_chain(self, tls):
+    def check_chain(self, tls, where=''):
         """root's chain_check of what nginx sends: an intermediate missing is
         said once for that certificate (and the second one beside it) -
-        browsers fetch it themselves and say nothing, apps do not."""
+        browsers fetch it themselves and say nothing, apps do not. `where`:
+        the server in front's card (its look holds the same check)."""
         for which, info in (('chain_check', tls.get('info')), ('alt_chain_check', tls.get('alt_info'))):
             got = tls.get(which)
             if not isinstance(got, dict) or got.get('ok') is not False or got.get('self_signed') or \
                     not isinstance(info, dict):
                 continue
-            key = 'chain-%s-%s-%s' % (which, info.get('subject') or info.get('cn'), info.get('not_after'))
+            key = 'chain-%s%s-%s-%s' % (where, which, info.get('subject') or info.get('cn'), info.get('not_after'))
             key = 'chain-' + hashlib.sha256(key.encode()).hexdigest()[:24]
             told = self.store.get_meta('chain_told') or ''
             if key in told.split():
                 continue
-            self.store.set_meta('chain_told', ' '.join((told.split() + [key])[-6:]))
-            self.notify('%s: the server does not send the intermediate authority (%s) - browsers manage, apps '
-                        'and MQTT clients refuse. Control - Certificates and TLS: upload it again.' % (
-                            info.get('cn') or 'the certificate', got.get('missing') or 'its issuer'),
+            self.store.set_meta('chain_told', ' '.join((told.split() + [key])[-12:]))
+            self.notify('%s: the server%s does not send the intermediate authority (%s) - browsers manage, apps '
+                        'and MQTT clients refuse. Control - Certificates and TLS: Complete the chain.' % (
+                            info.get('cn') or 'the certificate', ' in front' if where else '',
+                            got.get('missing') or 'its issuer'),
                         'warn', dedup=key, about='certificate')
 
     # ---- a new version ----------------------------------------------------------
@@ -45390,6 +45770,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if chain_said:
                     return {'message': 'checked - root is putting it in; but ' + chain_said, 'warn': chain_said}
                 return {'message': 'checked - root is putting it in'}
+            if act in ('tls_chain', 'chain', 'tls_chain_add', 'chain-add'):
+                # Complete / Check the chain, or the missing authority by hand:
+                # the chain beside the certificate in place, its key untouched
+                me = d.session_get(body.get('session')) or {}
+                return d.tls_chain_post(body, me.get('name') or who, add=act in ('tls_chain_add', 'chain-add'))
             if act == 'tls_csr':
                 return {'message': 'the request is made', 'csr': d.tls_csr(body)}
             if act == 'tls_csr_drop':
@@ -51665,6 +52050,7 @@ def _proxy_root_facts(d, path, pem):
     except (ValueError, OSError):
         return None, ''
     blocks = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', text or '', re.S)
+    d.__dict__.setdefault('_proxy_trust_read', {})[path] = blocks
     if not blocks:
         return None, ''
     infos = [cert_info_pem(d, b) for b in blocks]
@@ -51708,7 +52094,20 @@ def _proxy_tls_facts(d, blocks, mine, name):
         alt_pem = '\n'.join(re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
                                        d.proxy_run('cat %s' % shlex.quote(certs[1])) or '', re.S))
         alt_info = cert_info_pem(d, alt_pem)
-    return {'at': int(time.time()), 'ok': True, 'name': name, 'host': str(CONFIG.get('proxy_host') or ''),
+    # the chain as nginx there sends it, checked as a client that fetches
+    # nothing checks it (as root's chain_check here); the company roots of
+    # its trusted file kept to check with - public, never a key
+    trust = d.__dict__.get('_proxy_trust_read', {}).pop(_ngx_directive(mine, 'ssl_trusted_certificate') or '', [])
+    roots = [c for c in trust if (lambda n: n[0] and n[0] == n[1])(d._tls_names(c))]
+    chain_facts = {'roots': roots, 'roots_given': [d._tls_cn(d._tls_names(c)[0]) for c in roots],
+                   'port': _ngx_listen_port(mine)}
+    for k, text in (('chain_check', pem), ('alt_chain_check', alt_pem if alt_info else '')):
+        try:
+            chain_facts[k] = d.tls_chain_check(d.PEM_CERT.findall(text or ''), roots)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            chain_facts[k] = None
+    return dict(chain_facts, **{'at': int(time.time()), 'ok': True, 'name': name,
+                                'host': str(CONFIG.get('proxy_host') or ''),
             'blocks': len(same), 'info': info, 'pem': (pem + '\n') if pem else '',
             'alt_info': alt_info, 'alt_pem': (alt_pem + '\n') if alt_info else '',
             'root_info': root_info, 'verify': verify,
@@ -51720,7 +52119,17 @@ def _proxy_tls_facts(d, blocks, mine, name):
             'prefer': (_ngx_directive(mine, 'ssl_prefer_server_ciphers') or '') == 'on',
             'hsts': int(m.group(1)) if m else 0,
             'stapling': (_ngx_directive(mine, 'ssl_stapling') or '') == 'on',
-            'dh_file': bool(_ngx_directive(mine, 'ssl_dhparam')), 'base': base}
+            'dh_file': bool(_ngx_directive(mine, 'ssl_dhparam')), 'base': base})
+
+
+def _ngx_listen_port(block):
+    """The port of a server's `listen ... ssl` (443 when none says)."""
+    for v in _ngx_directives(block, 'listen'):
+        if 'ssl' in v.split():
+            m = re.search(r'(?:^|[:\]])(\d{1,5})$', v.split()[0])
+            if m:
+                return int(m.group(1))
+    return 443
 
 
 def proxy_tls_read(d, w='front'):
@@ -51891,6 +52300,14 @@ def proxy_tls_ask(d, source=None, pem=None, policy=None, why='', w='front'):
     setattr(d, W['asked'], ident)
     d.say_event('control', '%s: %s - root is putting it there' % (W['words'], why or 'TLS'),
                 'info', about='root')
+    if source == 'here' or (pem and pem.get('cert')):
+        # what a client that fetches nothing is sent there, once it is in
+        try:
+            own = bool(pem) and len(set(d._tls_names(pem['cert']))) == 1
+        except ValueError:
+            own = True
+        if not own:
+            d.tls_self_check_later(ident, d.PEM_CERT.findall((pem or {}).get('root') or ''), w)
     return ident
 
 
@@ -51991,7 +52408,9 @@ def proxy_tls_state(d, fresh=False, w='front'):
     there_fp = (look.get('info') or {}).get('fingerprint')
     target = W['target']
     ast = acme_state(d, target)
-    out = {'conf': conf, 'look': {k: v for k, v in look.items() if k not in ('pem', 'alt_pem')}, 'node': node,
+    out = {'conf': conf, 'look': {k: v for k, v in look.items() if k not in ('pem', 'alt_pem', 'roots')},
+           'node': node, 'chain_state': d.tls_chain_kept(w, (look.get('info') or {}).get('fingerprint')),
+           'self_check': d.tls_self_check_kept(w, (look.get('info') or {}).get('fingerprint')),
            'host': str(CONFIG.get('proxy_host') or ''), 'name': proxy_tls_name(d, w), 'which': w,
            'same': bool(here_fp and there_fp and here_fp == there_fp),
            'key_way': d.proxy_cfg()['ssh_auth'] == 'key' and bool(d.proxy_cfg()['ssh_key']),
@@ -52027,6 +52446,13 @@ def proxy_tls_post(d, act, body, who, w='front'):
     if w == 'ntfy' and act in ('proxy_follow', 'proxy_push'):
         raise ValueError('ntfy on the server in front has a certificate of its own: it never takes '
                          'the one of this machine')
+    if act in ('tls_chain', 'chain', 'tls_chain_add', 'chain-add'):
+        # its chain, completed or by hand, as for this machine's (the key there untouched)
+        if conf['follow']:
+            raise ValueError('the server in front has the same certificate as this machine: its chain '
+                             'is completed here')
+        me = d.session_get(body.get('session')) or {}
+        return d.tls_chain_post(body, me.get('name') or who, add=act in ('tls_chain_add', 'chain-add'), w=w)
     if act == 'proxy_follow':
         on = body.get('on') is True
         conf['follow'] = on

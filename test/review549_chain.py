@@ -253,8 +253,8 @@ try:
     # ---- the card ------------------------------------------------------------------------------
     print('the card')
     page = (HERE / 'web' / 'index.php').read_text()
-    for words in ('now.chain_check', "'incomplete - the intermediate '", 'zigmon fetches the missing link itself',
-                  "'self-signed - no chain'", "'complete ('"):
+    for words in ('now.chain_check', "'incomplete - the authority '", 'zigmon fetches the missing link itself',
+                  "'self-signed - no chain;", "'complete ('"):
         check(words in page, 'the card has no %s' % words)
 finally:
     httpd.shutdown()

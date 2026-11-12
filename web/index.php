@@ -4430,6 +4430,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ot .cert-kv dt{color:var(--tx-dim);font-weight:600;white-space:nowrap}
   .ot .cert-kv dd{margin:0;overflow-wrap:anywhere;font-weight:600}
   .ot .cert-kv dd.good{color:var(--ok)} .ot .cert-kv dd.bad{color:var(--crit)}
+  .ot .cert-self{margin:8px 0 0;font-size:12px;color:var(--tx-dim)} .ot .cert-self.good{color:var(--ok)} .ot .cert-self.bad{color:var(--crit)}
   .ot .tls-h{margin:4px 0 10px;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-dim)}
   .ot .tls-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
   .ot .tls-tile{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;gap:4px;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);transition:border-color .15s,background .15s}
@@ -31005,13 +31006,17 @@ function proxyView(d, w) {
   var p = (w === 'ntfy' ? d.proxy_ntfy : d.proxy) || {}, lk = p.look || {}, f = lk.files || {};
   return {target: w === 'ntfy' ? 'proxy-ntfy' : 'proxy', proxy: p, conf: p.conf || {}, node: p.node || {}, helper: d.helper,
           may: d.may, server_name: p.name || '', presets: d.presets, dh: d.dh, acme: p.acme || {},
+          /* the chain as nginx there sends it, and what Complete the chain and
+             the check after a change found - as this machine's card has them */
+          chain_state: p.chain_state || null, self_check: p.self_check || null,
           now: {info: lk.info || null, protocols: lk.protocols || [], hsts: lk.hsts || 0, broker: [],
                 // (5.42) a second certificate there, side by side (RSA and EC)
                 alt_info: lk.alt_info || null,
                 files: f.cert ? {cert: f.cert, key: f.key || '\u2013'} : null,
                 // (5.41.1) the root's own name, read there, and whether the chain leads to it
                 root_info: lk.root_info || (f.root ? {cn: f.root} : null), verify: lk.verify || '',
-                readable: lk.ok !== false}};
+                chain_check: lk.chain_check || null, alt_chain_check: lk.alt_chain_check || null,
+                roots_given: lk.roots_given, readable: lk.ok !== false}};
 }
 function loadWeb(quiet) {
   var host = $('web-certs');
@@ -31119,14 +31124,13 @@ function certCard(d) {
        the system's roots: one without its intermediate verified against the
        trusted file (which holds it) and looked whole */
     var cc = now.chain_check;
-    if (cc && cc.self_signed) facts.push(['Chain', 'self-signed - no chain', '']);
-    else if (cc && cc.ok) facts.push(['Chain', 'complete (' + (cc.sent + 1) + ' certificate' + (cc.sent ? 's' : '')
-      + (cc.up_to ? ' up to ' + cc.up_to : '') + ')', 'good']);
-    else if (cc) facts.push(['Chain', cc.missing
-      ? 'incomplete - the intermediate ' + cc.missing + ' is not sent. Upload it again: zigmon fetches the missing link itself'
-      : 'does not lead to a root this system trusts' + (cc.untrusted ? ' (' + cc.untrusted + ')' : ''), 'bad']);
-    else facts.push(['Chain', info.chain ? info.chain + ' between it and the root' : 'none sent with it']);
-    facts.push(['Root', now.root_info ? (now.root_info.cn || 'given') : 'not given']);
+    facts.push(['Chain'].concat(certChainWords(cc, d.chain_state, info)));
+    var acc = now.alt_chain_check;
+    if (acc && acc.ok === false) facts.push(['Chain (EC)'].concat(certChainWords(acc, null, now.alt_info)));
+    /* the root given (a company's own, kept to check with - never sent);
+       "not given" is right for a public one: the clients have it */
+    facts.push(['Root', now.roots_given ? (now.roots_given.length ? now.roots_given.join(', ') : 'not given')
+      : (now.root_info ? (now.root_info.cn || 'given') : 'not given')]);
     if (now.verify && !cc) facts.push(['Checked', now.verify === 'ok' ? 'the chain leads to the root' : now.verify,
       now.verify === 'ok' ? 'good' : 'bad']);
     if ((now.files || {}).cert) facts.push(['Files', now.files.cert + ', ' + now.files.key]);
@@ -31137,6 +31141,10 @@ function certCard(d) {
       kv.appendChild(dd);
     });
     b.appendChild(kv);
+    /* what a client that fetches nothing was sent after the last change */
+    var sc = d.self_check;
+    if (sc && sc.words && !(cc && cc.self_signed)) b.appendChild(el('p', 'cert-self' + (sc.ok ? ' good' : (sc.ok === false ? ' bad' : '')),
+      sc.words + (sc.at ? ' (' + stamp(sc.at) + ')' : '')));
     card.appendChild(b);
   } else if (px) {
     card.appendChild(el('p', 'note' + (lk.error ? ' warn' : ''), lk.error ? 'Not read: ' + lk.error
@@ -31206,6 +31214,27 @@ function certCard(d) {
     var pol = cmdButton('TLS settings', 'gear', 'small');
     pol.onclick = certOn(T, function () { certPolicy(prof, d); });
     tools.appendChild(pol);
+    /* the chain of the certificate in place (not for a self-signed one, nor
+       for the front while it has this machine's): checked against the
+       system's roots, an intermediate it was not sent with fetched from its
+       CA Issuers address, as browsers do - or uploaded by hand */
+    var ccb = (d.now || {}).chain_check;
+    if (info && ccb && !ccb.self_signed && !(px && prof.follow)) {
+      var bad = ccb.ok === false || ((d.now || {}).alt_chain_check || {}).ok === false;
+      var ch = cmdButton(bad ? 'Complete the chain' : 'Check the chain', 'refresh', bad ? 'small primary' : 'small');
+      ch.title = 'Checked against the system\u2019s root authorities; an intermediate the certificate was not sent with is fetched from its CA Issuers address, as browsers do - so that phone apps, curl and MQTT clients, which fetch nothing, take it too. The certificate and its key stay as they are.';
+      ch.onclick = certOn(T, function () {
+        zbusy(ch, true);
+        tlsDo({action: 'tls_chain'}).then(function (x) { certChainSaid(x); loadWeb(); }, zoops)
+          .then(function () { zbusy(ch, false); });
+      });
+      tools.appendChild(ch);
+      if (bad) {
+        var addc = cmdButton('Upload the missing authority', 'upload', 'small');
+        addc.onclick = certOn(T, function () { certChainAdd(d); });
+        tools.appendChild(addc);
+      }
+    }
     if (info) {
       var dl = cmdButton('Download', 'download', 'small');
       dl.title = 'The certificate - as PEM, DER or PFX, with its private key or without';
@@ -31237,6 +31266,75 @@ function certCard(d) {
     card.appendChild(tools);
   }
   return card;
+}
+/* The Chain line: [words, tone] - what nginx sends now, checked as a client
+   that fetches nothing checks it (the system's roots), and what Complete the
+   chain found for this certificate. */
+function certChainWords(cc, cs, info) {
+  if (cc && cc.self_signed) return ['self-signed - no chain; whoever connects must trust this certificate itself', ''];
+  if (cc && cc.ok) {
+    var w = 'complete (' + (cc.sent + 1) + ' certificate' + (cc.sent ? 's' : '') + (cc.up_to ? ' up to ' + cc.up_to : '') + ')';
+    if (cs && cs.ok && (cs.fetched || []).length) w += ' - fetched: ' + cs.fetched.join(', ') + ', it was not sent with the certificate';
+    if (cc.private_root) w += ' - a private root: only clients that trust it take it';
+    return [w, 'good'];
+  }
+  if (cc) {
+    if (cs && cs.ok === false) return [cs.words, 'bad'];
+    return [cc.missing
+      ? 'incomplete - the authority ' + cc.missing + ' is not sent: phone apps, curl and MQTT clients refuse it. Complete the chain: zigmon fetches the missing link itself where the certificate says it is - or upload the missing authority'
+      : 'it leads to ' + (cc.untrusted || 'a root') + ', a root the system does not trust (a private CA?)', 'bad'];
+  }
+  return [info && info.chain ? info.chain + ' between it and the root' : 'none sent with it', ''];
+}
+/* What Complete the chain or the authority uploaded came to: green when it
+   is whole, red with its words when not - never a bare "HTTP 200". */
+function certChainSaid(x) {
+  toast((x && x.message) || 'checked', !!(x && x.complete));
+}
+/* Upload the missing authority: only the certificate(s) of the authority -
+   never a key; the certificate and its key stay as they are, a root is kept
+   to check with and never sent. */
+function certChainAdd(d) {
+  var now = d.now || {}, cc = now.chain_check || {}, cs = d.chain_state || {};
+  var missing = cc.missing || cc.private_root || cs.missing || cs.private_root
+    || String(((now.info || {}).issuer) || '').replace(/^.*?CN=/, '').split(',')[0] || '?';
+  var area;
+  zmodal('Upload the missing authority', function (body) {
+    var p = el('p', 'note');
+    p.appendChild(document.createTextNode('Missing in the chain: '));
+    p.appendChild(el('b', 'cert-missing', missing));
+    body.appendChild(p);
+    body.appendChild(el('p', 'note', 'The certificate of that authority - the intermediate (or several) your certificate authority gives with the certificate, often called "CA bundle", "intermediate" or "chain" - as PEM or a .cer / .crt file. Only certificates of authorities, never a key; the certificate and its key stay as they are. A root is kept to check with and never sent.'));
+    area = el('textarea', 'mono osr-text cert-chain-text');
+    area.rows = 8; area.spellcheck = false; area.placeholder = '-----BEGIN CERTIFICATE-----';
+    body.appendChild(area);
+    var fr = el('div', 'btnrow osr-pick');
+    var pick = cmdButton('Read a file\u2026', 'upload', 'small');
+    var input = el('input'); input.type = 'file'; input.hidden = true;
+    input.accept = '.pem,.crt,.cer,.der,.cert,.ca-bundle';
+    pick.onclick = function () { input.click(); };
+    input.onchange = function () {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      if (f.size > 262144) { toast('that file is far bigger than certificates are', false); return; }
+      var r = new FileReader();
+      r.onload = function () { area.value = osrFileText(r.result); };
+      r.readAsArrayBuffer(f);
+      input.value = '';
+    };
+    fr.appendChild(pick); fr.appendChild(input);
+    body.appendChild(fr);
+  }, [{words: 'Cancel', close: true},
+      {words: 'Add it to the chain', cls: 'primary', icon: 'add', go: function (b) {
+        var gen = ZM.gen;
+        zbusy(b, true);
+        tlsDo({action: 'tls_chain_add', text: area.value.trim()}).then(function (x) {
+          zbusy(b, false);
+          if (gen === ZM.gen) closeZModal();
+          certChainSaid(x);
+          loadWeb();
+        }, function (e) { zbusy(b, false); zmodalSaid(e, gen); });
+      }}], 'medium');
 }
 /* The certificate's download (5.30): a format, and for those with the private
    key a password. Without the key it is made here at once; with it root makes
