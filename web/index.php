@@ -1384,6 +1384,29 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/plug/reset', 'POST', $body, 60.0);
         exit;
     }
+    // (5.51) a socket's box: its firmware, and its relay's own settings
+    if ($what === 'plug-shelly' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $in = json_decode((string) file_get_contents('php://input'), true);
+        $in = is_array($in) ? $in : [];
+        $action = (string) ($in['action'] ?? '');
+        $body = ['name' => (string) ($in['name'] ?? ''),
+                 'action' => in_array($action, ['firmware', 'firmware-update', 'settings', 'settings-save'], true) ? $action : ''];
+        if ($action === 'firmware-update') {
+            $body['stage'] = ($in['stage'] ?? '') === 'beta' ? 'beta' : 'stable';
+        }
+        if ($action === 'settings-save' && isset($in['settings']) && is_array($in['settings'])) {
+            $body['settings'] = array_intersect_key($in['settings'], array_flip(
+                ['initial_state', 'auto_on', 'auto_on_delay', 'auto_off', 'auto_off_delay', 'power_limit']));
+        }
+        if (isset($in['pin'])) {
+            $body['pin'] = (string) $in['pin'];
+        }
+        if (isset($in['session'])) {
+            $body['session'] = (string) $in['session'];
+        }
+        zigmon_relay('/api/plug/shelly', 'POST', $body, 30.0);
+        exit;
+    }
     if ($what === 'bindings-save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $clean = [];
@@ -19657,6 +19680,112 @@ function resetPlugCounters(plug, types, what, button) {
     }, function (e) { free(); throw e; });
   }, true, free);
 }
+// (5.51) A socket's box: its firmware, and what its relay does by itself.
+// Asked from the socket's fold; an administrator's on the daemon's side, and
+// nothing reaches the box without "are you sure" first (zconfirm).
+function plugFirmware(plug) {
+  withPin('Firmware of ' + plug.name, 'Asks the box whether Shelly offers it newer firmware. Nothing is changed.', function (pin) {
+    return post('plug-shelly', {name: plug.name, action: 'firmware', pin: pin}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'the box did not say');
+      var f = r.firmware || {};
+      showPlugFirmware(plug, f);
+      return f.stable ? plug.name + ': ' + f.stable + ' is offered' : plug.name + ' runs ' + (f.current || '?') + ', the newest offered';
+    });
+  });
+}
+function showPlugFirmware(plug, f) {
+  var buttons = [{words: 'Close', close: true}];
+  ['stable', 'beta'].forEach(function (stage) {
+    if (!f[stage]) return;
+    buttons.push({words: 'Update to ' + f[stage] + (stage === 'beta' ? ' (beta)' : ''), cls: stage === 'beta' ? '' : 'primary', close: true, icon: 'download', go: function () {
+      zconfirm('Update ' + plug.name, 'The box fetches firmware ' + f[stage] + (stage === 'beta' ? ', a beta,' : '') + ' from Shelly, puts it in and restarts by itself: a minute or two without it, and what is plugged in does what the box does at power-on while it restarts. It runs ' + (f.current || 'an unknown version') + ' now.', 'Update it', function () {
+        post('plug-shelly', {name: plug.name, action: 'firmware-update', stage: stage}).then(function (r) {
+          if (!r.ok) throw new Error(r.error || 'the box did not take it');
+          toast(r.message || 'update started', true);
+        }).catch(function (e) { toast(e.message || String(e), false); });
+      });
+    }});
+  });
+  zmodal('Firmware of ' + plug.name, function (body) {
+    body.appendChild(el('p', 'note', [f.model, 'runs ' + (f.current || 'an unknown version')].filter(Boolean).join(' · ')));
+    body.appendChild(el('p', 'note', f.stable ? 'Shelly offers ' + f.stable + '.' : 'No newer stable firmware is offered for it.'));
+    if (f.beta) body.appendChild(el('p', 'note dim', 'A beta is offered too: ' + f.beta + '.'));
+  }, buttons, 'narrow');
+}
+var PLUG_INITIAL = [['off', 'stays off'], ['on', 'comes on'], ['restore_last', 'goes back to what it was'], ['match_input', 'follows its wall switch']];
+function plugSettingsChanges(was, form) {
+  var out = {};
+  if ('initial_state' in was && form.initial_state !== was.initial_state) out.initial_state = form.initial_state;
+  ['auto_off', 'auto_on'].forEach(function (k) {
+    if (!(k in was)) return;
+    if (!!form[k] !== !!was[k]) out[k] = !!form[k];
+    if (form[k] && Number(form[k + '_delay']) !== Number(was[k + '_delay'])) out[k + '_delay'] = Number(form[k + '_delay']);
+  });
+  if ('power_limit' in was) {
+    var pl = form.power_limit === '' || form.power_limit === null ? null : Number(form.power_limit);
+    if (pl !== (was.power_limit === null || was.power_limit === undefined ? null : Number(was.power_limit))) out.power_limit = pl;
+  }
+  return out;
+}
+function plugSettingsWords(c) {
+  return Object.keys(c).map(function (k) {
+    if (k === 'initial_state') return 'at power-on it ' + ((PLUG_INITIAL.filter(function (p) { return p[0] === c[k]; })[0] || [0, c[k]])[1]);
+    if (k === 'auto_off' || k === 'auto_on') return (c[k] ? 'switches itself ' : 'no longer switches itself ') + (k === 'auto_off' ? 'off' : 'on');
+    if (k === 'auto_off_delay' || k === 'auto_on_delay') return (k === 'auto_off_delay' ? 'auto-off' : 'auto-on') + ' after ' + c[k] + ' s';
+    if (k === 'power_limit') return c[k] === null ? 'the overpower limit back to the box’s default' : 'overpower limit ' + c[k] + ' W';
+    return k;
+  }).join('; ');
+}
+function plugSettings(plug) {
+  withPin('Timers and power-on of ' + plug.name, 'Reads the relay’s own settings from the box. Nothing is changed.', function (pin) {
+    return post('plug-shelly', {name: plug.name, action: 'settings', pin: pin}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'the box did not say');
+      showPlugSettings(plug, r.settings || {});
+      return plug.name + ': its settings';
+    });
+  });
+}
+function showPlugSettings(plug, was) {
+  var f = {};
+  zmodal('Timers and power-on of ' + plug.name, function (body) {
+    if (!Object.keys(was).length) { body.appendChild(el('p', 'note', 'This box reports none of these settings.')); return; }
+    if ('initial_state' in was) {
+      f.initial_state = zSelect(PLUG_INITIAL, was.initial_state);
+      body.appendChild(zField('When power comes back, it', f.initial_state));
+    }
+    [['auto_off', 'Switch itself off', 'after being switched on'], ['auto_on', 'Switch itself on', 'after being switched off']].forEach(function (k) {
+      if (!(k[0] in was)) return;
+      f[k[0]] = zSwitch(was[k[0]]);
+      body.appendChild(zField(k[1], f[k[0]]));
+      f[k[0] + '_delay'] = zText(was[k[0] + '_delay'], 'seconds');
+      f[k[0] + '_delay'].inputMode = 'decimal';
+      body.appendChild(zField('… seconds ' + k[2], f[k[0] + '_delay']));
+    });
+    if ('power_limit' in was) {
+      f.power_limit = zText(was.power_limit, 'the box’s default');
+      f.power_limit.inputMode = 'decimal';
+      body.appendChild(zField('Overpower limit (W)', f.power_limit, 'Over this the box switches itself off. Empty: the box’s own default.'));
+    }
+  }, [{words: 'Close', close: true},
+      {words: 'Change…', cls: 'primary', close: false, icon: 'check', go: function () {
+        var form = {};
+        Object.keys(f).forEach(function (k) {
+          form[k] = f[k]._get ? !!f[k]._get() : (f[k].value === undefined ? '' : String(f[k].value).trim());
+        });
+        var bad = ['auto_off_delay', 'auto_on_delay', 'power_limit'].filter(function (k) {
+          return k in form && form[k] !== '' && !(Number(form[k]) >= 0 && isFinite(Number(form[k])));
+        });
+        if (bad.length) { toast('Not a number: ' + bad.join(', '), false); return; }
+        var changes = plugSettingsChanges(was, form);
+        if (!Object.keys(changes).length) { toast('Nothing changed', true); return; }
+        zconfirm('Change ' + plug.name, 'The box is told: ' + plugSettingsWords(changes) + '.', 'Change it', function () {
+          post('plug-shelly', {name: plug.name, action: 'settings-save', settings: changes}).then(function (r) {
+            if (!r.ok) throw new Error(r.error || 'the box did not take it');
+            toast(r.message || 'saved', true);
+          }).catch(function (e) { toast(e.message || String(e), false); });
+        }, false);
+      }}], 'narrow');
+}
 // The Smart Plugs card: one compact line per socket - name, state, its
 // current draw, and switch / pulse - and a fold under each for the counters
 // and their resets, closed by default. Two dozen sockets read as a list,
@@ -19804,6 +19933,24 @@ function renderPlugControls(st) {
       all.onclick = function () { resetPlugCounters(plug, [], 'every counter', all); };
       crow.appendChild(all);
       body.appendChild(crow);
+    }
+    // (5.51) the box itself: its firmware, and its relay's own settings -
+    // an administrator's, and every change asked about first
+    if (online && !plug.monitor_only) {
+      body.appendChild(el('div', 'set-head', 'The box itself'));
+      body.appendChild(el('p', 'btnhelp', 'What the box runs and what it does by itself: when power comes back, its auto-off and auto-on timers, its overpower limit. An administrator’s; nothing is changed without asking first.'));
+      var brow = el('div', 'btnrow');
+      var fw = cmdButton('Firmware…', 'download', 'small');
+      fw.setAttribute('data-plug-shelly', 'firmware');
+      attachHint(fw, '<b>Shelly.CheckForUpdate</b><br>Asks the box whether Shelly offers newer firmware. Nothing is changed; an update is offered afterwards, and asked about.');
+      fw.onclick = function () { plugFirmware(plug); };
+      brow.appendChild(fw);
+      var sw = cmdButton('Timers and power-on…', 'clock', 'small');
+      sw.setAttribute('data-plug-shelly', 'settings');
+      attachHint(sw, '<b>Switch.GetConfig</b> / <b>Switch.SetConfig</b><br>What the relay does when power comes back, its auto-off and auto-on timers and its overpower limit - the ones this box has.');
+      sw.onclick = function () { plugSettings(plug); };
+      brow.appendChild(sw);
+      body.appendChild(brow);
     }
     block.appendChild(body);
     host.appendChild(block);

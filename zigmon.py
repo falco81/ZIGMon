@@ -1705,6 +1705,7 @@ class ShellyRPC(object):
     answers 429 when that adds up.
     """
     _challenges = {}
+    _nc_guard = threading.Lock()    # (5.51) the nonce count steps once per request, never twice the same
     _last_request = {}
     _conns = {}                 # host -> [(connection, last used)]: a few open per box, used again (5.44)
     _conn_guard = threading.Lock()
@@ -2324,8 +2325,16 @@ class ShellyRPC(object):
 
         realm = fields.get('realm', '')
         nonce = fields.get('nonce', '')
-        fields['nc'] = int(fields.get('nc', 0)) + 1
-        nc = '%08x' % fields['nc']
+        # (5.51) One challenge is shared by every thread asking this box - the
+        # four sockets of a strip switched together - and the box takes each
+        # nc of a nonce once, strictly rising (Authentication: "rejects
+        # requests with an nc value that is not strictly greater"). Read and
+        # stepped on unguarded, two commands could be given the same count:
+        # the second was answered 401 and paid a fresh challenge, one more
+        # round trip on a light somebody was waiting for.
+        with self._nc_guard:
+            fields['nc'] = int(fields.get('nc', 0)) + 1
+            nc = '%08x' % fields['nc']
         cnonce = secrets.token_hex(8)
         ha1 = h('admin:%s:%s' % (realm, self.password))
         ha2 = h('%s:%s' % (method, path))
@@ -2390,6 +2399,131 @@ PLUG_RESET_FIELDS = {
     'on_time': 'counts.on_time_rst_ts', 'switch_on': 'counts.switch_on_rst_ts',
     'on_above_thr': 'counts.on_above_thr_rst_ts',
 }
+
+
+# ---- (5.51) a Shelly box's firmware and its relay's own settings ---------------------
+# Shared by the dashboard (Daemon.plug_shelly), "zigmon shelly NAME firmware" and
+# "zigmon shelly NAME switch-settings". Asked for by a person, never on the
+# way of a switching or a reading: each is one or two requests, made as a poll
+# is (a command overtakes them, as it overtakes a poll).
+SHELLY_UPDATE_STAGES = ('stable', 'beta')
+# The relay's settings a household cares about (Switch.GetConfig / SetConfig):
+# what it does when power comes back, the two timers, and the overpower limit.
+# Only the ones the box itself reports are shown or written - a box without a
+# meter has no power_limit, and an older firmware may not know a key.
+SWITCH_SETTING_KEYS = ('initial_state', 'auto_on', 'auto_on_delay', 'auto_off', 'auto_off_delay',
+                       'power_limit')
+SWITCH_INITIAL_STATES = ('off', 'on', 'restore_last', 'match_input')
+SWITCH_INITIAL_WORDS = {'off': 'stays off', 'on': 'comes on', 'restore_last': 'goes back to what it was',
+                        'match_input': 'follows its wall switch'}
+
+
+def shelly_firmware_check(rpc):
+    """What the box runs and what Shelly offers it (Shelly.CheckForUpdate):
+    {'current', 'model', 'stable', 'beta'} - a version, or None for none.
+    "alt" (a Zigbee or Matter firmware in place of this one) is never offered
+    here: that is a different device afterwards, not an update."""
+    info = rpc.call('Shelly.GetDeviceInfo') or {}
+    found = rpc.call('Shelly.CheckForUpdate') or {}
+    out = {'current': str(info.get('ver') or ''), 'model': str(info.get('model') or info.get('app') or ''),
+           'stable': None, 'beta': None}
+    for stage in SHELLY_UPDATE_STAGES:
+        offer = found.get(stage) if isinstance(found, dict) else None
+        if isinstance(offer, dict) and offer.get('version'):
+            out[stage] = str(offer['version'])
+    return out
+
+
+def shelly_firmware_update(rpc, stage='stable'):
+    """Shelly.Update to the stage asked for, only when the box is offered one
+    (asked first, so an "update" to nothing is said rather than sent). The box
+    fetches it, puts it in and restarts by itself, a minute or two."""
+    if stage not in SHELLY_UPDATE_STAGES:
+        raise ValueError('the stage is stable or beta')
+    found = shelly_firmware_check(rpc)
+    if not found.get(stage):
+        raise PlugError('no %s update is offered for this box (it runs %s)'
+                        % (stage, found.get('current') or 'an unknown version'))
+    rpc.call('Shelly.Update', {'stage': stage})
+    return found
+
+
+def shelly_switch_settings(rpc, switch_id=0):
+    """The relay's settings out of Switch.GetConfig, the ones it has."""
+    cfg = rpc.call('Switch.GetConfig', {'id': int(switch_id or 0)}) or {}
+    return {k: cfg[k] for k in SWITCH_SETTING_KEYS if k in cfg}
+
+
+def shelly_switch_settings_clean(changes, known):
+    """Settings to write, checked: only keys the box reported (`known`), each
+    in its own kind. A ValueError says what is wrong with which."""
+    out = {}
+    if not isinstance(changes, dict):
+        raise ValueError('the settings are an object')
+    for key, value in changes.items():
+        if key not in SWITCH_SETTING_KEYS:
+            raise ValueError('%s is not one of the settings here' % key)
+        if key not in (known or {}):
+            raise ValueError('this box has no %s' % key)
+        if key == 'initial_state':
+            if value not in SWITCH_INITIAL_STATES:
+                raise ValueError('initial_state is one of %s' % ', '.join(SWITCH_INITIAL_STATES))
+        elif key in ('auto_on', 'auto_off'):
+            if not isinstance(value, bool):
+                raise ValueError('%s is true or false' % key)
+        elif key in ('auto_on_delay', 'auto_off_delay'):
+            number = numeric(value) if not isinstance(value, bool) else None
+            if number is None or number <= 0 or number > 31 * 86400:
+                raise ValueError('%s is a number of seconds, more than 0' % key)
+            value = number
+        elif key == 'power_limit':
+            # null puts the box's own default back (Switch: "or to null to
+            # reset to default value")
+            if value is not None:
+                number = numeric(value) if not isinstance(value, bool) else None
+                if number is None or number < 0 or number > 100000:
+                    raise ValueError('power_limit is a number of watts, or null for the default')
+                value = number
+        out[key] = value
+    return out
+
+
+def shelly_switch_settings_write(rpc, switch_id, changes):
+    """Switch.SetConfig with what was checked, then read back: (settings
+    now, keys the box did not take, restart_required)."""
+    switch_id = int(switch_id or 0)
+    known = shelly_switch_settings(rpc, switch_id)
+    clean = shelly_switch_settings_clean(changes, known)
+    if not clean:
+        return known, [], False
+    reply = rpc.call('Switch.SetConfig', {'id': switch_id, 'config': clean}) or {}
+    now = shelly_switch_settings(rpc, switch_id)
+
+    def took(key, value):
+        if value is None:
+            return True                       # "the default" - whatever number that is
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return numeric(now.get(key)) == numeric(value)
+        return now.get(key) == value
+    missed = [k for k, v in clean.items() if not took(k, v)]
+    return now, missed, bool(isinstance(reply, dict) and reply.get('restart_required'))
+
+
+def switch_settings_words(cfg):
+    """The settings in a line each, for the command line and the console."""
+    out = []
+    if 'initial_state' in cfg:
+        out.append(('when power comes back', '%s (%s)' % (
+            SWITCH_INITIAL_WORDS.get(cfg['initial_state'], cfg['initial_state']), cfg['initial_state'])))
+    for key, words in (('auto_off', 'switches itself off'), ('auto_on', 'switches itself on')):
+        if key in cfg:
+            out.append((words, ('%g s after being switched %s' % (
+                numeric(cfg.get(key + '_delay')) or 0, 'on' if key == 'auto_off' else 'off'))
+                if cfg.get(key) else 'never'))
+    if 'power_limit' in cfg:
+        out.append(('overpower limit', ('%g W' % numeric(cfg['power_limit']))
+                    if numeric(cfg['power_limit']) is not None else "the box's default"))
+    return out
 
 PLUG_DESCRIPTIONS = {
     'switch.output': 'Relay output',
@@ -11514,9 +11648,23 @@ class Daemon(object):
             # them: /api/status answered 500 "dictionary changed size during
             # iteration", and the socket's poll failed the same way.
             if p.flat:
+                was_flat = p.flat
                 self._plug_flat_put(p, {'switch.' + k: v for k, v in flatten(value).items()
                                         if k not in ('id', 'source')})
                 p.generated = now
+                # (5.51) A socket protecting itself says so in its push first:
+                # "errors": ["overpower"] with the relay off, and "errors":
+                # null when it clears (Notifications: a key that goes away is
+                # sent as null). The push put that into the reading, and the
+                # poll that watches for it then compared the box with what
+                # the push had already written - nothing new, so the
+                # overpower alarm was never raised on a box on the broker,
+                # nor its all-clear. Watched here, as it arrives.
+                if 'errors' in value:
+                    try:
+                        self.watch_plug_errors(p, was_flat, p.flat)
+                    except Exception as e:
+                        log('%s: watching its errors: %s' % (p.name, e), 'warn')
             entry = self.live.get(p.device_id)
             if entry:
                 entry['ts'] = now
@@ -23957,6 +24105,62 @@ class Daemon(object):
             raise last or PlugError('could not read the counters')
         return {c['type']: numeric(flat.get(c['field'])) if c['field'] in flat else None
                 for c in PLUG_COUNTERS}
+
+    PLUG_SHELLY_ACTIONS = ('firmware', 'firmware-update', 'settings', 'settings-save')
+
+    def plug_shelly(self, p, action, body=None):
+        """(5.51) A socket's box, asked by an administrator from its fold on
+        the dashboard: its firmware (is there newer; put it in) and its
+        relay's own settings (power-on state, the auto-off and auto-on
+        timers, the overpower limit). (ok, answer) - answer a dict, or the
+        words of what went wrong. Nothing here is on the way of a switching:
+        the requests go as a poll goes, and a command overtakes them."""
+        body = body or {}
+        if action not in self.PLUG_SHELLY_ACTIONS:
+            return False, 'the action is one of %s' % ', '.join(self.PLUG_SHELLY_ACTIONS)
+        if action in ('firmware-update', 'settings-save'):
+            ok, message = self._monitor_guard(p)
+            if not ok:
+                return False, message
+        rpc = p.rpc()
+        switch_id = int(p.cfg.get('switch_id') or 0)
+        try:
+            if action == 'firmware':
+                return True, {'firmware': shelly_firmware_check(rpc)}
+            if action == 'firmware-update':
+                stage = str(body.get('stage') or 'stable')
+                if stage not in SHELLY_UPDATE_STAGES:
+                    return False, 'the stage is stable or beta'
+                found = shelly_firmware_update(rpc, stage)
+                words = 'firmware update to %s (%s) started; it was %s' % (
+                    found.get(stage), stage, found.get('current') or '?')
+                self.store.add_event('plug', words, 'info', p.device_id)
+                log('%s: %s' % (p.name, words))
+                # the box restarts by itself: what it runs is asked again
+                p.info = None
+                return True, {'firmware': found, 'message': '%s: %s - it restarts by itself in a minute '
+                                                            'or two' % (p.name, words)}
+            if action == 'settings':
+                return True, {'settings': shelly_switch_settings(rpc, switch_id)}
+            changes = body.get('settings')
+            if not isinstance(changes, dict) or not changes:
+                return False, 'nothing to change'
+            now, missed, restart = shelly_switch_settings_write(rpc, switch_id, changes)
+        except ValueError as e:
+            return False, str(e)
+        except PlugError as e:
+            return False, str(e)
+        words = 'its settings changed: %s' % ', '.join(
+            '%s %s' % (k, json.dumps(changes[k])) for k in sorted(changes))
+        self.store.add_event('plug', words, 'info', p.device_id)
+        log('%s: %s' % (p.name, words))
+        message = '%s: settings saved' % p.name
+        if missed:
+            message = '%s: the box did not take %s' % (p.name, ', '.join(missed))
+        elif restart:
+            message += ' - the box says it needs a restart for them to take effect'
+        return not missed, {'settings': now, 'missed': missed, 'restart_required': restart,
+                            'message': message}
 
     def reset_plug_counters(self, p, types=None):
         """Reset counters and check they actually moved - the plug says OK regardless."""
@@ -47727,6 +47931,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                 ok, message = d.zigbee_switch(':'.join(pieces[1:-1]), pieces[-1], do,
                                               'the dashboard', body.get('ms'))
                 return self._send(200 if ok else 502, {'ok': ok, 'message' if ok else 'error': message})
+            if path == '/api/plug/shelly':
+                # (5.51) a socket's firmware and its relay's settings - an
+                # administrator's (not one of OPERATOR_ROADS), asked for once
+                # the page has asked "are you sure" where it changes the box
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                p = d.plug_by_name(body.get('name') or '')
+                if p is None:
+                    return self._error(404, 'unknown plug')
+                ok, answer = d.plug_shelly(p, str(body.get('action') or ''), body)
+                if not ok and not isinstance(answer, dict):
+                    return self._send(200, {'ok': False, 'error': answer})
+                out = dict(answer, ok=ok)
+                if not ok:
+                    out['error'] = answer.get('message') or 'the box did not take it'
+                return self._send(200, out)
             if path == '/api/plug/reset':
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
@@ -56979,7 +57200,13 @@ def _ws_frames(sock):
         if opcode == 0x8:                       # close
             return
         if opcode == 0x9:                       # ping, answer with a pong
-            sock.sendall(bytes([0x8A, 0x00]))
+            # (5.51) masked and carrying the ping's own payload, as a client's
+            # frame must (RFC 6455 5.1, 5.5.3): a bare unmasked pong is a
+            # protocol error the device may close the connection over
+            mask_key = secrets.token_bytes(4)
+            body = payload[:125]
+            sock.sendall(bytes([0x8A, 0x80 | len(body)]) + mask_key
+                         + bytes(b ^ mask_key[i % 4] for i, b in enumerate(body)))
             continue
         if opcode in (0x1, 0x2) and payload:
             yield payload.decode('utf-8', 'replace')
@@ -57136,6 +57363,43 @@ counter types
                      choices=['status', 'on', 'off', 'rpc-on', 'rpc-off'])
     ble.add_argument('--reboot', action='store_true',
                      help='restart afterwards so the change takes effect')
+
+    firmware = add('firmware', 'is newer firmware offered; put it in',
+                   'Asks the box whether Shelly offers it newer firmware (Shelly.CheckForUpdate). '
+                   '"update" puts it in (Shelly.Update): asked first, the box then restarts by '
+                   'itself. A Zigbee or Matter firmware offered in place of this one is never put in.',
+                   epilog="""
+examples
+  zigmon shelly Lednice firmware                 what it runs, what is offered
+  zigmon shelly Lednice firmware update          put the stable one in (asks first)
+  zigmon shelly Lednice firmware update --beta --yes
+""")
+    firmware.add_argument('action', nargs='?', default='check', choices=['check', 'update'])
+    firmware.add_argument('--beta', action='store_true', help='the beta rather than the stable one')
+    firmware.add_argument('--yes', action='store_true',
+                          help='do not ask first; without a terminal nothing is changed unless given')
+
+    settings = add('switch-settings', 'what the relay does by itself: power-on, timers, limit',
+                   'With nothing else, what the relay does when power comes back, its auto-off '
+                   'and auto-on timers and its overpower limit (the ones this box has). With an '
+                   'option, that is changed - asked first - and read back.',
+                   epilog="""
+examples
+  zigmon shelly Lednice switch-settings
+  zigmon shelly Lednice switch-settings --power-on restore_last
+  zigmon shelly Lednice switch-settings --auto-off 600        off by itself after 10 minutes
+  zigmon shelly Lednice switch-settings --auto-off off --power-limit default --yes
+""")
+    settings.add_argument('--power-on', dest='power_on', choices=list(SWITCH_INITIAL_STATES),
+                          help='what it does when power comes back')
+    settings.add_argument('--auto-off', dest='auto_off', metavar='SECONDS|off',
+                          help='switch itself off this long after being switched on')
+    settings.add_argument('--auto-on', dest='auto_on', metavar='SECONDS|off',
+                          help='switch itself on this long after being switched off')
+    settings.add_argument('--power-limit', dest='power_limit', metavar='WATTS|default',
+                          help='switch itself off above this draw')
+    settings.add_argument('--yes', action='store_true',
+                          help='do not ask first; without a terminal nothing is changed unless given')
 
     call = add('call', 'invoke any RPC method directly',
                'For anything the commands above do not cover. Run "methods" '
@@ -57980,7 +58244,8 @@ def shelly_main(argv, pal):
     targets = shelly_targets()
     names = {n.lower(): n for n in targets}
     commands = ('discover', 'info', 'dump', 'methods', 'config', 'poll', 'watch', 'listen', 'serve',
-                'on', 'off', 'toggle', 'reset-counters', 'reboot', 'matter', 'ble', 'call')
+                'on', 'off', 'toggle', 'reset-counters', 'reboot', 'matter', 'ble', 'call',
+                'firmware', 'switch-settings')
     role = None
     for index, value in enumerate(arguments):
         if value.startswith('-'):
@@ -58021,6 +58286,7 @@ def shelly_main(argv, pal):
         'reset-counters': shelly_cmd_reset, 'call': shelly_cmd_call,
         'reboot': shelly_cmd_reboot, 'ble': shelly_cmd_radio,
         'matter': shelly_cmd_radio,
+        'firmware': shelly_cmd_firmware, 'switch-settings': shelly_cmd_switch_settings,
     }[args.command]
 
     try:
@@ -58720,6 +58986,104 @@ def shelly_cmd_reboot(args, pal):
     return 1
 
 
+def shelly_cli_sure(args, pal, question):
+    """(5.51) Asked before anything that changes a box: yes with --yes, else
+    a y on a terminal - and without a terminal (a script, cron, the console
+    capturing the answer) nothing is done, since nobody can be asked."""
+    if getattr(args, 'yes', False):
+        return True
+    if not sys.stdin.isatty():
+        print(pal.warn('  not done: nobody to ask here - add --yes to go ahead without asking'))
+        return False
+    try:
+        return input('  %s (y/N) ' % question).strip().lower() in ('y', 'yes')
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def shelly_cmd_firmware(args, pal):
+    """(5.51) firmware [check] | firmware update [--beta] [--yes]"""
+    rpc = shelly_for(args.device, args)
+    found = shelly_firmware_check(rpc)
+    if args.action == 'check':
+        if args.json:
+            print(json.dumps(found, indent=2))
+            return 0
+        print('  %s  %s' % (pal.title(found.get('model') or rpc.host), pal.dim('runs %s' % (found.get('current') or '?'))))
+        if found.get('stable'):
+            print('  ' + pal.ok('stable %s is offered' % found['stable'])
+                  + pal.dim('   zigmon shelly %s firmware update' % (args.device or '--host ' + rpc.host)))
+        else:
+            print('  ' + pal.dim('no newer stable firmware is offered'))
+        if found.get('beta'):
+            print('  ' + pal.dim('beta %s is offered too (firmware update --beta)' % found['beta']))
+        return 0
+    stage = 'beta' if args.beta else 'stable'
+    if not found.get(stage):
+        print(pal.warn('  no %s update is offered; it runs %s' % (stage, found.get('current') or '?')))
+        return 1
+    print('  %s runs %s; %s %s is offered.' % (args.device or rpc.host, found.get('current') or '?',
+                                                 stage, found[stage]))
+    print(pal.dim('  The box fetches it from Shelly, puts it in and restarts by itself - a minute or two'))
+    print(pal.dim('  without it, and what is plugged in does what the box does at power-on meanwhile.'))
+    if not shelly_cli_sure(args, pal, 'update it?'):
+        print('  nothing done')
+        return 1
+    shelly_firmware_update(rpc, stage)
+    print(pal.ok('  update to %s started' % found[stage]))
+    return 0
+
+
+def shelly_cmd_switch_settings(args, pal):
+    """(5.51) switch-settings [--power-on ...] [--auto-off S|off] [--auto-on S|off] [--power-limit W|default]"""
+    rpc = shelly_for(args.device, args)
+    known = shelly_switch_settings(rpc, rpc.switch_id)
+    changes = {}
+    if args.power_on is not None:
+        changes['initial_state'] = args.power_on
+    for key, given in (('auto_off', args.auto_off), ('auto_on', args.auto_on)):
+        if given is None:
+            continue
+        if str(given).strip().lower() in ('off', 'no', 'never', '0'):
+            changes[key] = False
+        else:
+            changes[key] = True
+            changes[key + '_delay'] = given
+    if args.power_limit is not None:
+        changes['power_limit'] = None if str(args.power_limit).strip().lower() in ('default', 'null') \
+            else args.power_limit
+    if not changes:
+        if args.json:
+            print(json.dumps(known, indent=2))
+            return 0
+        if not known:
+            print(pal.dim('  this box reports none of these settings'))
+            return 0
+        for words, value in switch_settings_words(known):
+            print('  %-24s %s' % (words, pal.value(value)))
+        return 0
+    try:
+        clean = shelly_switch_settings_clean(changes, known)
+    except ValueError as e:
+        raise PlugError(str(e))
+    after = dict(known, **clean)
+    print('  %s, switch %d, would be:' % (args.device or rpc.host, rpc.switch_id))
+    for words, value in switch_settings_words(after):
+        print('  %-24s %s' % (words, pal.value(value)))
+    if not shelly_cli_sure(args, pal, 'change it?'):
+        print('  nothing done')
+        return 1
+    now, missed, restart = shelly_switch_settings_write(rpc, rpc.switch_id, clean)
+    if missed:
+        print(pal.crit('  the box did not take: %s' % ', '.join(missed)))
+        return 1
+    print(pal.ok('  saved'))
+    if restart:
+        print(pal.dim('  the box says a restart is needed: zigmon shelly %s reboot --wait'
+                      % (args.device or 'NAME')))
+    return 0
+
+
 def is_missing_component(error):
     """Did the device say it does not have this, or did something else fail?"""
     text = str(error).lower()
@@ -58877,8 +59241,8 @@ addressing a device
 
 commands at a glance
   reading        discover, info, dump, methods, poll, watch, listen, serve
-  controlling    on, off, toggle, reset-counters, reboot
-  configuring    config, matter, ble
+  controlling    on, off, toggle, reset-counters, reboot, firmware
+  configuring    config, switch-settings, matter, ble
   anything else  call
 
 quoting JSON
@@ -59025,6 +59389,9 @@ HELP_LINES = [
     ('zigmon shelly Lednice reboot --wait', 'restart it and wait for it back'),
     ('zigmon shelly Lednice ble status|on|off|rpc-on|rpc-off [--reboot]', 'its Bluetooth'),
     ('zigmon shelly Lednice matter status|on|off|code [--reboot]', 'its Matter side'),
+    ('zigmon shelly Lednice firmware [update [--beta] [--yes]]', 'newer firmware offered? put it in'),
+    ('zigmon shelly Lednice switch-settings [--power-on|--auto-off|--auto-on|--power-limit]',
+     'power-on state, its timers, its limit'),
     ('zigmon shelly Lednice call Switch.GetStatus \'{"id":0}\'', 'any call the box knows'),
     ('zigmon shelly HT-Sklep dump', 'a sensor, while it is awake'),
     ('zigmon shelly listen', 'show webhook pushes as they arrive'),
@@ -63852,6 +64219,8 @@ class Console(object):
         what = self.choose(name, [('on', 'Switch it on'), ('off', 'Switch it off'),
                                   ('toggle', 'Switch it to the other state'),
                                   ('why', 'Why it is not answering, step by step'),
+                                  ('firmware', 'Its firmware: is a newer one offered'),
+                                  ('settings', 'What it does by itself: power-on, timers, limit'),
                                   ('show', 'Show it all')],
                            'It is %s.' % self._plug_state(p), cur=1 if p.get('output') else 0)
         if what == 'on':
@@ -63863,8 +64232,78 @@ class Console(object):
                 self.act('--plug-off' if what == 'off' else '--plug-toggle', name)
         elif what == 'why':
             self.act('--diagnose', name)
+        elif what == 'firmware':
+            self.plug_firmware(name)
+        elif what == 'settings':
+            self.plug_switch_settings(name)
         elif what == 'show':
             self.details(name, p, skip=('values', 'counters'))
+
+    def plug_firmware(self, name):
+        """(5.51) What the box runs and what is offered; an update only
+        after a yes here (the command is then told --yes: it has no terminal)."""
+        self.working('asking %s and Shelly...' % name)
+        found = self.out('shelly', name, 'firmware')
+        if not isinstance(found, dict):
+            self.act('shelly', name, 'firmware')          # says why, in its own words
+            return
+        now = found.get('current') or '?'
+        if not found.get('stable'):
+            self.note('Firmware of %s' % name, '%s runs %s, and no newer stable firmware is offered for it.%s'
+                      % (name, now, (' A beta is: %s.' % found['beta']) if found.get('beta') else ''))
+            return
+        if self.confirm('Update %s' % name, '%s runs %s; Shelly offers %s. The box fetches it, puts it in and '
+                        'restarts by itself - a minute or two without it, and what is plugged in does what the '
+                        'box does at power-on meanwhile.' % (name, now, found['stable']), 'Update it'):
+            self.act('shelly', name, 'firmware', 'update', '--yes')
+
+    def plug_switch_settings(self, name):
+        """(5.51) The relay's own settings, shown, and changed after a yes."""
+        self.working('asking %s...' % name)
+        known = self.out('shelly', name, 'switch-settings')
+        if not isinstance(known, dict):
+            self.act('shelly', name, 'switch-settings')
+            return
+        if not known:
+            self.note(name, 'This box reports none of these settings.')
+            return
+        fields = []
+        if 'initial_state' in known:
+            fields.append({'key': 'power_on', 'label': 'at power-on', 'kind': 'choice',
+                           'value': known.get('initial_state'),
+                           'options': [(k, SWITCH_INITIAL_WORDS[k]) for k in SWITCH_INITIAL_STATES]})
+        for key, label in (('auto_off', 'auto-off after (s)'), ('auto_on', 'auto-on after (s)')):
+            if key in known:
+                fields.append({'key': key, 'label': label,
+                               'value': ('%g' % (numeric(known.get(key + '_delay')) or 0)) if known.get(key) else '',
+                               'help': 'Seconds; empty: never.'})
+        if 'power_limit' in known:
+            fields.append({'key': 'power_limit', 'label': 'overpower limit (W)',
+                           'value': '' if known.get('power_limit') is None else '%g' % numeric(known['power_limit']),
+                           'help': 'Empty: the box\'s own default.'})
+        got = self.form('What %s does by itself' % name, fields, ok='Change')
+        if not got:
+            return
+        argv = []
+        if 'power_on' in got and got['power_on'] != known.get('initial_state'):
+            argv += ['--power-on', got['power_on']]
+        for key, flag in (('auto_off', '--auto-off'), ('auto_on', '--auto-on')):
+            if key not in got:
+                continue
+            was = ('%g' % (numeric(known.get(key + '_delay')) or 0)) if known.get(key) else ''
+            given = str(got[key] or '').strip()
+            if given != was:
+                argv += [flag, given or 'off']
+        if 'power_limit' in got:
+            was = '' if known.get('power_limit') is None else '%g' % numeric(known['power_limit'])
+            given = str(got['power_limit'] or '').strip()
+            if given != was:
+                argv += ['--power-limit', given or 'default']
+        if not argv:
+            self.note(name, 'Nothing changed.')
+            return
+        if self.confirm('Change %s' % name, 'The box is told: %s.' % ' '.join(argv), 'Change it'):
+            self.act('shelly', name, 'switch-settings', *(argv + ['--yes']))
 
     # ---- 4 accounts of the dashboard ------------------------------------------------
     ROLES = [('viewer', 'viewer - looks'), ('operator', 'operator - switches things'),
