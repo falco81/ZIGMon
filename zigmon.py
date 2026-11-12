@@ -57623,12 +57623,14 @@ def _sbk_quiet_post(self, body, auth=None):
     headers = {'Content-Type': 'application/json'}
     if auth:
         headers['Authorization'] = auth
-    host, _, port = self.host.partition(':')
-    conn = http.client.HTTPConnection(ShellyRPC._box_address(host), int(port or 80), timeout=self.timeout)
+    # HTTPS where the box has it on, its certificate checked as for every other call
+    conn = self.open_connection(self.timeout)
     try:
         conn.request('POST', '/rpc', body=body, headers=headers)
         response = conn.getresponse()
         return response.status, response.read(), dict(response.getheaders())
+    except ShellyTLSRefused:
+        raise
     except Exception as e:                              # noqa: BLE001 - in words, never the body
         raise PlugError('cannot reach %s at %s (%s)' % (self.label, self.host, type(e).__name__))
     finally:

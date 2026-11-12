@@ -275,6 +275,16 @@ try:
           % SEEN['accepted'])
     got = d.plugs['Secure'].rpc().set_output(False)
     check(('%d' % SECURE, 'Switch.Set') in [('%d' % p, m) for p, m in SEEN['calls']], 'a command over HTTPS did not arrive')
+    # the device backups' own quiet client (5.51) speaks HTTPS to a box that has it on
+    SEEN['calls'][:] = []
+    sec = d.plugs['Secure']
+    try:
+        got = zigmon.sbk_call(zigmon.sbk_rpc({'host': sec.cfg['host'], 'password': sec.cfg.get('password') or '',
+                                             'label': 'Secure'}), 'Switch.GetStatus', {'id': 0}, tries=1)
+    except Exception as e:                                # noqa: BLE001
+        got = e
+    check(isinstance(got, dict) and got.get('output') is True and SEEN['calls'],
+          'the device backups\' client does not speak HTTPS to an HTTPS box: %r' % (got,))
     snap = d.plug_snapshot(d.plugs['Secure'])
     check(snap['tls']['on'] and snap['tls']['pin'] == fp('boxA') and not snap['tls']['changed'],
           'the card of an HTTPS box: %r' % snap['tls'])
