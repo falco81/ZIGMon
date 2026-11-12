@@ -48,6 +48,7 @@ import getpass
 import functools
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import math
@@ -743,7 +744,8 @@ NOTIFY_PRESETS = {
     'all': {'crit', 'warn', 'offline', 'rule', 'switch'},
 }
 
-KNOWN_PLUG_KEYS = {'host_state', 'model', 'mac', 'name', 'host', 'password', 'switch_id', 'mqtt_name', 'enabled', 'kind', 'retain_full_days', 'monitor_only'}
+KNOWN_PLUG_KEYS = {'host_state', 'model', 'mac', 'name', 'host', 'password', 'switch_id', 'mqtt_name', 'enabled', 'kind', 'retain_full_days', 'monitor_only',
+                   'tls', 'tls_ca'}      # (5.52) HTTPS to the box: off unless "tls": true
 
 
 def warn_unknown_keys():
@@ -755,7 +757,7 @@ def warn_unknown_keys():
     for entry in CONFIG.get('zigbee_gateways') or []:
         if isinstance(entry, dict):
             for k in entry:
-                if k not in ('name', 'host', 'target', 'username', 'password', 'model', 'fw', 'kind'):
+                if k not in ('name', 'host', 'target', 'username', 'password', 'model', 'fw', 'kind', 'tls', 'tls_ca'):
                     log('config: unknown key %r on zigbee_gateways entry %r - a typo?' % (k, entry.get('name')), 'warn')
     for k in CONFIG:
         if k not in DEFAULTS and not k.startswith('_'):
@@ -1683,6 +1685,13 @@ class PlugError(Exception):
     pass
 
 
+class ShellyTLSRefused(PlugError):
+    """(5.52) A box with HTTPS on showed a certificate that is not the one
+    trusted for it. Refused, and not asked again in the same breath: a
+    certificate does not change back between two tries."""
+    final = True
+
+
 class SmsLoginFailed(RuntimeError):
     """The gateway's own API would not give us a token (5.43.3). Nothing was
     handed over, so a text that meets this was certainly not sent - unlike a
@@ -1705,6 +1714,19 @@ class ShellyRPC(object):
     answers 429 when that adds up.
     """
     _challenges = {}
+    # (5.52) HTTPS, only for a box it is switched on for - every other box
+    # speaks plain HTTP exactly as before. host -> {'ca': PEM or '', 'pin':
+    # SHA-256 of the certificate or ''}; set by the daemon from its settings
+    # (tls_configure), so every ShellyRPC made for that host - a poll, a
+    # command, a backup, the command line - speaks HTTPS to it without being
+    # told. A box that is not in here is plain HTTP.
+    _tls = {}
+    _tls_learnt = {}            # host -> fingerprint met first in this process (no setting to keep it in)
+    _tls_ctx = {}               # CA PEM ('' = pin only) -> SSLContext, made once
+    tls_seen = {}               # host -> fingerprint the box showed last
+    https_only = {}             # host -> when plain HTTP to it was sent on to https:// (fw 2.0+)
+    on_tls_pinned = None        # callable(host, fingerprint): a box met for the first time, kept
+    on_tls_refused = None       # callable(host, seen, pinned): a certificate that is not the trusted one
     _nc_guard = threading.Lock()    # (5.51) the nonce count steps once per request, never twice the same
     _last_request = {}
     _conns = {}                 # host -> [(connection, last used)]: a few open per box, used again (5.44)
@@ -1731,6 +1753,25 @@ class ShellyRPC(object):
         looks open - that is what the age limit is for."""
         if sock is None:
             return False
+        if isinstance(sock, ssl.SSLSocket):
+            # (5.52) a TLS socket takes no MSG_PEEK. Something waiting on an
+            # idle one is read without waiting: TLS 1.3 sends its session
+            # tickets after the handshake (records, no data - still open),
+            # where a close_notify or a FIN means it is gone
+            try:
+                if not select.select([sock], [], [], 0)[0]:
+                    return not sock.pending()
+                was = sock.gettimeout()
+                sock.settimeout(0)
+                try:
+                    sock.recv(1)
+                finally:
+                    sock.settimeout(was)
+            except ssl.SSLWantReadError:
+                return True
+            except (OSError, ValueError):
+                return False
+            return False                # closed, or bytes nobody asked for
         try:
             was = sock.gettimeout()
             sock.settimeout(0)
@@ -1788,14 +1829,15 @@ class ShellyRPC(object):
         return len(spares), time.monotonic() - spares[0][1]
 
     @classmethod
-    def _take_warm(cls, host, window):
+    def _take_warm(cls, host, window, tls=False):
         """The freshest spare of a box that is still good, or None."""
         conn, stale = None, []
         with cls._conn_guard:
             spares = cls._warm.get(host) or []
             while spares and conn is None:
                 one, opened = spares.pop()
-                if time.monotonic() - opened >= window or not cls._sock_open(one.sock):
+                if time.monotonic() - opened >= window or not cls._sock_open(one.sock) \
+                        or isinstance(one, http.client.HTTPSConnection) != bool(tls):
                     stale.append(one)
                 else:
                     conn = one
@@ -1821,8 +1863,17 @@ class ShellyRPC(object):
         gate = cls._gates.get(host)
         return bool(gate and (gate.get('queue') or gate.get('commands')))
 
-    def __init__(self, host, password='', switch_id=0, label='the plug'):
+    def __init__(self, host, password='', switch_id=0, label='the plug', tls=None, ca=None, pin=None):
+        # (5.52) "https://10.0.0.5" says HTTPS for this one client, and
+        # "http://" plain HTTP; a bare address speaks what the box's own
+        # setting says (tls_configure) - plain HTTP unless it was switched on.
+        # ca / pin given here are used instead of the box's own setting.
+        host, scheme = self.split_scheme(host)
         self.host = host
+        if tls is None:
+            tls = scheme if scheme is not None else host in self._tls
+        self.tls = bool(tls)
+        self._tls_given = (ca, pin)
         self.password = password or ''
         self.switch_id = int(switch_id or 0)
         self.timeout = float(CONFIG.get('plug_timeout') or 5.0)
@@ -1837,7 +1888,157 @@ class ShellyRPC(object):
 
     @property
     def url(self):
-        return 'http://%s/rpc' % self.host
+        return '%s://%s/rpc' % ('https' if self.tls else 'http', self.host)
+
+    # -- (5.52) HTTPS, for a box it is switched on for ----------------------------
+    @staticmethod
+    def split_scheme(host):
+        """'https://10.0.0.5/' -> ('10.0.0.5', True); 'http://..' -> (.., False);
+        a bare address -> (it, None)."""
+        text = str(host or '').strip()
+        low = text.lower()
+        for prefix, tls in (('https://', True), ('http://', False)):
+            if low.startswith(prefix):
+                return text[len(prefix):].split('/')[0], tls
+        return text, None
+
+    @classmethod
+    def tls_configure(cls, boxes):
+        """The daemon's settings, all at once: {host: {'ca':, 'pin':}} for every
+        box HTTPS is on for. A box whose setting changed loses the connections
+        kept to it, so nothing made under the old one is used again."""
+        boxes = {str(h): {'ca': str((c or {}).get('ca') or ''), 'pin': str((c or {}).get('pin') or '').lower()}
+                 for h, c in (boxes or {}).items() if h}
+        changed = {h for h in set(boxes) | set(cls._tls) if boxes.get(h) != cls._tls.get(h)}
+        cls._tls = boxes
+        for host in changed:
+            cls._tls_learnt.pop(host, None)
+            cls.forget_connections(host)
+        return changed
+
+    @classmethod
+    def forget_connections(cls, host):
+        with cls._conn_guard:
+            kept = cls._conns.pop(host, None) or []
+        for one, _used in kept:
+            cls._close_quietly(one)
+        cls.warm_drop(host)
+
+    def _tls_conf(self):
+        ca, pin = self._tls_given
+        known = self._tls.get(self.host) or {}
+        return {'ca': known.get('ca', '') if ca is None else str(ca or ''),
+                'pin': (known.get('pin', '') if pin is None else str(pin or '')).lower()}
+
+    @classmethod
+    def tls_context(cls, ca=''):
+        """Pin only (no CA): the chain and the name are not checked - a box is
+        reached by its address and its certificate is its own - and the
+        certificate's fingerprint is what is held to. With a CA: the chain
+        must lead to it and the certificate must be made out for the address
+        (or name) the box is reached by."""
+        ctx = cls._tls_ctx.get(ca)
+        if ctx is None:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            if ca:
+                ctx.load_verify_locations(cadata=ca)
+            else:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            cls._tls_ctx[ca] = ctx
+        return ctx
+
+    @staticmethod
+    def tls_ca_check(pem):
+        """'' if `pem` is a CA certificate (or several) that can be verified
+        against, else what is wrong with it."""
+        text = str(pem or '').strip()
+        if not text:
+            return ''
+        if '-----BEGIN CERTIFICATE-----' not in text:
+            return 'not a PEM certificate (-----BEGIN CERTIFICATE----- ...)'
+        try:
+            ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
+        except (ssl.SSLError, ValueError) as e:
+            return 'the certificate cannot be read: %s' % e
+        return ''
+
+    @staticmethod
+    def fingerprint(der):
+        return hashlib.sha256(der or b'').hexdigest()
+
+    @staticmethod
+    def fingerprint_words(fp):
+        fp = str(fp or '').upper()
+        return ':'.join(fp[i:i + 2] for i in range(0, len(fp), 2))
+
+    @classmethod
+    def tls_check(cls, host, sock, conf):
+        """After the handshake: the fingerprint is noted, and with no CA it is
+        held to the one pinned - met for the first time it becomes the pinned
+        one (trust on first use); a different one is refused, never taken."""
+        fp = cls.fingerprint(sock.getpeercert(binary_form=True))
+        cls.tls_seen[host] = fp
+        if conf.get('ca'):
+            return fp                       # the chain and the name were checked in the handshake
+        pin = conf.get('pin') or (cls._tls.get(host) or {}).get('pin') or cls._tls_learnt.get(host)
+        if not pin:
+            cls._tls_learnt[host] = fp
+            if host in cls._tls:
+                cls._tls[host] = dict(cls._tls[host], pin=fp)
+                hook = cls.on_tls_pinned
+                if hook:
+                    try:
+                        hook(host, fp)
+                    except Exception as e:
+                        log('keeping the certificate of %s: %s' % (host, e), 'warn')
+            return fp
+        if fp != pin:
+            hook = cls.on_tls_refused
+            if hook:
+                try:
+                    hook(host, fp, pin)
+                except Exception as e:
+                    log('the certificate of %s: %s' % (host, e), 'warn')
+            raise ShellyTLSRefused(
+                'the box at %s shows a different HTTPS certificate (SHA-256 %s...) from the one trusted for '
+                'it (%s...) - refused. If it was given a new one on purpose (a reset, a new certificate), '
+                'trust it: zigmon shelly NAME tls --trust-new, or "Trust the new certificate" on the dashboard'
+                % (host, cls.fingerprint_words(fp)[:23], cls.fingerprint_words(pin)[:23]))
+        return fp
+
+    def open_connection(self, timeout=None):
+        """A connection to the box, not yet connected: HTTPS (checked as the
+        box's setting says) where it is on, plain HTTP otherwise."""
+        name, _, port = self.host.partition(':')
+        timeout = self.timeout if timeout is None else timeout
+        if not self.tls:
+            return http.client.HTTPConnection(self._box_address(name), int(port or 80), timeout=timeout)
+        return ShellyHTTPS(self._box_address(name), int(port or 443), timeout, self.host, name, self._tls_conf())
+
+    def open_socket(self, timeout=None):
+        """A connected socket (TLS and checked where HTTPS is on) - for the websocket."""
+        conn = self.open_connection(timeout)
+        conn.connect()
+        return conn.sock
+
+    @classmethod
+    def peer_fingerprint(cls, host, timeout=5.0):
+        """The SHA-256 of the certificate a box shows now, nothing checked -
+        for a person to compare before trusting it."""
+        host = cls.split_scheme(host)[0]
+        name, _, port = host.partition(':')
+        sock = socket.create_connection((cls._box_address(name), int(port or 443)), timeout)
+        try:
+            with cls.tls_context('').wrap_socket(sock, server_hostname=name) as tls:
+                return cls.fingerprint(tls.getpeercert(binary_form=True))
+        finally:
+            cls._close_quietly(sock)
+
+    def redirect_words(self):
+        return ('%s at %s speaks only HTTPS (firmware 2.0+ sends plain HTTP on to HTTPS): switch HTTPS on '
+                'for it - "zigmon shelly NAME tls on", or HTTPS in the box\'s settings on the dashboard'
+                % (self.label, self.host))
 
     COMMANDS = ('Switch.Set', 'Switch.Toggle')
     # Saying it twice is the same as saying it once. Toggle is not here, and
@@ -1886,8 +2087,8 @@ class ShellyRPC(object):
                     try:
                         status, reply, headers = self._post(body, auth)
                         break
-                    except PlugError:
-                        if attempt + 1 >= len(ladder):
+                    except PlugError as e:
+                        if attempt + 1 >= len(ladder) or getattr(e, 'final', False):
                             raise
                         log('%s: no answer to %s in %.1fs; asking again' % (self.label, method, wait),
                             'debug')
@@ -1905,6 +2106,14 @@ class ShellyRPC(object):
                     raise PlugError('%s rejected the password' % self.label)
         finally:
             self._leave_device(gate, urgent_now)
+        if status in (301, 302, 303, 307, 308):
+            # (5.52) a box made with firmware 2.0+ speaks only HTTPS and sends
+            # plain HTTP on to it - said in words, never followed by itself
+            where = next((v for k, v in headers.items() if k.lower() == 'location'), '') or ''
+            if not self.tls and str(where).lower().startswith('https:'):
+                self.https_only[self.host] = time.time()
+                raise PlugError(self.redirect_words())
+            raise PlugError('%s answered HTTP %s (sent on to %s)' % (self.label, status, where or 'nowhere'))
         if status == 429:
             retry = headers.get('Retry-After')
             self.retry_after = numeric(retry) or 0
@@ -1970,6 +2179,8 @@ class ShellyRPC(object):
             raise PlugError('%s is rate limiting us (HTTP 429)' % self.label)
         if status != 200:
             raise PlugError('%s answered HTTP %s' % (self.label, status))
+        if self.https_only and self.host in self.https_only:
+            self.https_only.pop(self.host, None)      # (5.52) it answers as it is asked now
         try:
             result = json.loads(reply.decode('utf-8'))
         except ValueError:
@@ -2161,7 +2372,7 @@ class ShellyRPC(object):
         if auth:
             headers['Authorization'] = auth
         host, _, port = self.host.partition(':')
-        port = int(port or 80)
+        port = int(port or (443 if self.tls else 80))
         # A box closes an idle connection after a few seconds and does not
         # always say so. Writing into that dead socket succeeds and the answer
         # then never comes, so the call sits there until the timeout - three
@@ -2198,6 +2409,8 @@ class ShellyRPC(object):
                         # (5.44.1) the box has closed it already, and said so:
                         # asking on it would cost a failed request and a retry
                         stale.append(one)
+                    elif isinstance(one, http.client.HTTPSConnection) != self.tls:
+                        stale.append(one)       # (5.52) kept from before HTTPS was switched on or off
                     else:
                         conn = one
                 # whatever is older than the one taken is older still
@@ -2212,7 +2425,7 @@ class ShellyRPC(object):
                 # (5.44.1) nothing kept from a moment ago - the usual case, the
                 # first press after a quiet spell: the warm spare, connected
                 # already, instead of a handshake on the way of the command
-                conn = self._take_warm(self.host, window)
+                conn = self._take_warm(self.host, window, self.tls)
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -2221,8 +2434,10 @@ class ShellyRPC(object):
                 conn.timeout = self.timeout
                 if conn.sock is not None:
                     conn.sock.settimeout(self.timeout)
-            if fresh:
+            if fresh and not self.tls:
                 conn = http.client.HTTPConnection(self._box_address(host), port, timeout=self.timeout)
+            elif fresh:
+                conn = ShellyHTTPS(self._box_address(host), port, self.timeout, self.host, host, self._tls_conf())
             started = time.perf_counter()
             if CONFIG.get('debug'):
                 log('http -> %s POST /rpc %s%s %s' % (self.host, 'fresh' if fresh else 'kept',
@@ -2253,6 +2468,9 @@ class ShellyRPC(object):
                         except Exception:
                             pass
                 return status, data, head
+            except ShellyTLSRefused:
+                self._close_quietly(conn)
+                raise
             except Exception as e:
                 if CONFIG.get('debug'):
                     log('http !! %s after %.1f ms: %s%s' % (self.host, (time.perf_counter() - started) * 1000,
@@ -2268,10 +2486,21 @@ class ShellyRPC(object):
                 # had it and been slow to answer; asking again toggled a
                 # Toggle twice, and the socket ended where it started.
                 gone_stale = isinstance(e, (ConnectionError, http.client.RemoteDisconnected,
-                                            http.client.BadStatusLine, BrokenPipeError)) \
+                                            http.client.BadStatusLine, BrokenPipeError,
+                                            ssl.SSLEOFError, ssl.SSLZeroReturnError)) \
                     and not isinstance(e, socket.timeout)
                 if attempt == 0 and not fresh and gone_stale:
                     continue
+                if isinstance(e, ssl.SSLCertVerificationError):
+                    err = PlugError('%s at %s: its HTTPS certificate does not check out against the CA set for '
+                                    'it (%s) - refused. Either that CA did not sign it, or the certificate is '
+                                    'not made out for %s' % (self.label, self.host,
+                                                             getattr(e, 'verify_message', '') or e, host))
+                    err.final = True
+                    raise err
+                if self.tls and isinstance(e, ssl.SSLError):
+                    raise PlugError('cannot reach %s at %s over HTTPS (%s) - does this box speak HTTPS? '
+                                    'Most do only from firmware 2.0' % (self.label, self.host, e))
                 raise PlugError('cannot reach %s at %s (%s)' % (self.label, self.host, e))
 
     _addrs = {}                 # host name -> (address, when looked up)
@@ -2377,6 +2606,27 @@ class ShellyRPC(object):
             if not accepted:
                 raise
             return {'reset': accepted}
+
+
+class ShellyHTTPS(http.client.HTTPSConnection):
+    """(5.52) HTTPS to one box: connected to its address, its name (when it
+    has one) said as the server name, and its certificate checked the moment
+    the handshake is done - before anything is sent on it, the password's
+    digest included."""
+
+    def __init__(self, address, port, timeout, box, name, conf):
+        super().__init__(address, port, timeout=timeout, context=ShellyRPC.tls_context(conf.get('ca') or ''))
+        self.box, self.box_name, self.conf = box, name, conf
+
+    def connect(self):
+        http.client.HTTPConnection.connect(self)
+        try:
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self.box_name)
+            ShellyRPC.tls_check(self.box, self.sock, self.conf)
+        except BaseException:
+            ShellyRPC._close_quietly(self.sock)
+            self.sock = None
+            raise
 
 
 # What Switch.ResetCounters accepts, in the order the plug's own web UI lists
@@ -5627,6 +5877,33 @@ CREATE TABLE IF NOT EXISTS perf_now (
 );
 """
 SCHEMA += SCHEMA_ACCOUNTS
+
+# The configuration of the Shelly boxes (5.50): the archives the boxes make
+# of themselves (Sys.CreateBackup), kept here to be put back. Each holds the
+# box's Wi-Fi passwords and cloud tokens, so it is an administrator's alone
+# and never written into a log. The newest few per box, by its own id.
+SCHEMA_SHELLY_BACKUPS = """
+CREATE TABLE IF NOT EXISTS shelly_backups (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    dev       TEXT NOT NULL,
+    host      TEXT DEFAULT '',
+    name      TEXT DEFAULT '',
+    model     TEXT DEFAULT '',
+    app       TEXT DEFAULT '',
+    fw        TEXT DEFAULT '',
+    created   INTEGER,
+    at        INTEGER,
+    size      INTEGER,
+    sha256    TEXT,
+    fp        TEXT DEFAULT '',
+    manifest  TEXT DEFAULT '{}',
+    by        TEXT DEFAULT '',
+    why       TEXT DEFAULT '',
+    data      BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shelly_backups_dev ON shelly_backups (dev, at);
+"""
+SCHEMA += SCHEMA_SHELLY_BACKUPS
 
 
 
@@ -17226,7 +17503,8 @@ class Daemon(object):
                     'group': str(e.get('group') or ''),
                     'own_enabled': bool(e.get('own_enabled', e.get('enabled', True))),
                     'own_monitor_only': bool(e.get('own_monitor_only', e.get('monitor_only', False))),
-                    'model': str(e.get('model') or ''), 'mac': str(e.get('mac') or '')}
+                    'model': str(e.get('model') or ''), 'mac': str(e.get('mac') or ''),
+                    'tls': ShellyRPC.split_scheme(e.get('host'))[0] in ShellyRPC._tls}
         return {'plugs': [strip(e) for e in self.all_entries('plugs')],
                 'sensors': [strip(e) for e in self.all_entries('sensors')]}
 
@@ -17242,6 +17520,8 @@ class Daemon(object):
                         if isinstance(e, dict) and e.get('name')}
         clean = {'plugs': [], 'sensors': []}
         names = set()
+        known_hosts = {h for h, _sid in old_by_addr}
+        https_new = set()               # (5.52) a box added over HTTPS, as its add dialog offered
         for kind, items in (('plugs', plugs), ('sensors', sensors)):
             for index, e in enumerate(items or []):
                 if not isinstance(e, dict):
@@ -17259,6 +17539,8 @@ class Daemon(object):
                 if not re.match(r'^[A-Za-z0-9.:\[\]-]+$', host):
                     raise ValueError('"%s" is not an address' % host)
                 names.add(name)
+                if e.get('tls') is True and host not in known_hosts:
+                    https_new.add(host)
                 hs = str(e.get('host_state') or 'enabled')
                 if hs not in ('enabled', 'monitor', 'disabled', 'optional'):
                     hs = 'enabled'
@@ -17308,6 +17590,9 @@ class Daemon(object):
                     renamed.append((str(was.get('name')), str(e.get('name'))))
         self.snapshot('managed', 'saved from the dashboard')
         self.store.set_meta('managed', json.dumps(clean))
+        for host in sorted(https_new):
+            self._shelly_tls_change(host, lambda entry: entry.update(on=True))
+            self.store.add_event('control', 'HTTPS switched on for %s, added as a box that speaks only HTTPS' % host)
         self.reload_devices()
         for was_name, now_name in renamed:
             self.retarget(was_name, now_name)
@@ -17317,7 +17602,7 @@ class Daemon(object):
             [e['name'] for e in clean['plugs']] + [e['name'] for e in clean['sensors']]) or 'nothing')
         return self.managed_for_ui()
 
-    def detect_plug(self, host, password=None, name_hint=''):
+    def detect_plug(self, host, password=None, name_hint='', tls=False):
         """Ask the box at `host` what it is: model, MAC, firmware, and how many
         relays it has (with their own names and the MQTT prefix), so the
         dashboard can lay out one row per channel without anyone counting."""
@@ -17329,7 +17614,9 @@ class Daemon(object):
                 if str(e.get('host')) == host and e.get('password'):
                     password = e['password']
                     break
-        rpc = ShellyRPC(host, password or '', 0, label=name_hint or host)
+        # (5.52) tls: a box that said it speaks only HTTPS, asked again so,
+        # its certificate shown - nothing kept until the device is saved
+        rpc = ShellyRPC(host, password or '', 0, label=name_hint or host, tls=True if tls else None)
         info = rpc.call('Shelly.GetDeviceInfo') or {}
         status = rpc.call('Shelly.GetStatus') or {}
         channels = []
@@ -17352,7 +17639,8 @@ class Daemon(object):
                 'fw': str(info.get('ver') or info.get('fw_id') or ''), 'device_name': str(info.get('name') or ''),
                 'id': str(info.get('id') or ''), 'mqtt_prefix': prefix or str(info.get('id') or ''),
                 'channels': channels, 'multi': len(channels) > 1,
-                'sensor_like': not channels and any(k.startswith(('temperature:', 'humidity:')) for k in status)}
+                'sensor_like': not channels and any(k.startswith(('temperature:', 'humidity:')) for k in status),
+                'tls': rpc.tls, 'tls_fingerprint': ShellyRPC.tls_seen.get(rpc.host, '') if rpc.tls else ''}
 
     def reload_devices(self):
         """Rebuild self.plugs / self.sensors from config + managed, keeping live state where the entry is unchanged.
@@ -17366,6 +17654,7 @@ class Daemon(object):
         at all and the lights stayed on, with a line in the log and nothing on
         the page. Nobody can see a dict that is never mutated in place.
         """
+        self.apply_shelly_tls()
         with self._plug_lock:
             plugs, sensors = dict(self.plugs), dict(self.sensors)
             wanted = {e['name']: e for e in self.active_entries('plugs')}
@@ -17435,13 +17724,14 @@ class Daemon(object):
         self.warn_about_prefixes()
 
 
-    def test_device(self, host, password=''):
+    def test_device(self, host, password='', tls=False):
         """One Shelly.GetDeviceInfo, so the dashboard can check an address before saving it."""
-        rpc = ShellyRPC(host, password or '', 0, label='the device at %s' % host)
+        rpc = ShellyRPC(host, password or '', 0, label='the device at %s' % host, tls=True if tls else None)
         info = rpc.device_info()
         out = {'ok': True, 'id': info.get('id'), 'model': info.get('model'), 'app': info.get('app'),
                'ver': info.get('ver'), 'gen': info.get('gen'), 'auth': bool(info.get('auth_en')),
-               'name': info.get('name')}
+               'name': info.get('name'), 'tls': rpc.tls,
+               'tls_fingerprint': ShellyRPC.tls_seen.get(rpc.host, '') if rpc.tls else ''}
         try:
             status = rpc.device_status() or {}
             out['components'] = sorted(k for k in status if ':' in k)
@@ -17459,6 +17749,7 @@ class Daemon(object):
     # -- smart plugs ---------------------------------------------------------
     def setup_plugs(self):
         """One PlugState per plug from config.json and the dashboard; stale rows for plugs that are gone."""
+        self.apply_shelly_tls()
         configured = set()
         for entry in self.active_entries('plugs'):
             name = str(entry['name'])
@@ -20688,7 +20979,10 @@ class Daemon(object):
                           ('the server in front', lambda: proxy_tls_tick(self)),
                           # the system's trusted roots: put in again when they
                           # drifted, in a thread of its own (otp 1.0.265)
-                          ("the system's trusted roots", lambda: osr_tick(self))):
+                          ("the system's trusted roots", lambda: osr_tick(self)),
+                          # the configuration backups of the Shelly boxes (5.50):
+                          # the scheduled run, or a look - each on a thread of its own
+                          ('the devices\' configuration backups', lambda: sbk_tick(self))):
             try:
                 job()
             except Exception as e:                       # noqa: BLE001 - the next one still runs
@@ -22564,6 +22858,12 @@ class Daemon(object):
         for _short, _oldest, host, want in due:
             if self._stop.is_set():
                 return hosts, listed
+            if host in ShellyRPC._tls:
+                # (5.52) a box with HTTPS on: its handshake is the box's
+                # arithmetic and can take a second - on a thread of its own,
+                # so no other box waits behind it for its spare
+                self._warm_tls(host, want, backoff)
+                continue
             name, _, port = host.partition(':')
             conn = http.client.HTTPConnection(ShellyRPC._box_address(name), int(port or 80),
                                               timeout=min(1.5, float(CONFIG.get('plug_timeout') or 5.0)))
@@ -22584,6 +22884,35 @@ class Daemon(object):
                 return hosts, listed
         ShellyRPC._warm_wake.wait(max(0.02, min(soonest, renew)))
         return hosts, listed
+
+    def _warm_tls(self, host, want, backoff):
+        busy = self.__dict__.setdefault('_warm_tls_busy', set())
+        if host in busy:
+            return
+        busy.add(host)
+
+        def run():
+            conn = None
+            try:
+                conn = ShellyRPC(host, label='box %s' % host).open_connection(
+                    min(3.0, float(CONFIG.get('plug_timeout') or 5.0)))
+                conn.connect()
+            except (OSError, PlugError):
+                if conn is not None:
+                    ShellyRPC._close_quietly(conn)
+                ShellyRPC.warm_counts['failed'] += 1
+                fails = backoff.get(host, (0, 0.0))[0] + 1
+                backoff[host] = (fails, time.monotonic() + min(300.0, 5.0 * 2 ** (fails - 1)))
+                ShellyRPC.warm_drop(host, 'aged')
+            else:
+                backoff.pop(host, None)
+                if host in ShellyRPC._tls:
+                    ShellyRPC.warm_put(host, conn, want)
+                else:
+                    ShellyRPC._close_quietly(conn)      # switched off meanwhile
+            finally:
+                busy.discard(host)
+        threading.Thread(target=run, name='plug-warmer-tls', daemon=True).start()
 
     def plug_loop(self):
         # (5.44.1) the warm spares ride beside the poll, on a thread of their own
@@ -23081,6 +23410,7 @@ class Daemon(object):
             },
             'info': p.info or {},
             'counters': counters,
+            'tls': self.shelly_tls_brief(p.cfg.get('host')),      # (5.52) HTTPS for its box
         }
 
     def _counter_reset_at(self, p, flat, counter):
@@ -24122,6 +24452,226 @@ class Daemon(object):
             raise last or PlugError('could not read the counters')
         return {c['type']: numeric(flat.get(c['field'])) if c['field'] in flat else None
                 for c in PLUG_COUNTERS}
+
+    # -- (5.52) HTTPS to a Shelly box, where it is switched on --------------------
+    # Off for every box unless an administrator switched it on for that box;
+    # a box with it off speaks plain HTTP exactly as before. Kept by address
+    # (a box, not a socket of it) in the meta row shelly_tls:
+    #   {host: {on, ca, pin, pinned_at, seen, seen_at}}
+    # A box with HTTPS on is held to the certificate it showed the first
+    # time (its SHA-256 - trust on first use), or, with a CA set, to that CA
+    # and to its address. A different certificate is refused and said, never
+    # taken: "trust the new certificate" is a person's decision.
+    SHELLY_TLS_ACTIONS = ('status', 'on', 'off', 'ca', 'trust')
+
+    def shelly_tls_settings(self):
+        cached = getattr(self, '_shelly_tls_cache', None)
+        if cached is None:
+            try:
+                cached = json.loads(self.store.get_meta('shelly_tls') or '{}')
+            except (ValueError, TypeError):
+                cached = {}
+            if not isinstance(cached, dict):
+                cached = {}
+            cached = {str(h): e for h, e in cached.items() if isinstance(e, dict)}
+            self._shelly_tls_cache = cached
+        return cached
+
+    def _shelly_tls_lock(self):
+        lock = getattr(self, '_shelly_tls_guard', None)
+        if lock is None:
+            lock = self._shelly_tls_guard = threading.Lock()
+        return lock
+
+    def _shelly_tls_change(self, host, change):
+        """Read, change and keep one box's entry - under a lock, since a poll
+        thread keeps a first certificate while a person may be saving."""
+        with self._shelly_tls_lock():
+            settings = {h: dict(e) for h, e in self.shelly_tls_settings().items()}
+            entry = settings.get(host) or {}
+            result = change(entry)
+            if entry:
+                settings[host] = entry
+            else:
+                settings.pop(host, None)
+            self.store.set_meta('shelly_tls', json.dumps(settings, sort_keys=True))
+            self._shelly_tls_cache = settings
+            return result
+
+    def apply_shelly_tls(self):
+        """What every ShellyRPC in this process speaks to which box. Cheap,
+        called with every device list rebuilt; a box whose setting did not
+        change keeps its connections."""
+        ShellyRPC.on_tls_pinned = self._shelly_tls_pinned
+        ShellyRPC.on_tls_refused = self._shelly_tls_refused
+        return ShellyRPC.tls_configure(shelly_tls_boxes(self.shelly_tls_settings()))
+
+    def _shelly_tls_device(self, host):
+        for p in list(self.plugs.values()):
+            if ShellyRPC.split_scheme(p.cfg.get('host'))[0] == host:
+                return p.device_id
+        return None
+
+    def _shelly_tls_pinned(self, host, fp):
+        def change(entry):
+            if entry.get('pin') == fp:
+                return False
+            entry.update(pin=fp, pinned_at=int(time.time()))
+            entry.pop('seen', None)
+            entry.pop('seen_at', None)
+            return True
+        if self._shelly_tls_change(host, change):
+            words = 'HTTPS: %s showed its certificate for the first time - SHA-256 %s; it is the one ' \
+                    'trusted from now on' % (host, ShellyRPC.fingerprint_words(fp))
+            log(words)
+            self.store.add_event('plug', words, 'info', self._shelly_tls_device(host))
+
+    def _shelly_tls_refused(self, host, seen, pinned):
+        def change(entry):
+            if entry.get('seen') == seen:
+                return False
+            entry.update(seen=seen, seen_at=int(time.time()))
+            return True
+        if self._shelly_tls_change(host, change):
+            words = ('HTTPS: %s shows a different certificate (SHA-256 %s) from the one trusted for it (%s) - '
+                     'refused, nothing is sent to it. If the box was reset or given a new certificate on '
+                     'purpose, trust the new one; if not, something else may be answering at its address'
+                     % (host, ShellyRPC.fingerprint_words(seen), ShellyRPC.fingerprint_words(pinned)))
+            log(words, 'warn')
+            self.store.add_event('plug', words, 'warn', self._shelly_tls_device(host))
+
+    def shelly_box_host(self, target):
+        """A configured box's address, from a socket's or sensor's name or the
+        address itself; None for anything not configured."""
+        target = str(target or '').strip()
+        if not target:
+            return None
+        bare = ShellyRPC.split_scheme(target)[0]
+        entries = self.all_entries('plugs') + self.all_entries('sensors') + list(self.gateway_configs())
+        for e in entries:
+            if str(e.get('name') or '').lower() == target.lower():
+                return ShellyRPC.split_scheme(e.get('host'))[0]
+        for e in entries:
+            if ShellyRPC.split_scheme(e.get('host'))[0] == bare:
+                return bare
+        return None
+
+    def shelly_box_password(self, host):
+        for e in self.all_entries('plugs') + self.all_entries('sensors') + list(self.gateway_configs()):
+            if ShellyRPC.split_scheme(e.get('host'))[0] == host and e.get('password'):
+                return str(e['password'])
+        return ''
+
+    def shelly_tls_status(self, host):
+        e = self.shelly_tls_settings().get(host) or {}
+        on = host in ShellyRPC._tls
+        conf = ShellyRPC._tls.get(host) or {}
+        pin = conf.get('pin') or e.get('pin') or ''
+        seen = e.get('seen') or ''
+        return {'host': host, 'on': on, 'pin': pin, 'pin_words': ShellyRPC.fingerprint_words(pin),
+                'pinned_at': e.get('pinned_at'), 'ca': bool(conf.get('ca') or e.get('ca')),
+                'ca_pem': str(e.get('ca') or conf.get('ca') or ''),
+                'seen': seen if seen and seen != pin else '',
+                'seen_words': ShellyRPC.fingerprint_words(seen) if seen and seen != pin else '',
+                'seen_at': e.get('seen_at') if seen and seen != pin else None,
+                'https_only': bool(not on and ShellyRPC.https_only.get(host))}
+
+    def shelly_tls_brief(self, host):
+        """For the card, every poll: no store read."""
+        host = ShellyRPC.split_scheme(host)[0]
+        conf = ShellyRPC._tls.get(host)
+        e = self.shelly_tls_settings().get(host) or {}
+        seen = e.get('seen') or ''
+        pin = (conf or {}).get('pin') or e.get('pin') or ''
+        return {'on': conf is not None, 'pin': pin, 'ca': bool((conf or {}).get('ca')),
+                'changed': bool(conf is not None and seen and seen != pin and not (conf or {}).get('ca')),
+                'https_only': bool(conf is None and ShellyRPC.https_only.get(host))}
+
+    def shelly_tls(self, target, action, body=None):
+        """(5.52) An administrator's: HTTPS on or off for a box, its CA, and
+        trusting a new certificate. (ok, answer dict or words)."""
+        body = body or {}
+        if action not in self.SHELLY_TLS_ACTIONS:
+            return False, 'the action is one of %s' % ', '.join(self.SHELLY_TLS_ACTIONS)
+        host = self.shelly_box_host(target)
+        if not host:
+            return False, 'no box configured as "%s"' % target
+        if action == 'status':
+            return True, {'tls': self.shelly_tls_status(host)}
+        ca = body.get('ca')
+        if ca is not None:
+            ca = str(ca).strip()
+            if len(ca) > 64000:
+                return False, 'that CA is too long'
+            problem = ShellyRPC.tls_ca_check(ca)
+            if problem:
+                return False, problem
+        if action == 'trust':
+            try:
+                live = ShellyRPC.peer_fingerprint(host)
+            except (OSError, ssl.SSLError, PlugError) as e:
+                return False, 'cannot reach %s over HTTPS to see its certificate (%s)' % (host, e)
+            want = str(body.get('fingerprint') or '').replace(':', '').strip().lower()
+            if want and want != live:
+                return False, ('%s now shows yet another certificate (SHA-256 %s) than the one you were shown - '
+                               'nothing changed; look again' % (host, ShellyRPC.fingerprint_words(live)))
+
+            def change(entry):
+                entry.update(pin=live, pinned_at=int(time.time()))
+                entry.pop('seen', None)
+                entry.pop('seen_at', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            words = 'HTTPS: the new certificate of %s is trusted from now on (SHA-256 %s)' % (
+                host, ShellyRPC.fingerprint_words(live))
+            log(words)
+            self.store.add_event('control', words, 'info', self._shelly_tls_device(host))
+            self.bump()
+            return True, {'tls': self.shelly_tls_status(host), 'message': words}
+        if action == 'ca':
+            if ca is None:
+                return False, 'no CA given (an empty one takes it away)'
+
+            def change(entry):
+                if ca:
+                    entry['ca'] = ca
+                else:
+                    entry.pop('ca', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            words = 'HTTPS: %s %s' % (host, 'is checked against the CA given' if ca else
+                                      'is held to its own certificate again (no CA)')
+        else:
+            on = action == 'on'
+
+            def change(entry):
+                entry['on'] = on
+                if ca is not None:
+                    if ca:
+                        entry['ca'] = ca
+                    else:
+                        entry.pop('ca', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            ShellyRPC.https_only.pop(host, None)
+            words = 'HTTPS %s for %s' % ('switched on' if on else 'switched off - plain HTTP', host)
+        log(words)
+        self.store.add_event('control', words, 'info', self._shelly_tls_device(host))
+        out = {'message': words}
+        if host in ShellyRPC._tls:
+            # asked once now, so the certificate is met (and kept) by a person
+            # looking, not by the next poll at three in the morning
+            try:
+                ShellyRPC(host, self.shelly_box_password(host), 0, label='box %s' % host).device_info()
+                status = self.shelly_tls_status(host)
+                out['message'] = words + ' - it answers over HTTPS; certificate SHA-256 %s' % (
+                    status['pin_words'] or ShellyRPC.fingerprint_words(ShellyRPC.tls_seen.get(host)))
+            except PlugError as e:
+                out['warning'] = str(e)
+                out['message'] = words + ' - but it does not answer over HTTPS yet: %s' % e
+        self.bump()
+        out['tls'] = self.shelly_tls_status(host)
+        return True, out
 
     PLUG_SHELLY_ACTIONS = ('firmware', 'firmware-update', 'settings', 'settings-save')
 
@@ -45864,7 +46414,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # trust of the whole machine (otp 1.0.265)
                      '/api/osroots',
                      # SELinux: how the machine is guarded, its steps and its report
-                     '/api/selinux')
+                     '/api/selinux',
+                     # the configuration backups of the Shelly boxes (5.50): their
+                     # archives hold the boxes' Wi-Fi passwords and cloud tokens
+                     '/api/shellybackup')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -47127,6 +47680,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
                     return self._error(403, 'view locked \u2014 this one is for an administrator')
                 return self._send(200, selinux_view(d))
+            if path == '/api/shellybackup':
+                # the configuration backups of the Shelly boxes (5.50): an
+                # administrator's (ALWAYS_LOCKED), asked again here so a road
+                # moved out of that list never opens. Never an archive in it.
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                if not d.store.get_meta('sbk:used'):
+                    d.store.set_meta('sbk:used', '1')
+                return self._send(200, sbk_view(d))
             if path == '/api/webproxy':
                 # Control - Proxy (5.35): how the way out is set, the password
                 # only as there or not
@@ -47948,6 +48510,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 ok, message = d.zigbee_switch(':'.join(pieces[1:-1]), pieces[-1], do,
                                               'the dashboard', body.get('ms'))
                 return self._send(200 if ok else 502, {'ok': ok, 'message' if ok else 'error': message})
+            if path == '/api/shelly/tls':
+                # (5.52) HTTPS for a box: an administrator's (not one of
+                # OPERATOR_ROADS), the page asks "are you sure" first
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                ok, answer = d.shelly_tls(body.get('name') or body.get('host') or '', str(body.get('action') or ''),
+                                          body)
+                if not ok:
+                    return self._send(200, {'ok': False, 'error': answer})
+                return self._send(200, dict(answer, ok=True))
             if path == '/api/plug/shelly':
                 # (5.51) a socket's firmware and its relay's settings - an
                 # administrator's (not one of OPERATOR_ROADS), asked for once
@@ -48878,6 +49451,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e)[:600])
                 return self._send(200, out)
+            if path == '/api/shellybackup':
+                # the configuration backups of the Shelly boxes (5.50): an
+                # administrator's, every action - asked twice, the sign-in and
+                # the role, so it never becomes an operator's by a list
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator backs up and restores the devices')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = sbk_post(d, body, by)
+                except (ValueError, sqlite3.Error) as e:
+                    return self._error(400, str(e)[:600])
+                return self._send(200, out)
             if path == '/api/osup':
                 # the updates of the system (5.34): an administrator's, every action
                 err = d.check_pin(body.get('pin'), body.get('session'))
@@ -48978,7 +49569,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if err:
                     return self._error(403, err)
                 try:
-                    found = d.detect_plug(body.get('host'), body.get('password'), body.get('name'))
+                    found = d.detect_plug(body.get('host'), body.get('password'), body.get('name'),
+                                          tls=bool(body.get('tls')))
                 except ValueError as e:
                     return self._error(400, str(e))
                 except PlugError as e:
@@ -49163,7 +49755,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                     # and came back as a 500 rather than as what it is
                     return self._error(400, 'that is not an address')
                 try:
-                    return self._send(200, d.test_device(host, str(body.get('password') or '')))
+                    return self._send(200, d.test_device(host, str(body.get('password') or ''),
+                                                         tls=bool(body.get('tls'))))
                 except PlugError as e:
                     return self._error(502, str(e))
             if path == '/api/managed/discover':
@@ -51632,6 +52225,46 @@ RPC_COMPONENTS = {
 
 
 
+def shelly_tls_boxes(settings):
+    """(5.52) {host: {ca, pin}} for every box HTTPS is on for: a config.json
+    entry with "tls": true (or an https:// address), and what the dashboard
+    or "zigmon shelly NAME tls" set (the meta row shelly_tls), which wins."""
+    boxes = {}
+    for kind in ('plugs', 'sensors', 'zigbee_gateways'):
+        for e in CONFIG.get(kind) or []:
+            if not isinstance(e, dict) or not e.get('host'):
+                continue
+            host, scheme = ShellyRPC.split_scheme(e['host'])
+            if scheme or (scheme is None and e.get('tls') is True):
+                boxes[host] = {'ca': str(e.get('tls_ca') or ''), 'pin': ''}
+    for host, e in (settings or {}).items():
+        if not isinstance(e, dict):
+            continue
+        if 'on' in e and not e.get('on'):
+            boxes.pop(host, None)
+            continue
+        if e.get('on'):
+            boxes[host] = {'ca': str(e.get('ca') or (boxes.get(host) or {}).get('ca') or ''), 'pin': ''}
+        if host in boxes:
+            boxes[host]['pin'] = str(e.get('pin') or '')
+    return boxes
+
+
+def shelly_tls_from_db():
+    """The HTTPS settings the daemon keeps, read for the command line (which
+    does not write them: a first certificate met here is used, not kept)."""
+    try:
+        db = sqlite3.connect('file:%s?mode=ro' % db_path(), uri=True, timeout=2)
+        try:
+            row = db.execute("SELECT value FROM meta WHERE key='shelly_tls'").fetchone()
+        finally:
+            db.close()
+        data = json.loads(row[0]) if row and row[0] else {}
+        return data if isinstance(data, dict) else {}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+
+
 def shelly_targets():
     """Every device the configuration or the dashboard names: plugs first, then sensors."""
     out = {}
@@ -51661,6 +52294,8 @@ def shelly_for(role, args=None):
     """Build a client for a device named in the configuration, or an address given directly."""
     override_host = getattr(args, 'host', None) if args else None
     override_password = getattr(args, 'password', None) if args else None
+    if not ShellyRPC.on_tls_pinned:               # not inside the daemon: its HTTPS settings, read
+        ShellyRPC.tls_configure(shelly_tls_boxes(shelly_tls_from_db()))
     if override_host:
         return ShellyRPC(override_host, override_password or '', getattr(args, 'switch_id', 0) or 0,
                          label='the device at %s' % override_host)
@@ -56942,6 +57577,889 @@ def selinux_post(d, b, by):
     return dict(selinux_view(d), message=words if asked else 'a step is going on - it looks again after it')
 
 
+# ---- the configuration of the Shelly boxes, backed up and put back (5.50) ---------------------
+# Newer firmware makes an archive of a box's whole setup (Sys.CreateBackup) and takes one back
+# (Sys.UploadBackup + Sys.RestoreBackup). The archive is not made at once: it is made early in
+# the NEXT start of the box, so taking one restarts the box (its outputs may blink), and putting
+# one back wipes its files and restarts it. Kept here in the database (shelly_backups), the
+# newest few per box.
+#
+# Whether a box has changed since its last backup is known without a restart: its revisions
+# (Sys.GetStatus cfg_rev, kvs_rev, schedule_rev, webhook_rev...) and a SHA-256 of its whole
+# configuration (Shelly.GetConfig, the fields that move by themselves taken out) and of its
+# scripts' names - the fingerprint, kept with every backup. Looked at every six hours, on a
+# thread of its own, polite to the box (a command for it goes first), never on the way of a
+# button; and only once the feature is in use - a house that never opened it is not asked.
+#
+# The archive holds the box's Wi-Fi passwords and its cloud token: an administrator's alone
+# (ALWAYS_LOCKED, asked again in the handlers), never written into the log - the RPC calls that
+# carry it go through ShellyBackupRPC, which writes nothing down - and never sent anywhere but
+# back to its own box, or to an administrator who asks to download it.
+SBK_KEEP_DEFAULT = 5
+SBK_AT_DEFAULT = '03:40'
+SBK_CHUNK = 8192                 # bytes of the archive per Sys.DownloadBackup / Sys.UploadBackup
+SBK_MOST = 4 * 1024 * 1024       # an archive larger than this is not believed
+SBK_WAIT_S = 150.0               # how long a box is waited for after it restarts
+SBK_POLL_S = 3.0                 # ...asked this often
+SBK_CHECK_EVERY_S = 6 * 3600     # how often each box is looked at by itself
+SBK_FIRST_CHECK_S = 600          # after the daemon starts, before it looks at anything
+SBK_TIMEOUT = 8.0
+SBK_GATED = ('pending', 'confirmed')
+SBK_VOLATILE = frozenset(('fw_id', 'cfg_rev', 'unixtime', 'uptime', 'time', 'ts', 'last_sync_ts'))
+SBK_NEEDS = ('Sys.CreateBackup', 'Sys.DownloadBackup')
+SBK_NEEDS_RESTORE = ('Sys.UploadBackup', 'Sys.RestoreBackup')
+SBK_OUTPUT_RE = re.compile(r'^(switch|light|rgb|rgbw|cct|cover):\d+$')
+SBK_JOB = {'running': False, 'kind': '', 'by': '', 'started': 0, 'ended': 0, 'steps': [], 'id': '', 'said': ''}
+SBK_LOCK = threading.Lock()
+SBK_CHECKING = {'on': False, 'started': 0}
+SBK_STARTED = time.time()
+
+
+def _sbk_quiet_post(self, body, auth=None):
+    """ShellyRPC._post for the backups: one fresh connection, nothing written down. The
+    ordinary one writes every request and answer into the debug log, and these carry the
+    archive - the box's Wi-Fi password and cloud token in it."""
+    import http.client
+    headers = {'Content-Type': 'application/json'}
+    if auth:
+        headers['Authorization'] = auth
+    # HTTPS where the box has it on, its certificate checked as for every other call
+    conn = self.open_connection(self.timeout)
+    try:
+        conn.request('POST', '/rpc', body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read(), dict(response.getheaders())
+    except ShellyTLSRefused:
+        raise
+    except Exception as e:                              # noqa: BLE001 - in words, never the body
+        raise PlugError('cannot reach %s at %s (%s)' % (self.label, self.host, type(e).__name__))
+    finally:
+        try:
+            conn.close()
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+class ShellyBackupRPC(ShellyRPC):
+    """The same client - its digest, its gate behind a command to the same box, its pacing -
+    with a transport that never logs what it carries."""
+    _post = _sbk_quiet_post
+
+
+def sbk_rpc(box):
+    rpc = ShellyBackupRPC(box['host'], box.get('password') or '', 0, label='device %s' % box['label'])
+    rpc.timeout = SBK_TIMEOUT
+    return rpc
+
+
+def sbk_call(rpc, method, params=None, tries=6):
+    """One call; a box busy with a command (HTTP 429) is asked again a moment later."""
+    for n in range(tries):
+        try:
+            return rpc.call(method, params)
+        except PlugError as e:
+            if '429' not in str(e) or n + 1 >= tries:
+                raise
+            time.sleep(1.5)
+
+
+def sbk_settings(d):
+    try:
+        s = json.loads(d.store.get_meta('sbk:settings') or '{}')
+    except ValueError:
+        s = {}
+    s = s if isinstance(s, dict) else {}
+    at = str(s.get('at') or SBK_AT_DEFAULT)
+    if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', at):
+        at = SBK_AT_DEFAULT
+    try:
+        keep = max(1, min(50, int(s.get('keep') or SBK_KEEP_DEFAULT)))
+    except (TypeError, ValueError):
+        keep = SBK_KEEP_DEFAULT
+    return {'on': bool(s.get('on')), 'at': at, 'keep': keep}
+
+
+def sbk_states(d):
+    try:
+        got = json.loads(d.store.get_meta('sbk:state') or '{}')
+    except ValueError:
+        got = {}
+    return got if isinstance(got, dict) else {}
+
+
+def sbk_state_put(d, box, value):
+    with SBK_LOCK:
+        rows = sbk_states(d)
+        rows[box] = value
+        d.store.set_meta('sbk:state', json.dumps(rows))
+
+
+def sbk_boxes(d):
+    """The configured sockets and lights grouped by the box they are on (its address, as the
+    poll groups them): one backup per box, whatever number of sockets it carries."""
+    boxes = {}
+    plugs = sorted(list(d.plugs.values()), key=lambda q: (int(q.cfg.get('switch_id') or 0), str(q.name).lower()))
+    for p in plugs:
+        host = str(p.cfg.get('host') or '').strip()
+        if not host:
+            continue
+        key = d._box_of(p)
+        one = boxes.get(key)
+        if one is None:
+            one = boxes[key] = {'box': key, 'host': host, 'password': '', 'names': [], 'roles': [], 'info': {},
+                                'monitor_only': False, 'sockets': []}
+        one['names'].append(p.name)
+        one['roles'].append('light' if str(p.cfg.get('role') or 'plug') == 'light' else 'plug')
+        one['sockets'].append(p)
+        if not one['password'] and p.cfg.get('password'):
+            one['password'] = str(p.cfg['password'])
+        if not one['info'] and isinstance(p.info, dict):
+            one['info'] = dict(p.info)
+        one['monitor_only'] = one['monitor_only'] or bool(p.cfg.get('monitor_only'))
+    states = sbk_states(d)
+    for one in boxes.values():
+        one['label'] = ', '.join(one['names'][:3]) + (' +%d' % (len(one['names']) - 3) if len(one['names']) > 3 else '')
+        one['dev'] = sbk_dev_of(one, states.get(one['box']) or {})
+    return boxes
+
+
+def sbk_dev_of(box, st):
+    """The key the backups of a box are kept under: its own id (shellyplugsg3-aabbcc), which
+    stays when its address changes; its address until it was ever reached."""
+    return str(st.get('id') or (box.get('info') or {}).get('id') or ('host:' + box['box']))
+
+
+def sbk_find_box(d, word):
+    """A box by its address, or by the name of any socket on it."""
+    word = str(word or '').strip()
+    if not word:
+        raise ValueError('which device?')
+    boxes = sbk_boxes(d)
+    if word in boxes:
+        return boxes[word]
+    low = word.lower()
+    for b in boxes.values():
+        if low in [n.lower() for n in b['names']] or low == b['host'].lower() or low == b['dev'].lower():
+            return b
+    raise ValueError('no socket or light is called %s' % word[:60])
+
+
+def sbk_strip(v):
+    if isinstance(v, dict):
+        return {k: sbk_strip(x) for k, x in v.items() if k not in SBK_VOLATILE}
+    if isinstance(v, list):
+        return [sbk_strip(x) for x in v]
+    return v
+
+
+def sbk_look(rpc):
+    """What a box is, whether it can make and take a backup, and its fingerprint now."""
+    info = sbk_call(rpc, 'Shelly.GetDeviceInfo') or {}
+    try:
+        methods = set((sbk_call(rpc, 'Shelly.ListMethods') or {}).get('methods') or [])
+    except PlugError as e:
+        if 'RPC error' not in str(e):
+            raise
+        methods = set()
+    sys_ = sbk_call(rpc, 'Sys.GetStatus') or {}
+    cfg = sbk_call(rpc, 'Shelly.GetConfig') or {}
+    scripts = None
+    if 'Script.List' in methods:
+        try:
+            scripts = [{'id': s.get('id'), 'name': s.get('name'), 'enable': s.get('enable')}
+                       for s in (sbk_call(rpc, 'Script.List') or {}).get('scripts') or [] if isinstance(s, dict)]
+        except PlugError:
+            scripts = None
+    revs = {k: v for k, v in sys_.items() if k.endswith('_rev') and isinstance(v, (int, float))}
+    blob = json.dumps({'revs': revs, 'config': sbk_strip(cfg), 'scripts': scripts}, sort_keys=True,
+                      separators=(',', ':'), default=str)
+    provision = str(info.get('provision') or (sys_.get('provisioning') or {}).get('stage') or '')
+    supported = all(m in methods for m in SBK_NEEDS)
+    why = ''
+    if not supported:
+        why = ('its firmware (%s) has no backup - Sys.CreateBackup is not among its methods; not on Plus Uni, '
+               'Plus RGBW PM and some Zigbee-firmware Gen4 at all' % (info.get('ver') or '?'))
+    elif provision in SBK_GATED:
+        why = 'it is in its setup window (provisioning %s) - a backup is allowed once that is over' % provision
+    initial = {k: str(v.get('initial_state') or '') for k, v in cfg.items()
+               if SBK_OUTPUT_RE.match(str(k)) and isinstance(v, dict) and 'initial_state' in v}
+    return {'id': str(info.get('id') or ''), 'mac': str(info.get('mac') or ''),
+            'model': str(info.get('model') or ''), 'app': str(info.get('app') or ''),
+            'fw': str(info.get('ver') or info.get('fw_id') or ''), 'gen': info.get('gen'),
+            'name': str(info.get('name') or '') if info.get('name') else '',
+            'supported': supported, 'restore_ok': all(m in methods for m in SBK_NEEDS_RESTORE),
+            'provision': provision, 'why': why, 'revs': revs,
+            'fp': hashlib.sha256(blob.encode('utf-8')).hexdigest(), 'initial': initial,
+            'backup': sys_.get('backup') if isinstance(sys_.get('backup'), dict) else {},
+            'uptime': sys_.get('uptime'), 'restart_required': bool(sys_.get('restart_required'))}
+
+
+def sbk_rows(d, dev=None, with_data=False, rid=None):
+    cols = 'id, dev, host, name, model, app, fw, created, at, size, sha256, fp, manifest, by, why' + \
+        (', data' if with_data else '')
+    sql, args = 'SELECT %s FROM shelly_backups' % cols, []
+    if rid is not None:
+        sql += ' WHERE id=?'
+        args = [int(rid)]
+    elif dev is not None:
+        sql += ' WHERE dev=?'
+        args = [str(dev)]
+    sql += ' ORDER BY at DESC, id DESC'
+    with d.store.lock:
+        got = [dict(r) for r in d.store.db.execute(sql, args).fetchall()]
+    for r in got:
+        try:
+            r['manifest'] = json.loads(r.get('manifest') or '{}')
+        except ValueError:
+            r['manifest'] = {}
+    return got
+
+
+def sbk_row_public(r):
+    return {k: r.get(k) for k in ('id', 'dev', 'name', 'model', 'app', 'fw', 'created', 'at', 'size', 'sha256',
+                                   'by', 'why')}
+
+
+def sbk_store(d, box, look, raw, manifest, created, by, why):
+    keep = sbk_settings(d)['keep']
+    dev = look.get('id') or box['dev']
+    now = int(time.time())
+    with d.store.lock:
+        cur = d.store.db.execute(
+            'INSERT INTO shelly_backups (dev, host, name, model, app, fw, created, at, size, sha256, fp, manifest, '
+            'by, why, data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (dev, box['host'], box['label'], look.get('model') or '', look.get('app') or '', look.get('fw') or '',
+             int(created or now), now, len(raw), hashlib.sha256(raw).hexdigest(), look.get('fp') or '',
+             json.dumps(manifest), str(by)[:80], str(why)[:80], sqlite3.Binary(raw)))
+        rid = cur.lastrowid
+        old = [r[0] for r in d.store.db.execute(
+            'SELECT id FROM shelly_backups WHERE dev=? ORDER BY at DESC, id DESC LIMIT -1 OFFSET ?',
+            (dev, keep)).fetchall()]
+        if old:
+            d.store.db.execute('DELETE FROM shelly_backups WHERE id IN (%s)' % ','.join('?' * len(old)), old)
+    return rid, len(old)
+
+
+def sbk_check_box(d, box, quiet=False):
+    """Look at one box now and keep what was seen; an event (and the notice) when its
+    configuration starts to differ from its newest backup. A box that does not answer is
+    "not reachable", which is not an error."""
+    was = dict(sbk_states(d).get(box['box']) or {})
+    now = int(time.time())
+    try:
+        look = sbk_look(sbk_rpc(box))
+    except (PlugError, ValueError, OSError) as e:
+        st = dict(was, checked=now, reachable=False, said=str(e)[:200])
+        sbk_state_put(d, box['box'], st)
+        return st
+    st = dict(was, checked=now, reachable=True, said='', **{k: look[k] for k in (
+        'id', 'mac', 'model', 'app', 'fw', 'gen', 'supported', 'restore_ok', 'provision', 'why', 'revs', 'fp',
+        'initial')})
+    if was.get('fp') != look['fp']:
+        st['fp_since'] = now if was.get('fp') else (was.get('fp_since') or now)
+    box = dict(box, dev=sbk_dev_of(box, st))
+    newest = (sbk_rows(d, box['dev']) or [None])[0]
+    differs = bool(newest) and newest.get('fp') != look['fp']
+    st['differs'] = differs
+    sbk_state_put(d, box['box'], st)
+    if differs and was.get('fp') != look['fp'] and not quiet:
+        d.store.add_event('plug', 'the configuration of the box changed since its last backup (%s)'
+                          % time.strftime('%Y-%m-%d %H:%M', time.localtime(newest['at'])), 'info',
+                          'plug:' + box['names'][0])
+    try:
+        sbk_notice(d)
+    except Exception as e:                              # noqa: BLE001 - the look stands
+        log('device backups: the notice: %s' % e, 'debug')
+    return st
+
+
+def sbk_notice(d):
+    """One notice for every box whose configuration differs from its newest backup - told
+    once per change (its stamp is what differs), gone by itself when none does."""
+    states, rows = sbk_states(d), []
+    for b in sbk_boxes(d).values():
+        st = states.get(b['box']) or {}
+        if st.get('differs'):
+            rows.append((b['label'], st.get('fp') or ''))
+    if not rows:
+        d.notice_clear('shellybackup')
+        return
+    stamp = hashlib.sha256(json.dumps(sorted(rows)).encode()).hexdigest()[:16]
+    d.notice_raise('shellybackup', 'info', 'A device differs from its configuration backup',
+                   '%d device(s) differ from the configuration backed up: %s'
+                   % (len(rows), ', '.join(sorted(r[0] for r in rows))[:400]),
+                   action='Settings - Devices - Device backups: back them up (each restarts)',
+                   link='#control/dev-backups', stamp=stamp)
+
+
+def sbk_in_use(d):
+    if sbk_settings(d)['on'] or d.store.get_meta('sbk:used'):
+        return True
+    with d.store.lock:
+        return bool(d.store.db.execute('SELECT 1 FROM shelly_backups LIMIT 1').fetchone())
+
+
+def sbk_check_start(d, boxes=None, force=False):
+    """The look at the boxes, on a thread of its own, one box at a time; never while a backup
+    or a restore is going on. False when one is going on already."""
+    with SBK_LOCK:
+        if SBK_CHECKING['on'] or SBK_JOB['running']:
+            return False
+        SBK_CHECKING.update(on=True, started=time.time())
+    states = sbk_states(d)
+    todo = [b for b in (boxes or sorted(sbk_boxes(d).values(), key=lambda x: x['names'][0].lower()))
+            if force or time.time() - float((states.get(b['box']) or {}).get('checked') or 0) >= SBK_CHECK_EVERY_S]
+
+    def run():
+        try:
+            for b in todo:
+                if SBK_JOB['running']:
+                    break
+                # a box being switched right now is left for a moment: a press goes first
+                for _ in range(20):
+                    if not ShellyRPC.commanding(b['host'], 3.0):
+                        break
+                    time.sleep(0.5)
+                sbk_check_box(d, b)
+        except Exception as e:                          # noqa: BLE001
+            log('device backups: looking: %s' % e, 'debug')
+        finally:
+            SBK_CHECKING['on'] = False
+    if not todo:
+        SBK_CHECKING['on'] = False
+        return True
+    threading.Thread(target=run, name='zigmon-shelly-look', daemon=True).start()
+    return True
+
+
+def sbk_wait_back(rpc, done, say, what):
+    """After a restart: asked every few seconds until done(status) says so, at most SBK_WAIT_S."""
+    end = time.time() + SBK_WAIT_S
+    time.sleep(min(SBK_POLL_S, 2.0))
+    seen = None
+    while time.time() < end:
+        try:
+            st = sbk_call(rpc, 'Sys.GetStatus', tries=1) or {}
+            seen = st
+            if done(st):
+                return st
+            say('%s - it answers, waiting for it to finish' % what)
+        except PlugError:
+            say('%s - waiting for it to come back' % what)
+        time.sleep(SBK_POLL_S)
+    raise ValueError('it did not come back%s within %d s' % (
+        ' with a new backup' if seen is not None else '', int(SBK_WAIT_S)))
+
+
+def sbk_download(rpc):
+    out, off = bytearray(), 0
+    while True:
+        got = sbk_call(rpc, 'Sys.DownloadBackup', {'offset': off, 'len': SBK_CHUNK}) or {}
+        try:
+            piece = base64.b64decode(str(got.get('data') or ''))
+        except (ValueError, TypeError):
+            raise ValueError('the box sent a piece that is not base64')
+        try:
+            left = int(got.get('left') or 0)
+        except (TypeError, ValueError):
+            left = 0
+        if not piece and left:
+            raise ValueError('the box sent an empty piece with %d byte(s) still to come' % left)
+        out += piece
+        off += len(piece)
+        if off + left > SBK_MOST:
+            raise ValueError('the archive would be larger than %d MB - not believed' % (SBK_MOST // 1048576))
+        if left <= 0:
+            break
+    return bytes(out)
+
+
+def sbk_zip_check(raw):
+    """A ZIP that reads, and the safe facts of its manifest. Never says what is in it."""
+    import io
+    import zipfile
+    if len(raw) < 22 or not raw.startswith(b'PK'):
+        raise ValueError('what the box sent (%d bytes) is not a ZIP archive' % len(raw))
+    if len(raw) > SBK_MOST:
+        raise ValueError('larger than %d MB - not believed' % (SBK_MOST // 1048576))
+    try:
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        names = z.namelist()
+        broken = z.testzip()
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, OSError, EOFError,
+            ValueError) as e:
+        raise ValueError('what the box sent does not read as a ZIP archive (%s)' % type(e).__name__)
+    if broken is not None:
+        raise ValueError('a file in the archive is damaged (its checksum does not match)')
+    manifest = {}
+    for n in names:
+        if 'manifest' in n.lower() and z.getinfo(n).file_size < 65536:
+            try:
+                m = json.loads(z.read(n).decode('utf-8'))
+            except (ValueError, UnicodeDecodeError, RuntimeError, zipfile.BadZipFile):
+                continue
+            if isinstance(m, dict):
+                manifest = {k: m[k] for k in ('created_at', 'fw_ver', 'model', 'app_name', 'device_name', 'encrypt')
+                            if k in m and isinstance(m[k], (str, int, float, bool))}
+                break
+    return manifest
+
+
+def sbk_reboot_risk(rpc, look):
+    """Why restarting this box now would change what it is doing, or ''. An output that is on
+    comes back off after a restart unless it restores its last state, and one set to come
+    back on comes on."""
+    st = sbk_call(rpc, 'Shelly.GetStatus') or {}
+    for k in sorted(st):
+        v = st.get(k)
+        if not SBK_OUTPUT_RE.match(str(k)) or not isinstance(v, dict) or 'output' not in v:
+            continue
+        init = (look.get('initial') or {}).get(k, '')
+        if init == 'restore_last':
+            continue
+        if v.get('output'):
+            return '%s is on and its power-on state is "%s", not "restore last" - a restart would change it' % (
+                k, init or 'not known')
+        if init == 'on':
+            return '%s is off and is set to come on at power-on - a restart would switch it on' % k
+    return ''
+
+
+def sbk_backup_box(d, box, by, why, say=lambda w: None, careful=False):
+    """CreateBackup, a restart, the archive downloaded and kept. careful: the scheduler's
+    way - a box a restart would change is left alone, and why is said."""
+    if box.get('monitor_only') and careful:
+        raise LookupError('monitor-only: zigmon never switches it, so it is not restarted on the clock - '
+                          'back it up by hand')
+    rpc = sbk_rpc(box)
+    say('looking at it')
+    look = sbk_look(rpc)
+    if not look['supported']:
+        raise LookupError('not supported: ' + look['why'])
+    if look['provision'] in SBK_GATED:
+        raise LookupError(look['why'])
+    if careful:
+        risk = sbk_reboot_risk(rpc, look)
+        if risk:
+            raise LookupError(risk)
+    old = look.get('backup') or {}
+    old_created = float(old.get('created') or 0)
+    say('asking it for a backup (unencrypted)')
+    got = sbk_call(rpc, 'Sys.CreateBackup', {'encrypt': False}) or {}
+    if isinstance(got, dict) and got.get('key'):
+        raise ValueError('the box made an encrypted backup although none was asked for - not kept')
+    say('restarting it - the backup is made as it starts')
+    try:
+        rpc.call('Shelly.Reboot', {})
+    except PlugError as e:
+        if 'RPC error' in str(e):
+            raise ValueError('it would not restart: %s' % str(e)[:200])
+
+    def _sbk_backup_done(s):
+        b = s.get('backup') if isinstance(s.get('backup'), dict) else {}
+        return bool(b.get('error')) or float(b.get('created') or 0) > old_created
+    st = sbk_wait_back(rpc, _sbk_backup_done, say, 'restarting')
+    b = st.get('backup') or {}
+    if b.get('error'):
+        raise ValueError('the box could not make it: %s' % str(b['error'])[:200])
+    say('downloading the archive')
+    raw = sbk_download(rpc)
+    manifest = sbk_zip_check(raw)
+    if manifest.get('encrypt'):
+        raise ValueError('the archive is encrypted - its key is not kept here, so it is not kept either')
+    say('looking at it again')
+    after = sbk_look(rpc)
+    rid, dropped = sbk_store(d, box, after, raw, manifest, b.get('created'), by, why)
+    now = int(time.time())
+    was = sbk_states(d).get(box['box']) or {}
+    st2 = dict(was, checked=now, reachable=True, said='', differs=False,
+               **{k: after[k] for k in ('id', 'mac', 'model', 'app', 'fw', 'gen', 'supported', 'restore_ok',
+                                        'provision', 'why', 'revs', 'fp', 'initial')})
+    if was.get('fp') != after['fp']:
+        st2['fp_since'] = now
+    sbk_state_put(d, box['box'], st2)
+    try:
+        sbk_notice(d)
+    except Exception as e:                              # noqa: BLE001
+        log('device backups: the notice: %s' % e, 'debug')
+    return {'id': rid, 'size': len(raw), 'model': after['model'], 'fw': after['fw'], 'dropped': dropped}
+
+
+def sbk_upload(rpc, raw):
+    off, n, manifest = 0, len(raw), {}
+    while True:
+        piece = raw[off:off + SBK_CHUNK]
+        final = off + len(piece) >= n
+        got = sbk_call(rpc, 'Sys.UploadBackup', {'offset': off, 'data': base64.b64encode(piece).decode('ascii'),
+                                                 'final': final})
+        off += len(piece)
+        if final:
+            manifest = (got or {}).get('manifest') if isinstance(got, dict) else {}
+            return manifest if isinstance(manifest, dict) else {}
+
+
+def sbk_restore_box(d, box, rid, by, say=lambda w: None):
+    """A stored archive back into its own box: uploaded, its manifest looked at (another model
+    is refused, another firmware said), then restored - the box wipes its files and restarts."""
+    rows = sbk_rows(d, rid=rid, with_data=True)
+    row = rows[0] if rows else None
+    if not row or row['dev'] != box['dev']:
+        raise ValueError('that backup is not one of %s' % box['label'])
+    raw = bytes(row.pop('data') or b'')
+    if hashlib.sha256(raw).hexdigest() != row.get('sha256'):
+        raise ValueError('the stored archive does not match its checksum - it is not sent')
+    rpc = sbk_rpc(box)
+    say('looking at it')
+    look = sbk_look(rpc)
+    if not look['restore_ok']:
+        raise ValueError('it cannot take a backup back: its firmware (%s) has no Sys.RestoreBackup' % (look['fw'] or '?'))
+    if row.get('model') and look['model'] and row['model'] != look['model']:
+        raise ValueError('refused: the backup is of a %s, this device is a %s - nothing was sent'
+                         % (row['model'], look['model']))
+    say('sending the archive')
+    manifest = sbk_upload(rpc, raw)
+    mm = str((manifest or {}).get('model') or '')
+    if mm and look['model'] and mm != look['model']:
+        raise ValueError('refused: the archive says it is of a %s, this device is a %s - nothing was restored'
+                         % (mm, look['model']))
+    if (manifest or {}).get('encrypt'):
+        raise ValueError('the archive is encrypted and its key is not kept here - nothing was restored')
+    warn = ''
+    made_on = str((manifest or {}).get('fw_ver') or row.get('fw') or '')
+    if made_on and look['fw'] and made_on not in look['fw'] and look['fw'] not in made_on:
+        warn = 'it was made on firmware %s; the device runs %s' % (made_on, look['fw'])
+    old_up = float(look.get('uptime') or 0)
+    say('restoring - the device wipes its files and restarts')
+    try:
+        rpc.call('Sys.RestoreBackup', {})
+    except PlugError as e:
+        if 'RPC error' in str(e):
+            raise ValueError('it refused to restore: %s' % str(e)[:200])
+
+    def _sbk_restore_done(s):
+        up = s.get('uptime')
+        return isinstance(up, (int, float)) and (not old_up or up < old_up)
+    sbk_wait_back(rpc, _sbk_restore_done, say, 'restoring')
+    say('looking at it again')
+    st = sbk_check_box(d, box, quiet=True)
+    return {'warn': warn, 'fw': look['fw'], 'model': look['model'], 'reachable': st.get('reachable'),
+            'differs': bool(st.get('differs'))}
+
+
+def sbk_job_start(d, kind, by, steps, work):
+    with SBK_LOCK:
+        if SBK_JOB['running']:
+            raise ValueError('a backup or a restore is going on - wait for it to end')
+        # a look going on stops before its next box: it asks SBK_JOB
+        SBK_JOB.update(running=True, kind=kind, by=str(by)[:80], started=time.time(), ended=0, steps=steps,
+                       id=secrets.token_hex(4), said='')
+    ident = SBK_JOB['id']
+
+    def run():
+        try:
+            work()
+        except Exception as e:                          # noqa: BLE001 - said, never raised into the thread
+            SBK_JOB['said'] = str(e)[:300]
+            log('device backups: %s' % SBK_JOB['said'], 'warn')
+        finally:
+            SBK_JOB.update(running=False, ended=time.time())
+            try:
+                d.bump()
+            except Exception:                           # noqa: BLE001
+                pass
+    threading.Thread(target=run, name='zigmon-shelly-backup', daemon=True).start()
+    return ident
+
+
+def sbk_step(box, state='waiting', said=''):
+    return {'box': box['box'], 'label': box['label'], 'state': state, 'said': said, 'at': int(time.time())}
+
+
+def sbk_run_backups(d, boxes, steps, by, why, careful):
+    """One box after another; each one's end in the events, by whom."""
+    done = failed = skipped = 0
+    for b, step in zip(boxes, steps):
+        if step['state'] != 'waiting':
+            continue
+        step.update(state='working', said='starting', at=int(time.time()))
+        dev = 'plug:' + b['names'][0]
+        try:
+            got = sbk_backup_box(d, b, by, why, lambda w, s=step: s.update(said=w, at=int(time.time())),
+                                 careful=careful)
+            step.update(state='done', said='kept: %d KB, firmware %s%s' % (
+                max(1, got['size'] // 1024), got['fw'] or '?',
+                ('; %d older one(s) let go' % got['dropped']) if got['dropped'] else ''))
+            done += 1
+            d.store.add_event('plug', '%s backed up the configuration of the box (%s, firmware %s, %d KB) - it '
+                              'restarted for it' % (by, got['model'] or '?', got['fw'] or '?',
+                                                    max(1, got['size'] // 1024)), 'info', dev)
+        except LookupError as e:
+            step.update(state='skipped', said=str(e)[:300])
+            skipped += 1
+            d.store.add_event('plug', 'the configuration backup (%s) left it alone: %s' % (by, str(e)[:200]),
+                              'info', dev)
+        except (PlugError, ValueError, OSError, sqlite3.Error) as e:
+            step.update(state='failed', said=str(e)[:300])
+            failed += 1
+            d.store.add_event('plug', 'the configuration backup by %s failed: %s' % (by, str(e)[:200]), 'warn', dev)
+        step['at'] = int(time.time())
+    return {'done': done, 'failed': failed, 'skipped': skipped}
+
+
+def sbk_scheduled(d, steps_out, by='zigmon (on the clock)'):
+    """The scheduler's night: every box looked at, the ones that differ from their newest
+    backup (or have none) backed up one at a time - a box a restart would change is left."""
+    boxes = sorted(sbk_boxes(d).values(), key=lambda x: x['names'][0].lower())
+    want = []
+    for b in boxes:
+        step = sbk_step(b, 'working', 'looking at it')
+        steps_out.append(step)
+        st = sbk_check_box(d, b)
+        b = dict(b, dev=sbk_dev_of(b, st))
+        if not st.get('reachable'):
+            step.update(state='skipped', said='not reachable')
+        elif not st.get('supported'):
+            step.update(state='skipped', said='not supported: %s' % (st.get('why') or ''))
+        elif st.get('provision') in SBK_GATED:
+            step.update(state='skipped', said=st.get('why') or 'in its setup window')
+        elif not st.get('differs') and sbk_rows(d, b['dev']):
+            step.update(state='skipped', said='unchanged since its last backup')
+        else:
+            step.update(state='waiting', said='differs - to be backed up' if st.get('differs') else
+                        'never backed up - to be backed up')
+            want.append((b, step))
+    got = sbk_run_backups(d, [w[0] for w in want], [w[1] for w in want], by, 'scheduled', careful=True)
+    run = {'at': int(time.time()), 'done': got['done'], 'failed': got['failed'],
+           'skipped': len(steps_out) - got['done'] - got['failed'],
+           'steps': [{k: s.get(k) for k in ('label', 'state', 'said')} for s in steps_out][:100]}
+    d.store.set_meta('sbk:run', json.dumps(run))
+    if got['done'] or got['failed']:
+        d.store.add_event('plug', 'the scheduled configuration backup: %d backed up, %d failed, %d left alone'
+                          % (got['done'], got['failed'], run['skipped']), 'warn' if got['failed'] else 'info')
+    return run
+
+
+def sbk_due(d, now=None):
+    """Today's day when the scheduled run is due now and was not made today; None otherwise.
+    A run missed by more than three hours (the daemon was down) waits for tomorrow."""
+    s = sbk_settings(d)
+    if not s['on']:
+        return None
+    now = now or datetime.now()
+    hh, mm = [int(x) for x in s['at'].split(':')]
+    at, here = hh * 60 + mm, now.hour * 60 + now.minute
+    if here < at or here > at + 180:
+        return None
+    day = now.strftime('%Y-%m-%d')
+    return None if d.store.get_meta('sbk:day') == day else day
+
+
+def sbk_next(d, now=None):
+    s = sbk_settings(d)
+    if not s['on']:
+        return ''
+    now = now or datetime.now()
+    hh, mm = [int(x) for x in s['at'].split(':')]
+    nxt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if nxt <= now or d.store.get_meta('sbk:day') == now.strftime('%Y-%m-%d'):
+        nxt += timedelta(days=1)
+    return nxt.isoformat(timespec='minutes')
+
+
+def sbk_tick(d, now=None):
+    """From root_chores, every half minute: the scheduled run when it is due, else a look at
+    the boxes not looked at for six hours - only once the feature is in use, and never in the
+    first ten minutes of the daemon."""
+    if SBK_JOB['running'] or not d.plugs:
+        return None
+    day = sbk_due(d, now)
+    if day:
+        d.store.set_meta('sbk:day', day)
+        steps = []
+        sbk_job_start(d, 'scheduled', 'zigmon (on the clock)', steps, lambda: sbk_scheduled(d, steps))
+        return 'scheduled'
+    if time.time() - SBK_STARTED < SBK_FIRST_CHECK_S or SBK_CHECKING['on'] or not sbk_in_use(d):
+        return None
+    return 'look' if sbk_check_start(d) else None
+
+
+def sbk_risk_words(box, st):
+    """For the page's question before a backup by hand: what a restart would do to it, from
+    what the poll last read and the power-on states last seen."""
+    initial = st.get('initial') or {}
+    out = []
+    for p in box['sockets']:
+        k = 'switch:%d' % int(p.cfg.get('switch_id') or 0)
+        init = initial.get(k) or initial.get('light:%d' % int(p.cfg.get('switch_id') or 0)) or ''
+        if init == 'restore_last':
+            continue
+        if p.output:
+            out.append('%s is on and comes back %s' % (p.name, 'on' if init == 'on' else 'off' if init == 'off'
+                                                        else 'as its power-on state says (%s)' % (init or 'not known')))
+        elif init == 'on':
+            out.append('%s is off and comes back on' % p.name)
+    return '; '.join(out)
+
+
+def sbk_view(d):
+    """GET /api/shellybackup: every box with how its backups stand. Never an archive, never a
+    password."""
+    s = sbk_settings(d)
+    states = sbk_states(d)
+    devices = []
+    counts = {'devices': 0, 'backed_up': 0, 'differ': 0, 'never': 0, 'unsupported': 0, 'unreachable': 0}
+    for b in sorted(sbk_boxes(d).values(), key=lambda x: x['names'][0].lower()):
+        st = states.get(b['box']) or {}
+        rows = sbk_rows(d, b['dev'])
+        newest = rows[0] if rows else None
+        if not st:
+            status = 'unknown'
+        elif st.get('supported') is False:
+            status = 'unsupported'
+        elif not newest:
+            status = 'never'
+        elif st.get('fp') and st['fp'] != newest.get('fp'):
+            status = 'differs'
+        else:
+            status = 'same'
+        counts['devices'] += 1
+        counts['backed_up'] += 1 if newest else 0
+        counts['differ'] += 1 if status == 'differs' else 0
+        counts['never'] += 1 if status == 'never' else 0
+        counts['unsupported'] += 1 if status == 'unsupported' else 0
+        counts['unreachable'] += 1 if st and st.get('reachable') is False else 0
+        devices.append({
+            'box': b['box'], 'host': b['host'], 'names': b['names'], 'roles': b['roles'], 'label': b['label'],
+            'dev': b['dev'], 'model': st.get('model') or (b['info'] or {}).get('model') or '',
+            'app': st.get('app') or (b['info'] or {}).get('app') or '',
+            'fw': st.get('fw') or (b['info'] or {}).get('ver') or '', 'status': status,
+            'reachable': st.get('reachable'), 'checked': st.get('checked'), 'said': st.get('said') or '',
+            'why': st.get('why') or '', 'since': st.get('fp_since') if status == 'differs' else None,
+            'restore_ok': st.get('restore_ok'), 'provision': st.get('provision') or '',
+            'monitor_only': b['monitor_only'], 'risk': sbk_risk_words(b, st),
+            'last': newest['at'] if newest else None, 'count': len(rows),
+            'backups': [dict(sbk_row_public(r), current=bool(st.get('fp')) and r.get('fp') == st.get('fp'))
+                        for r in rows]})
+    try:
+        run = json.loads(d.store.get_meta('sbk:run') or '{}')
+    except ValueError:
+        run = {}
+    job = {k: SBK_JOB.get(k) for k in ('running', 'kind', 'by', 'started', 'ended', 'said', 'id')}
+    job['steps'] = [dict(x) for x in SBK_JOB.get('steps') or []]
+    return {'ok': True, 'settings': s, 'devices': devices, 'counts': counts, 'job': job,
+            'checking': bool(SBK_CHECKING['on']), 'run': run if isinstance(run, dict) else {},
+            'next': sbk_next(d), 'keep_most': 50, 'chunk': SBK_CHUNK}
+
+
+def sbk_post(d, b, by):
+    """POST /api/shellybackup: an administrator's, every action."""
+    act = str(b.get('action') or '')
+    if not d.store.get_meta('sbk:used'):
+        d.store.set_meta('sbk:used', '1')
+    if act in ('backup', 'restore', 'delete') and SBK_JOB['running']:
+        raise ValueError('a backup or a restore is going on - wait for it to end')
+    if act == 'check':
+        boxes = [sbk_find_box(d, b['box'])] if b.get('box') else None
+        if SBK_JOB['running']:
+            raise ValueError('a backup or a restore is going on - the look waits for it')
+        started = sbk_check_start(d, boxes, force=True)
+        return dict(sbk_view(d), message='looking at %s now' % (boxes[0]['label'] if boxes else 'every device')
+                    if started else 'a look is going on already')
+    if act == 'settings':
+        s = sbk_settings(d)
+        if 'on' in b:
+            s['on'] = bool(b.get('on')) and str(b.get('on')) not in ('0', 'false', 'off')
+        if b.get('at') not in (None, ''):
+            at = str(b['at']).strip()
+            if not re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', at):
+                raise ValueError('the time is HH:MM, such as 03:40')
+            s['at'] = '%02d:%s' % (int(at.split(':')[0]), at.split(':')[1])
+        if b.get('keep') not in (None, ''):
+            try:
+                keep = int(b['keep'])
+            except (TypeError, ValueError):
+                raise ValueError('how many to keep is a number, 1 to 50')
+            if not 1 <= keep <= 50:
+                raise ValueError('how many to keep is a number, 1 to 50')
+            s['keep'] = keep
+        d.store.set_meta('sbk:settings', json.dumps(s))
+        d.store.add_event('control', '%s set the configuration backups of the devices: scheduled %s at %s, the '
+                          'newest %d kept' % (by, 'on' if s['on'] else 'off', s['at'], s['keep']), 'info')
+        return dict(sbk_view(d), message='saved')
+    if act == 'backup':
+        if b.get('all'):
+            view = sbk_view(d)
+            words = [x['box'] for x in view['devices'] if x['status'] in ('differs', 'never')
+                     and x.get('reachable') is not False]
+            if not words:
+                raise ValueError('no device differs from its last backup')
+            boxes = [sbk_find_box(d, w) for w in words]
+        else:
+            boxes = [sbk_find_box(d, b.get('box'))]
+        steps = [sbk_step(x) for x in boxes]
+        sbk_job_start(d, 'backup', by, steps,
+                      lambda: sbk_run_backups(d, boxes, steps, by, 'by hand', careful=False))
+        return dict(sbk_view(d), message='backing up %s - %s restart(s), one at a time' % (
+            boxes[0]['label'] if len(boxes) == 1 else '%d devices' % len(boxes),
+            'it' if len(boxes) == 1 else 'each'))
+    if act == 'restore':
+        try:
+            rid = int(b.get('id'))
+        except (TypeError, ValueError):
+            raise ValueError('which backup?')
+        rows = sbk_rows(d, rid=rid)
+        if not rows:
+            raise ValueError('there is no backup %s' % rid)
+        if b.get('box'):
+            box = sbk_find_box(d, b['box'])
+        else:
+            box = next((x for x in sbk_boxes(d).values() if x['dev'] == rows[0]['dev']), None)
+            if box is None:
+                raise ValueError('the device of backup %s is not configured here any more' % rid)
+        steps = [sbk_step(box, 'working', 'starting')]
+
+        def work():
+            step = steps[0]
+            dev = 'plug:' + box['names'][0]
+            try:
+                got = sbk_restore_box(d, box, rid, by, lambda w: step.update(said=w, at=int(time.time())))
+                step.update(state='done', said='restored%s' % ('; ' + got['warn'] if got['warn'] else ''))
+                d.store.add_event('plug', '%s restored the configuration of the box from its backup of %s%s - it '
+                                  'restarted with its files replaced' % (
+                                      by, time.strftime('%Y-%m-%d %H:%M', time.localtime(rows[0]['at'])),
+                                      ' (%s)' % got['warn'] if got['warn'] else ''),
+                                  'warn' if got['warn'] else 'info', dev)
+            except (PlugError, ValueError, OSError, sqlite3.Error) as e:
+                step.update(state='failed', said=str(e)[:300])
+                d.store.add_event('plug', 'restoring the configuration by %s failed: %s' % (by, str(e)[:200]),
+                                  'warn', dev)
+        sbk_job_start(d, 'restore', by, steps, work)
+        return dict(sbk_view(d), message='restoring %s - it restarts with its files replaced' % box['label'])
+    if act in ('download', 'delete'):
+        try:
+            rid = int(b.get('id'))
+        except (TypeError, ValueError):
+            raise ValueError('which backup?')
+        rows = sbk_rows(d, rid=rid, with_data=act == 'download')
+        if not rows:
+            raise ValueError('there is no backup %s' % rid)
+        r = rows[0]
+        if act == 'delete':
+            with d.store.lock:
+                d.store.db.execute('DELETE FROM shelly_backups WHERE id=?', (rid,))
+            d.store.add_event('control', '%s deleted the stored configuration backup %d of %s (%s)' % (
+                by, rid, r.get('name') or r['dev'], time.strftime('%Y-%m-%d %H:%M', time.localtime(r['at']))), 'info')
+            return dict(sbk_view(d), message='deleted')
+        raw = bytes(r.get('data') or b'')
+        safe = re.sub(r'[^A-Za-z0-9._-]', '', str(r['dev']))[:60] or 'shelly'
+        d.store.add_event('control', '%s downloaded the configuration backup %d of %s - it holds the box\'s Wi-Fi '
+                          'password and cloud token' % (by, rid, r.get('name') or r['dev']), 'warn')
+        return {'ok': True, 'name': 'shelly-%s-%s.zip' % (safe, time.strftime('%Y%m%d-%H%M', time.localtime(r['at']))),
+                'file': base64.b64encode(raw).decode('ascii'), 'mime': 'application/zip', 'bytes': len(raw),
+                'sha256': r.get('sha256')}
+    raise ValueError('unknown action %r' % act[:40])
+
+
 # ---- mDNS discovery -------------------------------------------------------
 def local_ipv4_addresses():
     """Every IPv4 address this machine holds, one per interface.
@@ -57415,6 +58933,32 @@ examples
                           help='switch itself on this long after being switched off')
     settings.add_argument('--power-limit', dest='power_limit', metavar='WATTS|default',
                           help='switch itself off above this draw')
+
+    tls = add('tls', 'HTTPS to this box: on, off, its certificate',
+              'HTTPS is off for every box unless switched on here or on the dashboard; a box '
+              'with it off speaks plain HTTP exactly as before. A box made with firmware 2.0 '
+              'or newer speaks only HTTPS. With it on, the box is held to the certificate it '
+              'showed the first time (its SHA-256 is kept: trust on first use), or, with --ca, '
+              'to that CA and to its address. A different certificate is refused, never taken: '
+              '--trust-new takes the one it shows now, after you have seen it. Changes are the '
+              'daemon\'s, asked first.',
+              epilog="""
+examples
+  zigmon shelly Lednice tls                      on or off, the certificate trusted
+  zigmon shelly Lednice tls on                   HTTPS from now on (asks first)
+  zigmon shelly Lednice tls on --ca company-ca.pem
+  zigmon shelly Lednice tls --trust-new          it shows a new certificate: take it (asks first)
+  zigmon shelly Lednice tls off --yes            back to plain HTTP
+  zigmon shelly https://10.0.0.5 info            one box over HTTPS, not in the configuration
+""")
+    tls.add_argument('action', nargs='?', default='status', choices=['status', 'on', 'off'])
+    tls.add_argument('--ca', metavar='FILE|none',
+                     help='check the box against this CA (PEM) instead of the certificate it showed first; '
+                          '"none" takes it away')
+    tls.add_argument('--trust-new', dest='trust_new', action='store_true',
+                     help='trust the certificate the box shows now in place of the one trusted before')
+    tls.add_argument('--yes', action='store_true',
+                     help='do not ask first; without a terminal nothing is changed unless given')
     settings.add_argument('--yes', action='store_true',
                           help='do not ask first; without a terminal nothing is changed unless given')
 
@@ -58262,13 +59806,17 @@ def shelly_main(argv, pal):
     names = {n.lower(): n for n in targets}
     commands = ('discover', 'info', 'dump', 'methods', 'config', 'poll', 'watch', 'listen', 'serve',
                 'on', 'off', 'toggle', 'reset-counters', 'reboot', 'matter', 'ble', 'call',
-                'firmware', 'switch-settings')
+                'firmware', 'switch-settings', 'tls')
     role = None
     for index, value in enumerate(arguments):
         if value.startswith('-'):
             continue
         if value.lower() in names:
             role = names[value.lower()]
+            arguments.pop(index)
+        elif value not in commands and not globals_['host'] and shelly_cli_address(value):
+            # (5.52) zigmon shelly https://10.0.0.5 info - a box by its address
+            globals_['host'] = value
             arguments.pop(index)
         elif value not in commands and not globals_['host'] and value not in ('-h', '--help'):
             print(pal.crit('ERROR: ') + 'unknown device "%s"' % value, file=sys.stderr)
@@ -58304,6 +59852,7 @@ def shelly_main(argv, pal):
         'reboot': shelly_cmd_reboot, 'ble': shelly_cmd_radio,
         'matter': shelly_cmd_radio,
         'firmware': shelly_cmd_firmware, 'switch-settings': shelly_cmd_switch_settings,
+        'tls': shelly_cmd_tls,
     }[args.command]
 
     try:
@@ -58762,8 +60311,6 @@ def shelly_cmd_watch(args, pal):
     """Subscribe to the device's own notifications instead of polling."""
     import base64
     rpc = shelly_for(args.device, args)
-    host = rpc.host.split(':')[0]
-    port = int(rpc.host.split(':')[1]) if ':' in rpc.host else 80
     key = base64.b64encode(secrets.token_bytes(16)).decode()
 
     if rpc.password:
@@ -58771,10 +60318,11 @@ def shelly_cmd_watch(args, pal):
                        'does not carry that authentication - use poll instead.'))
         return 1
 
+    # (5.52) wss:// where the box has HTTPS on, its certificate checked as for any call
     try:
-        sock = socket.create_connection((host, port), 10)
+        sock = rpc.open_socket(10)
     except OSError as e:
-        raise PlugError('cannot reach %s (%s)' % (rpc.host, e))
+        raise PlugError('cannot reach %s%s (%s)' % (rpc.host, ' over HTTPS' if rpc.tls else '', e))
     request = ('GET /rpc HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n'
                'Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n'
                'Sec-WebSocket-Version: 13\r\n\r\n' % (rpc.host, key))
@@ -58788,7 +60336,7 @@ def shelly_cmd_watch(args, pal):
     if b'101' not in reply.split(b'\r\n')[0]:
         raise PlugError('the device refused the websocket upgrade')
 
-    print(pal.dim('connected to %s - press Ctrl+C to stop' % rpc.host))
+    print(pal.dim('connected to %s%s - press Ctrl+C to stop' % (rpc.host, ' (wss)' if rpc.tls else '')))
     _ws_send(sock, json.dumps({'id': 1, 'src': 'zigmon',
                                'method': 'Shelly.GetStatus'}))
     try:
@@ -59051,6 +60599,112 @@ def shelly_cmd_firmware(args, pal):
     return 0
 
 
+def shelly_cli_address(value):
+    """Whether a word in place of a name is an address: http(s)://..., or an IP (with a port)."""
+    host, scheme = ShellyRPC.split_scheme(value)
+    if scheme is not None:
+        return bool(host)
+    try:
+        ipaddress.ip_address(host.rsplit(':', 1)[0] if host.count(':') == 1 else host)
+        return True
+    except ValueError:
+        return False
+
+
+def shelly_tls_print(pal, t):
+    if t.get('on'):
+        print('  HTTPS        ' + pal.ok('on'))
+        if t.get('ca'):
+            print('  checked by   the CA given (chain and address)')
+        print('  certificate  ' + (pal.value(t.get('pin_words')) if t.get('pin') else
+                                   pal.dim('not met yet - kept the first time the box is asked')))
+    else:
+        print('  HTTPS        ' + pal.dim('off - plain HTTP'))
+        if t.get('https_only'):
+            print(pal.warn('  this box sent plain HTTP on to HTTPS: it speaks only HTTPS (firmware 2.0+) - '
+                           'switch it on: tls on'))
+    if t.get('seen'):
+        print(pal.crit('  it now shows ANOTHER certificate: %s - refused' % t.get('seen_words')))
+        print(pal.dim('  if that is expected (a reset, a new certificate): tls --trust-new'))
+
+
+def shelly_cmd_tls(args, pal):
+    """(5.52) tls [on|off] [--ca FILE|none] [--trust-new] [--yes] - the daemon's
+    setting for one box; what the box shows is asked directly."""
+    target = args.device or args.host
+    if not target:
+        raise PlugError('name a box: zigmon shelly NAME tls')
+    host = ShellyRPC.split_scheme(args.device and (shelly_targets().get(args.device) or {}).get('host')
+                                  or args.host)[0]
+    ca = None
+    if args.ca is not None:
+        if args.ca.strip().lower() in ('none', 'off', ''):
+            ca = ''
+        else:
+            try:
+                ca = Path(args.ca).read_text()
+            except OSError as e:
+                raise PlugError('cannot read %s (%s)' % (args.ca, e))
+            problem = ShellyRPC.tls_ca_check(ca)
+            if problem:
+                raise PlugError('%s: %s' % (args.ca, problem))
+    code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'status'})
+    if code == 0:
+        raise PlugError('the daemon is not answering (%s) - HTTPS for a box is its setting'
+                        % answer.get('error'))
+    if not answer.get('ok'):
+        if args.host and not args.device and args.action == 'status' and not args.trust_new:
+            # an address that is not configured: what it shows, and that is all
+            fp = ShellyRPC.peer_fingerprint(host)
+            print('  %s is not a configured box; it shows the certificate SHA-256' % host)
+            print('  ' + pal.value(ShellyRPC.fingerprint_words(fp)))
+            return 0
+        raise PlugError(answer.get('error') or 'the daemon said no (HTTP %s)' % code)
+    now = answer.get('tls') or {}
+    if args.json and args.action == 'status' and not args.trust_new and ca is None:
+        print(json.dumps(now, indent=2))
+        return 0
+    print('  %s  %s' % (pal.title(target), pal.dim(host)))
+    shelly_tls_print(pal, now)
+    if args.trust_new:
+        try:
+            live = ShellyRPC.peer_fingerprint(host)
+        except (OSError, ssl.SSLError) as e:
+            raise PlugError('cannot reach %s over HTTPS to see its certificate (%s)' % (host, e))
+        if live == now.get('pin'):
+            print(pal.ok('  it shows the certificate trusted already - nothing to do'))
+            return 0
+        print('  it shows now     ' + pal.value(ShellyRPC.fingerprint_words(live)))
+        print(pal.dim('  compare it with what the box itself says (its web page, Settings > TLS) before you trust it'))
+        if not shelly_cli_sure(args, pal, 'trust this certificate for %s?' % host):
+            print('  nothing done')
+            return 1
+        code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'trust', 'fingerprint': live})
+    elif args.action in ('on', 'off'):
+        if args.action == 'on' and ca is None and not now.get('on'):
+            print(pal.dim('  the certificate it shows the first time is the one held to from then on'))
+        if not shelly_cli_sure(args, pal, 'HTTPS %s for %s?' % (args.action, host)):
+            print('  nothing done')
+            return 1
+        body = {'name': target, 'action': args.action}
+        if ca is not None:
+            body['ca'] = ca
+        code, answer = api_call('/api/shelly/tls', 'POST', body)
+    elif ca is not None:
+        if not shelly_cli_sure(args, pal, 'check %s %s?' % (host, 'against this CA' if ca else 'without a CA')):
+            print('  nothing done')
+            return 1
+        code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'ca', 'ca': ca})
+    else:
+        return 0
+    if not answer.get('ok'):
+        raise PlugError(answer.get('error') or 'the daemon said no (HTTP %s)' % code)
+    print(pal.ok('  ' + str(answer.get('message') or 'done')))
+    if answer.get('warning'):
+        print(pal.warn('  ' + answer['warning']))
+    return 0
+
+
 def shelly_cmd_switch_settings(args, pal):
     """(5.51) switch-settings [--power-on ...] [--auto-off S|off] [--auto-on S|off] [--power-limit W|default]"""
     rpc = shelly_for(args.device, args)
@@ -59255,11 +60909,12 @@ addressing a device
   zigmon shelly Lednice info         a plug or sensor by the name it has in the configuration
   zigmon shelly info                 with no name, the first configured plug is assumed
   zigmon shelly --host 10.0.0.5 info  something not in the configuration at all
+  zigmon shelly https://10.0.0.5 info  the same over HTTPS (a box with firmware 2.0+)
 
 commands at a glance
   reading        discover, info, dump, methods, poll, watch, listen, serve
   controlling    on, off, toggle, reset-counters, reboot, firmware
-  configuring    config, switch-settings, matter, ble
+  configuring    config, switch-settings, tls, matter, ble
   anything else  call
 
 quoting JSON
@@ -59355,6 +61010,12 @@ HELP_LINES = [
     ('sudo zigmon --acme', 'the certificate by ACME: its name, its end, who renews it, its last order'),
     ('sudo zigmon --acme-order', 'order it from the ACME CA now, followed here'),
     ('sudo zigmon --acme-push', 'Certificates from acme: on or off, the acmes paired, the slots, the last push'),
+    ('sudo zigmon --shelly-backup', 'the Shelly sockets\u2019 and lights\u2019 configuration backups: each device, whether it changed since its last (--json)'),
+    ('sudo zigmon --shelly-backup now Lednice', 'back one up now - it restarts; all: every one that differs (asks first, --yes not to)'),
+    ('sudo zigmon --shelly-backup stored Lednice', 'the backups kept of one, by number; check [NAME]: look again now'),
+    ('sudo zigmon --shelly-backup restore 12', 'put one back - the device restarts with its files replaced (asks first)'),
+    ('sudo zigmon --shelly-backup export 12 FILE', 'the archive into a file (mode 0600) - it holds the Wi-Fi password; delete 12 forgets one'),
+    ('sudo zigmon --shelly-backup schedule on 03:40 keep=5', 'back up by itself every night, only what changed; off stops it'),
     ('sudo zigmon --os-roots', 'the system\u2019s trusted roots: the authorities zigmon added, the machine\u2019s list'),
     ('sudo zigmon --os-roots-add FILE', 'add a company\u2019s root or intermediate to the trust of the whole machine'),
     ('sudo zigmon --os-roots-remove SHA256', 'take one zigmon added out of it again'),
@@ -59409,6 +61070,8 @@ HELP_LINES = [
     ('zigmon shelly Lednice firmware [update [--beta] [--yes]]', 'newer firmware offered? put it in'),
     ('zigmon shelly Lednice switch-settings [--power-on|--auto-off|--auto-on|--power-limit]',
      'power-on state, its timers, its limit'),
+    ('zigmon shelly Lednice tls [on|off] [--ca FILE] [--trust-new] [--yes]',
+     'HTTPS to the box (off unless switched on), its certificate'),
     ('zigmon shelly Lednice call Switch.GetStatus \'{"id":0}\'', 'any call the box knows'),
     ('zigmon shelly HT-Sklep dump', 'a sensor, while it is awake'),
     ('zigmon shelly listen', 'show webhook pushes as they arrive'),
@@ -59627,6 +61290,11 @@ def build_parser():
     a.add_argument('--acme-order', nargs='?', const='all', metavar='web|all',
                    help='(root) order the certificate from the ACME CA now and follow it here; '
                         'ACME looks after it from then on')
+    a.add_argument('--shelly-backup', nargs='*', metavar='WORDS',
+                   help='(root) the configuration backups of the Shelly sockets and lights (Settings - Device '
+                        'backups): list, check [NAME], now NAME|all, stored NAME, restore ID, export ID FILE, '
+                        'delete ID, schedule on|off|HH:MM|keep=N - a backup or a restore restarts the device '
+                        'and asks first (--yes not to)')
     a.add_argument('--os-roots', action='store_true',
                    help='(root) the system\u2019s trusted roots (Control - Certificates): the authorities '
                         'zigmon added to the trust of the whole machine, and what the machine has')
@@ -62138,6 +63806,263 @@ def cmd_acme_push(args, pal):
     return 0
 
 
+SBK_CLI_VERBS = ('list', 'check', 'now', 'stored', 'restore', 'export', 'delete', 'schedule')
+
+
+def sbk_cli_words(words):
+    """zigmon --shelly-backup WORDS, read: (verb, the rest). Refused here, before the daemon is
+    asked, when it is not one of them."""
+    words = [str(w) for w in (words or [])]
+    verb = (words[0].lower() if words else 'list')
+    if verb not in SBK_CLI_VERBS:
+        raise ValueError('--shelly-backup: one of %s, not %r' % (', '.join(SBK_CLI_VERBS), verb[:30]))
+    rest = words[1:]
+    need = {'now': 1, 'stored': 1, 'restore': 1, 'export': 2, 'delete': 1, 'schedule': 1}.get(verb, 0)
+    if len(rest) < need:
+        raise ValueError('--shelly-backup %s needs %s' % (verb, {
+            'now': 'a socket or light (or all)', 'stored': 'a socket or light', 'restore': 'the number of a backup',
+            'export': 'the number of a backup and a file', 'delete': 'the number of a backup',
+            'schedule': 'on, off, HH:MM and/or keep=N'}[verb]))
+    if verb in ('restore', 'export', 'delete') and not rest[0].isdigit():
+        raise ValueError('the number of a backup, as --shelly-backup stored NAME lists them')
+    if verb == 'schedule':
+        body = {'action': 'settings'}
+        for w in rest:
+            lw = w.lower()
+            if lw in ('on', 'off'):
+                body['on'] = lw == 'on'
+            elif re.match(r'^([01]?\d|2[0-3]):[0-5]\d$', lw):
+                body['at'] = lw
+            elif lw.startswith('keep='):
+                body['keep'] = lw[5:]
+            else:
+                raise ValueError('schedule takes on, off, HH:MM and keep=N - not %r' % w[:30])
+        return verb, rest, body
+    return verb, rest, None
+
+
+def sbk_cli_ask(pal, args, words):
+    if getattr(args, 'yes', False):
+        return True
+    if not sys.stdin.isatty():
+        print(pal.crit('%s - asked first: run it at a terminal, or with --yes' % words))
+        return None                     # not asked at all: the caller exits 2
+    try:
+        answer = input('%s. Go on? [y/N] ' % words)
+    except EOFError:
+        answer = ''
+    return answer.strip().lower() in ('y', 'yes')
+
+
+def sbk_cli_follow(pal, ident, quiet=False):
+    """A backup or a restore followed here until it ends; 0 when nothing failed."""
+    said, end, v = {}, time.time() + 1800, {}
+    while time.time() < end:
+        code, v = api_call('/api/shellybackup', timeout=20.0)
+        if code != 200 or not isinstance(v, dict):
+            time.sleep(2)
+            continue
+        job = v.get('job') or {}
+        for st in job.get('steps') or []:
+            line = '%s: %s %s' % (st.get('label'), st.get('state'), st.get('said') or '')
+            if said.get(st.get('label')) != line:
+                said[st.get('label')] = line
+                if not quiet:
+                    tone = {'done': pal.ok, 'failed': pal.crit, 'skipped': pal.warn}.get(st.get('state'), pal.dim)
+                    print('  ' + tone(line))
+        if job.get('id') == ident and not job.get('running'):
+            if job.get('said'):
+                print(pal.crit('  ' + job['said']))
+            return 1 if job.get('said') or any(s.get('state') == 'failed' for s in job.get('steps') or []) else 0
+        time.sleep(2)
+    print(pal.crit('it has not ended in half an hour - Settings - Device backups says how it goes'))
+    return 1
+
+
+def cmd_shelly_backup(args, pal):
+    """zigmon --shelly-backup [list|check|now|stored|restore|export|delete|schedule ...] (5.50):
+    Settings - Devices - Device backups on the command line, through the daemon as the page
+    asks it - an administrator's there, root's key here."""
+    try:
+        verb, rest, body = sbk_cli_words(args.shelly_backup)
+    except ValueError as e:
+        print(pal.crit(str(e)))
+        return 2
+    js = getattr(args, 'json', False)
+
+    def _sbkc_view():
+        code, v = api_call('/api/shellybackup', timeout=20.0)
+        if code != 200 or not isinstance(v, dict):
+            print(pal.crit('the daemon said: %s' % (v or {}).get('error', code)))
+            return None
+        return v
+
+    def _sbkc_device(v, word):
+        low = word.lower()
+        for x in v.get('devices') or []:
+            if low in [n.lower() for n in x.get('names') or []] or low in (x.get('box', '').lower(),
+                                                                             x.get('host', '').lower()):
+                return x
+        print(pal.crit('no socket or light is called %s' % word))
+        return None
+
+    def _sbkc_post(b, timeout=30.0):
+        code, out = api_call('/api/shellybackup', method='POST', payload=b, timeout=timeout)
+        if code != 200 or not isinstance(out, dict) or out.get('ok') is False:
+            print(pal.crit('refused: %s' % (out or {}).get('error', code)))
+            return None
+        return out
+
+    def _sbkc_day(ts):
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(float(ts))) if ts else '-'
+
+    if verb == 'schedule':
+        out = _sbkc_post(body)
+        if out is None:
+            return 1
+        s = out.get('settings') or {}
+        print(json.dumps(s) if js else pal.ok('scheduled backups %s at %s, the newest %d kept per device%s' % (
+            'on' if s.get('on') else 'off', s.get('at'), s.get('keep') or 5,
+            ('; next %s' % out['next'].replace('T', ' ')) if out.get('next') else '')))
+        return 0
+    if verb in ('restore', 'export', 'delete'):
+        rid = int(rest[0])
+        v = _sbkc_view()
+        if v is None:
+            return 2
+        hit = [(x, b) for x in v.get('devices') or [] for b in x.get('backups') or [] if b.get('id') == rid]
+        if not hit:
+            print(pal.crit('there is no backup %d - zigmon --shelly-backup stored NAME lists them' % rid))
+            return 1
+        x, b = hit[0]
+        if verb == 'export':
+            path = rest[1]
+            out = _sbkc_post({'action': 'download', 'id': rid}, timeout=60.0)
+            if out is None:
+                return 1
+            raw = base64.b64decode(out.get('file') or '')
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                    os.write(fd, raw)
+                finally:
+                    os.close(fd)
+            except OSError as e:
+                print(pal.crit('%s: %s' % (path, e.strerror or e)))
+                return 1
+            print(pal.ok('%s: %d bytes, the backup of %s made %s (mode 0600) - it holds the device\'s Wi-Fi '
+                         'password and cloud token' % (path, len(raw), x.get('label'), _sbkc_day(b.get('at')))))
+            return 0
+        if verb == 'delete':
+            sbk_asked = sbk_cli_ask(pal, args, 'The backup of %s made %s is deleted from the database'
+                                    % (x.get('label'), _sbkc_day(b.get('at'))))
+            if not sbk_asked:
+                print('nothing deleted')
+                return 1 if sbk_asked is False else 2
+            return 0 if _sbkc_post({'action': 'delete', 'id': rid}) is not None else 1
+        fw = ''
+        if b.get('fw') and x.get('fw') and b['fw'] != x['fw']:
+            fw = ' It was made on firmware %s; the device runs %s.' % (b['fw'], x['fw'])
+        sbk_asked = sbk_cli_ask(pal, args, 'RESTORE %s from %s: the device restarts at once and its files are WIPED and '
+                                'replaced by the backup\'s - what was changed since is gone.%s'
+                                % (x.get('label'), _sbkc_day(b.get('at')), fw))
+        if not sbk_asked:
+            print('nothing restored')
+            return 1 if sbk_asked is False else 2
+        out = _sbkc_post({'action': 'restore', 'id': rid, 'box': x.get('box')})
+        if out is None:
+            return 1
+        print(pal.dim(out.get('message') or 'restoring'))
+        return sbk_cli_follow(pal, (out.get('job') or {}).get('id'))
+    if verb == 'now':
+        v = _sbkc_view()
+        if v is None:
+            return 2
+        if rest[0].lower() == 'all':
+            todo = [x for x in v.get('devices') or [] if x.get('status') in ('differs', 'never')
+                    and x.get('reachable') is not False]
+            if not todo:
+                print(pal.ok('no device differs from its last backup'))
+                return 0
+            body = {'action': 'backup', 'all': True}
+        else:
+            x = _sbkc_device(v, rest[0])
+            if x is None:
+                return 1
+            todo, body = [x], {'action': 'backup', 'box': x['box']}
+        for x in todo:
+            print('  %s%s' % (x.get('label'), pal.warn(' - after the restart: ' + x['risk']) if x.get('risk') else ''))
+        sbk_asked = sbk_cli_ask(pal, args, '%s restart(s), one at a time: the firmware makes its backup as it '
+                                'starts, and the outputs may blink' % len(todo))
+        if not sbk_asked:
+            print('nothing backed up')
+            return 1 if sbk_asked is False else 2
+        out = _sbkc_post(body)
+        if out is None:
+            return 1
+        print(pal.dim(out.get('message') or 'backing up'))
+        return sbk_cli_follow(pal, (out.get('job') or {}).get('id'))
+    if verb == 'check':
+        b = {'action': 'check'}
+        if rest:
+            b['box'] = rest[0]
+        out = _sbkc_post(b)
+        if out is None:
+            return 1
+        end = time.time() + 300
+        while time.time() < end:
+            v = _sbkc_view()
+            if v is None or not v.get('checking'):
+                break
+            time.sleep(2)
+    v = _sbkc_view()
+    if v is None:
+        return 2
+    if verb == 'stored':
+        x = _sbkc_device(v, rest[0])
+        if x is None:
+            return 1
+        if js:
+            print(json.dumps(x.get('backups') or [], indent=2, ensure_ascii=False))
+            return 0
+        print(pal.title('the configuration backups of %s (%s, firmware %s)' % (x.get('label'), x.get('model') or '?',
+                                                                              x.get('fw') or '?')))
+        for b in x.get('backups') or []:
+            print('  %5d  %s  fw %-22s %6d KB  %s%s' % (b['id'], _sbkc_day(b.get('at')), b.get('fw') or '?',
+                                                      max(1, (b.get('size') or 0) // 1024),
+                                                      ('by %s' % b['by']) if b.get('by') else '',
+                                                      pal.ok('  current') if b.get('current') else ''))
+        if not x.get('backups'):
+            print(pal.dim('  none kept'))
+        return 0
+    if js:
+        print(json.dumps(v, indent=2, ensure_ascii=False))
+        return 0
+    s, c = v.get('settings') or {}, v.get('counts') or {}
+    print(pal.title('the Shelly devices\' configuration backups - %d _sbkc_device(s), %d backed up, %d differ, %d never, '
+                    '%d not supported' % (c.get('devices', 0), c.get('backed_up', 0), c.get('differ', 0),
+                                          c.get('never', 0), c.get('unsupported', 0))))
+    words = {'same': pal.ok('up to date'), 'differs': pal.warn('differs'), 'never': pal.warn('never backed up'),
+             'unsupported': pal.dim('not supported'), 'unknown': pal.dim('not looked at yet')}
+    for x in v.get('devices') or []:
+        print('  %-28s %-14s %-20s %s%s  last %s (%d kept)' % (
+            (x.get('label') or '')[:28], (x.get('model') or '?')[:14], (x.get('fw') or '?')[:20],
+            words.get(x.get('status'), x.get('status')),
+            pal.crit(' not reachable') if x.get('reachable') is False else '', _sbkc_day(x.get('last')), x.get('count') or 0))
+        if x.get('status') == 'unsupported' and x.get('why'):
+            print(pal.dim('      ' + x['why']))
+    if not v.get('devices'):
+        print(pal.dim('  no Shelly socket or light is configured'))
+    run = v.get('run') or {}
+    print(pal.dim('scheduled: %s%s; last run %s' % (
+        'on at %s, the newest %d kept' % (s.get('at'), s.get('keep') or 5) if s.get('on') else 'off',
+        ('; next %s' % v['next'].replace('T', ' ')) if v.get('next') else '',
+        ('%s - %d backed up, %d failed' % (_sbkc_day(run['at']), run.get('done', 0), run.get('failed', 0)))
+        if run.get('at') else 'never')))
+    return 0
+
+
 def cmd_os_roots(args, pal):
     """zigmon --os-roots, --os-roots-add FILE, --os-roots-remove SHA256 (otp
     1.0.265): Control - Certificates - Trusted roots of the system, on the
@@ -64238,6 +66163,7 @@ class Console(object):
                                   ('why', 'Why it is not answering, step by step'),
                                   ('firmware', 'Its firmware: is a newer one offered'),
                                   ('settings', 'What it does by itself: power-on, timers, limit'),
+                                  ('https', 'HTTPS to it: on, off, its certificate'),
                                   ('show', 'Show it all')],
                            'It is %s.' % self._plug_state(p), cur=1 if p.get('output') else 0)
         if what == 'on':
@@ -64253,6 +66179,8 @@ class Console(object):
             self.plug_firmware(name)
         elif what == 'settings':
             self.plug_switch_settings(name)
+        elif what == 'https':
+            self.plug_tls(name)
         elif what == 'show':
             self.details(name, p, skip=('values', 'counters'))
 
@@ -64273,6 +66201,40 @@ class Console(object):
                         'restarts by itself - a minute or two without it, and what is plugged in does what the '
                         'box does at power-on meanwhile.' % (name, now, found['stable']), 'Update it'):
             self.act('shelly', name, 'firmware', 'update', '--yes')
+
+    def plug_tls(self, name):
+        """(5.52) HTTPS to the box: on, off, or a new certificate trusted -
+        each after a yes here (the command is then told --yes)."""
+        self.working('asking the daemon...')
+        t = self.out('shelly', name, 'tls')
+        if not isinstance(t, dict):
+            self.act('shelly', name, 'tls')                 # says why, in its own words
+            return
+        if t.get('on'):
+            said = 'HTTPS is on for %s; %s.' % (t.get('host') or name, (
+                'it is checked against the CA given' if t.get('ca') else
+                'the certificate trusted is SHA-256 %s' % t['pin_words'] if t.get('pin') else
+                'its certificate is kept the first time it is asked'))
+            options = [('off', 'Switch HTTPS off - plain HTTP again')]
+        else:
+            said = 'HTTPS is off for %s: plain HTTP.%s' % (t.get('host') or name, (
+                ' It sent plain HTTP on to HTTPS - it speaks only HTTPS (firmware 2.0+).'
+                if t.get('https_only') else ''))
+            options = [('on', 'Switch HTTPS on')]
+        if t.get('seen'):
+            said += ' It now shows ANOTHER certificate (SHA-256 %s), refused.' % t['seen_words']
+            options.insert(0, ('trust', 'Trust the certificate it shows now'))
+        what = self.choose('HTTPS to %s' % name, options, said)
+        if what == 'on' and self.confirm('HTTPS for %s' % name, 'From now on it is spoken to over HTTPS, and held '
+                                         'to the certificate it shows the first time.', 'Switch it on'):
+            self.act('shelly', name, 'tls', 'on', '--yes')
+        elif what == 'off' and self.confirm('Plain HTTP for %s' % name, 'Its password digest and its readings go '
+                                            'over the network unencrypted again.', 'Switch it off'):
+            self.act('shelly', name, 'tls', 'off', '--yes')
+        elif what == 'trust' and self.confirm('Trust the new certificate', 'SHA-256 %s - compare it with what the '
+                                              'box itself shows before trusting it.' % t['seen_words'],
+                                              'Trust it'):
+            self.act('shelly', name, 'tls', '--trust-new', '--yes')
 
     def plug_switch_settings(self, name):
         """(5.51) The relay's own settings, shown, and changed after a yes."""
@@ -64829,6 +66791,99 @@ def _console_os_roots(c):
 CONSOLE_MORE['main'].append(("The system's trusted roots", _console_os_roots))
 
 
+def _console_shelly_backup(c):
+    """The Shelly devices' configuration backups from the console (5.50): every device and how
+    it stands; Enter on one backs it up, lists what is kept, restores or exports one - each
+    asked first, as on the page (Settings - Devices - Device backups)."""
+    def _sbkn_rows():
+        got = c.out('--shelly-backup')
+        return got.get('devices') if isinstance(got, dict) else []
+
+    def _sbkn_words(x):
+        return {'same': 'up to date', 'differs': 'differs', 'never': 'never backed up',
+                'unsupported': 'not supported', 'unknown': 'not looked at'}.get(x.get('status'), x.get('status'))
+
+    def _sbkn_stored(x):
+        backups = x.get('backups') or []
+        if not backups:
+            c.note(x.get('label') or '', 'No backup of it is kept yet.')
+            return
+        pick = c.choose('Backups of %s' % x.get('label'), [
+            (b['id'], '%s  fw %s  %d KB%s' % (time.strftime('%Y-%m-%d %H:%M', time.localtime(b.get('at') or 0)),
+                                             b.get('fw') or '?', max(1, (b.get('size') or 0) // 1024),
+                                             '  (current)' if b.get('current') else '')) for b in backups])
+        if pick is None:
+            return
+        what = c.choose('Backup %s' % pick, [('restore', 'Restore it - the device restarts, its files replaced'),
+                                             ('export', 'Export it into a file (it holds the Wi-Fi password)'),
+                                             ('delete', 'Delete it from the database')])
+        if what == 'restore':
+            if c.confirm('Restore %s' % x.get('label'), 'The device restarts at once and its files are wiped and '
+                         'replaced by the backup\'s: its settings, schedules, webhooks, scripts and Wi-Fi as they '
+                         'were then. What was changed since is gone.', 'Restore it', danger=True):
+                c.act('--shelly-backup', 'restore', str(pick), '--yes')
+        elif what == 'export':
+            path = c.ask_one('Export backup %s' % pick, 'File', '/root/shelly-backup-%s.zip' % pick,
+                             'written with mode 0600 - it holds the device\'s Wi-Fi password and cloud token')
+            if path:
+                c.act('--shelly-backup', 'export', str(pick), path)
+        elif what == 'delete':
+            if c.confirm('Delete backup %s' % pick, 'It is deleted from the database; the device is not touched.',
+                         'Delete it', danger=True):
+                c.act('--shelly-backup', 'delete', str(pick), '--yes')
+
+    def _sbkn_one(x):
+        what = c.choose(x.get('label') or '', [('now', 'Back it up now - it restarts'),
+                                                ('stored', 'The backups kept of it: restore, export, delete'),
+                                                ('check', 'Look at it again (nothing restarts)')],
+                        '%s, %s, %s' % (x.get('model') or 'Shelly', x.get('fw') or '?', _sbkn_words(x)))
+        if what == 'now':
+            if c.confirm('Back up %s' % x.get('label'), 'The device restarts: the firmware makes its backup as it '
+                         'starts, and its outputs may blink for a few seconds.%s' % (
+                             (' After the restart: %s.' % x['risk']) if x.get('risk') else ''), 'Back it up'):
+                c.act('--shelly-backup', 'now', x['names'][0], '--yes')
+        elif what == 'stored':
+            _sbkn_stored(x)
+        elif what == 'check':
+            c.act('--shelly-backup', 'check', x['names'][0])
+
+    def _sbkn_devices():
+        return c.pick('Device backups', _sbkn_rows, [
+            ('device', lambda x: x.get('label'), 26, None),
+            ('state', _sbkn_words, 16, lambda x: 'ok' if x.get('status') == 'same' else
+             ('warn' if x.get('status') in ('differs', 'never') else 'dim')),
+            ('model', lambda x: x.get('model') or '', 14, lambda x: 'dim'),
+            ('last backup', lambda x: time.strftime('%Y-%m-%d %H:%M', time.localtime(x['last'])) if x.get('last')
+             else 'never', 40, None)], _sbkn_one, 'no Shelly socket or light is configured')
+
+    def _sbkn_all_that_differ():
+        if c.confirm('Back up all that differ', 'Every device whose configuration differs from its last backup '
+                     '(or has none) restarts, one at a time: the firmware makes its backup as it starts.',
+                     'Back them up'):
+            c.act('--shelly-backup', 'now', 'all', '--yes')
+
+    def _sbkn_schedule(on):
+        if on:
+            at = c.ask_one('Scheduled backups', 'Every day at (HH:MM)', '03:40',
+                           'only the devices that changed are backed up, one at a time; a device a restart would '
+                           'change is left alone')
+            if at:
+                c.act('--shelly-backup', 'schedule', 'on', at)
+        else:
+            c.act('--shelly-backup', 'schedule', 'off')
+    return c.sub('Device backups (Shelly)', [
+        ('Every device and how its backups stand', lambda: c.act('--shelly-backup')),
+        ('The devices (Enter: back up, restore, export)', _sbkn_devices),
+        ('Look at every device again (nothing restarts)', lambda: c.act('--shelly-backup', 'check')),
+        ('Back up all that differ (each restarts)', _sbkn_all_that_differ),
+        ('Scheduled backups on, at an hour', lambda: _sbkn_schedule(True)),
+        ('Scheduled backups off', lambda: _sbkn_schedule(False)),
+    ])
+
+
+CONSOLE_MORE['devices'].append(('Device backups (Shelly): back up, restore', _console_shelly_backup))
+
+
 def _console_updates(c):
     """System updates from the console (otp 1.0.168): how they stand, a look
     and an update - each followed, as on the page."""
@@ -65092,6 +67147,8 @@ def _dispatch(args, pal):
         return cmd_rbackup(args, pal)
     if getattr(args, 'acme_push', False):
         return cmd_acme_push(args, pal)
+    if getattr(args, 'shelly_backup', None) is not None:
+        return cmd_shelly_backup(args, pal)
     if getattr(args, 'os_roots', False) or getattr(args, 'os_roots_add', None) or \
             getattr(args, 'os_roots_remove', None):
         return cmd_os_roots(args, pal)

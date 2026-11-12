@@ -651,6 +651,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/osup');
         exit;
     }
+    if ($what === 'shellybackup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.50) the configuration backups of the Shelly boxes: how each
+        // stands - never an archive - an administrator's, in the daemon
+        zigmon_relay('/api/shellybackup');
+        exit;
+    }
     if ($what === 'selinux' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // SELinux on this machine: the mode, what zigmon needs of it, what it
         // refused - an administrator's, behind the sign-in in the daemon
@@ -1015,7 +1021,7 @@ if (isset($_GET['api'])) {
     if (in_array($what, ['scenes-save', 'scene-run', 'notify-save', 'notify-test', 'import', 'energy-reset', 'config-save', 'rule-dryrun', 'sessions', 'lock-all', 'backup-run', 'schedules-save', 'overview-layout-save', 'gateways-save', 'sequences-save', 'sequence-advance', 'sequence-reset', 'db-check', 'db-optimize', 'db-backup', 'db-restore', 'plug-detect', 'gateway-detect', 'db-backup-delete', 'db-backup-upload', 'db-prune', 'db-stale', 'db-stale-drop', 'ghosts', 'ghosts-clear',
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
-                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do',
+                       'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do', 'shellybackup-do', 'shelly-tls',
                        'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
@@ -1050,6 +1056,7 @@ if (isset($_GET['api'])) {
                   'rule-dryrun' => '/api/rule/dryrun', 'sessions' => '/api/sessions', 'lock-all' => '/api/lock-all',
                   'backup-run' => '/api/backup/run', 'schedules-save' => '/api/schedules',
                   'overview-layout-save' => '/api/overview-layout', 'gateways-save' => '/api/gateways', 'plug-detect' => '/api/plug/detect', 'gateway-detect' => '/api/gateway/detect',
+                  'shelly-tls' => '/api/shelly/tls',   /* (5.52) HTTPS to a box: an administrator's */
                   'sequences-save' => '/api/sequences', 'sequence-advance' => '/api/sequence/advance',
                   'sequence-reset' => '/api/sequence/reset', 'db-check' => '/api/db/check',
                   'db-optimize' => '/api/db/optimize', 'db-prune' => '/api/db/prune',
@@ -1072,6 +1079,7 @@ if (isset($_GET['api'])) {
                   'acmepush-do' => '/api/acmepush',
                   'osroots-do' => '/api/osroots',   /* the system's trusted roots: check, add, remove, refresh */
                   'selinux-do' => '/api/selinux',   /* a look, a step, the report: root does it */
+                  'shellybackup-do' => '/api/shellybackup',   /* (5.50) the Shelly boxes' configuration: back up, restore, download */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -1313,6 +1321,9 @@ if (isset($_GET['api'])) {
                 if (!empty($e['clear_password'])) {
                     $row['clear_password'] = true;
                 }
+                if (!empty($e['tls'])) {
+                    $row['tls'] = true;     // (5.52) a new box added over HTTPS
+                }
                 $body[$kind][] = $row;
             }
         }
@@ -1327,7 +1338,8 @@ if (isset($_GET['api'])) {
     }
     if ($what === 'managed-test' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
-        $body = ['host' => (string) ($in['host'] ?? ''), 'password' => (string) ($in['password'] ?? '')];
+        $body = ['host' => (string) ($in['host'] ?? ''), 'password' => (string) ($in['password'] ?? ''),
+                 'tls' => !empty($in['tls'])];
         if (is_array($in) && isset($in['pin'])) {
             $body['pin'] = (string) $in['pin'];
         }
@@ -5336,6 +5348,55 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .hl-panel .hp-core-bot{font-size:11px;white-space:nowrap;gap:4px}
   .hl-panel .hp-core-top{white-space:nowrap}
   /* ---- the end of the performance meter (5.43) ---- */
+  /* ---- Settings - Devices - Device backups (5.50): the Shelly boxes' own archives ---- */
+  .sbk-card h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .sbk-card .sbk-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .sbk-card .sbk-lede{max-width:900px}
+  .sbk-card .facts .fact.warn .v{color:var(--warn)} .sbk-card .facts .fact.ok .v{color:var(--ok)}
+  .sbk-card .facts .fact.dim .v{color:var(--tx-dim)}
+  .sbk-sched{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:12px 14px;margin:0 0 14px;
+    border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+  .sbk-sched .sbk-sw{display:flex;align-items:center;gap:10px;font-weight:600}
+  .sbk-sched label.sbk-f{display:flex;align-items:center;gap:6px;color:var(--tx-dim);font-size:13px}
+  .sbk-sched input[type=time]{width:110px} .sbk-sched select{width:auto}
+  .sbk-sched .sbk-says{flex-basis:100%;margin:0;color:var(--tx-dim);font-size:12.5px}
+  .sbk-job{border:1px solid rgba(88,166,255,.45);background:var(--info-bg);border-radius:12px;padding:10px 14px;margin:0 0 14px}
+  .sbk-job.done{border-color:var(--line);background:var(--panel2)}
+  .sbk-job h3{margin:0 0 6px;font-size:14px;display:flex;align-items:center;gap:8px}
+  .sbk-job .sbk-spin{width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--info);border-radius:50%;
+    animation:upspin .9s linear infinite;display:inline-block;flex:0 0 auto}
+  .sbk-steps{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+  .sbk-steps li{display:flex;gap:8px;align-items:baseline;font-size:13px;min-width:0}
+  .sbk-steps li .n{font-weight:600;flex:0 0 auto} .sbk-steps li .w{color:var(--tx-dim);overflow-wrap:anywhere;min-width:0}
+  .sbk-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+  .sbk-dev{display:grid;grid-template-columns:36px minmax(0,1.6fr) minmax(0,1.2fr) minmax(0,1fr) auto;gap:6px 14px;
+    align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+  .sbk-dev:last-child{border-bottom:0}
+  .sbk-dev:hover{background:var(--panel2)}
+  .sbk-ic{font-size:22px;line-height:1;text-align:center}
+  .sbk-name{min-width:0} .sbk-name b{display:block;overflow-wrap:anywhere}
+  .sbk-name .sbk-sub{display:block;color:var(--tx-dim);font-size:12.5px;overflow-wrap:anywhere}
+  .sbk-last{font-size:13px;color:var(--tx-dim);min-width:0} .sbk-last b{color:var(--tx);font-weight:600}
+  .sbk-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .sbk-state{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx-dim);max-width:100%}
+  .sbk-state .dot{width:8px;height:8px;border-radius:50%;background:var(--tx-mut);flex:0 0 auto}
+  .sbk-state.ok{background:var(--ok-bg);color:var(--ok);border-color:rgba(63,185,80,.3)} .sbk-state.ok .dot{background:var(--ok)}
+  .sbk-state.warn{background:var(--warn-bg);color:var(--warn);border-color:rgba(210,153,34,.3)} .sbk-state.warn .dot{background:var(--warn)}
+  .sbk-state.crit{background:var(--crit-bg);color:var(--crit);border-color:rgba(248,81,73,.3)} .sbk-state.crit .dot{background:var(--crit)}
+  .sbk-state.info{background:var(--info-bg);color:var(--info);border-color:rgba(88,166,255,.3)} .sbk-state.info .dot{background:var(--info)}
+  .sbk-states{display:flex;flex-wrap:wrap;gap:5px;min-width:0}
+  .sbk-why{display:block;color:var(--tx-dim);font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+  .sbk-dlg ul{margin:6px 0 10px;padding-left:20px} .sbk-dlg li{margin:2px 0}
+  .sbk-dlg .sbk-risk{color:var(--warn)}
+  @media (max-width:760px){
+    .sbk-dev{grid-template-columns:32px minmax(0,1fr);grid-template-areas:'ic name' 'ic state' 'ic last' 'acts acts'}
+    .sbk-dev .sbk-ic{grid-area:ic;align-self:start} .sbk-dev .sbk-name{grid-area:name}
+    .sbk-dev .sbk-states{grid-area:state;justify-content:flex-start}
+    .sbk-card .facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .sbk-dev .sbk-last{grid-area:last} .sbk-dev .sbk-acts{grid-area:acts;justify-content:flex-start}
+    .sbk-card .sbk-top{margin-left:0}
+  }
   /* ---- Settings - Security - SELinux (otp 1.0.233's card, one machine) ---- */
   .se-card .se-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
   .se-card .se-lede{max-width:900px}
@@ -5812,6 +5873,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="dev-zigbee" data-icon="mesh">Zigbee</button>
     <button type="button" data-sec="dev-health" data-icon="pulse">Health</button>
     <button type="button" data-sec="dev-polling" data-icon="clock">Polling</button>
+    <button type="button" data-sec="dev-backups" data-icon="archive" title="The configuration of the Shelly sockets and lights backed up into the database and put back - each backup restarts the device.">Device backups</button>
     <div class="ctl-group">Automation</div>
     <button type="button" data-sec="auto-rules" data-icon="bolt">Rules</button>
     <button type="button" data-sec="auto-scenes" data-icon="layers">Scenes &amp; time</button>
@@ -6374,6 +6436,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <!-- SELinux (otp 1.0.233 - 1.0.265, one machine): the mode, what zigmon
          needs of it, what it refused, and the steps to enforcing - each one
          asked of root's helper, nothing done by itself. Drawn by drawSelinux. -->
+    <!-- Settings - Devices - Device backups (5.50): the Shelly boxes' own archives, kept in the database -->
+    <div class="card full ot sbk-card" data-sec="dev-backups" id="sbk-card">
+      <div id="sbk-host"></div>
+    </div>
     <div class="card full ot se-card" data-sec="sec-selinux" id="se-card">
       <div id="se-host"></div>
     </div>
@@ -18860,6 +18926,8 @@ var ICONS = {
   code: '<path d="M9 8l-5 4 5 4"/><path d="M15 8l5 4-5 4"/>',
   sms: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  // a box with an arrow into it: the devices' configuration kept (5.50)
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9"/><path d="M12 11.5v6"/><path d="M9.5 15l2.5 2.5 2.5-2.5"/>',
   // a shield with a tick: SELinux guarding the machine
   selinux: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.6 12.2l2.4 2.4 4.4-4.8"/>',
   db: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>',
@@ -19680,6 +19748,67 @@ function resetPlugCounters(plug, types, what, button) {
     }, function (e) { free(); throw e; });
   }, true, free);
 }
+// (5.52) HTTPS to a socket's box: off unless switched on (a box with it off
+// speaks plain HTTP exactly as before). With it on the box is held to the
+// certificate it showed the first time, or to a CA pasted here; a different
+// certificate is refused until somebody trusts it here. An administrator's,
+// and asked about first (zconfirm).
+function plugTls(plug) {
+  withPin('HTTPS to ' + plug.name, 'Reads how the daemon speaks to this box. Nothing is changed.', function (pin) {
+    return post('shelly-tls', {name: plug.name, action: 'status', pin: pin}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'the daemon did not say');
+      showPlugTls(plug, r.tls || {});
+      return plug.name + ': HTTPS ' + (r.tls && r.tls.on ? 'on' : 'off');
+    });
+  });
+}
+function plugTlsSend(plug, body, words) {
+  return post('shelly-tls', Object.assign({name: plug.name}, body)).then(function (r) {
+    if (!r.ok) throw new Error(r.error || 'the daemon did not take it');
+    toast(r.message || words, !r.warning);
+    if (r.tls) showPlugTls(plug, r.tls);
+  }).catch(function (e) { toast(e.message || String(e), false); });
+}
+function showPlugTls(plug, t) {
+  var sw, ca;
+  zmodal('HTTPS to ' + plug.name, function (body) {
+    body.appendChild(el('p', 'note', t.on ? 'HTTPS is on for ' + t.host + '.' : 'HTTPS is off for ' + t.host + ': plain HTTP, as for every box unless it is switched on.'));
+    if (t.https_only) body.appendChild(el('p', 'note bad', 'This box sent plain HTTP on to HTTPS: it speaks only HTTPS (firmware 2.0 and newer). Switch HTTPS on for it.'));
+    sw = zSwitch(t.on);
+    sw.setAttribute('data-tls', 'switch');
+    body.appendChild(zField('HTTPS', sw, 'On: the box is spoken to as https://' + t.host + ' (port 443 unless the address says another).'));
+    var fp = el('div', 'mono', t.pin ? t.pin_words : (t.on ? 'not met yet — kept the first time the box is asked' : '—'));
+    fp.setAttribute('data-tls', 'pin');
+    fp.style.wordBreak = 'break-all';
+    body.appendChild(zField('Certificate trusted (SHA-256)', fp, t.ca ? 'Shown only: with a CA it is the CA that is checked.' : 'Trust on first use: the certificate it showed first. A different one is refused.'));
+    if (t.seen) {
+      var seen = el('div', 'mono bad', t.seen_words);
+      seen.setAttribute('data-tls', 'seen');
+      seen.style.wordBreak = 'break-all';
+      body.appendChild(zField('It now shows ANOTHER certificate', seen, 'Refused, nothing is sent to it. Trust it only if the box was reset or given a new certificate on purpose - compare it with what the box’s own page shows.'));
+    }
+    ca = el('textarea', 'mono');
+    ca.rows = 4; ca.value = t.ca_pem || ''; ca.placeholder = '-----BEGIN CERTIFICATE-----  (optional: your own CA)';
+    ca.setAttribute('data-tls', 'ca');
+    body.appendChild(zField('Check against a CA (optional)', ca, 'Paste a CA certificate (PEM) to have the box checked against it - and against its address - instead of the certificate it showed first. Empty: the certificate it showed first.'));
+  }, [{words: 'Close', close: true}].concat(t.seen ? [{words: 'Trust the new certificate…', close: false, icon: 'check', go: function () {
+    zconfirm('Trust the new certificate', plug.name + '’s box (' + t.host + ') shows the certificate SHA-256 ' + t.seen_words + '. From now on that one is trusted, and the one before is refused.', 'Trust it', function () {
+      plugTlsSend(plug, {action: 'trust', fingerprint: t.seen}, 'trusted');
+    });
+  }}] : []).concat([{words: 'Save…', cls: 'primary', close: false, icon: 'check', go: function () {
+    var on = !!sw._get(), pem = String(ca.value || '').trim(), wasPem = String(t.ca_pem || '').trim();
+    if (on === !!t.on && pem === wasPem) { toast('Nothing changed', true); return; }
+    if (pem && pem.indexOf('-----BEGIN CERTIFICATE-----') < 0) { toast('The CA is not a PEM certificate (-----BEGIN CERTIFICATE----- ...)', false); return; }
+    var words = on === !!t.on ? (pem ? 'The box is checked against the CA given.' : 'The box is held to the certificate it showed first again, no CA.')
+      : on ? 'From now on the daemon speaks HTTPS to ' + t.host + (pem ? ', checked against the CA given.' : ', held to the certificate it shows the first time.')
+           : 'The daemon speaks plain HTTP to ' + t.host + ' again: its password digest and readings go over the network unencrypted.';
+    zconfirm('HTTPS to ' + plug.name, words, on === !!t.on ? 'Change it' : (on ? 'Switch it on' : 'Switch it off'), function () {
+      var body = {action: on === !!t.on ? 'ca' : (on ? 'on' : 'off')};
+      if (pem !== wasPem) body.ca = pem;
+      plugTlsSend(plug, body, 'saved');
+    }, !on);
+  }}]), 'narrow');
+}
 // (5.51) A socket's box: its firmware, and what its relay does by itself.
 // Asked from the socket's fold; an administrator's on the daemon's side, and
 // nothing reaches the box without "are you sure" first (zconfirm).
@@ -19858,7 +19987,7 @@ function renderPlugControls(st) {
     attachCardMenu(block, {head: plug.name, rows: [
       ['\ud83d\udcc8 History for this socket', function () { showTab('history'); setTimeout(function () { pickHistoryDevice('plug:' + plug.name); }, 80); }],
       ['\u26a1 A rule from this socket', function () { showTab('control'); setTimeout(function () { showControlSection('automation'); newRuleFor('plug:' + plug.name); }, 120); }],
-      ['\ud83d\udd0c Its own web page', function () { if (plug.host) window.open('http://' + String(plug.host).split(':')[0], '_blank'); }],
+      ['\ud83d\udd0c Its own web page', function () { if (plug.host) window.open(((plug.tls || {}).on ? 'https://' : 'http://') + String(plug.host).split(':')[0], '_blank'); }],
       ['\ud83e\ude7a Why is it not working?', function () {
         withPin('Look into ' + plug.name, 'Nothing is switched; it only asks.', function (pin) {
           return post('plug-diagnose', {pin: pin, name: plug.name}).then(function (r) {
@@ -19879,6 +20008,15 @@ function renderPlugControls(st) {
     var watts = plugWatts(plug);
     var draw = el('span', 'pc-draw', online && isNum(watts) ? fmt(watts, watts < 10 ? 1 : 0) + ' W' : '');
     var left = el('span', 'pc-left'); left.appendChild(fold); left.appendChild(name); left.appendChild(state); left.appendChild(draw);
+    var tls = plug.tls || {};
+    if (tls.changed || tls.https_only) {
+      // (5.52) a box that needs a person: it speaks only HTTPS, or shows a new certificate
+      var tw = el('span', 'tag warn', tls.changed ? 'new certificate' : 'HTTPS only');
+      tw.setAttribute('data-plug-tls', 'hint');
+      tw.title = tls.changed ? 'Its box shows a different HTTPS certificate from the one trusted: refused. Open the socket \u2192 HTTPS\u2026 to trust it.'
+        : 'Its box speaks only HTTPS (firmware 2.0+): switch HTTPS on for it - open the socket \u2192 HTTPS\u2026';
+      left.appendChild(tw);
+    }
     if (plug.monitor_only) { var mo = el('span', 'dim', '\ud83d\udc41 monitor-only'); mo.title = 'Watched, recorded and charted; switching from the dashboard, bindings, rules and scenes is refused. Change it under Plugs and sensors \u2192 State.'; left.appendChild(mo); }
     left.onclick = function () { PLUGCTL_OPEN[plug.name] = !PLUGCTL_OPEN[plug.name]; rememberPlugCtl(); forgetSig('plugcontrols'); renderPlugControls(st); };
     line.appendChild(left);
@@ -19952,6 +20090,19 @@ function renderPlugControls(st) {
       brow.appendChild(sw);
       body.appendChild(brow);
     }
+    // (5.52) HTTPS to the box - shown when it does not answer too, since a
+    // box that speaks only HTTPS is exactly one that does not
+    body.appendChild(el('div', 'set-head', 'HTTPS'));
+    body.appendChild(el('p', 'btnhelp', tls.on ? 'On' + (tls.ca ? ', checked against a CA.' : tls.pin ? ', held to the certificate SHA-256 ' + String(tls.pin).slice(0, 16).toUpperCase().replace(/(..)(?=.)/g, '$1:') + '\u2026' : ', its certificate kept the first time it is asked.')
+      + (tls.changed ? ' It now shows a different certificate: refused until it is trusted.' : '')
+      : 'Off: plain HTTP.' + (tls.https_only ? ' This box sent plain HTTP on to HTTPS - it speaks only HTTPS (firmware 2.0+): switch HTTPS on for it.' : '')));
+    var trow = el('div', 'btnrow');
+    var tb = cmdButton('HTTPS\u2026', 'lock', 'small');
+    tb.setAttribute('data-plug-tls', 'open');
+    attachHint(tb, 'HTTPS to this box: on or off, the certificate trusted for it, a CA to check it against, and trusting a new certificate. An administrator\u2019s; asked first.');
+    tb.onclick = function () { plugTls(plug); };
+    trow.appendChild(tb);
+    body.appendChild(trow);
     block.appendChild(body);
     host.appendChild(block);
   });
@@ -20469,7 +20620,7 @@ function renderManaged(st) {
     test.onclick = function () {
       test.disabled = true; test.classList.add('busy');
       withPin('Test ' + (e.name || e.host), 'The daemon asks the device at <b>' + esc(e.host || '?') + '</b> who it is.', function (pin) {
-        return post('managed-test', {host: e.host, password: dv.password || '', pin: pin}).then(function (r) {
+        return post('managed-test', {host: e.host, password: dv.password || '', tls: !!(e.tls || dv.tls), pin: pin}).then(function (r) {
           return (r.model || '?') + ' \u00b7 ' + (r.app || '') + ' ' + (r.ver || '') + (r.auth && !dv.password && !dv.password_set ? ' \u00b7 needs a password' : '') + ' \u00b7 ' + (r.kind === 'plug' ? 'has a switch' : 'no switch, a sensor');
         });
       });
@@ -20488,13 +20639,29 @@ function renderManaged(st) {
 // button and by "Find Shelly devices -> Add"
 function detectDevice(dv, addr, password, done) {
   withPin('Detect ' + addr, 'The daemon asks the device at <b>' + esc(addr) + '</b> what it is and how many relays it has.', function (pin) {
-    return post('plug-detect', {host: addr, password: password || '', pin: pin}).then(function (r) {
-      applyDetect(dv, r); markManaged(); renderManaged(STATE.status);
+    return post('plug-detect', {host: addr, password: password || '', tls: !!dv.tls, pin: pin}).then(function (r) {
+      applyDetect(dv, r);
+      if (r.tls) { dv.tls = true; dv.channels.forEach(function (e) { e.tls = true; }); }
+      markManaged(); renderManaged(STATE.status);
       if (done) done(r);
       var n = (r.channels || []).length;
       var moved = applyDetect.renamed || [];
       return (r.model || '?') + (r.app ? ' \u00b7 ' + r.app : '') + (r.fw ? ' ' + r.fw : '') + ' \u00b7 ' + (n ? n + ' relay' + (n === 1 ? '' : 's') : (r.sensor_like ? 'a sensor' : 'no relay'))
-        + (moved.length ? ' \u00b7 renamed ' + moved.join(', ') : '');
+        + (moved.length ? ' \u00b7 renamed ' + moved.join(', ') : '')
+        + (r.tls ? ' \u00b7 over HTTPS, certificate SHA-256 ' + String(r.tls_fingerprint || '?').slice(0, 16).toUpperCase().replace(/(..)(?=.)/g, '$1:') + '\u2026 (kept once saved)' : '');
+    }, function (e) {
+      // (5.52) a box made with firmware 2.0+ speaks only HTTPS: offered, never
+      // switched on by itself
+      if (!dv.tls && /speaks only HTTPS/.test(e.message || '')) {
+        setTimeout(function () {
+          zconfirm('HTTPS for ' + addr, 'The box at ' + addr + ' speaks only HTTPS (firmware 2.0 and newer). Ask it again over HTTPS? Once the device is saved the daemon speaks HTTPS to it, held to the certificate it shows the first time.', 'Use HTTPS', function () {
+            dv.tls = true;
+            dv.channels.forEach(function (c) { c.tls = true; });
+            detectDevice(dv, addr, password, done);
+          }, false);
+        }, 50);
+      }
+      throw e;
     });
   });
 }
@@ -20595,6 +20762,7 @@ $('managed-save').onclick = function () {
                mqtt_user: e.mqtt_user || '', mqtt_password: e.mqtt_password || '', clear_mqtt_password: !!e.clear_mqtt_password,
                host_state: e.host_state || 'enabled', model: e.model || '', mac: e.mac || ''};
     if (e.password) row.password = e.password;
+    if (e.tls) row.tls = true;
     (e.kind === 'plug' ? plugs : sensors).push(row);
   });
   withPin('Save devices', 'The daemon starts polling new entries at once and drops removed ones.', function (pin) {
@@ -35720,6 +35888,311 @@ function seNode(n) {
   if (row.childNodes.length) box.appendChild(row);
   return box;
 }
+/* ---- Settings - Devices - Device backups (5.50) ------------------------------------------
+   The whole configuration of each Shelly box, made by the box itself (Sys.CreateBackup) and
+   kept in the database; put back with Sys.UploadBackup + Sys.RestoreBackup. A backup is made
+   as the box starts, so each one restarts it - said before it is asked. Whether a box changed
+   since its last backup is known without a restart (its revisions and a hash of its
+   configuration). An administrator's: the archives hold the boxes' Wi-Fi passwords. While a
+   backup, a restore or a look is going on, the card asks again every two seconds. */
+var SBK = {d: null, poll: null, first: false, open: null};
+function loadSbk(quiet) {
+  var host = $('sbk-host');
+  if (!host) return;
+  rootTimer('dev-backups', function () { if (!SBK.poll) loadSbk(true); }, 30000);
+  if (!isUnlocked()) {
+    sbkPoll(false);
+    rootLocked(host, 'An administrator’s to see: the backups hold the devices’ Wi-Fi passwords and cloud tokens.', loadSbk);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('shellybackup').then(function (d) {
+    SBK.d = d;
+    /* a device never looked at: looked at now, once - the look restarts nothing */
+    if (!SBK.first && !sbkBusy(d) && (d.devices || []).some(function (x) { return x.status === 'unknown'; })) {
+      SBK.first = true;
+      return post('shellybackup-do', {action: 'check'}).then(function (x) { SBK.d = x; }, function () {});
+    }
+  }).then(function () { drawSbk(); sbkPoll(sbkBusy()); })
+    .catch(function (e) { if (!quiet) zoops(e); });
+}
+function sbkBusy(d) {
+  d = d || SBK.d || {};
+  return !!((d.job || {}).running || d.checking);
+}
+function sbkPoll(on) {
+  if (on && !SBK.poll) {
+    SBK.poll = setInterval(function () {
+      if (STATE.tab !== 'control' || CONTROL_SEC !== 'dev-backups') { sbkPoll(false); return; }
+      if (document.hidden) return;
+      api('shellybackup').then(function (d) {
+        SBK.d = d;
+        if (!($('zmodal') && !$('zmodal').hidden)) drawSbk(); else sbkDrawOpen();
+        if (!sbkBusy(d)) sbkPoll(false);
+      }).catch(function () {});
+    }, 2000);
+  }
+  if (!on && SBK.poll) { clearInterval(SBK.poll); SBK.poll = null; }
+}
+function sbkAsk(body, b) {
+  if (b) zbusy(b, true);
+  return post('shellybackup-do', body).then(function (x) {
+    if (b) zbusy(b, false);
+    if (x.message) toast(x.message, true);
+    SBK.d = x;
+    drawSbk();
+    sbkPoll(true);
+    return x;
+  }, function (e) { if (b) zbusy(b, false); zoops(e); throw e; });
+}
+function sbkState(x) {
+  var s = {same: ['ok', 'up to date'], differs: ['warn', 'differs since ' + (x.since ? ago(x.since) : 'its last backup')],
+           never: ['info', 'never backed up'], unsupported: ['', 'not supported'], unknown: ['', 'not looked at yet']}[x.status]
+    || ['', x.status];
+  var p = el('span', 'sbk-state ' + s[0]);
+  p.appendChild(el('span', 'dot'));
+  p.appendChild(el('span', '', s[1]));
+  if (x.status === 'unsupported' && x.why) p.title = x.why;
+  return p;
+}
+function sbkIcon(x) {
+  var roles = x.roles || [];
+  if (roles.length && roles.every(function (r) { return r === 'light'; })) return ICON.light;
+  return deviceIcon({source: 'plug', name: (x.names || [])[0]}) || ICON.plug;
+}
+function sbkSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round((n || 0) / 1024)) + ' KB'; }
+function drawSbk() {
+  var host = $('sbk-host');
+  if (!host || !SBK.d || host.dataset.locked === '1') return;
+  if (typingIn(host)) return;
+  var d = SBK.d, c = d.counts || {}, s = d.settings || {}, job = d.job || {}, busy = !!job.running;
+  host.innerHTML = '';
+  var h = el('h2', '', 'Device backups');
+  var top = el('span', 'sbk-top');
+  var look = cmdButton(d.checking ? 'Looking…' : 'Look again', 'refresh', 'small');
+  look.id = 'sbk-look';
+  look.disabled = busy || d.checking;
+  look.title = 'Asks every device for its configuration now - nothing restarts';
+  look.onclick = function () { sbkAsk({action: 'check'}, look).catch(function () {}); };
+  top.appendChild(look);
+  var differ = (d.devices || []).filter(function (x) { return (x.status === 'differs' || x.status === 'never') && x.reachable !== false; });
+  var all = cmdButton('Back up all that differ' + (differ.length ? ' (' + differ.length + ')' : ''), 'archive', 'small primary');
+  all.id = 'sbk-all';
+  all.disabled = busy || !differ.length;
+  all.onclick = function () { sbkBackupAsk(differ, true); };
+  top.appendChild(all);
+  h.appendChild(top);
+  host.appendChild(h);
+  host.appendChild(el('p', 'note sbk-lede', 'The device makes its backup as it starts: a backup restarts it, and its outputs may blink for a moment. '
+    + 'Kept in this dashboard’s database, the newest ' + (s.keep || 5) + ' of each device. A backup holds the device’s Wi-Fi password and its cloud token - '
+    + 'only an administrator sees, restores or downloads one. On the server: zigmon --shelly-backup.'));
+  var tiles = el('div', 'facts');
+  var last = (d.run || {}).at ? stamp(d.run.at).slice(0, 16) + ' - ' + (d.run.done || 0) + ' backed up' + ((d.run.failed) ? ', ' + d.run.failed + ' failed' : '') : 'none yet';
+  [['Devices', String(c.devices || 0), ''], ['Backed up', String(c.backed_up || 0), c.backed_up ? 'ok' : 'dim'],
+   ['Differ', String(c.differ || 0), c.differ ? 'warn' : 'dim'], ['Never backed up', String(c.never || 0), c.never ? 'warn' : 'dim'],
+   ['Not supported', String(c.unsupported || 0), 'dim'], ['Not reachable', String(c.unreachable || 0), c.unreachable ? 'warn' : 'dim'],
+   ['Last scheduled run', last, ''], ['Next run', s.on && d.next ? d.next.replace('T', ' ') : 'off', s.on ? '' : 'dim']].forEach(function (f) {
+    var t = el('div', 'fact ' + f[2]);
+    t.appendChild(el('span', 'k', f[0]));
+    t.appendChild(el('span', 'v', f[1]));
+    tiles.appendChild(t);
+  });
+  host.appendChild(tiles);
+  if (busy || (job.ended && Date.now() / 1000 - job.ended < 600 && (job.steps || []).length)) host.appendChild(sbkJobBox(job));
+  host.appendChild(sbkSched(s));
+  var list = el('div', 'sbk-list');
+  list.id = 'sbk-list';
+  if (!(d.devices || []).length) list.appendChild(el('p', 'note', 'No Shelly socket or light is configured (Settings → Devices).'));
+  (d.devices || []).forEach(function (x) { list.appendChild(sbkRow(x, busy)); });
+  host.appendChild(list);
+}
+function sbkJobBox(job) {
+  var box = el('div', 'sbk-job' + (job.running ? '' : ' done'));
+  box.id = 'sbk-job';
+  var t = el('h3');
+  if (job.running) t.appendChild(el('span', 'sbk-spin'));
+  var kind = {backup: 'Backing up', restore: 'Restoring', scheduled: 'The scheduled backup'}[job.kind] || job.kind;
+  t.appendChild(el('span', '', (job.running ? kind : kind + ' - ended') + (job.by ? ' · ' + job.by : '')));
+  box.appendChild(t);
+  var ul = el('ul', 'sbk-steps');
+  (job.steps || []).forEach(function (st) {
+    var li = el('li');
+    var tone = {done: 'ok', failed: 'crit', skipped: '', working: 'info', waiting: ''}[st.state] || '';
+    var pill = el('span', 'sbk-state ' + tone);
+    pill.appendChild(el('span', 'dot'));
+    pill.appendChild(el('span', '', {done: 'done', failed: 'failed', skipped: 'left alone', working: 'working', waiting: 'waiting'}[st.state] || st.state));
+    li.appendChild(pill);
+    li.appendChild(el('span', 'n', st.label));
+    li.appendChild(el('span', 'w', st.said || ''));
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  if (job.said) box.appendChild(el('p', 'note bad', job.said));
+  return box;
+}
+function sbkSched(s) {
+  var box = el('div', 'sbk-sched');
+  box.id = 'sbk-sched';
+  var sw = zSwitch(s.on);
+  sw.input.id = 'sbk-on';
+  var l = el('label', 'sbk-sw');
+  l.appendChild(sw);
+  l.appendChild(el('span', '', 'Back up by itself, when a device changed'));
+  box.appendChild(l);
+  var at = el('input'); at.type = 'time'; at.value = s.at || '03:40'; at.id = 'sbk-at';
+  var f1 = el('label', 'sbk-f'); f1.appendChild(document.createTextNode('every day at')); f1.appendChild(at);
+  box.appendChild(f1);
+  var keeps = [1, 2, 3, 5, 7, 10, 15, 20, 30, 50];
+  if (keeps.indexOf(Number(s.keep || 5)) < 0) { keeps.push(Number(s.keep)); keeps.sort(function (p, q) { return p - q; }); }
+  var keep = zSelect(keeps.map(function (n) { return [String(n), String(n)]; }), String(s.keep || 5));
+  keep.id = 'sbk-keep';
+  var f2 = el('label', 'sbk-f'); f2.appendChild(document.createTextNode('keep the newest')); f2.appendChild(keep);
+  f2.appendChild(document.createTextNode('per device'));
+  box.appendChild(f2);
+  var save = cmdButton('Save', 'save', 'small primary');
+  save.id = 'sbk-save';
+  save.onclick = function () {
+    sbkAsk({action: 'settings', on: sw._get(), at: at.value, keep: keep.value}, save).catch(function () {});
+  };
+  box.appendChild(save);
+  box.appendChild(el('p', 'sbk-says', 'Off until switched on. At that time it looks at every device and backs up, one at a time, only the ones whose configuration differs from their newest backup. '
+    + 'A device it would change by restarting it is left alone and said: an output that is on and does not come back as it was (power-on state other than “restore last”), and a monitor-only socket.'));
+  return box;
+}
+function sbkRow(x, busy) {
+  var r = el('div', 'sbk-dev');
+  r.dataset.box = x.box;
+  r.appendChild(el('div', 'sbk-ic', sbkIcon(x)));
+  var n = el('div', 'sbk-name');
+  n.appendChild(el('b', '', x.label));
+  n.appendChild(el('span', 'sbk-sub', [x.model || x.app || 'Shelly', x.fw ? 'fw ' + x.fw : '', x.host].filter(Boolean).join(' · ')));
+  r.appendChild(n);
+  var st = el('div', 'sbk-states');
+  st.appendChild(sbkState(x));
+  if (x.reachable === false) {
+    var u = el('span', 'sbk-state crit');
+    u.appendChild(el('span', 'dot')); u.appendChild(el('span', '', 'not reachable'));
+    u.title = x.said || '';
+    st.appendChild(u);
+  }
+  if (x.status === 'unsupported' && x.why) { var w = el('span', 'sbk-why', x.why); st.appendChild(w); }
+  r.appendChild(st);
+  var l = el('div', 'sbk-last');
+  if (x.last) { l.appendChild(document.createTextNode('Last backup ')); l.appendChild(el('b', '', ago(x.last))); l.appendChild(document.createTextNode(' · ' + x.count + ' kept')); l.title = stamp(x.last); }
+  else l.textContent = 'No backup kept';
+  r.appendChild(l);
+  var a = el('div', 'sbk-acts');
+  var bk = cmdButton('Back up', 'archive', 'small');
+  bk.disabled = busy || x.status === 'unsupported' || x.reachable === false;
+  bk.title = 'Restarts the device: its backup is made as it starts';
+  bk.onclick = function () { sbkBackupAsk([x], false); };
+  var rs = cmdButton('Restore…', 'undo', 'small');
+  rs.disabled = busy || !x.count;
+  rs.onclick = function () { sbkRestoreList(x); };
+  var dl = iconButton('download', 'Download the newest backup (it holds the Wi-Fi password)');
+  dl.disabled = !x.count;
+  dl.onclick = function () { sbkDownloadAsk(x, (x.backups || [])[0]); };
+  [bk, rs, dl].forEach(function (b) { a.appendChild(b); });
+  r.appendChild(a);
+  return r;
+}
+/* A backup by hand: asked first, every device that restarts named - and what a restart would
+   do to one whose output is on and does not come back as it was. */
+function sbkBackupAsk(list, many) {
+  zmodal(many ? 'Back up ' + list.length + ' device(s)?' : 'Back up ' + list[0].label + '?', function (body) {
+    body.classList.add('sbk-dlg');
+    body.appendChild(el('p', 'note warn', (many ? 'Each of these restarts, one at a time' : 'The device restarts')
+      + ': the firmware makes its backup as it starts. Its outputs may blink for a few seconds, and it is away for up to a minute or two.'));
+    var ul = el('ul');
+    list.forEach(function (x) {
+      var li = el('li');
+      li.appendChild(el('b', '', x.label));
+      li.appendChild(document.createTextNode(' - ' + (x.model || 'Shelly') + (x.status === 'differs' ? ', differs from its last backup' : x.status === 'never' ? ', never backed up' : '')));
+      if (x.risk) { li.appendChild(el('br')); li.appendChild(el('span', 'sbk-risk', 'After the restart: ' + x.risk)); }
+      if (x.monitor_only) { li.appendChild(el('br')); li.appendChild(el('span', 'sbk-risk', 'Monitor-only: zigmon never switches it - this restarts it all the same.')); }
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+    body.appendChild(el('p', 'note small', 'The backup is not encrypted on the device: it is kept here, behind the administrator’s sign-in.'));
+  }, [{words: 'No, leave it', close: true},
+      {words: many ? 'Back them up (they restart)' : 'Back it up (it restarts)', cls: 'primary', icon: 'archive', close: true, go: function () {
+        sbkAsk(many ? {action: 'backup', all: true} : {action: 'backup', box: list[0].box}).catch(function () {});
+      }}], 'narrow');
+}
+function sbkRestoreList(x) {
+  SBK.open = x.box;
+  zmodal('Backups of ' + x.label, function (body) {
+    body.classList.add('sbk-dlg');
+    sbkFillList(body, x);
+  }, [{words: 'Close', close: true}], 'medium');
+  ZM.onClose = function () { SBK.open = null; };
+}
+function sbkDrawOpen() {
+  if (!SBK.open || !SBK.d) return;
+  var x = (SBK.d.devices || []).filter(function (y) { return y.box === SBK.open; })[0];
+  var body = $('zmodal-body');
+  if (x && body && body.classList.contains('sbk-dlg') && body.querySelector('.sbk-backups')) { body.innerHTML = ''; sbkFillList(body, x); }
+}
+function sbkFillList(body, x) {
+  body.appendChild(el('p', 'note', (x.model || 'Shelly') + (x.fw ? ', firmware ' + x.fw : '') + ' · ' + x.host
+    + '. “current”: the device’s configuration is the one in that backup.'));
+  var wrap = zTable(['Made', 'Firmware', 'Size', ''], x.backups || [], function (b) {
+    var tr = el('tr');
+    var w = el('td');
+    w.appendChild(el('div', '', stamp(b.at).slice(0, 16)));
+    var tags = el('div', 'muted small', (b.by ? 'by ' + b.by : '') + (b.why ? ' · ' + b.why : ''));
+    if (b.current) { tags.appendChild(document.createTextNode(' ')); tags.appendChild(el('span', 'tag ok', 'current')); }
+    w.appendChild(tags);
+    tr.appendChild(w);
+    var fw = el('td', 'mono small', b.fw || '?');
+    if (b.fw && x.fw && b.fw !== x.fw) { fw.appendChild(document.createTextNode(' ')); fw.appendChild(el('span', 'tag warn', 'not the firmware it runs')); }
+    tr.appendChild(fw);
+    tr.appendChild(el('td', 'num', sbkSize(b.size)));
+    var a = el('td', 'acts');
+    var rs = cmdButton('Restore…', 'undo', 'small danger');
+    rs.disabled = !!((SBK.d || {}).job || {}).running || x.restore_ok === false;
+    if (x.restore_ok === false) rs.title = 'Its firmware cannot take a backup back';
+    rs.onclick = function () { sbkRestoreAsk(x, b); };
+    var dl = iconButton('download', 'Download it (it holds the Wi-Fi password)');
+    dl.onclick = function () { sbkDownloadAsk(x, b); };
+    var del = iconButton('trash', 'Delete it');
+    del.onclick = function () {
+      zconfirm('Delete this backup of ' + x.label + '?', 'The backup made ' + stamp(b.at).slice(0, 16) + ' is deleted from the database. The device is not touched.', 'Delete it', function () {
+        sbkAsk({action: 'delete', id: b.id}).then(function () { sbkRestoreList(sbkDev(x.box) || x); }, function () {});
+      });
+    };
+    [rs, dl, del].forEach(function (y) { a.appendChild(y); });
+    tr.appendChild(a);
+    return tr;
+  }, 'plain|No backup kept.');
+  wrap.classList.add('sbk-backups');
+  body.appendChild(wrap);
+}
+function sbkDev(box) { return ((SBK.d || {}).devices || []).filter(function (y) { return y.box === box; })[0]; }
+function sbkRestoreAsk(x, b) {
+  var fw = b.fw && x.fw && b.fw !== x.fw ? ' It was made on firmware ' + b.fw + '; the device runs ' + x.fw + ' - a restore across firmware versions may not take everything.' : '';
+  zconfirm('Restore ' + x.label + ' from ' + stamp(b.at).slice(0, 16) + '?',
+    'The device restarts at once, and its files are wiped and replaced by the backup’s: its settings, schedules, webhooks, scripts and Wi-Fi, as they were then. '
+    + 'What was changed since is gone. A backup of another model is refused before anything is sent.' + fw,
+    'Restore it (it restarts)', function () { SBK.open = null; sbkAsk({action: 'restore', box: x.box, id: b.id}).catch(function () {}); });
+}
+function sbkDownloadAsk(x, b) {
+  if (!b) return;
+  zconfirm('Download the backup of ' + x.label + '?', 'The archive holds the device’s Wi-Fi password and its cloud token: keep it as you would a password. '
+    + 'The download is written into the events, by your name.', 'Download it', function () {
+    post('shellybackup-do', {action: 'download', id: b.id}).then(function (r) {
+      var bin = atob(r.file), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var a = el('a');
+      a.href = URL.createObjectURL(new Blob([bytes], {type: r.mime || 'application/zip'}));
+      a.download = r.name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      toast('downloaded: ' + r.name, true);
+    }).catch(zoops);
+  }, false);
+}
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -35733,6 +36206,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-upgrade') { upgradeWire(); loadUpgrade(); }
   if (sec === 'sys-osup') loadOsup(); else ouPoll(false);
   if (sec === 'sec-selinux') loadSelinux(); else sePoll(false);
+  if (sec === 'dev-backups') loadSbk(); else sbkPoll(false);
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-proxy') drawProxy();
@@ -35747,6 +36221,7 @@ var CONTROL_SECTIONS = {
   'dev-zigbee': ['Zigbee', 'The gateways that carry the mesh, and what each device was told to report.'],
   'dev-health': ['Health', 'When a device counts as unwell: batteries, signal, readings out of range and devices gone quiet.'],
   'dev-polling': ['Polling', 'How often the boxes are asked, and how they are spoken to.'],
+  'dev-backups': ['Device backups', 'The whole configuration of each Shelly socket and light - its settings, schedules, webhooks, scripts and Wi-Fi - backed up by the device itself into this dashboard\u2019s database, and put back when it is needed. The firmware makes a backup as it starts, so each backup restarts the device; a restore wipes its files and restarts it. A change since the last backup is noticed without a restart.'],
   'auto-rules': ['Rules', 'What happens when a reading crosses a line — and a way to try it before it does.'],
   'auto-scenes': ['Scenes & time', 'Named bundles of actions, steps in order, and things that happen on the clock.'],
   'auto-groups': ['Buttons & groups', 'What each button does, and several things switched or read as one.'],
