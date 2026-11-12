@@ -595,6 +595,9 @@ const job = %(job)s;
     r.after = await read();
   }
   if (job.act !== 'dialog') await (await p.$(card)).screenshot({path: job.dir + '/' + job.shot + '.png'});
+  // 5.49.1: a button of the front's card left the page's target at the front,
+  // and the next drawing made this machine's card the front's as well
+  r.first = await p.evaluate(() => (document.querySelector('#web-certs .cert-grid > .cert-card:nth-child(1) .cert-target') || {}).textContent);
   r.errors = errors;
   console.log(JSON.stringify(r));
   await b.close();
@@ -657,6 +660,8 @@ const job = %(job)s;
         a = r.get('after') or {}
         check(not r.get('error') and (r.get('before') or {}).get('cls') == 'bad' and a.get('cls') == 'good'
               and 'the whole chain is sent' in a.get('self', ''), 'the front\'s card: %r' % r)
+        check(r.get('first') == 'The dashboard and the broker',
+              'after a button of the front\'s card the first card is not this machine\'s: %r' % r.get('first'))
         check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
         print('  screenshots: %s' % SHOTS)
 finally:

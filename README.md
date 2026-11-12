@@ -2083,7 +2083,16 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.49.0**
+Current version: **5.49.1**
+
+5.49.1 — this machine's certificate card stays its own.
+
+* After Look again, Check the chain or any other button of the server in
+  front's (or ntfy's) certificate card, the page drew this machine's card as
+  the front's as well - its title, its files, its buttons. The card is drawn
+  from what it is, never from the last button pressed.
+
+`test/review550_chainui.py`; this check fails on 5.49.0.
 
 5.49.0 — a certificate is sent with its whole chain.
 

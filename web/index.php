@@ -31067,7 +31067,9 @@ window.addEventListener('resize', function () {
 });
 function certCard(d) {
   var prof = d.conf || {}, now = d.now || {}, info = now.info || null;
-  var px = certIsProxy(d.target) ? d.proxy : null, T = px ? d.target : '';
+  // (5.49.1) d.target, never the target the last button pressed left behind: this machine's
+  // card has none, and was drawn as the front's after Look again or Check the chain there
+  var px = certIsProxy(d.target || '') ? d.proxy : null, T = px ? d.target : '';
   var nt = T === 'proxy-ntfy';
   var lk = px ? (px.look || {}) : {};
   var card = el('section', 'cert-card' + (px ? ' cert-proxy' : '') + (nt ? ' cert-ntfy' : ''));
