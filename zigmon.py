@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.49.1'
+__version__ = '5.50.0'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -22783,6 +22783,21 @@ class Daemon(object):
             mate.last_device_status = now
         return (whole or {}).get('switch:%d' % int(p.cfg.get('switch_id') or 0))
 
+    # (5.49.2) A box's model and firmware were read once and remembered for
+    # good - across restarts too - so a firmware put in from the Shelly app or
+    # the box's own page never reached the card. Read again when the box has
+    # restarted (its uptime went back: every update restarts it) and every six
+    # hours at the latest; one small request, off the switching path.
+    PLUG_INFO_EVERY_S = 6 * 3600
+
+    def _plug_info_due(self, p, status, now):
+        up = ((status or {}).get('sys') or {}).get('uptime') if isinstance(status, dict) else None
+        seen = getattr(p, 'uptime_seen', None)
+        restarted = isinstance(up, (int, float)) and isinstance(seen, (int, float)) and up < seen
+        if isinstance(up, (int, float)):
+            p.uptime_seen = up
+        return not p.info or restarted or now - (getattr(p, 'info_at', 0) or 0) >= self.PLUG_INFO_EVERY_S
+
     def poll_plug(self, p, force=False):
         """Read one plug and record it."""
         now = time.time()
@@ -22822,8 +22837,9 @@ class Daemon(object):
             if not busy and (now - p.last_device_status >= 60 or not p.device_status):
                 p.device_status = rpc.device_status()
                 p.last_device_status = now
-            if not p.info and not ShellyRPC.commanding(p.cfg.get('host'), 1.5):
+            if self._plug_info_due(p, p.device_status, now) and not ShellyRPC.commanding(p.cfg.get('host'), 1.5):
                 p.info = rpc.device_info()
+                p.info_at = now
                 self._info_gen = getattr(self, '_info_gen', 0) + 1
                 self.store.set_meta('plug_info_' + p.name, json.dumps(p.info))
         except PlugError as e:
@@ -22953,8 +22969,9 @@ class Daemon(object):
             if now - lead.last_device_status >= 60 or not lead.device_status:
                 lead.device_status = full
                 lead.last_device_status = now
-            if not lead.info:
+            if self._plug_info_due(lead, full, now):
                 lead.info = rpc.device_info()
+                lead.info_at = now
                 self._info_gen = getattr(self, '_info_gen', 0) + 1
                 self.store.set_meta('plug_info_' + lead.name, json.dumps(lead.info))
         except PlugError as e:
@@ -22969,7 +22986,7 @@ class Daemon(object):
             p.failures = 0
             p.error = None
             p.backoff_until = 0.0
-            if not p.info and lead.info:
+            if lead.info and p.info != lead.info:
                 p.info = lead.info
                 self._info_gen = getattr(self, '_info_gen', 0) + 1
             try:

@@ -2083,7 +2083,28 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.49.1**
+Current version: **5.50.0**
+
+5.50.0 — Shelly boxes checked against their API; their firmware and relay settings.
+
+* The firmware a box shows is read again when the box restarts (every update
+  restarts it) and every six hours: an update put in from the Shelly app or
+  the box's own page stayed on the card as the old version for good.
+* A strip's sockets switched together could send one digest nonce count twice;
+  firmware 2.0+ refuses that and the command paid a second round trip.
+* "Protecting itself" (overpower) pushed by the box over MQTT was lost, and
+  so was its all-clear: the next poll compared with the reading the push had
+  already put in place.
+* `zigmon shelly watch` answers a ping with a masked pong carrying its payload.
+* A box's firmware: is a newer one offered (stable, or beta on request), and put
+  it in - asked first. And what the relay does by itself: its state at power
+  on, auto off and auto on after a time, the power limit. On the socket's fold
+  ("The box itself"), `zigmon shelly NAME firmware`, `zigmon shelly NAME
+  switch-settings` and the console. Administrators only; nothing changes until
+  someone does it.
+
+`test/review551_shelly.py`, `test/review5492_plugfw.py`; these checks fail on
+5.49.1.
 
 5.49.1 — this machine's certificate card stays its own.
 
