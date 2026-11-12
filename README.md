@@ -2083,7 +2083,30 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.48.1**
+Current version: **5.49.0**
+
+5.49.0 — a certificate is sent with its whole chain.
+
+* A certificate uploaded without its intermediate authority (Control -
+  Certificates and TLS, and the server in front) made nginx send it alone:
+  browsers fetch the missing link themselves, but Python, curl, openssl,
+  phone apps and MQTT clients refused ("unable to get local issuer
+  certificate"). zigmon now fetches the missing link as browsers do - from the
+  certificate's Authority Information Access (CA Issuers), http or https,
+  64 KB and ten seconds at most, four steps, through the proxy as the ACME CA
+  is - and keeps it only when the whole chain then leads to a root this
+  system trusts (or a company root uploaded with it). The answer and an event
+  say so: better, upload the whole chain. A self-signed certificate fetches
+  nothing; a chain that cannot be completed is still taken, with a warning.
+* The same for a certificate from acme push whose chain_pem is empty.
+* The card has a line Chain, checked as nginx sends it: complete (N
+  certificates up to the root), incomplete (the intermediate X is not sent)
+  or self-signed. The old "Checked" line verified against the trusted file,
+  which holds the intermediate, and said "good" for a server that did not
+  send it.
+* A server that does not send its intermediate is told once per certificate.
+
+`test/review549_chain.py`; these checks fail on 5.48.1.
 
 5.48.1 — the SELinux report lists the processes again.
 
