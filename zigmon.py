@@ -48,6 +48,7 @@ import getpass
 import functools
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import math
@@ -743,7 +744,8 @@ NOTIFY_PRESETS = {
     'all': {'crit', 'warn', 'offline', 'rule', 'switch'},
 }
 
-KNOWN_PLUG_KEYS = {'host_state', 'model', 'mac', 'name', 'host', 'password', 'switch_id', 'mqtt_name', 'enabled', 'kind', 'retain_full_days', 'monitor_only'}
+KNOWN_PLUG_KEYS = {'host_state', 'model', 'mac', 'name', 'host', 'password', 'switch_id', 'mqtt_name', 'enabled', 'kind', 'retain_full_days', 'monitor_only',
+                   'tls', 'tls_ca'}      # (5.52) HTTPS to the box: off unless "tls": true
 
 
 def warn_unknown_keys():
@@ -755,7 +757,7 @@ def warn_unknown_keys():
     for entry in CONFIG.get('zigbee_gateways') or []:
         if isinstance(entry, dict):
             for k in entry:
-                if k not in ('name', 'host', 'target', 'username', 'password', 'model', 'fw', 'kind'):
+                if k not in ('name', 'host', 'target', 'username', 'password', 'model', 'fw', 'kind', 'tls', 'tls_ca'):
                     log('config: unknown key %r on zigbee_gateways entry %r - a typo?' % (k, entry.get('name')), 'warn')
     for k in CONFIG:
         if k not in DEFAULTS and not k.startswith('_'):
@@ -1683,6 +1685,13 @@ class PlugError(Exception):
     pass
 
 
+class ShellyTLSRefused(PlugError):
+    """(5.52) A box with HTTPS on showed a certificate that is not the one
+    trusted for it. Refused, and not asked again in the same breath: a
+    certificate does not change back between two tries."""
+    final = True
+
+
 class SmsLoginFailed(RuntimeError):
     """The gateway's own API would not give us a token (5.43.3). Nothing was
     handed over, so a text that meets this was certainly not sent - unlike a
@@ -1705,6 +1714,19 @@ class ShellyRPC(object):
     answers 429 when that adds up.
     """
     _challenges = {}
+    # (5.52) HTTPS, only for a box it is switched on for - every other box
+    # speaks plain HTTP exactly as before. host -> {'ca': PEM or '', 'pin':
+    # SHA-256 of the certificate or ''}; set by the daemon from its settings
+    # (tls_configure), so every ShellyRPC made for that host - a poll, a
+    # command, a backup, the command line - speaks HTTPS to it without being
+    # told. A box that is not in here is plain HTTP.
+    _tls = {}
+    _tls_learnt = {}            # host -> fingerprint met first in this process (no setting to keep it in)
+    _tls_ctx = {}               # CA PEM ('' = pin only) -> SSLContext, made once
+    tls_seen = {}               # host -> fingerprint the box showed last
+    https_only = {}             # host -> when plain HTTP to it was sent on to https:// (fw 2.0+)
+    on_tls_pinned = None        # callable(host, fingerprint): a box met for the first time, kept
+    on_tls_refused = None       # callable(host, seen, pinned): a certificate that is not the trusted one
     _nc_guard = threading.Lock()    # (5.51) the nonce count steps once per request, never twice the same
     _last_request = {}
     _conns = {}                 # host -> [(connection, last used)]: a few open per box, used again (5.44)
@@ -1731,6 +1753,25 @@ class ShellyRPC(object):
         looks open - that is what the age limit is for."""
         if sock is None:
             return False
+        if isinstance(sock, ssl.SSLSocket):
+            # (5.52) a TLS socket takes no MSG_PEEK. Something waiting on an
+            # idle one is read without waiting: TLS 1.3 sends its session
+            # tickets after the handshake (records, no data - still open),
+            # where a close_notify or a FIN means it is gone
+            try:
+                if not select.select([sock], [], [], 0)[0]:
+                    return not sock.pending()
+                was = sock.gettimeout()
+                sock.settimeout(0)
+                try:
+                    sock.recv(1)
+                finally:
+                    sock.settimeout(was)
+            except ssl.SSLWantReadError:
+                return True
+            except (OSError, ValueError):
+                return False
+            return False                # closed, or bytes nobody asked for
         try:
             was = sock.gettimeout()
             sock.settimeout(0)
@@ -1788,14 +1829,15 @@ class ShellyRPC(object):
         return len(spares), time.monotonic() - spares[0][1]
 
     @classmethod
-    def _take_warm(cls, host, window):
+    def _take_warm(cls, host, window, tls=False):
         """The freshest spare of a box that is still good, or None."""
         conn, stale = None, []
         with cls._conn_guard:
             spares = cls._warm.get(host) or []
             while spares and conn is None:
                 one, opened = spares.pop()
-                if time.monotonic() - opened >= window or not cls._sock_open(one.sock):
+                if time.monotonic() - opened >= window or not cls._sock_open(one.sock) \
+                        or isinstance(one, http.client.HTTPSConnection) != bool(tls):
                     stale.append(one)
                 else:
                     conn = one
@@ -1821,8 +1863,17 @@ class ShellyRPC(object):
         gate = cls._gates.get(host)
         return bool(gate and (gate.get('queue') or gate.get('commands')))
 
-    def __init__(self, host, password='', switch_id=0, label='the plug'):
+    def __init__(self, host, password='', switch_id=0, label='the plug', tls=None, ca=None, pin=None):
+        # (5.52) "https://10.0.0.5" says HTTPS for this one client, and
+        # "http://" plain HTTP; a bare address speaks what the box's own
+        # setting says (tls_configure) - plain HTTP unless it was switched on.
+        # ca / pin given here are used instead of the box's own setting.
+        host, scheme = self.split_scheme(host)
         self.host = host
+        if tls is None:
+            tls = scheme if scheme is not None else host in self._tls
+        self.tls = bool(tls)
+        self._tls_given = (ca, pin)
         self.password = password or ''
         self.switch_id = int(switch_id or 0)
         self.timeout = float(CONFIG.get('plug_timeout') or 5.0)
@@ -1837,7 +1888,157 @@ class ShellyRPC(object):
 
     @property
     def url(self):
-        return 'http://%s/rpc' % self.host
+        return '%s://%s/rpc' % ('https' if self.tls else 'http', self.host)
+
+    # -- (5.52) HTTPS, for a box it is switched on for ----------------------------
+    @staticmethod
+    def split_scheme(host):
+        """'https://10.0.0.5/' -> ('10.0.0.5', True); 'http://..' -> (.., False);
+        a bare address -> (it, None)."""
+        text = str(host or '').strip()
+        low = text.lower()
+        for prefix, tls in (('https://', True), ('http://', False)):
+            if low.startswith(prefix):
+                return text[len(prefix):].split('/')[0], tls
+        return text, None
+
+    @classmethod
+    def tls_configure(cls, boxes):
+        """The daemon's settings, all at once: {host: {'ca':, 'pin':}} for every
+        box HTTPS is on for. A box whose setting changed loses the connections
+        kept to it, so nothing made under the old one is used again."""
+        boxes = {str(h): {'ca': str((c or {}).get('ca') or ''), 'pin': str((c or {}).get('pin') or '').lower()}
+                 for h, c in (boxes or {}).items() if h}
+        changed = {h for h in set(boxes) | set(cls._tls) if boxes.get(h) != cls._tls.get(h)}
+        cls._tls = boxes
+        for host in changed:
+            cls._tls_learnt.pop(host, None)
+            cls.forget_connections(host)
+        return changed
+
+    @classmethod
+    def forget_connections(cls, host):
+        with cls._conn_guard:
+            kept = cls._conns.pop(host, None) or []
+        for one, _used in kept:
+            cls._close_quietly(one)
+        cls.warm_drop(host)
+
+    def _tls_conf(self):
+        ca, pin = self._tls_given
+        known = self._tls.get(self.host) or {}
+        return {'ca': known.get('ca', '') if ca is None else str(ca or ''),
+                'pin': (known.get('pin', '') if pin is None else str(pin or '')).lower()}
+
+    @classmethod
+    def tls_context(cls, ca=''):
+        """Pin only (no CA): the chain and the name are not checked - a box is
+        reached by its address and its certificate is its own - and the
+        certificate's fingerprint is what is held to. With a CA: the chain
+        must lead to it and the certificate must be made out for the address
+        (or name) the box is reached by."""
+        ctx = cls._tls_ctx.get(ca)
+        if ctx is None:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            if ca:
+                ctx.load_verify_locations(cadata=ca)
+            else:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            cls._tls_ctx[ca] = ctx
+        return ctx
+
+    @staticmethod
+    def tls_ca_check(pem):
+        """'' if `pem` is a CA certificate (or several) that can be verified
+        against, else what is wrong with it."""
+        text = str(pem or '').strip()
+        if not text:
+            return ''
+        if '-----BEGIN CERTIFICATE-----' not in text:
+            return 'not a PEM certificate (-----BEGIN CERTIFICATE----- ...)'
+        try:
+            ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=text)
+        except (ssl.SSLError, ValueError) as e:
+            return 'the certificate cannot be read: %s' % e
+        return ''
+
+    @staticmethod
+    def fingerprint(der):
+        return hashlib.sha256(der or b'').hexdigest()
+
+    @staticmethod
+    def fingerprint_words(fp):
+        fp = str(fp or '').upper()
+        return ':'.join(fp[i:i + 2] for i in range(0, len(fp), 2))
+
+    @classmethod
+    def tls_check(cls, host, sock, conf):
+        """After the handshake: the fingerprint is noted, and with no CA it is
+        held to the one pinned - met for the first time it becomes the pinned
+        one (trust on first use); a different one is refused, never taken."""
+        fp = cls.fingerprint(sock.getpeercert(binary_form=True))
+        cls.tls_seen[host] = fp
+        if conf.get('ca'):
+            return fp                       # the chain and the name were checked in the handshake
+        pin = conf.get('pin') or (cls._tls.get(host) or {}).get('pin') or cls._tls_learnt.get(host)
+        if not pin:
+            cls._tls_learnt[host] = fp
+            if host in cls._tls:
+                cls._tls[host] = dict(cls._tls[host], pin=fp)
+                hook = cls.on_tls_pinned
+                if hook:
+                    try:
+                        hook(host, fp)
+                    except Exception as e:
+                        log('keeping the certificate of %s: %s' % (host, e), 'warn')
+            return fp
+        if fp != pin:
+            hook = cls.on_tls_refused
+            if hook:
+                try:
+                    hook(host, fp, pin)
+                except Exception as e:
+                    log('the certificate of %s: %s' % (host, e), 'warn')
+            raise ShellyTLSRefused(
+                'the box at %s shows a different HTTPS certificate (SHA-256 %s...) from the one trusted for '
+                'it (%s...) - refused. If it was given a new one on purpose (a reset, a new certificate), '
+                'trust it: zigmon shelly NAME tls --trust-new, or "Trust the new certificate" on the dashboard'
+                % (host, cls.fingerprint_words(fp)[:23], cls.fingerprint_words(pin)[:23]))
+        return fp
+
+    def open_connection(self, timeout=None):
+        """A connection to the box, not yet connected: HTTPS (checked as the
+        box's setting says) where it is on, plain HTTP otherwise."""
+        name, _, port = self.host.partition(':')
+        timeout = self.timeout if timeout is None else timeout
+        if not self.tls:
+            return http.client.HTTPConnection(self._box_address(name), int(port or 80), timeout=timeout)
+        return ShellyHTTPS(self._box_address(name), int(port or 443), timeout, self.host, name, self._tls_conf())
+
+    def open_socket(self, timeout=None):
+        """A connected socket (TLS and checked where HTTPS is on) - for the websocket."""
+        conn = self.open_connection(timeout)
+        conn.connect()
+        return conn.sock
+
+    @classmethod
+    def peer_fingerprint(cls, host, timeout=5.0):
+        """The SHA-256 of the certificate a box shows now, nothing checked -
+        for a person to compare before trusting it."""
+        host = cls.split_scheme(host)[0]
+        name, _, port = host.partition(':')
+        sock = socket.create_connection((cls._box_address(name), int(port or 443)), timeout)
+        try:
+            with cls.tls_context('').wrap_socket(sock, server_hostname=name) as tls:
+                return cls.fingerprint(tls.getpeercert(binary_form=True))
+        finally:
+            cls._close_quietly(sock)
+
+    def redirect_words(self):
+        return ('%s at %s speaks only HTTPS (firmware 2.0+ sends plain HTTP on to HTTPS): switch HTTPS on '
+                'for it - "zigmon shelly NAME tls on", or HTTPS in the box\'s settings on the dashboard'
+                % (self.label, self.host))
 
     COMMANDS = ('Switch.Set', 'Switch.Toggle')
     # Saying it twice is the same as saying it once. Toggle is not here, and
@@ -1886,8 +2087,8 @@ class ShellyRPC(object):
                     try:
                         status, reply, headers = self._post(body, auth)
                         break
-                    except PlugError:
-                        if attempt + 1 >= len(ladder):
+                    except PlugError as e:
+                        if attempt + 1 >= len(ladder) or getattr(e, 'final', False):
                             raise
                         log('%s: no answer to %s in %.1fs; asking again' % (self.label, method, wait),
                             'debug')
@@ -1905,6 +2106,14 @@ class ShellyRPC(object):
                     raise PlugError('%s rejected the password' % self.label)
         finally:
             self._leave_device(gate, urgent_now)
+        if status in (301, 302, 303, 307, 308):
+            # (5.52) a box made with firmware 2.0+ speaks only HTTPS and sends
+            # plain HTTP on to it - said in words, never followed by itself
+            where = next((v for k, v in headers.items() if k.lower() == 'location'), '') or ''
+            if not self.tls and str(where).lower().startswith('https:'):
+                self.https_only[self.host] = time.time()
+                raise PlugError(self.redirect_words())
+            raise PlugError('%s answered HTTP %s (sent on to %s)' % (self.label, status, where or 'nowhere'))
         if status == 429:
             retry = headers.get('Retry-After')
             self.retry_after = numeric(retry) or 0
@@ -1970,6 +2179,8 @@ class ShellyRPC(object):
             raise PlugError('%s is rate limiting us (HTTP 429)' % self.label)
         if status != 200:
             raise PlugError('%s answered HTTP %s' % (self.label, status))
+        if self.https_only and self.host in self.https_only:
+            self.https_only.pop(self.host, None)      # (5.52) it answers as it is asked now
         try:
             result = json.loads(reply.decode('utf-8'))
         except ValueError:
@@ -2161,7 +2372,7 @@ class ShellyRPC(object):
         if auth:
             headers['Authorization'] = auth
         host, _, port = self.host.partition(':')
-        port = int(port or 80)
+        port = int(port or (443 if self.tls else 80))
         # A box closes an idle connection after a few seconds and does not
         # always say so. Writing into that dead socket succeeds and the answer
         # then never comes, so the call sits there until the timeout - three
@@ -2198,6 +2409,8 @@ class ShellyRPC(object):
                         # (5.44.1) the box has closed it already, and said so:
                         # asking on it would cost a failed request and a retry
                         stale.append(one)
+                    elif isinstance(one, http.client.HTTPSConnection) != self.tls:
+                        stale.append(one)       # (5.52) kept from before HTTPS was switched on or off
                     else:
                         conn = one
                 # whatever is older than the one taken is older still
@@ -2212,7 +2425,7 @@ class ShellyRPC(object):
                 # (5.44.1) nothing kept from a moment ago - the usual case, the
                 # first press after a quiet spell: the warm spare, connected
                 # already, instead of a handshake on the way of the command
-                conn = self._take_warm(self.host, window)
+                conn = self._take_warm(self.host, window, self.tls)
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -2221,8 +2434,10 @@ class ShellyRPC(object):
                 conn.timeout = self.timeout
                 if conn.sock is not None:
                     conn.sock.settimeout(self.timeout)
-            if fresh:
+            if fresh and not self.tls:
                 conn = http.client.HTTPConnection(self._box_address(host), port, timeout=self.timeout)
+            elif fresh:
+                conn = ShellyHTTPS(self._box_address(host), port, self.timeout, self.host, host, self._tls_conf())
             started = time.perf_counter()
             if CONFIG.get('debug'):
                 log('http -> %s POST /rpc %s%s %s' % (self.host, 'fresh' if fresh else 'kept',
@@ -2253,6 +2468,9 @@ class ShellyRPC(object):
                         except Exception:
                             pass
                 return status, data, head
+            except ShellyTLSRefused:
+                self._close_quietly(conn)
+                raise
             except Exception as e:
                 if CONFIG.get('debug'):
                     log('http !! %s after %.1f ms: %s%s' % (self.host, (time.perf_counter() - started) * 1000,
@@ -2268,10 +2486,21 @@ class ShellyRPC(object):
                 # had it and been slow to answer; asking again toggled a
                 # Toggle twice, and the socket ended where it started.
                 gone_stale = isinstance(e, (ConnectionError, http.client.RemoteDisconnected,
-                                            http.client.BadStatusLine, BrokenPipeError)) \
+                                            http.client.BadStatusLine, BrokenPipeError,
+                                            ssl.SSLEOFError, ssl.SSLZeroReturnError)) \
                     and not isinstance(e, socket.timeout)
                 if attempt == 0 and not fresh and gone_stale:
                     continue
+                if isinstance(e, ssl.SSLCertVerificationError):
+                    err = PlugError('%s at %s: its HTTPS certificate does not check out against the CA set for '
+                                    'it (%s) - refused. Either that CA did not sign it, or the certificate is '
+                                    'not made out for %s' % (self.label, self.host,
+                                                             getattr(e, 'verify_message', '') or e, host))
+                    err.final = True
+                    raise err
+                if self.tls and isinstance(e, ssl.SSLError):
+                    raise PlugError('cannot reach %s at %s over HTTPS (%s) - does this box speak HTTPS? '
+                                    'Most do only from firmware 2.0' % (self.label, self.host, e))
                 raise PlugError('cannot reach %s at %s (%s)' % (self.label, self.host, e))
 
     _addrs = {}                 # host name -> (address, when looked up)
@@ -2377,6 +2606,27 @@ class ShellyRPC(object):
             if not accepted:
                 raise
             return {'reset': accepted}
+
+
+class ShellyHTTPS(http.client.HTTPSConnection):
+    """(5.52) HTTPS to one box: connected to its address, its name (when it
+    has one) said as the server name, and its certificate checked the moment
+    the handshake is done - before anything is sent on it, the password's
+    digest included."""
+
+    def __init__(self, address, port, timeout, box, name, conf):
+        super().__init__(address, port, timeout=timeout, context=ShellyRPC.tls_context(conf.get('ca') or ''))
+        self.box, self.box_name, self.conf = box, name, conf
+
+    def connect(self):
+        http.client.HTTPConnection.connect(self)
+        try:
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self.box_name)
+            ShellyRPC.tls_check(self.box, self.sock, self.conf)
+        except BaseException:
+            ShellyRPC._close_quietly(self.sock)
+            self.sock = None
+            raise
 
 
 # What Switch.ResetCounters accepts, in the order the plug's own web UI lists
@@ -17226,7 +17476,8 @@ class Daemon(object):
                     'group': str(e.get('group') or ''),
                     'own_enabled': bool(e.get('own_enabled', e.get('enabled', True))),
                     'own_monitor_only': bool(e.get('own_monitor_only', e.get('monitor_only', False))),
-                    'model': str(e.get('model') or ''), 'mac': str(e.get('mac') or '')}
+                    'model': str(e.get('model') or ''), 'mac': str(e.get('mac') or ''),
+                    'tls': ShellyRPC.split_scheme(e.get('host'))[0] in ShellyRPC._tls}
         return {'plugs': [strip(e) for e in self.all_entries('plugs')],
                 'sensors': [strip(e) for e in self.all_entries('sensors')]}
 
@@ -17242,6 +17493,8 @@ class Daemon(object):
                         if isinstance(e, dict) and e.get('name')}
         clean = {'plugs': [], 'sensors': []}
         names = set()
+        known_hosts = {h for h, _sid in old_by_addr}
+        https_new = set()               # (5.52) a box added over HTTPS, as its add dialog offered
         for kind, items in (('plugs', plugs), ('sensors', sensors)):
             for index, e in enumerate(items or []):
                 if not isinstance(e, dict):
@@ -17259,6 +17512,8 @@ class Daemon(object):
                 if not re.match(r'^[A-Za-z0-9.:\[\]-]+$', host):
                     raise ValueError('"%s" is not an address' % host)
                 names.add(name)
+                if e.get('tls') is True and host not in known_hosts:
+                    https_new.add(host)
                 hs = str(e.get('host_state') or 'enabled')
                 if hs not in ('enabled', 'monitor', 'disabled', 'optional'):
                     hs = 'enabled'
@@ -17308,6 +17563,9 @@ class Daemon(object):
                     renamed.append((str(was.get('name')), str(e.get('name'))))
         self.snapshot('managed', 'saved from the dashboard')
         self.store.set_meta('managed', json.dumps(clean))
+        for host in sorted(https_new):
+            self._shelly_tls_change(host, lambda entry: entry.update(on=True))
+            self.store.add_event('control', 'HTTPS switched on for %s, added as a box that speaks only HTTPS' % host)
         self.reload_devices()
         for was_name, now_name in renamed:
             self.retarget(was_name, now_name)
@@ -17317,7 +17575,7 @@ class Daemon(object):
             [e['name'] for e in clean['plugs']] + [e['name'] for e in clean['sensors']]) or 'nothing')
         return self.managed_for_ui()
 
-    def detect_plug(self, host, password=None, name_hint=''):
+    def detect_plug(self, host, password=None, name_hint='', tls=False):
         """Ask the box at `host` what it is: model, MAC, firmware, and how many
         relays it has (with their own names and the MQTT prefix), so the
         dashboard can lay out one row per channel without anyone counting."""
@@ -17329,7 +17587,9 @@ class Daemon(object):
                 if str(e.get('host')) == host and e.get('password'):
                     password = e['password']
                     break
-        rpc = ShellyRPC(host, password or '', 0, label=name_hint or host)
+        # (5.52) tls: a box that said it speaks only HTTPS, asked again so,
+        # its certificate shown - nothing kept until the device is saved
+        rpc = ShellyRPC(host, password or '', 0, label=name_hint or host, tls=True if tls else None)
         info = rpc.call('Shelly.GetDeviceInfo') or {}
         status = rpc.call('Shelly.GetStatus') or {}
         channels = []
@@ -17352,7 +17612,8 @@ class Daemon(object):
                 'fw': str(info.get('ver') or info.get('fw_id') or ''), 'device_name': str(info.get('name') or ''),
                 'id': str(info.get('id') or ''), 'mqtt_prefix': prefix or str(info.get('id') or ''),
                 'channels': channels, 'multi': len(channels) > 1,
-                'sensor_like': not channels and any(k.startswith(('temperature:', 'humidity:')) for k in status)}
+                'sensor_like': not channels and any(k.startswith(('temperature:', 'humidity:')) for k in status),
+                'tls': rpc.tls, 'tls_fingerprint': ShellyRPC.tls_seen.get(rpc.host, '') if rpc.tls else ''}
 
     def reload_devices(self):
         """Rebuild self.plugs / self.sensors from config + managed, keeping live state where the entry is unchanged.
@@ -17366,6 +17627,7 @@ class Daemon(object):
         at all and the lights stayed on, with a line in the log and nothing on
         the page. Nobody can see a dict that is never mutated in place.
         """
+        self.apply_shelly_tls()
         with self._plug_lock:
             plugs, sensors = dict(self.plugs), dict(self.sensors)
             wanted = {e['name']: e for e in self.active_entries('plugs')}
@@ -17435,13 +17697,14 @@ class Daemon(object):
         self.warn_about_prefixes()
 
 
-    def test_device(self, host, password=''):
+    def test_device(self, host, password='', tls=False):
         """One Shelly.GetDeviceInfo, so the dashboard can check an address before saving it."""
-        rpc = ShellyRPC(host, password or '', 0, label='the device at %s' % host)
+        rpc = ShellyRPC(host, password or '', 0, label='the device at %s' % host, tls=True if tls else None)
         info = rpc.device_info()
         out = {'ok': True, 'id': info.get('id'), 'model': info.get('model'), 'app': info.get('app'),
                'ver': info.get('ver'), 'gen': info.get('gen'), 'auth': bool(info.get('auth_en')),
-               'name': info.get('name')}
+               'name': info.get('name'), 'tls': rpc.tls,
+               'tls_fingerprint': ShellyRPC.tls_seen.get(rpc.host, '') if rpc.tls else ''}
         try:
             status = rpc.device_status() or {}
             out['components'] = sorted(k for k in status if ':' in k)
@@ -17459,6 +17722,7 @@ class Daemon(object):
     # -- smart plugs ---------------------------------------------------------
     def setup_plugs(self):
         """One PlugState per plug from config.json and the dashboard; stale rows for plugs that are gone."""
+        self.apply_shelly_tls()
         configured = set()
         for entry in self.active_entries('plugs'):
             name = str(entry['name'])
@@ -22564,6 +22828,12 @@ class Daemon(object):
         for _short, _oldest, host, want in due:
             if self._stop.is_set():
                 return hosts, listed
+            if host in ShellyRPC._tls:
+                # (5.52) a box with HTTPS on: its handshake is the box's
+                # arithmetic and can take a second - on a thread of its own,
+                # so no other box waits behind it for its spare
+                self._warm_tls(host, want, backoff)
+                continue
             name, _, port = host.partition(':')
             conn = http.client.HTTPConnection(ShellyRPC._box_address(name), int(port or 80),
                                               timeout=min(1.5, float(CONFIG.get('plug_timeout') or 5.0)))
@@ -22584,6 +22854,35 @@ class Daemon(object):
                 return hosts, listed
         ShellyRPC._warm_wake.wait(max(0.02, min(soonest, renew)))
         return hosts, listed
+
+    def _warm_tls(self, host, want, backoff):
+        busy = self.__dict__.setdefault('_warm_tls_busy', set())
+        if host in busy:
+            return
+        busy.add(host)
+
+        def run():
+            conn = None
+            try:
+                conn = ShellyRPC(host, label='box %s' % host).open_connection(
+                    min(3.0, float(CONFIG.get('plug_timeout') or 5.0)))
+                conn.connect()
+            except (OSError, PlugError):
+                if conn is not None:
+                    ShellyRPC._close_quietly(conn)
+                ShellyRPC.warm_counts['failed'] += 1
+                fails = backoff.get(host, (0, 0.0))[0] + 1
+                backoff[host] = (fails, time.monotonic() + min(300.0, 5.0 * 2 ** (fails - 1)))
+                ShellyRPC.warm_drop(host, 'aged')
+            else:
+                backoff.pop(host, None)
+                if host in ShellyRPC._tls:
+                    ShellyRPC.warm_put(host, conn, want)
+                else:
+                    ShellyRPC._close_quietly(conn)      # switched off meanwhile
+            finally:
+                busy.discard(host)
+        threading.Thread(target=run, name='plug-warmer-tls', daemon=True).start()
 
     def plug_loop(self):
         # (5.44.1) the warm spares ride beside the poll, on a thread of their own
@@ -23064,6 +23363,7 @@ class Daemon(object):
             },
             'info': p.info or {},
             'counters': counters,
+            'tls': self.shelly_tls_brief(p.cfg.get('host')),      # (5.52) HTTPS for its box
         }
 
     def _counter_reset_at(self, p, flat, counter):
@@ -24105,6 +24405,226 @@ class Daemon(object):
             raise last or PlugError('could not read the counters')
         return {c['type']: numeric(flat.get(c['field'])) if c['field'] in flat else None
                 for c in PLUG_COUNTERS}
+
+    # -- (5.52) HTTPS to a Shelly box, where it is switched on --------------------
+    # Off for every box unless an administrator switched it on for that box;
+    # a box with it off speaks plain HTTP exactly as before. Kept by address
+    # (a box, not a socket of it) in the meta row shelly_tls:
+    #   {host: {on, ca, pin, pinned_at, seen, seen_at}}
+    # A box with HTTPS on is held to the certificate it showed the first
+    # time (its SHA-256 - trust on first use), or, with a CA set, to that CA
+    # and to its address. A different certificate is refused and said, never
+    # taken: "trust the new certificate" is a person's decision.
+    SHELLY_TLS_ACTIONS = ('status', 'on', 'off', 'ca', 'trust')
+
+    def shelly_tls_settings(self):
+        cached = getattr(self, '_shelly_tls_cache', None)
+        if cached is None:
+            try:
+                cached = json.loads(self.store.get_meta('shelly_tls') or '{}')
+            except (ValueError, TypeError):
+                cached = {}
+            if not isinstance(cached, dict):
+                cached = {}
+            cached = {str(h): e for h, e in cached.items() if isinstance(e, dict)}
+            self._shelly_tls_cache = cached
+        return cached
+
+    def _shelly_tls_lock(self):
+        lock = getattr(self, '_shelly_tls_guard', None)
+        if lock is None:
+            lock = self._shelly_tls_guard = threading.Lock()
+        return lock
+
+    def _shelly_tls_change(self, host, change):
+        """Read, change and keep one box's entry - under a lock, since a poll
+        thread keeps a first certificate while a person may be saving."""
+        with self._shelly_tls_lock():
+            settings = {h: dict(e) for h, e in self.shelly_tls_settings().items()}
+            entry = settings.get(host) or {}
+            result = change(entry)
+            if entry:
+                settings[host] = entry
+            else:
+                settings.pop(host, None)
+            self.store.set_meta('shelly_tls', json.dumps(settings, sort_keys=True))
+            self._shelly_tls_cache = settings
+            return result
+
+    def apply_shelly_tls(self):
+        """What every ShellyRPC in this process speaks to which box. Cheap,
+        called with every device list rebuilt; a box whose setting did not
+        change keeps its connections."""
+        ShellyRPC.on_tls_pinned = self._shelly_tls_pinned
+        ShellyRPC.on_tls_refused = self._shelly_tls_refused
+        return ShellyRPC.tls_configure(shelly_tls_boxes(self.shelly_tls_settings()))
+
+    def _shelly_tls_device(self, host):
+        for p in list(self.plugs.values()):
+            if ShellyRPC.split_scheme(p.cfg.get('host'))[0] == host:
+                return p.device_id
+        return None
+
+    def _shelly_tls_pinned(self, host, fp):
+        def change(entry):
+            if entry.get('pin') == fp:
+                return False
+            entry.update(pin=fp, pinned_at=int(time.time()))
+            entry.pop('seen', None)
+            entry.pop('seen_at', None)
+            return True
+        if self._shelly_tls_change(host, change):
+            words = 'HTTPS: %s showed its certificate for the first time - SHA-256 %s; it is the one ' \
+                    'trusted from now on' % (host, ShellyRPC.fingerprint_words(fp))
+            log(words)
+            self.store.add_event('plug', words, 'info', self._shelly_tls_device(host))
+
+    def _shelly_tls_refused(self, host, seen, pinned):
+        def change(entry):
+            if entry.get('seen') == seen:
+                return False
+            entry.update(seen=seen, seen_at=int(time.time()))
+            return True
+        if self._shelly_tls_change(host, change):
+            words = ('HTTPS: %s shows a different certificate (SHA-256 %s) from the one trusted for it (%s) - '
+                     'refused, nothing is sent to it. If the box was reset or given a new certificate on '
+                     'purpose, trust the new one; if not, something else may be answering at its address'
+                     % (host, ShellyRPC.fingerprint_words(seen), ShellyRPC.fingerprint_words(pinned)))
+            log(words, 'warn')
+            self.store.add_event('plug', words, 'warn', self._shelly_tls_device(host))
+
+    def shelly_box_host(self, target):
+        """A configured box's address, from a socket's or sensor's name or the
+        address itself; None for anything not configured."""
+        target = str(target or '').strip()
+        if not target:
+            return None
+        bare = ShellyRPC.split_scheme(target)[0]
+        entries = self.all_entries('plugs') + self.all_entries('sensors') + list(self.gateway_configs())
+        for e in entries:
+            if str(e.get('name') or '').lower() == target.lower():
+                return ShellyRPC.split_scheme(e.get('host'))[0]
+        for e in entries:
+            if ShellyRPC.split_scheme(e.get('host'))[0] == bare:
+                return bare
+        return None
+
+    def shelly_box_password(self, host):
+        for e in self.all_entries('plugs') + self.all_entries('sensors') + list(self.gateway_configs()):
+            if ShellyRPC.split_scheme(e.get('host'))[0] == host and e.get('password'):
+                return str(e['password'])
+        return ''
+
+    def shelly_tls_status(self, host):
+        e = self.shelly_tls_settings().get(host) or {}
+        on = host in ShellyRPC._tls
+        conf = ShellyRPC._tls.get(host) or {}
+        pin = conf.get('pin') or e.get('pin') or ''
+        seen = e.get('seen') or ''
+        return {'host': host, 'on': on, 'pin': pin, 'pin_words': ShellyRPC.fingerprint_words(pin),
+                'pinned_at': e.get('pinned_at'), 'ca': bool(conf.get('ca') or e.get('ca')),
+                'ca_pem': str(e.get('ca') or conf.get('ca') or ''),
+                'seen': seen if seen and seen != pin else '',
+                'seen_words': ShellyRPC.fingerprint_words(seen) if seen and seen != pin else '',
+                'seen_at': e.get('seen_at') if seen and seen != pin else None,
+                'https_only': bool(not on and ShellyRPC.https_only.get(host))}
+
+    def shelly_tls_brief(self, host):
+        """For the card, every poll: no store read."""
+        host = ShellyRPC.split_scheme(host)[0]
+        conf = ShellyRPC._tls.get(host)
+        e = self.shelly_tls_settings().get(host) or {}
+        seen = e.get('seen') or ''
+        pin = (conf or {}).get('pin') or e.get('pin') or ''
+        return {'on': conf is not None, 'pin': pin, 'ca': bool((conf or {}).get('ca')),
+                'changed': bool(conf is not None and seen and seen != pin and not (conf or {}).get('ca')),
+                'https_only': bool(conf is None and ShellyRPC.https_only.get(host))}
+
+    def shelly_tls(self, target, action, body=None):
+        """(5.52) An administrator's: HTTPS on or off for a box, its CA, and
+        trusting a new certificate. (ok, answer dict or words)."""
+        body = body or {}
+        if action not in self.SHELLY_TLS_ACTIONS:
+            return False, 'the action is one of %s' % ', '.join(self.SHELLY_TLS_ACTIONS)
+        host = self.shelly_box_host(target)
+        if not host:
+            return False, 'no box configured as "%s"' % target
+        if action == 'status':
+            return True, {'tls': self.shelly_tls_status(host)}
+        ca = body.get('ca')
+        if ca is not None:
+            ca = str(ca).strip()
+            if len(ca) > 64000:
+                return False, 'that CA is too long'
+            problem = ShellyRPC.tls_ca_check(ca)
+            if problem:
+                return False, problem
+        if action == 'trust':
+            try:
+                live = ShellyRPC.peer_fingerprint(host)
+            except (OSError, ssl.SSLError, PlugError) as e:
+                return False, 'cannot reach %s over HTTPS to see its certificate (%s)' % (host, e)
+            want = str(body.get('fingerprint') or '').replace(':', '').strip().lower()
+            if want and want != live:
+                return False, ('%s now shows yet another certificate (SHA-256 %s) than the one you were shown - '
+                               'nothing changed; look again' % (host, ShellyRPC.fingerprint_words(live)))
+
+            def change(entry):
+                entry.update(pin=live, pinned_at=int(time.time()))
+                entry.pop('seen', None)
+                entry.pop('seen_at', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            words = 'HTTPS: the new certificate of %s is trusted from now on (SHA-256 %s)' % (
+                host, ShellyRPC.fingerprint_words(live))
+            log(words)
+            self.store.add_event('control', words, 'info', self._shelly_tls_device(host))
+            self.bump()
+            return True, {'tls': self.shelly_tls_status(host), 'message': words}
+        if action == 'ca':
+            if ca is None:
+                return False, 'no CA given (an empty one takes it away)'
+
+            def change(entry):
+                if ca:
+                    entry['ca'] = ca
+                else:
+                    entry.pop('ca', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            words = 'HTTPS: %s %s' % (host, 'is checked against the CA given' if ca else
+                                      'is held to its own certificate again (no CA)')
+        else:
+            on = action == 'on'
+
+            def change(entry):
+                entry['on'] = on
+                if ca is not None:
+                    if ca:
+                        entry['ca'] = ca
+                    else:
+                        entry.pop('ca', None)
+            self._shelly_tls_change(host, change)
+            self.apply_shelly_tls()
+            ShellyRPC.https_only.pop(host, None)
+            words = 'HTTPS %s for %s' % ('switched on' if on else 'switched off - plain HTTP', host)
+        log(words)
+        self.store.add_event('control', words, 'info', self._shelly_tls_device(host))
+        out = {'message': words}
+        if host in ShellyRPC._tls:
+            # asked once now, so the certificate is met (and kept) by a person
+            # looking, not by the next poll at three in the morning
+            try:
+                ShellyRPC(host, self.shelly_box_password(host), 0, label='box %s' % host).device_info()
+                status = self.shelly_tls_status(host)
+                out['message'] = words + ' - it answers over HTTPS; certificate SHA-256 %s' % (
+                    status['pin_words'] or ShellyRPC.fingerprint_words(ShellyRPC.tls_seen.get(host)))
+            except PlugError as e:
+                out['warning'] = str(e)
+                out['message'] = words + ' - but it does not answer over HTTPS yet: %s' % e
+        self.bump()
+        out['tls'] = self.shelly_tls_status(host)
+        return True, out
 
     PLUG_SHELLY_ACTIONS = ('firmware', 'firmware-update', 'settings', 'settings-save')
 
@@ -47931,6 +48451,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 ok, message = d.zigbee_switch(':'.join(pieces[1:-1]), pieces[-1], do,
                                               'the dashboard', body.get('ms'))
                 return self._send(200 if ok else 502, {'ok': ok, 'message' if ok else 'error': message})
+            if path == '/api/shelly/tls':
+                # (5.52) HTTPS for a box: an administrator's (not one of
+                # OPERATOR_ROADS), the page asks "are you sure" first
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                ok, answer = d.shelly_tls(body.get('name') or body.get('host') or '', str(body.get('action') or ''),
+                                          body)
+                if not ok:
+                    return self._send(200, {'ok': False, 'error': answer})
+                return self._send(200, dict(answer, ok=True))
             if path == '/api/plug/shelly':
                 # (5.51) a socket's firmware and its relay's settings - an
                 # administrator's (not one of OPERATOR_ROADS), asked for once
@@ -48961,7 +49492,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if err:
                     return self._error(403, err)
                 try:
-                    found = d.detect_plug(body.get('host'), body.get('password'), body.get('name'))
+                    found = d.detect_plug(body.get('host'), body.get('password'), body.get('name'),
+                                          tls=bool(body.get('tls')))
                 except ValueError as e:
                     return self._error(400, str(e))
                 except PlugError as e:
@@ -49146,7 +49678,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                     # and came back as a 500 rather than as what it is
                     return self._error(400, 'that is not an address')
                 try:
-                    return self._send(200, d.test_device(host, str(body.get('password') or '')))
+                    return self._send(200, d.test_device(host, str(body.get('password') or ''),
+                                                         tls=bool(body.get('tls'))))
                 except PlugError as e:
                     return self._error(502, str(e))
             if path == '/api/managed/discover':
@@ -51615,6 +52148,46 @@ RPC_COMPONENTS = {
 
 
 
+def shelly_tls_boxes(settings):
+    """(5.52) {host: {ca, pin}} for every box HTTPS is on for: a config.json
+    entry with "tls": true (or an https:// address), and what the dashboard
+    or "zigmon shelly NAME tls" set (the meta row shelly_tls), which wins."""
+    boxes = {}
+    for kind in ('plugs', 'sensors', 'zigbee_gateways'):
+        for e in CONFIG.get(kind) or []:
+            if not isinstance(e, dict) or not e.get('host'):
+                continue
+            host, scheme = ShellyRPC.split_scheme(e['host'])
+            if scheme or (scheme is None and e.get('tls') is True):
+                boxes[host] = {'ca': str(e.get('tls_ca') or ''), 'pin': ''}
+    for host, e in (settings or {}).items():
+        if not isinstance(e, dict):
+            continue
+        if 'on' in e and not e.get('on'):
+            boxes.pop(host, None)
+            continue
+        if e.get('on'):
+            boxes[host] = {'ca': str(e.get('ca') or (boxes.get(host) or {}).get('ca') or ''), 'pin': ''}
+        if host in boxes:
+            boxes[host]['pin'] = str(e.get('pin') or '')
+    return boxes
+
+
+def shelly_tls_from_db():
+    """The HTTPS settings the daemon keeps, read for the command line (which
+    does not write them: a first certificate met here is used, not kept)."""
+    try:
+        db = sqlite3.connect('file:%s?mode=ro' % db_path(), uri=True, timeout=2)
+        try:
+            row = db.execute("SELECT value FROM meta WHERE key='shelly_tls'").fetchone()
+        finally:
+            db.close()
+        data = json.loads(row[0]) if row and row[0] else {}
+        return data if isinstance(data, dict) else {}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+
+
 def shelly_targets():
     """Every device the configuration or the dashboard names: plugs first, then sensors."""
     out = {}
@@ -51644,6 +52217,8 @@ def shelly_for(role, args=None):
     """Build a client for a device named in the configuration, or an address given directly."""
     override_host = getattr(args, 'host', None) if args else None
     override_password = getattr(args, 'password', None) if args else None
+    if not ShellyRPC.on_tls_pinned:               # not inside the daemon: its HTTPS settings, read
+        ShellyRPC.tls_configure(shelly_tls_boxes(shelly_tls_from_db()))
     if override_host:
         return ShellyRPC(override_host, override_password or '', getattr(args, 'switch_id', 0) or 0,
                          label='the device at %s' % override_host)
@@ -57398,6 +57973,32 @@ examples
                           help='switch itself on this long after being switched off')
     settings.add_argument('--power-limit', dest='power_limit', metavar='WATTS|default',
                           help='switch itself off above this draw')
+
+    tls = add('tls', 'HTTPS to this box: on, off, its certificate',
+              'HTTPS is off for every box unless switched on here or on the dashboard; a box '
+              'with it off speaks plain HTTP exactly as before. A box made with firmware 2.0 '
+              'or newer speaks only HTTPS. With it on, the box is held to the certificate it '
+              'showed the first time (its SHA-256 is kept: trust on first use), or, with --ca, '
+              'to that CA and to its address. A different certificate is refused, never taken: '
+              '--trust-new takes the one it shows now, after you have seen it. Changes are the '
+              'daemon\'s, asked first.',
+              epilog="""
+examples
+  zigmon shelly Lednice tls                      on or off, the certificate trusted
+  zigmon shelly Lednice tls on                   HTTPS from now on (asks first)
+  zigmon shelly Lednice tls on --ca company-ca.pem
+  zigmon shelly Lednice tls --trust-new          it shows a new certificate: take it (asks first)
+  zigmon shelly Lednice tls off --yes            back to plain HTTP
+  zigmon shelly https://10.0.0.5 info            one box over HTTPS, not in the configuration
+""")
+    tls.add_argument('action', nargs='?', default='status', choices=['status', 'on', 'off'])
+    tls.add_argument('--ca', metavar='FILE|none',
+                     help='check the box against this CA (PEM) instead of the certificate it showed first; '
+                          '"none" takes it away')
+    tls.add_argument('--trust-new', dest='trust_new', action='store_true',
+                     help='trust the certificate the box shows now in place of the one trusted before')
+    tls.add_argument('--yes', action='store_true',
+                     help='do not ask first; without a terminal nothing is changed unless given')
     settings.add_argument('--yes', action='store_true',
                           help='do not ask first; without a terminal nothing is changed unless given')
 
@@ -58245,13 +58846,17 @@ def shelly_main(argv, pal):
     names = {n.lower(): n for n in targets}
     commands = ('discover', 'info', 'dump', 'methods', 'config', 'poll', 'watch', 'listen', 'serve',
                 'on', 'off', 'toggle', 'reset-counters', 'reboot', 'matter', 'ble', 'call',
-                'firmware', 'switch-settings')
+                'firmware', 'switch-settings', 'tls')
     role = None
     for index, value in enumerate(arguments):
         if value.startswith('-'):
             continue
         if value.lower() in names:
             role = names[value.lower()]
+            arguments.pop(index)
+        elif value not in commands and not globals_['host'] and shelly_cli_address(value):
+            # (5.52) zigmon shelly https://10.0.0.5 info - a box by its address
+            globals_['host'] = value
             arguments.pop(index)
         elif value not in commands and not globals_['host'] and value not in ('-h', '--help'):
             print(pal.crit('ERROR: ') + 'unknown device "%s"' % value, file=sys.stderr)
@@ -58287,6 +58892,7 @@ def shelly_main(argv, pal):
         'reboot': shelly_cmd_reboot, 'ble': shelly_cmd_radio,
         'matter': shelly_cmd_radio,
         'firmware': shelly_cmd_firmware, 'switch-settings': shelly_cmd_switch_settings,
+        'tls': shelly_cmd_tls,
     }[args.command]
 
     try:
@@ -58745,8 +59351,6 @@ def shelly_cmd_watch(args, pal):
     """Subscribe to the device's own notifications instead of polling."""
     import base64
     rpc = shelly_for(args.device, args)
-    host = rpc.host.split(':')[0]
-    port = int(rpc.host.split(':')[1]) if ':' in rpc.host else 80
     key = base64.b64encode(secrets.token_bytes(16)).decode()
 
     if rpc.password:
@@ -58754,10 +59358,11 @@ def shelly_cmd_watch(args, pal):
                        'does not carry that authentication - use poll instead.'))
         return 1
 
+    # (5.52) wss:// where the box has HTTPS on, its certificate checked as for any call
     try:
-        sock = socket.create_connection((host, port), 10)
+        sock = rpc.open_socket(10)
     except OSError as e:
-        raise PlugError('cannot reach %s (%s)' % (rpc.host, e))
+        raise PlugError('cannot reach %s%s (%s)' % (rpc.host, ' over HTTPS' if rpc.tls else '', e))
     request = ('GET /rpc HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n'
                'Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n'
                'Sec-WebSocket-Version: 13\r\n\r\n' % (rpc.host, key))
@@ -58771,7 +59376,7 @@ def shelly_cmd_watch(args, pal):
     if b'101' not in reply.split(b'\r\n')[0]:
         raise PlugError('the device refused the websocket upgrade')
 
-    print(pal.dim('connected to %s - press Ctrl+C to stop' % rpc.host))
+    print(pal.dim('connected to %s%s - press Ctrl+C to stop' % (rpc.host, ' (wss)' if rpc.tls else '')))
     _ws_send(sock, json.dumps({'id': 1, 'src': 'zigmon',
                                'method': 'Shelly.GetStatus'}))
     try:
@@ -59034,6 +59639,112 @@ def shelly_cmd_firmware(args, pal):
     return 0
 
 
+def shelly_cli_address(value):
+    """Whether a word in place of a name is an address: http(s)://..., or an IP (with a port)."""
+    host, scheme = ShellyRPC.split_scheme(value)
+    if scheme is not None:
+        return bool(host)
+    try:
+        ipaddress.ip_address(host.rsplit(':', 1)[0] if host.count(':') == 1 else host)
+        return True
+    except ValueError:
+        return False
+
+
+def shelly_tls_print(pal, t):
+    if t.get('on'):
+        print('  HTTPS        ' + pal.ok('on'))
+        if t.get('ca'):
+            print('  checked by   the CA given (chain and address)')
+        print('  certificate  ' + (pal.value(t.get('pin_words')) if t.get('pin') else
+                                   pal.dim('not met yet - kept the first time the box is asked')))
+    else:
+        print('  HTTPS        ' + pal.dim('off - plain HTTP'))
+        if t.get('https_only'):
+            print(pal.warn('  this box sent plain HTTP on to HTTPS: it speaks only HTTPS (firmware 2.0+) - '
+                           'switch it on: tls on'))
+    if t.get('seen'):
+        print(pal.crit('  it now shows ANOTHER certificate: %s - refused' % t.get('seen_words')))
+        print(pal.dim('  if that is expected (a reset, a new certificate): tls --trust-new'))
+
+
+def shelly_cmd_tls(args, pal):
+    """(5.52) tls [on|off] [--ca FILE|none] [--trust-new] [--yes] - the daemon's
+    setting for one box; what the box shows is asked directly."""
+    target = args.device or args.host
+    if not target:
+        raise PlugError('name a box: zigmon shelly NAME tls')
+    host = ShellyRPC.split_scheme(args.device and (shelly_targets().get(args.device) or {}).get('host')
+                                  or args.host)[0]
+    ca = None
+    if args.ca is not None:
+        if args.ca.strip().lower() in ('none', 'off', ''):
+            ca = ''
+        else:
+            try:
+                ca = Path(args.ca).read_text()
+            except OSError as e:
+                raise PlugError('cannot read %s (%s)' % (args.ca, e))
+            problem = ShellyRPC.tls_ca_check(ca)
+            if problem:
+                raise PlugError('%s: %s' % (args.ca, problem))
+    code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'status'})
+    if code == 0:
+        raise PlugError('the daemon is not answering (%s) - HTTPS for a box is its setting'
+                        % answer.get('error'))
+    if not answer.get('ok'):
+        if args.host and not args.device and args.action == 'status' and not args.trust_new:
+            # an address that is not configured: what it shows, and that is all
+            fp = ShellyRPC.peer_fingerprint(host)
+            print('  %s is not a configured box; it shows the certificate SHA-256' % host)
+            print('  ' + pal.value(ShellyRPC.fingerprint_words(fp)))
+            return 0
+        raise PlugError(answer.get('error') or 'the daemon said no (HTTP %s)' % code)
+    now = answer.get('tls') or {}
+    if args.json and args.action == 'status' and not args.trust_new and ca is None:
+        print(json.dumps(now, indent=2))
+        return 0
+    print('  %s  %s' % (pal.title(target), pal.dim(host)))
+    shelly_tls_print(pal, now)
+    if args.trust_new:
+        try:
+            live = ShellyRPC.peer_fingerprint(host)
+        except (OSError, ssl.SSLError) as e:
+            raise PlugError('cannot reach %s over HTTPS to see its certificate (%s)' % (host, e))
+        if live == now.get('pin'):
+            print(pal.ok('  it shows the certificate trusted already - nothing to do'))
+            return 0
+        print('  it shows now     ' + pal.value(ShellyRPC.fingerprint_words(live)))
+        print(pal.dim('  compare it with what the box itself says (its web page, Settings > TLS) before you trust it'))
+        if not shelly_cli_sure(args, pal, 'trust this certificate for %s?' % host):
+            print('  nothing done')
+            return 1
+        code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'trust', 'fingerprint': live})
+    elif args.action in ('on', 'off'):
+        if args.action == 'on' and ca is None and not now.get('on'):
+            print(pal.dim('  the certificate it shows the first time is the one held to from then on'))
+        if not shelly_cli_sure(args, pal, 'HTTPS %s for %s?' % (args.action, host)):
+            print('  nothing done')
+            return 1
+        body = {'name': target, 'action': args.action}
+        if ca is not None:
+            body['ca'] = ca
+        code, answer = api_call('/api/shelly/tls', 'POST', body)
+    elif ca is not None:
+        if not shelly_cli_sure(args, pal, 'check %s %s?' % (host, 'against this CA' if ca else 'without a CA')):
+            print('  nothing done')
+            return 1
+        code, answer = api_call('/api/shelly/tls', 'POST', {'name': target, 'action': 'ca', 'ca': ca})
+    else:
+        return 0
+    if not answer.get('ok'):
+        raise PlugError(answer.get('error') or 'the daemon said no (HTTP %s)' % code)
+    print(pal.ok('  ' + str(answer.get('message') or 'done')))
+    if answer.get('warning'):
+        print(pal.warn('  ' + answer['warning']))
+    return 0
+
+
 def shelly_cmd_switch_settings(args, pal):
     """(5.51) switch-settings [--power-on ...] [--auto-off S|off] [--auto-on S|off] [--power-limit W|default]"""
     rpc = shelly_for(args.device, args)
@@ -59238,11 +59949,12 @@ addressing a device
   zigmon shelly Lednice info         a plug or sensor by the name it has in the configuration
   zigmon shelly info                 with no name, the first configured plug is assumed
   zigmon shelly --host 10.0.0.5 info  something not in the configuration at all
+  zigmon shelly https://10.0.0.5 info  the same over HTTPS (a box with firmware 2.0+)
 
 commands at a glance
   reading        discover, info, dump, methods, poll, watch, listen, serve
   controlling    on, off, toggle, reset-counters, reboot, firmware
-  configuring    config, switch-settings, matter, ble
+  configuring    config, switch-settings, tls, matter, ble
   anything else  call
 
 quoting JSON
@@ -59392,6 +60104,8 @@ HELP_LINES = [
     ('zigmon shelly Lednice firmware [update [--beta] [--yes]]', 'newer firmware offered? put it in'),
     ('zigmon shelly Lednice switch-settings [--power-on|--auto-off|--auto-on|--power-limit]',
      'power-on state, its timers, its limit'),
+    ('zigmon shelly Lednice tls [on|off] [--ca FILE] [--trust-new] [--yes]',
+     'HTTPS to the box (off unless switched on), its certificate'),
     ('zigmon shelly Lednice call Switch.GetStatus \'{"id":0}\'', 'any call the box knows'),
     ('zigmon shelly HT-Sklep dump', 'a sensor, while it is awake'),
     ('zigmon shelly listen', 'show webhook pushes as they arrive'),
@@ -64221,6 +64935,7 @@ class Console(object):
                                   ('why', 'Why it is not answering, step by step'),
                                   ('firmware', 'Its firmware: is a newer one offered'),
                                   ('settings', 'What it does by itself: power-on, timers, limit'),
+                                  ('https', 'HTTPS to it: on, off, its certificate'),
                                   ('show', 'Show it all')],
                            'It is %s.' % self._plug_state(p), cur=1 if p.get('output') else 0)
         if what == 'on':
@@ -64236,6 +64951,8 @@ class Console(object):
             self.plug_firmware(name)
         elif what == 'settings':
             self.plug_switch_settings(name)
+        elif what == 'https':
+            self.plug_tls(name)
         elif what == 'show':
             self.details(name, p, skip=('values', 'counters'))
 
@@ -64256,6 +64973,40 @@ class Console(object):
                         'restarts by itself - a minute or two without it, and what is plugged in does what the '
                         'box does at power-on meanwhile.' % (name, now, found['stable']), 'Update it'):
             self.act('shelly', name, 'firmware', 'update', '--yes')
+
+    def plug_tls(self, name):
+        """(5.52) HTTPS to the box: on, off, or a new certificate trusted -
+        each after a yes here (the command is then told --yes)."""
+        self.working('asking the daemon...')
+        t = self.out('shelly', name, 'tls')
+        if not isinstance(t, dict):
+            self.act('shelly', name, 'tls')                 # says why, in its own words
+            return
+        if t.get('on'):
+            said = 'HTTPS is on for %s; %s.' % (t.get('host') or name, (
+                'it is checked against the CA given' if t.get('ca') else
+                'the certificate trusted is SHA-256 %s' % t['pin_words'] if t.get('pin') else
+                'its certificate is kept the first time it is asked'))
+            options = [('off', 'Switch HTTPS off - plain HTTP again')]
+        else:
+            said = 'HTTPS is off for %s: plain HTTP.%s' % (t.get('host') or name, (
+                ' It sent plain HTTP on to HTTPS - it speaks only HTTPS (firmware 2.0+).'
+                if t.get('https_only') else ''))
+            options = [('on', 'Switch HTTPS on')]
+        if t.get('seen'):
+            said += ' It now shows ANOTHER certificate (SHA-256 %s), refused.' % t['seen_words']
+            options.insert(0, ('trust', 'Trust the certificate it shows now'))
+        what = self.choose('HTTPS to %s' % name, options, said)
+        if what == 'on' and self.confirm('HTTPS for %s' % name, 'From now on it is spoken to over HTTPS, and held '
+                                         'to the certificate it shows the first time.', 'Switch it on'):
+            self.act('shelly', name, 'tls', 'on', '--yes')
+        elif what == 'off' and self.confirm('Plain HTTP for %s' % name, 'Its password digest and its readings go '
+                                            'over the network unencrypted again.', 'Switch it off'):
+            self.act('shelly', name, 'tls', 'off', '--yes')
+        elif what == 'trust' and self.confirm('Trust the new certificate', 'SHA-256 %s - compare it with what the '
+                                              'box itself shows before trusting it.' % t['seen_words'],
+                                              'Trust it'):
+            self.act('shelly', name, 'tls', '--trust-new', '--yes')
 
     def plug_switch_settings(self, name):
         """(5.51) The relay's own settings, shown, and changed after a yes."""
