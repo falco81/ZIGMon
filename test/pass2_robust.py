@@ -168,6 +168,15 @@ try:
     held.execute('BEGIN EXCLUSIVE')
     try:
         got, took = health()
+        # the store's lock busy for 50 ms with something else (a loaded machine:
+        # the whole suite at once) gives the last figures, here none - by design;
+        # asked again until the probe ran, each answer still timed on its own
+        for _ in range(20):
+            if not isinstance(got, dict) or (got.get('db') or {}).get('read_ms') is not None or \
+                    (got.get('db') or {}).get('write_error'):
+                break
+            time.sleep(0.1)
+            got, took = health()
     finally:
         held.execute('ROLLBACK')
         held.close()
