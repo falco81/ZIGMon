@@ -50,6 +50,15 @@ uni.call = (lambda f: lambda m, p=None: dict(f(m, p), app='PlusUni', model='SNSN
 got = zigmon.sbk_look(uni)
 check(got['supported'] is False and 'Plus Uni' in got['why'] and 'older than' not in got['why'],
       'a Plus Uni is told to update a firmware that will never have it: %r' % got['why'])
+g2 = Box('1.7.1', OLD)
+g2.call = (lambda f: lambda m, p=None: dict(f(m, p), app='PlusPlugS', gen=2)
+           if m == 'Shelly.GetDeviceInfo' else f(m, p))(g2.call)
+got = zigmon.sbk_look(g2)
+check('older than 2.2.0' in got['why'] and 'stay at 1.7.x for good' in got['why'],
+      'a Gen2 on 1.7.x is not told it may never get it: %r' % got['why'])
+got = zigmon.sbk_look(Box('2.1.1', OLD))
+check('once Shelly offers it for this model' in got['why'] and '1.7.x' not in got['why'],
+      'a Gen4 on 2.1.1: %r' % got['why'])
 got = zigmon.sbk_look(Box('2.2.0', OLD))
 check(got['supported'] is False and 'not among its methods' in got['why'],
       'a 2.2.0 box without the methods (Plus Uni and the like): %r' % got['why'])

@@ -57795,10 +57795,14 @@ def sbk_look(rpc):
     if not supported:
         ver = str(info.get('ver') or '')
         if sbk_older_than(ver, SBK_SINCE) and str(info.get('app') or '') not in SBK_NEVER_APPS:
-            # (5.51.1) the plain reason: the backup came with firmware 2.2.0 (Shelly's changelog)
+            # (5.51.1) the plain reason: the backup came with firmware 2.2.0 (Shelly's changelog),
+            # rolled out model by model - and a Gen2 kept at 1.7.x for good never gets it
             why = ('its firmware %s is older than %s, the first with the backup of its configuration - put in '
-                   'a newer one (the socket\'s fold: The box itself - Firmware, or zigmon shelly NAME firmware) '
-                   'and look again' % (ver, SBK_SINCE))
+                   'a newer one once Shelly offers it for this model (the socket\'s fold: The box itself - '
+                   'Firmware, or zigmon shelly NAME firmware) and look again' % (ver, SBK_SINCE))
+            if info.get('gen') == 2 and sbk_older_than(ver, '2.0.0'):
+                why += ('; some Gen2 models stay at 1.7.x for good (Shelly\'s firmware policy: Plus 1, Plus 1PM, '
+                        'Plus 2PM, Plus PM Mini, Plus I4, Plus Plug S/US, Plus H&T, Plus 0-10V) and never get it')
         else:
             why = ('its firmware (%s) has no backup - Sys.CreateBackup is not among its methods; not on Plus Uni, '
                    'Plus RGBW PM and some Zigbee-firmware Gen4 at all' % (ver or '?'))

@@ -2089,7 +2089,9 @@ Current version: **5.51.1**
 
 * The backup of a box's configuration came with Shelly firmware 2.2.0. A box
   on an older one (a Mini 1PM Gen4 on 2.1.1) now says that its firmware is
-  older than 2.2.0 and how to put in a newer one, not a list of models.
+  older than 2.2.0 and how to put in a newer one once Shelly offers it for
+  that model (rolled out model by model), not a list of models; a Gen2 on
+  1.7.x hears that some Gen2 models stay there for good.
 
 `test/review5511_sbkwhy.py`; these checks fail on 5.51.0.
 
