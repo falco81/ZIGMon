@@ -1207,7 +1207,43 @@ def tls_now():
         out['chain_check'] = chain_check(files['cert'], files['root'])
     if out['alt_info']:
         out['alt_chain_check'] = chain_check(files['alt_cert'], files['root'])
+    # the port nginx answers TLS on for this server (the daemon's check of
+    # what it sends), and what the files hold that anybody may have: the
+    # certificates as sent and the company roots kept to check with - never
+    # the key. The daemon completes the chain from them (tls_chain).
+    out['port'] = listen_port(block)
+    pems = {'cert': '', 'chain': [], 'roots': [], 'alt_cert': '', 'alt_chain': []}
+    for k, path in (('cert', files['cert']), ('alt_cert', files['alt_cert'] if out['alt_info'] else '')):
+        got = pem_blocks(path)
+        if got:
+            pems[k] = got[0]
+            pems[k.replace('cert', 'chain')] = got[1:]
+    pems['roots'] = [c for c in pem_blocks(files['root']) if cert_names(c)[0] and len(set(cert_names(c))) == 1]
+    out['pems'] = pems
+    out['fp'] = fingerprint(pems['cert']) if pems['cert'] else ''
+    out['roots_given'] = [dn_cn(cert_names(c)[0]) for c in pems['roots']]
     return out
+
+
+def listen_port(block):
+    """The port of the server's `listen ... ssl` (443 when none says)."""
+    for v in directives(block, 'listen'):
+        if 'ssl' in v.split():
+            m = re.search(r'(?:^|[:\]])(\d{1,5})$', v.split()[0])
+            if m:
+                return int(m.group(1))
+    return 443
+
+
+def pem_blocks(path):
+    """The certificates of a file, in order; [] unread."""
+    if not path:
+        return []
+    try:
+        with open(path) as f:
+            return PEM_CERT_RE.findall(f.read(1 << 20))
+    except OSError:
+        return []
 
 
 CA_BUNDLES = ('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', '/etc/ssl/certs/ca-certificates.crt',
@@ -1272,12 +1308,14 @@ def chain_check(cert_file, root_file):
                 trust = f.read()
         except OSError:
             trust = ''
+    private = False
     try:
         with open(root_file) as f:
             for c in PEM_CERT_RE.findall(f.read()):
                 s, i = cert_names(c)
                 if s and s == i:
                     trust += '\n' + c + '\n'
+                    private = True
     except OSError:
         pass
     with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
@@ -1298,6 +1336,10 @@ def chain_check(cert_file, root_file):
         top = deep[-1] if deep else ''
         m = re.search(r'(?:^|[,/]\s*)CN\s*=\s*([^,/]+)', top)
         out['up_to'] = (m.group(1).strip() if m else top)[:120]
+        if private and not chain_verifies(leaf, rest, bundle):
+            # whole only with the company root kept here: clients that do not
+            # trust it refuse it all the same
+            out['private_root'] = out['up_to']
         return out
     # where the chain sent stops: the issuer of the last link found
     out['ok'] = False
@@ -1315,8 +1357,159 @@ def chain_check(cert_file, root_file):
             break
         at = nxt[1]
     out['missing'] = dn_cn(at)
-    out['said'] = ((got.stdout + got.stderr).strip().splitlines() or ['does not verify'])[-1][:200]
+    out['said'] = unpath(((got.stdout + got.stderr).strip().splitlines() or ['does not verify'])[-1])[:200]
     return out
+
+
+def unpath(text):
+    """openssl's words without the temporary files it was handed."""
+    return re.sub(r'(?:error\s+)?/\S*zigmon-(?:chain|root)-\S*?\.pem:?\s*', '', str(text or '')).strip() or \
+        'does not verify'
+
+
+def chain_verifies(leaf, chain, bundle):
+    """Whether a certificate with this chain sent leads to a root of the
+    file `bundle` (the system's) - nothing else trusted."""
+    if not bundle:
+        return False
+    with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
+        for n, v in (('leaf.pem', leaf.strip() + '\n'), ('rest.pem', ''.join(c.strip() + '\n' for c in chain))):
+            with open(os.path.join(t, n), 'w') as fh:
+                fh.write(v)
+        args = ['openssl', 'verify', '-CAfile', bundle]
+        if os.environ.get('ZIGMON_TEST_CA_BUNDLE'):
+            args.append('-no-CApath')
+        if chain:
+            args += ['-untrusted', os.path.join(t, 'rest.pem')]
+        got = subprocess.run(args + [os.path.join(t, 'leaf.pem')], capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=60)
+    return got.returncode == 0
+
+
+def issued_by(c, issuer):
+    """Whether `issuer` signed `c`: its name, and the signature (no root
+    needed - openssl's partial chain)."""
+    if cert_names(issuer)[0] != cert_names(c)[1]:
+        return False
+    with tempfile.TemporaryDirectory(prefix='zigmon-chain-') as t:
+        for n, v in (('ca.pem', issuer), ('c.pem', c)):
+            with open(os.path.join(t, n), 'w') as fh:
+                fh.write(v.strip() + '\n')
+        got = subprocess.run(['openssl', 'verify', '-no-CApath', '-partial_chain', '-CAfile',
+                              os.path.join(t, 'ca.pem'), os.path.join(t, 'c.pem')],
+                             capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+    return got.returncode == 0
+
+
+def fingerprint(pem):
+    der = subprocess.run(['openssl', 'x509', '-outform', 'DER'], input=pem.strip().encode() + b'\n',
+                         capture_output=True, timeout=60).stdout
+    return hashlib.sha256(der).hexdigest() if der else ''
+
+
+def chain_checked(leaf, fp, chain, what):
+    """The chain asked for one certificate in place: `fp` must be the one
+    nginx sends now, the chain certificates only (no key, no root), each the
+    issuer of the one before it."""
+    fp = re.sub(r'[^0-9a-f]', '', str(fp or '').lower())
+    if len(fp) != 64 or not leaf or fingerprint(leaf) != fp:
+        raise Refused('%s in place is not the one the chain was made for - look again' % what)
+    if not isinstance(chain, list) or len(chain) > 8:
+        raise Refused('the chain of %s is a list of a few certificates' % what)
+    out, at = [], leaf
+    for c in chain:
+        c = str(c or '')
+        if 'PRIVATE KEY' in c or not CERT_RE.match(c) or len(PEM_CERT_RE.findall(c)) != 1:
+            raise Refused('the chain of %s is certificates, one by one - nothing else' % what)
+        s, i = cert_names(c)
+        if not s or s == i:
+            raise Refused('a root is never sent with %s - only the authorities between it and the root' % what)
+        if not issued_by(at, c):
+            raise Refused('the chain of %s does not go up from it: %s did not sign %s' % (
+                what, dn_cn(s), dn_cn(cert_names(at)[0])))
+        out.append(c.strip())
+        at = c
+    return out
+
+
+def chain_roots(raw, chain, alt_chain):
+    """(roots, trusted file) of a chain asked for: the company roots given
+    to check with, self-signed only, and the file nginx trusts - the roots
+    and the chains, as trust_of() makes it for an upload."""
+    root = str(raw.get('root') or '')
+    if 'PRIVATE KEY' in root or (root.strip() and not CERT_RE.match(root)):
+        raise Refused('the root is certificates only (-----BEGIN CERTIFICATE-----)')
+    roots = PEM_CERT_RE.findall(root)
+    if len(roots) > 4:
+        raise Refused('%d roots - a certificate leads to one' % len(roots))
+    for c in roots:
+        s, i = cert_names(c)
+        if not s or s != i:
+            raise Refused('%s is not a root (it is not self-signed): it belongs in the chain' % dn_cn(s))
+    if not chain and not roots and not alt_chain:
+        raise Refused('nothing to put in: no chain and no root')
+    trust = trust_of({'root': ''.join(c.strip() + '\n' for c in roots),
+                      'chain': ''.join(c + '\n' for c in chain)},
+                     {'own_trust': True, 'chain': ''.join(c + '\n' for c in alt_chain), 'root': ''})
+    return roots, trust
+
+
+def tls_chain(raw):
+    """(tls_chain) The chain of the certificate in place, and the company
+    root kept to check with - the certificate itself and its key as they are:
+    the cert file the same certificate with the new chain after it, the
+    trusted file (OCSP stapling) the root and the chains, as an upload puts
+    them. nginx -t, a reload, the broker told; as it was when nginx says no."""
+    conf = nginx_conf()
+    with open(conf) as f:
+        main = f.read()
+    where = server_block(main)
+    if not where:
+        raise Refused('no HTTPS server { } was found in %s' % conf)
+    block = main[where[0]:where[1]]
+    files = tls_files(block)
+    dual = len(directives(block, 'ssl_certificate')) > 1
+    leaf = (pem_blocks(files['cert']) or [''])[0]
+    chain = chain_checked(leaf, raw.get('fp'), raw.get('chain'), 'the certificate')
+    alt = raw.get('alt') if isinstance(raw.get('alt'), dict) else None
+    alt_leaf, alt_chain = '', []
+    if alt and dual:
+        alt_leaf = (pem_blocks(files['alt_cert']) or [''])[0]
+        alt_chain = chain_checked(alt_leaf, alt.get('fp'), alt.get('chain'), 'the second certificate')
+    roots, trust = chain_roots(raw, chain, alt_chain)
+    snap = snapshot([conf, files['cert'], files['alt_cert'], files['root']])
+    said = []
+    try:
+        progress('writing the chain of the certificate', 3)
+        write_root(files['cert'], leaf.strip() + '\n' + ''.join(c + '\n' for c in chain), 0o644)
+        if alt_leaf:
+            write_root(files['alt_cert'], alt_leaf.strip() + '\n' + ''.join(c + '\n' for c in alt_chain), 0o644)
+        if trust:
+            write_root(files['root'], trust, 0o644)
+            new = set_directive(block, 'ssl_trusted_certificate', files['root'])
+            if new != block:
+                write_root(conf, main[:where[0]] + new + main[where[1]:], 0o644)
+        said.append('the chain of %s: %s' % (dn_cn(cert_names(leaf)[0]), ', '.join(
+            dn_cn(cert_names(c)[0]) for c in chain) or 'none'))
+        if alt_leaf:
+            said.append('the chain of the second one: %s' % (', '.join(
+                dn_cn(cert_names(c)[0]) for c in alt_chain) or 'none'))
+        if roots:
+            said.append('the root kept to check with (never sent): %s' % ', '.join(
+                dn_cn(cert_names(c)[0]) for c in roots))
+        progress('asking nginx, and reloading it', 4)
+        t = subprocess.run(NGINX_TEST, capture_output=True, text=True)
+        if t.returncode != 0:
+            raise Refused('nginx does not take it, so it is as it was: %s'
+                          % ((t.stderr or '').strip().splitlines() or ['?'])[-1][:300])
+        service('reload', 'nginx')
+        said.append('nginx reloaded')
+    except BaseException:
+        put_back(snap)
+        raise
+    if mosquitto_reads([files['cert'], files['key']]):
+        said.append(mosquitto_hup())
+    return {}, said
 
 
 # ---- the firewall -------------------------------------------------------------
@@ -2459,6 +2652,8 @@ def tls_proxy(raw, which='front'):
             raise Refused('nginx on the server in front has no HTTPS server of its own for %s' % name)
     if op == 'export':
         return proxy_export(raw, ssh, paths, files[where[0][0]][where[0][1]:where[0][2]])
+    if op == 'chain':
+        return proxy_chain(raw, ssh, files, where, paths, which)
     t = raw.get('tls')
     pol = None
     if isinstance(t, dict) and t.get('protocols'):
@@ -2606,6 +2801,67 @@ def tls_proxy(raw, which='front'):
     return fields, ['on the server in front (%s), %s%d server block(s): %s; nginx reloaded'
                     % (ssh['host'], 'ntfy\'s ' if which == 'ntfy' else '', len(where),
                        '; '.join(said) or 'as it was')]
+
+
+def proxy_cat(ssh, path):
+    """The certificates of a file there, in order."""
+    if not PROXY_PATH_RE.match(path or '') or '..' in path.split('/'):
+        return []
+    code, out, _err = proxy_ssh(ssh, 'cat %s' % shlex.quote(path))
+    return PEM_CERT_RE.findall(out) if code == 0 else []
+
+
+def proxy_chain(raw, ssh, files, where, paths, which):
+    """(op chain) The chain of the certificate in place there - and the
+    company root kept to check with - the certificate and its key as they
+    are, as tls_chain() does it here: the same checks, the same files, nginx
+    -t and a reload there, every file put back when nginx says no."""
+    first = files[where[0][0]][where[0][1]:where[0][2]]
+    certs = directives(first, 'ssl_certificate')
+    leaf = (proxy_cat(ssh, paths['cert']) or [''])[0]
+    chain = chain_checked(leaf, raw.get('fp'), raw.get('chain'), 'the certificate there')
+    alt = raw.get('alt') if isinstance(raw.get('alt'), dict) else None
+    alt_leaf, alt_chain, alt_path = '', [], ''
+    if alt and len(certs) > 1:
+        alt_path = certs[1]
+        alt_leaf = (proxy_cat(ssh, alt_path) or [''])[0]
+        alt_chain = chain_checked(alt_leaf, alt.get('fp'), alt.get('chain'), 'the second certificate there')
+    roots, trust = chain_roots(raw, chain, alt_chain)
+    progress('making the files for %s' % ssh['host'], 2)
+    put = [(leaf.strip() + '\n' + ''.join(c + '\n' for c in chain), '644', paths['cert'])]
+    if alt_leaf:
+        put.append((alt_leaf.strip() + '\n' + ''.join(c + '\n' for c in alt_chain), '644', alt_path))
+    if trust and paths['root'] not in (paths['cert'], alt_path):
+        put.append((trust, '644', paths['root']))
+        changed = {}
+        for path, start, end in sorted(where, key=lambda w: (w[0], -w[1])):
+            text = changed.get(path, files[path])
+            block = text[start:end]
+            if roots or (directive(block, 'ssl_stapling') or '') == 'on' or \
+                    directive(block, 'ssl_trusted_certificate'):
+                block = set_directive(block, 'ssl_trusted_certificate', paths['root'])
+            changed[path] = text[:start] + block + text[end:]
+        for path, text in changed.items():
+            if text != files[path]:
+                if not PROXY_PATH_RE.match(path) or '..' in path.split('/'):
+                    raise Refused('nginx on the server in front reads a file that is not a plain path')
+                put.append((text if text.endswith('\n') else text + '\n', '644', path))
+    progress('putting it on %s' % ssh['host'], 3)
+    out = proxy_put(ssh, put, paths['cert'])
+    there = re.search(r'Fingerprint=([0-9A-Fa-f:]+)', out)
+    there = there.group(1).replace(':', '').lower() if there else ''
+    fp = re.sub(r'[^0-9a-f]', '', str(raw.get('fp') or '').lower())
+    if there and there != fp:
+        raise Refused('%s serves a different certificate from the file it was given' % ssh['host'])
+    fields = {'proxy': {'host': ssh['host'], 'at': int(time.time()), 'source': 'chain', 'fingerprint': fp,
+                        'files': len(put)}}
+    if which == 'ntfy':
+        fields['proxy']['which'] = 'ntfy'
+    words = 'the chain: %s' % (', '.join(dn_cn(cert_names(c)[0]) for c in chain) or 'none')
+    if roots:
+        words += '; the root kept to check with (never sent): %s' % ', '.join(dn_cn(cert_names(c)[0]) for c in roots)
+    return fields, ['on the server in front (%s), %s%s; nginx reloaded' % (
+        ssh['host'], 'ntfy\'s certificate, ' if which == 'ntfy' else '', words)]
 
 
 def proxy_put(ssh, put, fp_of=None):
@@ -5444,6 +5700,8 @@ def handle(raw):
             ['handed over for a download: %s%s' % (name, ' (with a password)' if pw else '')]
     if kind == 'tls_export':
         return tls_export(raw)
+    if kind == 'tls_chain':
+        return tls_chain(raw)
     if kind == 'tls_proxy':
         return tls_proxy(raw)
     if kind == 'tls_proxy_ntfy':
