@@ -2105,8 +2105,21 @@ Current version: **5.49.0**
   which holds the intermediate, and said "good" for a server that did not
   send it.
 * A server that does not send its intermediate is told once per certificate.
+* On the card of a certificate - this machine's, the server in front's and
+  ntfy's alike: "Complete the chain" (when it is incomplete; "Check the chain"
+  otherwise) fetches the missing link for the certificate already in place,
+  and "Upload the missing authority" takes it by hand (PEM, or a .cer/.der
+  file turned into PEM in the browser) - certificates only, never a key; a
+  private CA's root is kept for checking and never sent. Root changes only
+  the chain and the trusted root of the certificate in place: its
+  fingerprint checked, every link checked to sign the one before it,
+  `nginx -t`, reload, everything put back when it fails. The card says Root
+  (its name, or not given) and the last check.
+* After every change of a certificate zigmon connects to the server as a
+  client that fetches nothing; a refusal is an event, not silence.
 
-`test/review549_chain.py`; these checks fail on 5.48.1.
+`test/review549_chain.py`, `test/review550_chainui.py`; these checks fail on
+5.48.1.
 
 5.48.1 — the SELinux report lists the processes again.
 
