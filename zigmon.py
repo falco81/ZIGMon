@@ -57777,7 +57777,7 @@ SBK_NEEDS_RESTORE = ('Sys.UploadBackup', 'Sys.RestoreBackup')
 SBK_OUTPUT_RE = re.compile(r'^(switch|light|rgb|rgbw|cct|cover):\d+$')
 SBK_JOB = {'running': False, 'kind': '', 'by': '', 'started': 0, 'ended': 0, 'steps': [], 'id': '', 'said': ''}
 SBK_LOCK = threading.Lock()
-SBK_CHECKING = {'on': False, 'started': 0}
+SBK_CHECKING = {'on': False, 'started': 0, 'box': ''}
 SBK_STARTED = time.time()
 
 
@@ -58113,11 +58113,15 @@ def sbk_check_start(d, boxes=None, force=False):
                     if not ShellyRPC.commanding(b['host'], 3.0):
                         break
                     time.sleep(0.5)
-                sbk_check_box(d, b)
+                SBK_CHECKING['box'] = b['box']        # (5.52) the row being looked at, for the page
+                try:
+                    sbk_check_box(d, b)
+                finally:
+                    SBK_CHECKING['box'] = ''
         except Exception as e:                          # noqa: BLE001
             log('device backups: looking: %s' % e, 'debug')
         finally:
-            SBK_CHECKING['on'] = False
+            SBK_CHECKING.update(on=False, box='')
     if not todo:
         SBK_CHECKING['on'] = False
         return True
@@ -58144,7 +58148,7 @@ def sbk_wait_back(rpc, done, say, what):
         ' with a new backup' if seen is not None else '', int(SBK_WAIT_S)))
 
 
-def sbk_download(rpc):
+def sbk_download(rpc, say=None):
     out, off = bytearray(), 0
     while True:
         got = sbk_call(rpc, 'Sys.DownloadBackup', {'offset': off, 'len': SBK_CHUNK}) or {}
@@ -58164,6 +58168,8 @@ def sbk_download(rpc):
             raise ValueError('the archive would be larger than %d MB - not believed' % (SBK_MOST // 1048576))
         if left <= 0:
             break
+        if say:
+            say('downloading the archive %d %%' % int(100 * off / max(1, off + left)))
     return bytes(out)
 
 
@@ -58256,7 +58262,7 @@ def sbk_backup_box(d, box, by, why, say=lambda w: None, careful=False):
     if b.get('error'):
         raise ValueError('the box could not make it: %s' % str(b['error'])[:200])
     say('downloading the archive')
-    raw = sbk_download(rpc)
+    raw = sbk_download(rpc, say)
     manifest = sbk_zip_check(raw)
     if manifest.get('encrypt'):
         raise ValueError('the archive is encrypted - its key is not kept here, so it is not kept either')
@@ -58368,17 +58374,41 @@ def sbk_step(box, state='waiting', said=''):
     return {'box': box['box'], 'label': box['label'], 'state': state, 'said': said, 'at': int(time.time())}
 
 
+# (5.52) Where a backup or a restore of one box has got to, for its row on the page: the
+# words it says are mapped once here, so the page shows the steps without reading prose.
+SBK_PHASES = (('looking at it again', 'store'), ('downloading', 'download'), ('restarting', 'restart'),
+              ('asking it for a backup', 'ask'), ('sending the archive', 'upload'), ('restoring', 'restore'),
+              ('looking at it', 'look'), ('starting', 'look'))
+
+
+def sbk_phase_of(words):
+    w = str(words or '')
+    for start, phase in SBK_PHASES:
+        if w.startswith(start):
+            return phase
+    return ''
+
+
+def sbk_say_into(step):
+    """The `say` of a box's backup or restore: its words, its phase and, while downloading,
+    how much of the archive is in."""
+    def say(w):
+        m = re.search(r'(\d{1,3}) %$', str(w))
+        step.update(said=w, phase=sbk_phase_of(w) or step.get('phase') or '', at=int(time.time()),
+                    pct=int(m.group(1)) if m else None)
+    return say
+
+
 def sbk_run_backups(d, boxes, steps, by, why, careful):
     """One box after another; each one's end in the events, by whom."""
     done = failed = skipped = 0
     for b, step in zip(boxes, steps):
         if step['state'] != 'waiting':
             continue
-        step.update(state='working', said='starting', at=int(time.time()))
+        step.update(state='working', said='starting', phase='look', at=int(time.time()))
         dev = 'plug:' + b['names'][0]
         try:
-            got = sbk_backup_box(d, b, by, why, lambda w, s=step: s.update(said=w, at=int(time.time())),
-                                 careful=careful)
+            got = sbk_backup_box(d, b, by, why, sbk_say_into(step), careful=careful)
             step.update(state='done', said='kept: %d KB, firmware %s%s' % (
                 max(1, got['size'] // 1024), got['fw'] or '?',
                 ('; %d older one(s) let go' % got['dropped']) if got['dropped'] else ''))
@@ -58540,7 +58570,7 @@ def sbk_view(d):
     job = {k: SBK_JOB.get(k) for k in ('running', 'kind', 'by', 'started', 'ended', 'said', 'id')}
     job['steps'] = [dict(x) for x in SBK_JOB.get('steps') or []]
     return {'ok': True, 'settings': s, 'devices': devices, 'counts': counts, 'job': job,
-            'checking': bool(SBK_CHECKING['on']), 'run': run if isinstance(run, dict) else {},
+            'checking': bool(SBK_CHECKING['on']), 'checking_box': SBK_CHECKING.get('box') or '', 'run': run if isinstance(run, dict) else {},
             'next': sbk_next(d), 'keep_most': 50, 'chunk': SBK_CHUNK}
 
 
@@ -58615,7 +58645,7 @@ def sbk_post(d, b, by):
             step = steps[0]
             dev = 'plug:' + box['names'][0]
             try:
-                got = sbk_restore_box(d, box, rid, by, lambda w: step.update(said=w, at=int(time.time())))
+                got = sbk_restore_box(d, box, rid, by, sbk_say_into(step))
                 step.update(state='done', said='restored%s' % ('; ' + got['warn'] if got['warn'] else ''))
                 d.store.add_event('plug', '%s restored the configuration of the box from its backup of %s%s - it '
                                   'restarted with its files replaced' % (

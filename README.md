@@ -2100,7 +2100,14 @@ Current version: **5.52.0**
 * A head's card on the Sensors tab shows its offset (OFFSET -2 °C), and when
   its room follows, which thermometer and when it was last matched.
 
-`test/review552_heatfollow.py`; these checks fail on 5.51.2.
+* Settings - Device backups: the device being looked at or backed up is
+  framed in blue with a glow while the others dim (each still lights up under
+  the pointer), and under its state the steps - looked at, asked, restarted,
+  downloading (in %), stored; a restore: looked at, sent, restoring. A device
+  waiting its turn says so (2 of 3).
+
+`test/review552_heatfollow.py`, `test/review551_shellybackup.py`; these checks
+fail on 5.51.2.
 
 5.51.2 — the time of the device backups' run looks as the rest.
 

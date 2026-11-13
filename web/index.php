@@ -5366,7 +5366,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .sbk-sched input[type=time],.sbk-sched select{box-sizing:border-box;height:34px;font:inherit;font-size:13.5px;
     font-weight:600;color:var(--tx);background-color:var(--panel2);border:1px solid var(--line);border-radius:9px;
     color-scheme:dark;outline:none}
-  .sbk-sched input[type=time]{width:112px;padding:0 8px 0 10px;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .sbk-sched input[type=time]{width:auto;min-width:112px;padding:0 8px 0 10px;font-variant-numeric:tabular-nums;letter-spacing:.02em}
   .sbk-sched input[type=time]::-webkit-calendar-picker-indicator{opacity:.65;cursor:pointer}
   .sbk-sched select{width:auto;padding:0 28px 0 10px}
   .sbk-sched input[type=time]:hover,.sbk-sched select:hover{border-color:rgba(88,166,255,.55)}
@@ -5385,6 +5385,25 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
   .sbk-dev:last-child{border-bottom:0}
   .sbk-dev:hover{background:var(--panel2)}
+  /* (5.52) the row being looked at or backed up: a blue frame with a glow, the others
+     dimmed while it runs - and each still lights up under the pointer as before */
+  .sbk-list.running .sbk-dev{transition:opacity .2s,background .15s}
+  .sbk-list.running .sbk-dev:not(.busy){opacity:.45}
+  .sbk-list.running .sbk-dev:not(.busy):hover{opacity:.85}
+  .sbk-dev.busy{position:relative;z-index:1;border-radius:10px;border-bottom-color:transparent;
+    outline:2px solid var(--info);outline-offset:-2px;background:rgba(88,166,255,.08);
+    box-shadow:0 0 18px rgba(88,166,255,.35);animation:sbk-glow 2.4s ease-in-out infinite}
+  .sbk-dev.busy:hover{background:rgba(88,166,255,.14)}
+  @keyframes sbk-glow{0%,100%{box-shadow:0 0 12px rgba(88,166,255,.25)}50%{box-shadow:0 0 22px rgba(88,166,255,.45)}}
+  @media (prefers-reduced-motion:reduce){.sbk-dev.busy{animation:none}}
+  .sbk-state.run{background:rgba(88,166,255,.18);color:var(--info);border-color:var(--info)}
+  .sbk-state.run .sbk-spin{width:11px;height:11px;border:2px solid rgba(88,166,255,.35);border-top-color:var(--info);border-radius:50%;
+    animation:upspin .9s linear infinite;display:inline-block;flex:0 0 auto;margin:0}
+  .sbk-flow{display:block;flex-basis:100%;font-size:12px;color:var(--tx-mut);margin-top:3px;overflow-wrap:anywhere}
+  .sbk-flow .ok{color:var(--info)} .sbk-flow .now{color:var(--info);font-weight:700}
+  .sbk-flow .sep{opacity:.6;margin:0 3px}
+  .sbk-flow > span:not(.sep){white-space:nowrap}
+  .sbk-queue{display:block;flex-basis:100%;font-size:12px;color:var(--tx-dim);margin-top:3px}
   .sbk-ic{font-size:22px;line-height:1;text-align:center}
   .sbk-name{min-width:0} .sbk-name b{display:block;overflow-wrap:anywhere}
   .sbk-name .sbk-sub{display:block;color:var(--tx-dim);font-size:12.5px;overflow-wrap:anywhere}
@@ -36062,7 +36081,15 @@ function drawSbk() {
   var list = el('div', 'sbk-list');
   list.id = 'sbk-list';
   if (!(d.devices || []).length) list.appendChild(el('p', 'note', 'No Shelly socket or light is configured (Settings → Devices).'));
-  (d.devices || []).forEach(function (x) { list.appendChild(sbkRow(x, busy)); });
+  /* (5.52) the row being worked on: its step of the job, or the box being looked at */
+  var steps = job.running ? (job.steps || []) : [];
+  var queue = steps.filter(function (st) { return st.state === 'waiting' || st.state === 'working'; });
+  var looking = d.checking ? (d.checking_box || '') : '';
+  if (steps.some(function (st) { return st.state === 'working'; }) || looking) list.classList.add('running');
+  (d.devices || []).forEach(function (x) {
+    var step = steps.filter(function (st) { return st.box === x.box; })[0] || null;
+    list.appendChild(sbkRow(x, busy, step, queue, job.kind, looking === x.box));
+  });
   host.appendChild(list);
 }
 function sbkJobBox(job) {
@@ -36118,8 +36145,33 @@ function sbkSched(s) {
     + 'A device it would change by restarting it is left alone and said: an output that is on and does not come back as it was (power-on state other than “restore last”), and a monitor-only socket.'));
   return box;
 }
-function sbkRow(x, busy) {
-  var r = el('div', 'sbk-dev');
+/* (5.52) Where one box's backup or restore has got to, as a line of steps under its state */
+var SBK_FLOW = {backup: [['look', 'looked at'], ['ask', 'asked'], ['restart', 'restarted'], ['download', 'downloading'], ['store', 'stored']],
+                restore: [['look', 'looked at'], ['upload', 'sent'], ['restore', 'restoring'], ['store', 'looked at again']]};
+var SBK_NOW = {look: 'looking at it', ask: 'asking for a backup', restart: 'restarting', download: 'downloading',
+               store: 'storing', upload: 'sending the archive', restore: 'restoring'};
+function sbkFlow(step, kind) {
+  var flow = SBK_FLOW[kind === 'restore' ? 'restore' : 'backup'];
+  var at = -1;
+  flow.forEach(function (f, i) { if (f[0] === step.phase) at = i; });
+  var line = el('span', 'sbk-flow');
+  flow.forEach(function (f, i) {
+    if (i) line.appendChild(el('span', 'sep', '\u2192'));
+    var words = f[1];
+    if (i === at && f[0] === 'download' && typeof step.pct === 'number') words += ' ' + step.pct + ' %';
+    line.appendChild(el('span', i < at ? 'ok' : (i === at ? 'now' : ''), words));
+  });
+  return line;
+}
+function sbkRunPill(words) {
+  var p = el('span', 'sbk-state run');
+  p.appendChild(el('span', 'sbk-spin'));
+  p.appendChild(el('span', '', words));
+  return p;
+}
+function sbkRow(x, busy, step, queue, kind, looking) {
+  var working = !!(step && step.state === 'working');
+  var r = el('div', 'sbk-dev' + (working || looking ? ' busy' : ''));
   r.dataset.box = x.box;
   r.appendChild(el('div', 'sbk-ic', sbkIcon(x)));
   var n = el('div', 'sbk-name');
@@ -36127,7 +36179,20 @@ function sbkRow(x, busy) {
   n.appendChild(el('span', 'sbk-sub', [x.model || x.app || 'Shelly', x.fw ? 'fw ' + x.fw : '', x.host].filter(Boolean).join(' · ')));
   r.appendChild(n);
   var st = el('div', 'sbk-states');
-  st.appendChild(sbkState(x));
+  if (working) {
+    var what = kind === 'restore' ? 'restoring' : 'backing up';
+    var now = SBK_NOW[step.phase] || '';
+    if (step.phase === 'download' && typeof step.pct === 'number') now += ' ' + step.pct + ' %';
+    st.appendChild(sbkRunPill(what + (now && now !== what ? ' \u00b7 ' + now : '')));
+    st.appendChild(sbkFlow(step, kind));
+  } else if (looking) {
+    st.appendChild(sbkRunPill('looking\u2026'));
+  } else {
+    st.appendChild(sbkState(x));
+    if (step && step.state === 'waiting' && queue && queue.length) {
+      st.appendChild(el('span', 'sbk-queue', 'waits its turn (' + (queue.indexOf(step) + 1) + ' of ' + queue.length + ')'));
+    }
+  }
   if (x.reachable === false) {
     var u = el('span', 'sbk-state crit');
     u.appendChild(el('span', 'dot')); u.appendChild(el('span', '', 'not reachable'));

@@ -419,6 +419,18 @@ try:
     check('data' not in json.dumps(zigmon.sbk_view(d)) or A.secret not in json.dumps(zigmon.sbk_view(d)),
           'the view carries the archive')
 
+    print('where a backup has got to (5.52)')
+    stp = {}
+    say = zigmon.sbk_say_into(stp)
+    for words, phase in (('looking at it', 'look'), ('asking it for a backup (unencrypted)', 'ask'),
+                         ('restarting - waiting for it to come back', 'restart'), ('downloading the archive 40 %', 'download'),
+                         ('looking at it again', 'store'), ('sending the archive', 'upload'),
+                         ('restoring - the device wipes its files and restarts', 'restore')):
+        say(words)
+        check(stp.get('phase') == phase, 'the phase of %r: %r' % (words, stp.get('phase')))
+    say('downloading the archive 40 %')
+    check(stp.get('pct') == 40, 'how much of the archive is in: %r' % stp.get('pct'))
+    check('checking_box' in zigmon.sbk_view(d), 'the page is not told which box is looked at')
     print('the newest N are kept')
     code, out = call('/api/shellybackup', {'action': 'settings', 'keep': 2}, session=S)
     check(code == 200 and out['settings']['keep'] == 2, 'keep 2: %s %r' % (code, out.get('error')))
@@ -670,6 +682,28 @@ const job = %(job)s;
         Array.from(document.querySelectorAll('#zmodal-foot button')).map(x => [x.textContent.trim(), x.className])]);
       await p.screenshot({path: job.dir + '/dialog-restore.png'});
       await p.click('#zmodal-foot button:has-text("No, leave it")');
+      // (5.52) a backup going on: its row framed, its steps under its state, the others dimmed
+      r.busy = await p.evaluate((boxA) => {
+        const d = JSON.parse(JSON.stringify(SBK.d)), other = (d.devices || []).filter(x => x.box !== boxA)[0];
+        d.job = {running: true, kind: 'backup', by: 'test', steps: [
+          {box: boxA, label: 'A', state: 'working', phase: 'download', pct: 62, said: 'downloading the archive 62 %%'},
+          {box: other.box, label: 'B', state: 'waiting', said: ''}]};
+        d.checking = false; SBK.d = d; drawSbk();
+        const row = document.querySelector('#sbk-host .sbk-dev[data-box="' + boxA + '"]');
+        const o = document.querySelector('#sbk-host .sbk-dev[data-box="' + other.box + '"]');
+        return {busy: row.classList.contains('busy'), running: document.querySelector('#sbk-list').classList.contains('running'),
+                pill: (row.querySelector('.sbk-state.run') || {}).textContent, flow: (row.querySelector('.sbk-flow') || {}).textContent,
+                now: (row.querySelector('.sbk-flow .now') || {}).textContent, queue: (o.querySelector('.sbk-queue') || {}).textContent,
+                dim: getComputedStyle(o).opacity, outline: getComputedStyle(row).outlineStyle,
+                hover: Array.from(document.styleSheets).some(sh => { try { return Array.from(sh.cssRules).some(c => c.selectorText === '.sbk-dev:hover'); } catch (e) { return false; } })};
+      }, job.boxA);
+      await p.waitForTimeout(400);
+      await (await p.$('#sbk-card')).screenshot({path: job.dir + '/card-busy.png'});
+      r.look = await p.evaluate((boxA) => {
+        SBK.d.job = {running: false, steps: []}; SBK.d.checking = true; SBK.d.checking_box = boxA; drawSbk();
+        const row = document.querySelector('#sbk-host .sbk-dev[data-box="' + boxA + '"]');
+        return {busy: row.classList.contains('busy'), pill: (row.querySelector('.sbk-state.run') || {}).textContent};
+      }, job.boxA);
     } else {
       await p.click('#sbk-host .sbk-dev[data-box="' + job.boxA + '"] button:has-text("Restore")');
       await p.waitForSelector('#zmodal:not([hidden]) .sbk-backups', {timeout: 5000});
@@ -706,6 +740,14 @@ const job = %(job)s;
         check(tm and abs(tm.get('h', 0) - tm.get('kh', 99)) < 1.5 and tm.get('bg') == tm.get('kbg')
               and tm.get('radius') == tm.get('kradius') and tm.get('font') == tm.get('kfont'),
               'the time of the scheduled run does not look as the select beside it: %r' % tm)
+        bz = r.get('busy') or {}
+        check(bz.get('busy') and bz.get('running') and bz.get('outline') == 'solid' and float(bz.get('dim') or 1) < 0.6
+              and 'downloading 62 %' in (bz.get('pill') or '') and bz.get('now') == 'downloading 62 %'
+              and 'asked' in (bz.get('flow') or '') and 'stored' in (bz.get('flow') or '')
+              and bz.get('queue') == 'waits its turn (2 of 2)' and bz.get('hover'),
+              'the row being backed up is not framed with its steps (or the hover is gone): %r' % bz)
+        lk = r.get('look') or {}
+        check(lk.get('busy') and 'looking' in (lk.get('pill') or ''), 'the row being looked at: %r' % lk)
         bd = r.get('backupDialog') or ['', '', []]
         check('Back up Lednice' in bd[0] and 'restarts' in bd[1] and 'Back it up (it restarts)' in bd[2],
               'the backup dialog: %r' % bd)
