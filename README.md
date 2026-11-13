@@ -2083,7 +2083,15 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.51.1**
+Current version: **5.51.2**
+
+5.51.2 — the time of the device backups' run looks as the rest.
+
+* Settings - Device backups: "every day at" was the browser's bare time box -
+  small, square, another font; it has the height, field, border and dark
+  picker of the select beside it.
+
+`test/review551_shellybackup.py`; this check fails on 5.51.1.
 
 5.51.1 — a box too old for the backup says so.
 
