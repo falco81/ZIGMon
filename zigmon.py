@@ -58431,11 +58431,11 @@ def sbk_phase_of(words):
 def sbk_say_into(step):
     """The `say` of a box's backup or restore: its words, its phase and, while downloading,
     how much of the archive is in."""
-    def say(w):
+    def sbk_say(w):
         m = re.search(r'(\d{1,3}) %$', str(w))
         step.update(said=w, phase=sbk_phase_of(w) or step.get('phase') or '', at=int(time.time()),
                     pct=int(m.group(1)) if m else None)
-    return say
+    return sbk_say
 
 
 def sbk_run_backups(d, boxes, steps, by, why, careful):
