@@ -5358,7 +5358,16 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
   .sbk-sched .sbk-sw{display:flex;align-items:center;gap:10px;font-weight:600}
   .sbk-sched label.sbk-f{display:flex;align-items:center;gap:6px;color:var(--tx-dim);font-size:13px}
-  .sbk-sched input[type=time]{width:110px} .sbk-sched select{width:auto}
+  /* (5.51.2) the time of the scheduled run as the select beside it: the same
+     height, field, border and dark picker - it was the browser's bare box */
+  .sbk-sched input[type=time],.sbk-sched select{box-sizing:border-box;height:34px;font:inherit;font-size:13.5px;
+    font-weight:600;color:var(--tx);background-color:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    color-scheme:dark;outline:none}
+  .sbk-sched input[type=time]{width:112px;padding:0 8px 0 10px;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .sbk-sched input[type=time]::-webkit-calendar-picker-indicator{opacity:.65;cursor:pointer}
+  .sbk-sched select{width:auto;padding:0 28px 0 10px}
+  .sbk-sched input[type=time]:hover,.sbk-sched select:hover{border-color:rgba(88,166,255,.55)}
+  .sbk-sched input[type=time]:focus,.sbk-sched select:focus{border-color:var(--info)}
   .sbk-sched .sbk-says{flex-basis:100%;margin:0;color:var(--tx-dim);font-size:12.5px}
   .sbk-job{border:1px solid rgba(88,166,255,.45);background:var(--info-bg);border-radius:12px;padding:10px 14px;margin:0 0 14px}
   .sbk-job.done{border-color:var(--line);background:var(--panel2)}

@@ -335,6 +335,8 @@ def called(fake, method):
 
 
 def events(text):
+    # an event is written by the store's writer a moment later: what it holds goes in first
+    d.store.flush()
     with d.store.lock:
         return [dict(r) for r in d.store.db.execute(
             "SELECT * FROM events WHERE detail LIKE ? ORDER BY id", ('%' + text + '%',)).fetchall()]
@@ -639,7 +641,13 @@ const job = %(job)s;
       tiles: Array.from(document.querySelectorAll('#sbk-host .facts .fact')).map(x => x.textContent),
       head: (document.querySelector('#ctl-head') || {}).textContent || '',
       wide: document.documentElement.scrollWidth, view: window.innerWidth,
-      all: (document.querySelector('#sbk-all') || {}).textContent}));
+      all: (document.querySelector('#sbk-all') || {}).textContent,
+      // (5.51.2) the time of the scheduled run looks as the select beside it
+      time: (() => { const t = document.querySelector('#sbk-at'), k = document.querySelector('#sbk-keep');
+        if (!t || !k) return null; const a = getComputedStyle(t), c = getComputedStyle(k);
+        return {h: t.getBoundingClientRect().height, kh: k.getBoundingClientRect().height,
+                bg: a.backgroundColor, kbg: c.backgroundColor, radius: a.borderRadius, kradius: c.borderRadius,
+                font: a.fontFamily, kfont: c.fontFamily}; })()}));
     await p.evaluate(() => { const h = document.querySelector('#ctl-head'); if (h) h.scrollIntoView(); });
     await p.screenshot({path: job.dir + '/section-' + shot.n + '.png', fullPage: shot.n === 'phone'});
     if (shot.n === 'desktop') {
@@ -694,6 +702,10 @@ const job = %(job)s;
               'the summary: %r' % dk.get('tiles'))
         check(ph.get('wide', 9999) <= ph.get('view', 0) + 1, 'the phone scrolls sideways: %r/%r'
               % (ph.get('wide'), ph.get('view')))
+        tm = dk.get('time') or {}
+        check(tm and abs(tm.get('h', 0) - tm.get('kh', 99)) < 1.5 and tm.get('bg') == tm.get('kbg')
+              and tm.get('radius') == tm.get('kradius') and tm.get('font') == tm.get('kfont'),
+              'the time of the scheduled run does not look as the select beside it: %r' % tm)
         bd = r.get('backupDialog') or ['', '', []]
         check('Back up Lednice' in bd[0] and 'restarts' in bd[1] and 'Back it up (it restarts)' in bd[2],
               'the backup dialog: %r' % bd)
