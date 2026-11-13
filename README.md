@@ -2109,8 +2109,16 @@ Current version: **5.52.0**
 * Settings - Devices: "What it is" of a channel read "a s..." - wide enough now
   for its words and icon, and "State" for "monitor only".
 
+* Settings - Health - Batteries: the time a cell has left is read from its
+  history since it was put in (a year at most, a rise of 10 % or more is a new
+  cell), as a line through every point - not the first and last of the last
+  30 days, which said "not falling yet" for ever of a cell that sat on one
+  whole percent for a month. Said in days, months or years; a cell that has
+  not fallen says for how long it has been watched ("no drop in 3 months").
+
 `test/review552_heatfollow.py`, `test/review551_shellybackup.py`,
-`test/review5521_mchan.py`; these checks fail on 5.51.2.
+`test/review5521_mchan.py`, `test/review5522_battery.py`; these checks fail on
+5.51.2.
 
 5.51.2 — the time of the device backups' run looks as the rest.
 
