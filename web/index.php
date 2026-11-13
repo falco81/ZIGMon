@@ -2632,7 +2632,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .mdev-line select,.mchan select{width:auto;min-width:0;max-width:100%}
   .mdev-what{font-size:13px;color:var(--tx)} .mdev-what .dim{color:var(--tx-mut)} .mdev-what .mono{font-size:12px;margin-left:6px}
   .mdev-chans{margin:8px 0 0 22px;padding-left:12px;border-left:2px solid var(--line)}
-  .mchan{display:grid;grid-template-columns:36px minmax(110px,1.4fr) minmax(110px,1.2fr) 92px minmax(90px,.9fr) 92px 104px;gap:8px;align-items:center;padding:5px 0}
+  /* (5.52) "What it is" wide enough for its words and icon: at 92 px "a socket" read "a s…" */
+  .mchan{display:grid;grid-template-columns:36px minmax(110px,1.4fr) minmax(110px,1.2fr) 136px minmax(130px,.9fr) 92px 104px;gap:8px;align-items:center;padding:5px 0}
   .mchan.off>*:not(button){opacity:.55}
   .mchan-head{color:var(--tx-mut);font-size:11px;letter-spacing:.7px;text-transform:uppercase;font-weight:700;padding-bottom:4px}
   .mchan-add{padding-top:6px}

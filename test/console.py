@@ -105,7 +105,14 @@ def on_pty(argv, env, keys=(), wait_for=(), timeout=20.0, rows=30, cols=110):
             break
     if status is None:
         try:
-            done, st = os.waitpid(pid, os.WNOHANG)
+            # the terminal can close a moment before the process has ended: a loaded
+            # machine (the whole suite at once) saw "None" for a console that had quit
+            done, st = 0, None
+            for _ in range(50):
+                done, st = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                time.sleep(0.1)
             if done:
                 status = st
             else:
