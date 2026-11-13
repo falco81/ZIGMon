@@ -377,6 +377,20 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   await oc.screenshot({path: job.dir + '/' + pre + 'overview-card.png'});
   out.remove = await measure(p, oc, '.ov-remove');
   out.ovHist = await measure(p, oc, '.dev-hist');
+  // the card under the pointer: the chart button and the x both showing, and
+  // never on top of each other
+  {
+    await oc.scrollIntoViewIfNeeded();
+    const box = await oc.boundingBox();
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height - 8); await p.waitForTimeout(400);
+    out.ovPair = await oc.evaluate(c => {
+      const r = s => { const e = c.querySelector(s), b = e.getBoundingClientRect(), cs = getComputedStyle(e);
+                       return {l: b.left, r: b.right, t: b.top, b: b.bottom, opacity: cs.opacity, visibility: cs.visibility}; };
+      return {hist: r('.dev-hist'), rm: r('.ov-remove')};
+    });
+    await oc.screenshot({path: job.dir + '/' + pre + 'overview-card-hovered.png'});
+    await p.mouse.move(1, 1); await p.waitForTimeout(300);
+  }
   await oc.locator('.ov-remove').click();
   await p.waitForTimeout(800);
   out.removeClick = await p.evaluate(() => ({
@@ -445,7 +459,7 @@ def keep(m):
 if BEFORE_MODE:
     print(json.dumps({'hist': keep(r.get('hist')), 'remove': keep(r.get('remove')), 'mark': keep(r.get('mark')),
                       'raw': {k: r.get(k) for k in ('hist', 'remove', 'mark', 'buttonHist', 'ovHist', 'chartClick',
-                                                    'markClick', 'removeClick', 'arrange')},
+                                                    'markClick', 'removeClick', 'arrange', 'ovPair')},
                       'oper_remove': any(c.get('hasRemove') for c in r.get('operOverview') or [])}, indent=1))
     print('screenshots: %s' % SHOTS)
     finish()
@@ -466,6 +480,19 @@ check(rm.get('cls') == 'ov-remove' and rm.get('title') == 'Remove from Overview'
 check(r.get('chartClick') == {'tab': 'history', 'dev': '0xtemp0001'}, 'the chart button: %r' % r.get('chartClick'))
 check(r.get('markClick') is True, 'the object mark did not open the object')
 check(r.get('removeClick') == {'gone': True, 'layout': True}, 'the remove button: %r' % r.get('removeClick'))
+# On the Overview, with the card under the pointer, both buttons show and do
+# not touch: the chart button first, the x after it, at least 4 px apart.
+# (5.52.0 had the x under the chart button, 6 px below it; the hidden chart
+# button kept its place there as it does here.)
+pair = r.get('ovPair') or {}
+hb, xb = pair.get('hist') or {}, pair.get('rm') or {}
+apart = max(xb.get('l', 0) - hb.get('r', 0), hb.get('l', 0) - xb.get('r', 0),
+            xb.get('t', 0) - hb.get('b', 0), hb.get('t', 0) - xb.get('b', 0))
+check(hb.get('opacity') == '1' and xb.get('opacity') == '1' and hb.get('visibility') == 'visible'
+      and xb.get('visibility') == 'visible', 'the chart button and the x do not both show on hover: %r' % pair)
+check(apart >= 4, 'the chart button and the x overlap or touch (%.1f px apart): %r' % (apart, pair))
+check(hb.get('r', 0) <= xb.get('l', 0) and abs((hb.get('t', 0) + hb.get('b', 0)) / 2 - (xb.get('t', 0) + xb.get('b', 0)) / 2) < 1,
+      'the chart button and the x are not side by side, chart first: %r' % pair)
 a = r.get('arrange') or {}
 check(a.get('grab') and a.get('dragging') and a.get('histEvents') == 'none',
       'Rearrange: the card is not draggable, or its buttons are live: %r' % a)
