@@ -2010,6 +2010,48 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .dev .head > .nm{flex:1 1 auto;min-width:0}
   .dev .head .model.mdl{color:var(--tx);color:color-mix(in srgb,var(--tx) 80%,var(--tx-dim));font-weight:600;margin-top:4px;overflow-wrap:anywhere}
   .dev .head .desc{color:var(--tx-dim);font-size:12.5px;margin-top:1px;overflow-wrap:anywhere}
+  /* (5.53, a proposal - three ways for the user to choose from, switched by a
+     class on body: ?foot=a, ?foot=b or ?foot=c; none of them, the footer as it
+     always was) the battery, the signal, the way in and the age in a band at
+     the foot of the card that mirrors the one on top, pinned to the bottom so
+     the bands of a row line up. The warnings stay in it, on a line of their own. */
+  body.foot-a .dev > .dfoot,body.foot-b .dev > .dfoot,body.foot-c .dev > .dfoot{
+    margin:auto -19px -17px;padding:9px 19px 10px;box-sizing:border-box;background:rgba(255,255,255,.02);
+    border-top:1px solid var(--line);border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px)}
+  body.foot-a .dfoot > .reason,body.foot-b .dfoot > .reason,body.foot-c .dfoot > .reason{overflow-wrap:anywhere}
+  /* A: one line - battery and a short bar, the signal, then the way in and the
+     age to the right; a second line only when it does not fit */
+  body.foot-a .dfoot{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px}
+  body.foot-a .dfoot .batt{min-width:0;gap:6px}
+  body.foot-a .dfoot .batt .bar{flex:none;width:34px;min-width:0;height:5px}
+  body.foot-a .dfoot > .f-via,body.foot-a .dfoot > :not(.f-via) + .f-ago,body.foot-a .dfoot > .f-ago:first-child{margin-left:auto}
+  body.foot-a .dfoot > .reason{flex-basis:100%}
+  /* B: two rows - battery left and signal right, the way in left and the age right */
+  body.foot-b .dfoot{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;align-items:center}
+  body.foot-b .dfoot .batt{grid-column:1;grid-row:1;min-width:0}
+  body.foot-b .dfoot .batt .bar{flex:none;width:56px;min-width:0}
+  body.foot-b .dfoot > .f-lqi{grid-column:2;grid-row:1;justify-self:end}
+  body.foot-b .dfoot > .f-lqi:first-child{grid-column:1;justify-self:start}
+  body.foot-b .dfoot > .f-via{grid-column:1;grid-row:2;min-width:0}
+  body.foot-b .dfoot > .f-ago{grid-column:2;grid-row:2;justify-self:end}
+  body.foot-b .dfoot > .f-ago:first-child,body.foot-b .dfoot > .f-lqi:first-child + .f-ago{grid-row:1}
+  body.foot-b .dfoot > .reason{grid-column:1/-1}
+  /* C: chips, as the action pills - the battery's colour is the chip's, the
+     words "Battery", "LQI" and "via" give way to marks; every tooltip stays */
+  body.foot-c .dfoot{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  body.foot-c .dfoot > .f-batt,body.foot-c .dfoot > .f-lqi,body.foot-c .dfoot > .f-via,body.foot-c .dfoot > .f-ago,body.foot-c .dfoot > .f-zb{
+    display:inline-flex;align-items:center;gap:5px;min-width:0;padding:2px 9px;border:1px solid var(--line);
+    border-radius:999px;background:var(--panel2);font-size:11.5px;line-height:1.5;opacity:1}
+  body.foot-c .dfoot .f-word,body.foot-c .dfoot .batt .bar{display:none}
+  body.foot-c .dfoot .f-batt::before{content:'\1F50B'}
+  body.foot-c .dfoot .f-batt.f-ok{color:var(--ok);border-color:rgba(63,185,80,.35)}
+  body.foot-c .dfoot .f-batt.f-warn{color:var(--warn);border-color:rgba(210,153,34,.45)}
+  body.foot-c .dfoot .f-batt.f-crit{color:var(--crit);border-color:rgba(248,81,73,.5)}
+  body.foot-c .dfoot .f-lqi .sig{height:11px;margin-right:0;vertical-align:0}
+  body.foot-c .dfoot .f-lqi .sig i:nth-child(4){height:11px}
+  body.foot-c .dfoot .f-via::before{content:'\21B3'}
+  body.foot-c .dfoot .f-ago::before{content:'\1F551'}
+  body.foot-c .dfoot > .reason:not(.f-zb){flex-basis:100%}
   .dev .readings{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
   .dev .reading .v{font-size:28px;font-weight:680;letter-spacing:-.5px;line-height:1.05}
   .dev .reading .v .unit{font-size:14px;font-weight:600;color:var(--tx-dim);margin-left:2px}
@@ -10117,26 +10159,38 @@ function buildDeviceCard(d, st) {
     if (d.has_action && d.actions && d.actions.length) card.appendChild(actionChips(d));
     var trv = thermostatControls(d, st);
     if (trv) card.appendChild(trv);
-    var foot = el('div', 'foot');
+    // (5.53, a proposal) dfoot and the f-* names are what the footer band
+    // variants (body.foot-a / foot-b / foot-c) hang on; without one of them
+    // the footer is drawn exactly as it always was
+    var foot = el('div', 'foot dfoot');
     if (isNum(d.battery)) {
-      var bw = el('span', 'batt');
+      var bw = el('span', 'batt f-batt');
       var bar = el('span', 'bar'); var fill = el('span');
       var bl = d.battery <= st.thresholds.battery_crit ? 'var(--crit)' : (d.battery <= st.thresholds.battery_warn ? 'var(--warn)' : 'var(--ok)');
       fill.style.width = Math.max(0, Math.min(100, d.battery)) + '%'; fill.style.background = bl;
       bar.appendChild(fill);
-      bw.appendChild(el('span', '', 'Battery ' + fmt(d.battery, 0) + '%'));
+      bw.classList.add(bl === 'var(--crit)' ? 'f-crit' : (bl === 'var(--warn)' ? 'f-warn' : 'f-ok'));
+      var bt = el('span', 'f-txt');
+      bt.appendChild(el('span', 'f-word', 'Battery '));
+      bt.appendChild(document.createTextNode(fmt(d.battery, 0) + '%'));
+      bw.appendChild(bt);
       bw.appendChild(bar);
       foot.appendChild(bw);
     }
     if (isNum(d.linkquality)) {
-      var lw = el('span', 'sigwrap');
+      var lw = el('span', 'sigwrap f-lqi');
       lw.appendChild(signalBars('lqi', d.linkquality, st.thresholds));
-      lw.appendChild(el('span', '', 'LQI ' + fmt(d.linkquality, 0)));
+      var lt = el('span', 'f-txt');
+      lt.appendChild(el('span', 'f-word', 'LQI '));
+      lt.appendChild(document.createTextNode(fmt(d.linkquality, 0)));
+      lw.appendChild(lt);
       foot.appendChild(lw);
     }
     if (d.via && d.via.name) {
       var neighbour = d.via.relation === 'neighbour';
-      var via = el('span', 'via', (neighbour ? 'next to ' : 'via ') + d.via.name);
+      var via = el('span', 'via f-via');
+      via.appendChild(el('span', 'f-word', neighbour ? 'next to ' : 'via '));
+      via.appendChild(document.createTextNode(d.via.name));
       via.title = (neighbour ? 'A router has no parent \u2014 this is its strongest neighbour, ' + d.via.name
                              : 'Connected through ' + d.via.name)
         + (d.via.type ? ' (' + d.via.type.toLowerCase() + ')' : '')
@@ -10144,7 +10198,7 @@ function buildDeviceCard(d, st) {
         + (d.via.ts ? ' — from the network map ' + ago(d.via.ts) : '');
       foot.appendChild(via);
     }
-    foot.appendChild(el('span', '', ago(d.last_seen)));
+    foot.appendChild(el('span', 'f-ago', ago(d.last_seen)));
     if (d.zigbee_ts !== undefined && d.zigbee_ts !== null && d.last_seen - d.zigbee_ts > 120) {
       // its readings are being kept fresh over the network, not over Zigbee:
       // say when the device itself last spoke on the mesh, or the age above
@@ -10152,7 +10206,7 @@ function buildDeviceCard(d, st) {
       // is only heard from when Zigbee2MQTT pings it, every ten minutes or
       // so - that is not worth a colour; a quarter of an hour and more is.
       var quiet = d.last_seen - d.zigbee_ts;
-      var zb = el('span', quiet > 900 ? 'reason' : 'muted small', 'Zigbee ' + ago(d.zigbee_ts));
+      var zb = el('span', (quiet > 900 ? 'reason' : 'muted small') + ' f-zb', 'Zigbee ' + ago(d.zigbee_ts));
       zb.title = 'Its own Zigbee report. The figures above are refreshed over the network by its gateway entry, which says nothing about the mesh.'
         + (quiet > 900 ? '' : ' A mains-powered device with nothing to report is only heard from when the bridge pings it, so a few minutes is normal.');
       foot.appendChild(zb);
@@ -10721,8 +10775,8 @@ function buildProxyTileCard(t) {
   if (isNum(sur.packets)) facts.push(sur.packets + ' packets' + (isNum(sur.drops) ? ', ' + sur.drops + ' dropped' : ''));
   if (isNum(t.weighed_hour)) facts.push(t.weighed_hour + ' weighed here, 1 h');
   if (facts.length) card.appendChild(el('div', 'pt-facts', facts.join(' \u00b7 ')));
-  var foot = el('div', 'foot');
-  foot.appendChild(el('span', '', t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet')));
+  var foot = el('div', 'foot dfoot');
+  foot.appendChild(el('span', 'f-ago', t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet')));
   if (t.error) foot.appendChild(el('span', 'reason', t.error));
   card.appendChild(foot);
   card.title = 'The server in front \u2014 click for more';
@@ -17701,6 +17755,12 @@ function lockChanged() {
 // every tile draggable at once, and then a slider on a card could not be
 // dragged without the card going with it.
 var REARRANGE = false;
+// (5.53, a proposal) ?foot=a, ?foot=b or ?foot=c draws a device card's footer
+// as one of the three bands to choose from; without it, as it always was
+(function () {
+  var m = /[?&]foot=([abc])(?:&|$)/.exec(location.search || '');
+  if (m && document.body) document.body.classList.add('foot-' + m[1]);
+})();
 // Write a property only when it differs, so a redraw that changes nothing
 // leaves the page alone.
 function setIf(node, prop, value) {

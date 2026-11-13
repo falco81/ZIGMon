@@ -247,8 +247,8 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     p.on('pageerror', e => out.errors.push(String(e)));
     return p;
   }
-  async function tab(p, name, host) {
-    await p.goto('http://127.0.0.1:' + job.port + '/#' + name);
+  async function tab(p, name, host, query) {
+    await p.goto('http://127.0.0.1:' + job.port + '/' + (query || '') + '#' + name);
     await p.waitForTimeout(1200);
     try { await p.click('button[data-tab="' + name + '"]', {timeout: 1500}); } catch (e) {}
     await p.waitForSelector(host + ' .card.dev', {timeout: 20000});
@@ -427,6 +427,43 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   await tab(ph, 'buttons', '#button-cards');
   out.phoneButtons = await ph.evaluate(survey, '#button-cards');
   await ph.screenshot({path: job.dir + '/' + pre + 'phone-buttons.png', fullPage: true});
+
+  // ---- (a proposal) the footer band, three ways: ?foot=a|b|c --------------------------
+  const footCheck = host => Array.from(document.querySelectorAll(host + ' .card.dev')).map(c => {
+    const f = c.querySelector(':scope > .dfoot');
+    if (!f) return {name: c.textContent.slice(0, 30), foot: false};
+    const cr = c.getBoundingClientRect(), fr = f.getBoundingClientRect(), cs = getComputedStyle(f);
+    const cut = [];
+    f.querySelectorAll('*').forEach(e => {
+      const es = getComputedStyle(e);
+      if (es.display === 'inline' || es.display === 'none' || e.closest('svg')) return;
+      if (e.scrollWidth > e.clientWidth + 1 && es.overflowX !== 'visible') cut.push(e.className);
+      const r = e.getBoundingClientRect();
+      if (r.width && (r.right > cr.right + 0.5 || r.left < cr.left - 0.5)) cut.push('outside ' + e.className);
+    });
+    const vis = sel => Array.from(f.querySelectorAll(sel)).every(e => e.getClientRects().length && getComputedStyle(e).visibility === 'visible');
+    return {name: Array.from(c.querySelector('.name').childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(),
+            foot: true, bg: cs.backgroundColor, border: cs.borderTopStyle, radius: cs.borderBottomLeftRadius,
+            pinned: Math.abs(cr.bottom - 1 - fr.bottom) < 1.5, wide: Math.abs(fr.width - (cr.width - 2)) < 1.5,
+            bottom: Math.round(fr.bottom), top: Math.round(cr.top), cut: cut,
+            reasons: f.querySelectorAll('.reason').length, reasonsShown: vis('.reason'), viaShown: vis('.f-via'),
+            viaTitle: (f.querySelector('.f-via') || {}).title || ((f.querySelector('.f-via') || {}).dataset || {}).said || '',
+            text: f.innerText};
+  });
+  out.foot = {};
+  if (!job.before) for (const v of ['a', 'b', 'c']) {
+    const pf = await page(job.admin, 1200, 1600);
+    out.foot[v] = {};
+    for (const [tb, host, names] of [['sensors', '#sensor-cards', job.sensors], ['buttons', '#button-cards', job.buttons]]) {
+      await tab(pf, tb, host, '?foot=' + v);
+      out.foot[v][tb] = await pf.evaluate(footCheck, host);
+      out.foot[v].bodyClass = await pf.evaluate(() => document.body.className);
+      await pf.screenshot({path: job.dir + '/foot-' + v + '-' + tb + '.png', fullPage: true});
+      for (const n of names.filter(n => ['Temp-Koupelna', 'Head-Loznice', 'Router', 'Temp-Garaz', 'Temp-Puda', 'Button4X-Workshop'].indexOf(n) >= 0))
+        await cardByName(pf, host, n).screenshot({path: job.dir + '/foot-' + v + '-card-' + slug(n) + '.png'}).catch(e => out.errors.push('no card ' + n));
+    }
+    await pf.context().close();
+  }
   console.log(JSON.stringify(out));
   await b.close();
 })().catch(e => { console.log(JSON.stringify({error: String(e && e.stack || e)})); }).then(() => process.exit(0));
@@ -533,6 +570,34 @@ tk = next((c for c in r.get('sensors') or [] if c['name'] == 'Temp-Koupelna'), {
 check(tk.get('modelText') == 'Shelly SBHT-203C' and tk.get('descText') == 'Humidity & temperature sensor',
       'the model and the description: %r / %r' % (tk.get('modelText'), tk.get('descText')))
 check(r.get('phoneScroll', 999) <= 390, 'the phone page scrolls sideways: %r' % r.get('phoneScroll'))
+
+# ---- (a proposal) the footer band variants -----------------------------------------------------
+print('the footer band, a / b / c')
+for v in 'abc':
+    fv = (r.get('foot') or {}).get(v) or {}
+    check('foot-' + v in fv.get('bodyClass', ''), 'foot-%s: the body class is not set: %r' % (v, fv.get('bodyClass')))
+    for tb in ('sensors', 'buttons'):
+        cards = fv.get(tb) or []
+        check(len(cards) >= (len(SENSOR_NAMES) if tb == 'sensors' else len(BUTTON_NAMES)), 'foot-%s %s: %d cards' % (v, tb, len(cards)))
+        rows = {}
+        for c in cards:
+            where = 'foot-%s %s / %s' % (v, tb, c.get('name'))
+            if not check(c.get('foot'), where + ': no footer'):
+                continue
+            check(c['bg'] == 'rgba(255, 255, 255, 0.02)' and c['border'] == 'solid' and c['radius'] != '0px',
+                  where + ': the band is drawn %r %r %r' % (c['bg'], c['border'], c['radius']))
+            check(c['pinned'] and c['wide'], where + ': the band is not at the foot, edge to edge')
+            check(not c['cut'], where + ': cut: %r' % c['cut'])
+            check(c['reasonsShown'] and c['viaShown'], where + ': a warning or the way in is hidden')
+            rows.setdefault(c['top'], set()).add(c['bottom'])
+            if c['name'] == 'Temp-Garaz':
+                check('reported offline by the bridge' in c['text'] and 'weak signal (40)' in c['text'],
+                      where + ': the warning is gone: %r' % c['text'])
+            if c['name'] == 'Temp-Puda':
+                check('battery 6%' in c['text'], where + ': the low battery is not said: %r' % c['text'])
+            if c['name'] == 'Temp-Koupelna':
+                check(c['viaTitle'].startswith('Connected through Router'), where + ': the way in lost its tooltip: %r' % c['viaTitle'])
+        check(all(len(b) == 1 for b in rows.values()), 'foot-%s %s: the bands of a row do not line up: %r' % (v, tb, rows))
 check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
 print('screenshots: %s' % SHOTS)
 finish()
