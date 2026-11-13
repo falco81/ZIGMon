@@ -2541,6 +2541,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .trv .trv-value{min-width:66px;text-align:center;font-size:15px;font-weight:600;color:var(--tx)}
   .trv button{min-width:32px}
   .trv-room{flex-direction:column;align-items:stretch;gap:7px}
+  .trv-room .trv-head{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
   .trv-room .trv-mode{flex:1 1 auto;min-width:0}
   .trv-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
   .trv select{font:inherit;font-size:12.5px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:3px 6px}
@@ -9946,7 +9947,10 @@ function thermostatControls(d, st) {
 // room's slider, and the room's presets - one vocabulary in both places.
 function roomThermostat(d, st, room) {
   var wrap = el('div', 'trv trv-room');
-  var head = el('div', 'trv-line');
+  // (5.53.2) the room's name on a line of its own and what it holds on the next, always: a
+  // short "holding the off temperature" fitted beside the name and a longer one did not, so
+  // one head's slider stood a line lower than its neighbour's
+  var head = el('div', 'trv-line trv-head');
   head.appendChild(el('span', 'lbl', ICON.heat + ' ' + room.name));
   head.appendChild(el('span', 'muted small', room.why === 'by hand'
     ? 'set by hand' + (room.hold_until ? ' until ' + new Date(room.hold_until * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '')
@@ -10217,6 +10221,18 @@ function buildDeviceCard(d, st) {
       bw.appendChild(el('span', '', 'Battery ' + fmt(d.battery, 0) + '%'));
       bw.appendChild(bar);
       foot.appendChild(bw);
+    } else if (d.values && d.values.battery_low && d.values.battery_low.value !== undefined && d.values.battery_low.value !== null) {
+      // (5.53.2) a head that says only whether its battery is low (TuYa / Immax heads have no
+      // percentage): said in the same place, ok or low, rather than nothing at all
+      var lowV = d.values.battery_low.value;
+      var low = lowV === true || lowV === 1 || String(lowV).toLowerCase() === 'true';
+      var bwl = el('span', 'batt f-batt');
+      bwl.appendChild(el('span', '', 'Battery ' + (low ? 'low' : 'ok')));
+      var dot = el('span', 'batt-flag');
+      dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:6px;background:' + (low ? 'var(--crit)' : 'var(--ok)');
+      bwl.appendChild(dot);
+      bwl.title = 'This device says only whether its battery is low, not how full it is';
+      foot.appendChild(bwl);
     }
     if (isNum(d.linkquality)) {
       var lw = el('span', 'sigwrap f-lqi');

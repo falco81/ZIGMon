@@ -143,7 +143,7 @@ DEVICES = [
       'local_temperature': {'type': 'numeric', 'access': 1},
       'local_temperature_calibration': {'type': 'numeric', 'access': 7, 'min': -9, 'max': 9}},
      {'local_temperature': 23.0, 'local_temperature_calibration': 0.5, 'current_heating_setpoint': 27.0,
-      'position': 0, 'system_mode': 'heat', 'battery': 80, 'linkquality': 156}, {}),
+      'position': 0, 'system_mode': 'heat', 'battery_low': False, 'linkquality': 156}, {}),
     ('Router', ROUTER, 'IKEA', 'E1746', 'TRADFRI signal repeater', 'Router', {}, {'linkquality': 210}, {}),
     ('Coordinator', '0x00124b0000000001', 'Texas Instruments', 'CC2652P', 'Zigbee coordinator', 'Coordinator', {},
      {}, {}),
@@ -381,7 +381,21 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   out.heads = await p.evaluate(() => Array.from(document.querySelectorAll('#sensor-cards .card.dev')).filter(c =>
     /Head-/.test(c.textContent)).map(c => { const top = c.getBoundingClientRect().top;
       const at = sel => { const e = c.querySelector(sel); return e ? Math.round(e.getBoundingClientRect().top - top) : null; };
-      return {follows: at('.valve-follows'), trv: at('.trv'), offset: at('.valve-offset'), foot: at('.dfoot')}; }));
+      return {follows: at('.valve-follows'), trv: at('.trv'), offset: at('.valve-offset'), foot: at('.dfoot'),
+              slider: at('.trv input[type=range]'), level: at('.trv select')}; }));
+  out.headBatt = await p.evaluate(() => Array.from(document.querySelectorAll('#sensor-cards .card.dev')).filter(c =>
+    /Head-Obyvak/.test(c.textContent)).map(c => (c.querySelector('.dfoot .f-batt') || {}).textContent || null));
+  // ...and at the width of a wide screen (about 300 px a card), where a short "holding the off
+  // temperature" fits beside the room's name and a longer one does not
+  {
+    const pw2 = await page(job.admin, 1920, 1200);
+    await tab(pw2, 'sensors', '#sensor-cards');
+    out.headsWide = await pw2.evaluate(() => Array.from(document.querySelectorAll('#sensor-cards .card.dev')).filter(c =>
+      /Head-/.test(c.textContent)).map(c => { const top = c.getBoundingClientRect().top;
+        const at = sel => { const e = c.querySelector(sel); return e ? Math.round(e.getBoundingClientRect().top - top) : null; };
+        return {trv: at('.trv'), slider: at('.trv input[type=range]'), level: at('.trv select'), foot: at('.dfoot')}; }));
+    await pw2.close();
+  }
   const tc = await cardByName(p, '#sensor-cards', 'Temp-Koupelna');
   out.hist = await measure(p, tc, '.dev-hist');
   out.mark = await measure(p, tc, '.obj-mark');
@@ -575,6 +589,11 @@ hd = r.get('heads') or []
 check(len(hd) == 2 and all(h.get('follows') is not None and h.get('trv') is not None for h in hd)
       and hd[0] == hd[1], 'two heads do not have their offset, their follow line, their heating strip and '
       'their footer at one height: %r' % hd)
+check(r.get('headBatt') == ['Battery ok'], 'a head that says only battery_low shows nothing of its battery: %r'
+      % r.get('headBatt'))
+hw = r.get('headsWide') or []
+check(len(hw) == 2 and hw[0].get('slider') is not None and hw[0] == hw[1],
+      'on a wide screen two heads do not have their slider and level at one height: %r' % hw)
 pair = r.get('ovPair') or {}
 hb, xb = pair.get('hist') or {}, pair.get('rm') or {}
 apart = max(xb.get('l', 0) - hb.get('r', 0), hb.get('l', 0) - xb.get('r', 0),

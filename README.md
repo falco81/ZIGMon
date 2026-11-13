@@ -2083,7 +2083,19 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.53.1**
+Current version: **5.53.2**
+
+5.53.2 — the heads' sliders in line, and their battery said.
+
+* A head's heating strip: the room's name on a line of its own and what it is
+  holding on the next, always. A short "holding the off temperature" fitted
+  beside the name and "holding the comfort temperature" did not, so on a wide
+  screen one head's slider and level stood a line lower than its neighbour's.
+* A device that says only whether its battery is low (TuYa / Immax radiator
+  heads have no percentage) shows "Battery ok" or "Battery low" in its card's
+  footer, where a percentage would be, instead of nothing.
+
+`test/review553_tilesH.py`; these checks fail on 5.53.1.
 
 5.53.1 — every radiator head's card has its things at one height.
 
