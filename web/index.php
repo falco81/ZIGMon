@@ -26023,6 +26023,12 @@ function showDiagnosis(r) {
 // ---- batteries: what is falling, and how fast --------------------------------
 function renderBattery() {
   var host = $('battery-list'); if (!host) return;
+  function battSpan(d) {
+    d = Math.max(0, Math.round(d || 0));
+    if (d < 60) return d + (d === 1 ? ' day' : ' days');
+    if (d < 730) return Math.round(d / 30.4) + ' months';
+    var y = d / 365; return (y < 10 ? y.toFixed(1).replace(/\.0$/, '') : Math.round(y)) + ' years';
+  }
   api('battery-health').then(function (r) {
     host.innerHTML = '';
     var rows = r.batteries || [];
@@ -26033,11 +26039,15 @@ function renderBattery() {
       row.appendChild(el('span', 'top', b.name));
       row.appendChild(el('span', 'who', fmt(b.percent, 0) + ' %'));
       row.appendChild(el('span', 'who', b.per_week ? '\u2212' + b.per_week + ' %/week' : 'steady'));
-      row.appendChild(el('span', 'why', b.days_left === null || b.days_left === undefined
-        ? 'not falling yet' : 'about ' + b.days_left + ' day(s) left'));
-      row.title = b.days_left !== null && b.days_left !== undefined
-        ? 'At the rate of the last month it reaches 5 % in about ' + b.days_left + ' days'
-        : 'It has not fallen enough for a guess';
+      /* (5.52) from the cell's history since it was put in, in days, months or years; a cell
+         that has not fallen says for how long it has been watched */
+      var falls = b.days_left !== null && b.days_left !== undefined;
+      row.appendChild(el('span', 'why', falls ? 'about ' + battSpan(b.days_left) + ' left'
+        : (b.seen_days ? 'no drop in ' + battSpan(b.seen_days) : 'too new to tell')));
+      row.title = falls
+        ? 'At the rate it has fallen over ' + battSpan(b.seen_days || 0) + ' of history it reaches 5 % in about ' + battSpan(b.days_left)
+        : (b.seen_days ? 'Not one step down in ' + battSpan(b.seen_days) + ' of history - a fresh cell often sits at the top for months'
+                       : 'Less than a day of history - nothing to tell yet');
       attachReadings(row, function () { return b.id; }, function () { return 'battery'; });
       host.appendChild(row);
     });

@@ -10009,6 +10009,20 @@ def _one_writer(fn):
     return held
 
 
+def battery_span(d):
+    """Days as a person says them: 40 days, 7 months, 3.8 years."""
+    d = max(0, int(round(d or 0)))
+    if d < 60:
+        return '%d day%s' % (d, '' if d == 1 else 's')
+    if d < 730:
+        return '%d months' % round(d / 30.4)
+    y = d / 365.0
+    return ('%.1f' % y).rstrip('0').rstrip('.') + ' years' if y < 10 else '%d years' % round(y)
+
+
+# (5.52) how far back a cell's history is read for its fall: a year (hourly rows are kept two)
+BATTERY_LOOK_DAYS = 365
+
 class Daemon(object):
     def __init__(self, storage=None):
         open_log()
@@ -40779,6 +40793,36 @@ class Daemon(object):
         finally:
             self._battery_busy = False
 
+    @staticmethod
+    def battery_fall(rows, key, now):
+        """(5.52) How fast a cell falls, from its history since it was last put in (a year at
+        most), not the last month: a cell reports in whole percent and may sit on one number
+        for weeks, and a month that held no step said "not falling yet" for ever. The slope is
+        a least-squares line through every point, so one odd reading at either end no longer
+        decides it. A rise of 10 % or more is a new cell: what came before it is not this one's.
+        A cell that has not fallen says so, and for how long it has been watched."""
+        pts = [(float(r['ts']), float(r[key])) for r in rows if isinstance(r.get(key), (int, float))]
+        for i in range(len(pts) - 1, 0, -1):
+            if pts[i][1] - pts[i - 1][1] >= 10:
+                pts = pts[i:]
+                break
+        out = {'per_week': None, 'days_left': None, 'seen_days': 0}
+        if len(pts) < 2 or not isinstance(now, (int, float)):
+            return out
+        span = (pts[-1][0] - pts[0][0]) / 86400.0
+        out['seen_days'] = int(span)
+        if span < 1:
+            return out
+        n = len(pts)
+        mt = sum(t for t, _ in pts) / n
+        mv = sum(v for _, v in pts) / n
+        den = sum((t - mt) ** 2 for t, _ in pts)
+        slope = (sum((t - mt) * (v - mv) for t, v in pts) / den * 86400.0) if den else 0.0   # % a day
+        if slope < -0.01 and max(v for _, v in pts) - float(now) >= 1:
+            out['per_week'] = round(-slope * 7, 1)
+            out['days_left'] = int(max(0, (float(now) - 5) / -slope))
+        return out
+
     def battery_health(self, force=False):
         """Which batteries are sinking, how fast, and how long they have left.
         A cell's own history says it better than a percentage does. It walks a
@@ -40801,18 +40845,12 @@ class Daemon(object):
             now = self.latest_value(dev['id'], bkey)
             if now is None:
                 continue
-            rows = self.store.history(dev['id'], [bkey], 30 * 86400, points=200) or []
-            points = [(r['ts'], r[bkey]) for r in rows if r.get(bkey) is not None]
-            days_left, per_week = None, None
-            if len(points) >= 4:
-                (t0, v0), (t1, v1) = points[0], points[-1]
-                span_days = max(0.5, (t1 - t0) / 86400.0)
-                drop = v0 - v1
-                if drop > 0.5:
-                    per_week = round(drop / span_days * 7, 1)
-                    days_left = int(max(0, (v1 - 5) / (drop / span_days)))
+            fall = self.battery_fall(self.store.history(dev['id'], [bkey], BATTERY_LOOK_DAYS * 86400, points=400) or [],
+                                     bkey, now)
+            days_left, per_week = fall['days_left'], fall['per_week']
             out.append({'id': dev['id'], 'name': dev.get('name') or dev['id'], 'percent': now,
                         'per_week': per_week, 'days_left': days_left,
+                        'seen_days': fall['seen_days'],
                         'level': 'crit' if now <= 15 or (days_left is not None and days_left <= 7)
                                  else ('warn' if now <= 30 or (days_left is not None and days_left <= 30) else 'ok')})
         out.sort(key=lambda x: (x['days_left'] if x['days_left'] is not None else 9999, x['percent']))
@@ -51932,7 +51970,8 @@ def cmd_battery(args, pal):
         return 0
     for b in rows:
         colour = pal.crit if b['level'] == 'crit' else (pal.warn if b['level'] == 'warn' else pal.ok)
-        left = ('%d days left' % b['days_left']) if b.get('days_left') is not None else 'not falling yet'
+        left = ('about %s left' % battery_span(b['days_left'])) if b.get('days_left') is not None else (
+            ('no drop in %s' % battery_span(b['seen_days'])) if b.get('seen_days') else 'too new to tell')
         print('  %s %-24s %5s %%  %-14s %s' % (colour('\u2022'), b['name'], ('%g' % b['percent']),
                                                ('-%s %%/week' % b['per_week']) if b.get('per_week') else 'steady',
                                                pal.dim(left)))
