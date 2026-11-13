@@ -137,6 +137,13 @@ DEVICES = [
       'local_temperature_calibration': {'type': 'numeric', 'access': 7, 'min': -9, 'max': 9}},
      {'local_temperature': 22.5, 'local_temperature_calibration': -1.5, 'current_heating_setpoint': 21.0,
       'position': 35, 'system_mode': 'heat', 'battery': 64, 'linkquality': 88}, {}),
+    # (5.53.1) a second head, in a room that does not follow its thermometer
+    ('Head-Obyvak', '0xhead0002', 'TuYa', 'TS0601_thermostat', 'Thermostatic radiator valve', 'EndDevice',
+     {'current_heating_setpoint': {'type': 'numeric', 'access': 7, 'min': 5, 'max': 35},
+      'local_temperature': {'type': 'numeric', 'access': 1},
+      'local_temperature_calibration': {'type': 'numeric', 'access': 7, 'min': -9, 'max': 9}},
+     {'local_temperature': 23.0, 'local_temperature_calibration': 0.5, 'current_heating_setpoint': 27.0,
+      'position': 0, 'system_mode': 'heat', 'battery': 80, 'linkquality': 156}, {}),
     ('Router', ROUTER, 'IKEA', 'E1746', 'TRADFRI signal repeater', 'Router', {}, {'linkquality': 210}, {}),
     ('Coordinator', '0x00124b0000000001', 'Texas Instruments', 'CC2652P', 'Zigbee coordinator', 'Coordinator', {},
      {}, {}),
@@ -179,11 +186,12 @@ d.live['sms:gateway'] = {'payload': {'rssi': -67, 'operator': 'O2 CZ', 'network'
                                      'received_today': 5, 'waiting_to_go': 0},
                          'ts': now - 30, 'availability': 'online'}
 # the head in a room that follows the room thermometer: the level select, the offset
-d.store.set_meta('rooms', json.dumps([{'id': 'r1', 'name': 'Loznice'}]))
+d.store.set_meta('rooms', json.dumps([{'id': 'r1', 'name': 'Loznice'}, {'id': 'r2', 'name': 'Obyvak'}]))
 d.store._meta_cache.pop('rooms', None)
-d.store.set_meta('room_of', json.dumps({HEAD: 'r1', THERMO: 'r1'}))
+d.store.set_meta('room_of', json.dumps({HEAD: 'r1', THERMO: 'r1', '0xhead0002': 'r2'}))
 d.save_heating({'enabled': True, 'rooms': {'r1': {'mode': 'comfort', 'comfort_c': 21.0, 'thermometer': THERMO,
-                                                  'follow_room': True}}, '_quiet': True})
+                                                  'follow_room': True},
+                                           'r2': {'mode': 'off', 'comfort_c': 21.0}}, '_quiet': True})
 d._heat_state_cache = None
 
 api = zigmon.ApiServer(d)
@@ -369,6 +377,11 @@ const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const c = await cardByName(p, '#sensor-cards', n);
     await c.screenshot({path: job.dir + '/' + pre + 'card-' + slug(n) + '.png'}).catch(e => out.errors.push('no card ' + n));
   }
+  // (5.53.1) two heads, one following the room and one not: the same things at the same height
+  out.heads = await p.evaluate(() => Array.from(document.querySelectorAll('#sensor-cards .card.dev')).filter(c =>
+    /Head-/.test(c.textContent)).map(c => { const top = c.getBoundingClientRect().top;
+      const at = sel => { const e = c.querySelector(sel); return e ? Math.round(e.getBoundingClientRect().top - top) : null; };
+      return {follows: at('.valve-follows'), trv: at('.trv'), offset: at('.valve-offset'), foot: at('.dfoot')}; }));
   const tc = await cardByName(p, '#sensor-cards', 'Temp-Koupelna');
   out.hist = await measure(p, tc, '.dev-hist');
   out.mark = await measure(p, tc, '.obj-mark');
@@ -558,6 +571,10 @@ check(r.get('removeClick') == {'gone': True, 'layout': True}, 'the remove button
 # not touch: the chart button first, the x after it, at least 4 px apart.
 # (5.52.0 had the x under the chart button, 6 px below it; the hidden chart
 # button kept its place there as it does here.)
+hd = r.get('heads') or []
+check(len(hd) == 2 and all(h.get('follows') is not None and h.get('trv') is not None for h in hd)
+      and hd[0] == hd[1], 'two heads do not have their offset, their follow line, their heating strip and '
+      'their footer at one height: %r' % hd)
 pair = r.get('ovPair') or {}
 hb, xb = pair.get('hist') or {}, pair.get('rm') or {}
 apart = max(xb.get('l', 0) - hb.get('r', 0), hb.get('l', 0) - xb.get('r', 0),

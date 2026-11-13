@@ -429,7 +429,11 @@ const job = %(job)s;
             check((sens.get('Head-Loznice') or {}).get('v') == '-2\u00b0C' and
                   (sens.get('Head-Loznice') or {}).get('follows', '').startswith('follows Temp-Loznice \u00b7 matched '),
                   'the head\'s card has no offset or no follow note: %r' % sens)
-            check('Head-Plain' in sens and sens['Head-Plain'] is None, 'a head without an offset shows one: %r' % sens)
+            # (5.53.1) a head without an offset keeps the place of one ("-") and of the follow line,
+            # so every head's facts and heating strip stand at one height
+            hp = sens.get('Head-Plain') or {}
+            check(hp.get('v') == '\u2013' and hp.get('l') == 'Offset' and hp.get('follows') == 'goes by its own thermometer',
+                  'a head without an offset does not keep its place: %r' % sens)
             check('Temp-Loznice' in sens and sens['Temp-Loznice'] is None, 'a thermometer shows an offset: %r' % sens)
             check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
             print('  screenshot: %s' % (SHOTS / 'room-card-follow.png'))

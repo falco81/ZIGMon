@@ -10161,6 +10161,16 @@ function buildDeviceCard(d, st) {
     // a head that has one, every other card as it was
     var calV = deviceCategory(d) === 'valve' ? ((d.values || {}).local_temperature_calibration || {}).value : null;
     var calFollow = null;
+    var isValve = deviceCategory(d) === 'valve';
+    if (isValve && !isNum(calV)) {
+      // (5.53.1) a head without an offset still keeps its place, so the facts and the heating
+      // strip below them stand at one height on every head
+      var calNo = el('div', 'reading small valve-offset');
+      calNo.appendChild(el('div', 'v', '\u2013'));
+      calNo.appendChild(el('div', 'l', 'Offset'));
+      calNo.title = 'This head has no offset setting';
+      readings.appendChild(calNo);
+    }
     if (isNum(calV)) {
       var calR = el('div', 'reading small valve-offset');
       var calVal = el('div', 'v');
@@ -10182,6 +10192,12 @@ function buildDeviceCard(d, st) {
       readings.appendChild(calR);
     }
     card.appendChild(readings);
+    if (isValve && !calFollow) {
+      // (5.53.1) the line is there on every head, said or not, so a head that follows the room
+      // and one that does not have their heating strip at the same height
+      calFollow = el('div', 'muted small valve-follows', 'goes by its own thermometer');
+      calFollow.title = 'Its offset is left as it is (Heating \u2192 Follow the room thermometer keeps it matched to the room)';
+    }
     if (calFollow) card.appendChild(calFollow);
     if (d.has_action && d.actions && d.actions.length) card.appendChild(actionChips(d));
     var trv = thermostatControls(d, st);

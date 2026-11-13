@@ -2083,7 +2083,19 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.53.0**
+Current version: **5.53.1**
+
+5.53.1 — every radiator head's card has its things at one height.
+
+* The line "follows Temp-Loznice" stood only on a head whose room follows its
+  thermometer, and pushed that head's heating strip lower than its
+  neighbour's. Every head now has the line ("goes by its own thermometer"
+  when it does not follow), and a head without an offset setting keeps the
+  offset's place ("-"): the facts, the line, the strip and the footer stand
+  at one height on every head.
+
+`test/review553_tilesH.py`, `test/review552_heatfollow.py`; these checks fail
+on 5.53.0.
 
 5.53.0 — device cards with a head and a foot, nothing cut.
 
