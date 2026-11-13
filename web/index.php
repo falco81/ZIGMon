@@ -1993,6 +1993,42 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      is broken where it must be: whole, it made the card, and the phone's page, wider than the screen */
   .dev .name{font-weight:650;font-size:16px;line-height:1.25;overflow-wrap:anywhere}
   .dev .model{color:var(--tx-dim);font-size:12.5px}
+  /* (5.53) the band on top of a device card: its state and its object mark on
+     the left, its chart button (and on the Overview, while editing, its x) on
+     the right. The name below has the card's whole width, and the model and
+     the description are a line each - nothing is shortened, there is simply
+     room. The buttons are the same buttons, only moved up here. */
+  .dev > .dev-band{display:flex;align-items:center;gap:8px;margin:-17px -19px 0;padding:7px 12px 7px 19px;height:41px;
+    box-sizing:border-box;background:rgba(255,255,255,.02);border-bottom:1px solid var(--line);
+    border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0}
+  .dev-band .band-l{flex:1 1 auto;min-width:0;line-height:1}
+  .dev-band .band-l > *{vertical-align:middle}
+  .dev-band .band-l .obj-mark{margin-left:6px}
+  .dev-band .band-r{display:flex;align-items:center;gap:6px;flex:none}
+  .dev-band .band-r .dev-hist{margin-left:0}
+  #overview-custom .card.dev .dev-band .ov-remove{position:static}
+  .dev .head > .nm{flex:1 1 auto;min-width:0}
+  .dev .head .model.mdl{color:var(--tx);color:color-mix(in srgb,var(--tx) 80%,var(--tx-dim));font-weight:600;margin-top:4px;overflow-wrap:anywhere}
+  .dev .head .desc{color:var(--tx-dim);font-size:12.5px;margin-top:1px;overflow-wrap:anywhere}
+  /* (5.53) the footer band, mirroring the one on top: the battery and the
+     signal, then the way in and the age - always these two rows, of one height
+     on every card, pinned to the foot so the bands of a row line up. Nothing
+     in it is cut: what does not fit is behind the mark before the age. */
+  .dev > .foot.dfoot{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:18px 18px;gap:4px 12px;
+    align-items:center;height:60px;margin:auto -19px -17px;padding:9px 19px 10px;box-sizing:border-box;
+    background:rgba(255,255,255,.02);border-top:1px solid var(--line);
+    border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px);line-height:18px;white-space:nowrap}
+  .dfoot > .f-batt{grid-area:1/1;min-width:0;max-width:100%}
+  .dfoot > .f-batt .bar{flex:none;width:56px;min-width:0}
+  .dfoot > .f-lqi{grid-area:1/2;justify-self:end}
+  .dfoot > .f-via{grid-area:2/1;display:block;min-width:0}
+  .dfoot.f-fold > .f-via{visibility:hidden}
+  .dfoot > .f-end{grid-area:2/2;justify-self:end;display:inline-flex;align-items:center;gap:7px}
+  .f-note{appearance:none;border:0;background:none;padding:0;margin:0;width:18px;height:18px;display:inline-flex;
+    align-items:center;justify-content:center;cursor:help;font:inherit;font-size:14px;line-height:1;color:var(--tx-dim);border-radius:5px}
+  .f-note.warn{color:var(--warn)} .f-note.crit{color:var(--crit)}
+  .f-note:hover,.f-note:focus-visible{background:var(--panel2);outline:none}
+  .f-note[hidden]{display:none}
   .dev .readings{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
   .dev .reading .v{font-size:28px;font-weight:680;letter-spacing:-.5px;line-height:1.05}
   .dev .reading .v .unit{font-size:14px;font-weight:600;color:var(--tx-dim);margin-left:2px}
@@ -9969,32 +10005,96 @@ function roomThermostat(d, st, room) {
   return wrap;
 }
 
+// (5.53) The thin band on top of a device card: the state pill and the object
+// mark on the left, the card's buttons on the right (the chart button; on a
+// curated Overview, while editing, the x that takes the card off it).
+function deviceBand(card) {
+  var band = el('div', 'dev-band'), left = el('div', 'band-l'), right = el('div', 'band-r');
+  band.appendChild(left); band.appendChild(right);
+  card.appendChild(band);
+  return {band: band, left: left, right: right};
+}
+// (5.53) The end of the footer band's second row: the mark that holds what
+// does not fit in two rows (a warning, the Zigbee age - and the way in, when
+// its name is too long for the width), coloured by how bad it is, then the age.
+// Pointed at, or tapped, it says all of it in the page's own panel.
+function footEnd(foot, age, notes, level) {
+  var end = el('span', 'f-end');
+  var note = el('button', 'f-note');
+  note.type = 'button';
+  note.textContent = '⚠︎';
+  note.onclick = function (e) { e.stopPropagation(); if (note._explainHtml) helpAt(note, note._explainHtml); };
+  end.appendChild(note);
+  end.appendChild(el('span', 'f-ago', age));
+  foot.appendChild(end);
+  foot._notes = notes || [];
+  foot._level = level || '';
+  footNote(foot);
+  return end;
+}
+function footNote(foot) {
+  var note = foot.querySelector(':scope > .f-end > .f-note');
+  if (!note) return;
+  var words = foot._notes.slice();
+  var via = foot.querySelector(':scope > .f-via');
+  if (via && foot.classList.contains('f-fold')) words.push(via.textContent + ' — ' + (via.title || via.dataset.said || ''));
+  note.hidden = !words.length;
+  note.className = 'f-note' + (foot._level ? ' ' + foot._level : '');
+  if (words.length) explain(note, words.join('\n'));
+}
+// A name of the way in too long for the row goes behind the mark rather than
+// being cut: measured whenever a grid of cards is drawn or changes width.
+function fitDeviceFeet(host) {
+  if (!host) return;
+  Array.prototype.forEach.call(host.querySelectorAll('.dev > .dfoot'), function (f) {
+    var via = f.querySelector(':scope > .f-via');
+    if (!via || !f.getClientRects().length) return;
+    var was = f.classList.contains('f-fold');
+    if (was) f.classList.remove('f-fold');
+    var over = via.scrollWidth > via.clientWidth + 1;
+    if (over) f.classList.add('f-fold');
+    if (over !== was) footNote(f);
+  });
+}
+var FEET_RO = typeof ResizeObserver === 'function' ? new ResizeObserver(function (entries) {
+  entries.forEach(function (en) { fitDeviceFeet(en.target); });
+}) : null;
+function watchDeviceFeet(host) {
+  if (!host) return;
+  if (FEET_RO && !host._feetWatched) { FEET_RO.observe(host); host._feetWatched = true; }
+  requestAnimationFrame(function () { fitDeviceFeet(host); });
+}
 // One device (sensor, button, router - anything that isn't a plug) as a card.
 // Shared by the Sensors tab, the Buttons tab, and a curated Overview.
 function buildDeviceCard(d, st) {
     var stale = !d.online;
     var card = el('div', 'card dev ' + d.level + (stale ? ' stale' : ''));
+    // (5.53) the band on top: the state and the object mark, the chart button
+    var band = deviceBand(card);
     var head = el('div', 'head');
-    var nm = el('div');
+    var nm = el('div', 'nm');
     var nmName = el('div', 'name');
     // (5.47.8) the card says what kind of thing it is before its name - the
     // same mark the lists to pick it from wear
     var ic = el('span', 'dev-ic', deviceIcon(d));
     nmName.appendChild(ic);
     nmName.appendChild(document.createTextNode(d.name));
-    nmName.appendChild(objMark(devRef(d), d.name));
     nm.appendChild(nmName);
-    nm.appendChild(el('div', 'model', [[d.vendor, d.model].filter(Boolean).join(' '), d.description, gatewayFirmware(d)].filter(Boolean).join(' · ')));
+    // the model and what it is, a line each rather than one string wrapped over three
+    var mdl = [d.vendor, d.model].filter(Boolean).join(' ');
+    var dsc = [d.description, gatewayFirmware(d)].filter(Boolean).join(' · ');
+    if (mdl) nm.appendChild(el('div', 'model mdl', mdl));
+    if (dsc) nm.appendChild(el('div', 'desc', dsc));
     head.appendChild(nm);
-    head.appendChild(el('span', 'spacer'));
-    head.appendChild(el('span', 'tag ' + (d.availability === 'offline' ? 'crit' : (stale ? 'warn' : (d.level === 'ok' ? 'ok' : d.level))),
+    band.left.appendChild(el('span', 'tag ' + (d.availability === 'offline' ? 'crit' : (stale ? 'warn' : (d.level === 'ok' ? 'ok' : d.level))),
                         d.availability === 'offline' ? 'offline' : (stale ? 'silent' : (d.level === 'ok' ? 'online' : d.level))));
+    band.left.appendChild(objMark(devRef(d), d.name));
     if (linkAllowed(d)) {
       // the way to the charts: a small icon at the top right, shown on hover only - never the name, never the card
       var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
       hist.title = 'History and charts of ' + d.name;
       hist.onclick = function (e) { e.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return; STATE.hDevice = d.id; showTab('history'); };
-      head.appendChild(hist);
+      band.right.appendChild(hist);
     }
     card.appendChild(head);
     var readings = el('div', 'readings');
@@ -10086,9 +10186,14 @@ function buildDeviceCard(d, st) {
     if (d.has_action && d.actions && d.actions.length) card.appendChild(actionChips(d));
     var trv = thermostatControls(d, st);
     if (trv) card.appendChild(trv);
-    var foot = el('div', 'foot');
+    // (5.53) the footer band: two rows of one height on every card - the
+    // battery and the signal, then the way in and the age. What used to be
+    // written under them (a warning, the Zigbee age) is behind the mark in
+    // the second row, so no footer is taller than another.
+    var foot = el('div', 'foot dfoot');
+    var notes = [], noteLevel = '';
     if (isNum(d.battery)) {
-      var bw = el('span', 'batt');
+      var bw = el('span', 'batt f-batt');
       var bar = el('span', 'bar'); var fill = el('span');
       var bl = d.battery <= st.thresholds.battery_crit ? 'var(--crit)' : (d.battery <= st.thresholds.battery_warn ? 'var(--warn)' : 'var(--ok)');
       fill.style.width = Math.max(0, Math.min(100, d.battery)) + '%'; fill.style.background = bl;
@@ -10098,14 +10203,14 @@ function buildDeviceCard(d, st) {
       foot.appendChild(bw);
     }
     if (isNum(d.linkquality)) {
-      var lw = el('span', 'sigwrap');
+      var lw = el('span', 'sigwrap f-lqi');
       lw.appendChild(signalBars('lqi', d.linkquality, st.thresholds));
       lw.appendChild(el('span', '', 'LQI ' + fmt(d.linkquality, 0)));
       foot.appendChild(lw);
     }
     if (d.via && d.via.name) {
       var neighbour = d.via.relation === 'neighbour';
-      var via = el('span', 'via', (neighbour ? 'next to ' : 'via ') + d.via.name);
+      var via = el('span', 'via f-via', (neighbour ? 'next to ' : 'via ') + d.via.name);
       via.title = (neighbour ? 'A router has no parent \u2014 this is its strongest neighbour, ' + d.via.name
                              : 'Connected through ' + d.via.name)
         + (d.via.type ? ' (' + d.via.type.toLowerCase() + ')' : '')
@@ -10113,7 +10218,10 @@ function buildDeviceCard(d, st) {
         + (d.via.ts ? ' — from the network map ' + ago(d.via.ts) : '');
       foot.appendChild(via);
     }
-    foot.appendChild(el('span', '', ago(d.last_seen)));
+    if (d.reasons.length) {
+      notes.push(d.reasons.join('; '));
+      noteLevel = d.level === 'crit' ? 'crit' : 'warn';
+    }
     if (d.zigbee_ts !== undefined && d.zigbee_ts !== null && d.last_seen - d.zigbee_ts > 120) {
       // its readings are being kept fresh over the network, not over Zigbee:
       // say when the device itself last spoke on the mesh, or the age above
@@ -10121,12 +10229,11 @@ function buildDeviceCard(d, st) {
       // is only heard from when Zigbee2MQTT pings it, every ten minutes or
       // so - that is not worth a colour; a quarter of an hour and more is.
       var quiet = d.last_seen - d.zigbee_ts;
-      var zb = el('span', quiet > 900 ? 'reason' : 'muted small', 'Zigbee ' + ago(d.zigbee_ts));
-      zb.title = 'Its own Zigbee report. The figures above are refreshed over the network by its gateway entry, which says nothing about the mesh.'
-        + (quiet > 900 ? '' : ' A mains-powered device with nothing to report is only heard from when the bridge pings it, so a few minutes is normal.');
-      foot.appendChild(zb);
+      notes.push('Zigbee ' + ago(d.zigbee_ts) + ' \u2014 its own Zigbee report. The figures above are refreshed over the network by its gateway entry, which says nothing about the mesh.'
+        + (quiet > 900 ? '' : ' A mains-powered device with nothing to report is only heard from when the bridge pings it, so a few minutes is normal.'));
+      if (quiet > 900 && !noteLevel) noteLevel = 'warn';
     }
-    if (d.reasons.length) foot.appendChild(el('span', 'reason', d.reasons.join('; ')));
+    footEnd(foot, ago(d.last_seen), notes, noteLevel);
     card.appendChild(foot);
     attachCardMenu(card, {head: d.name, rows: [
       ['\ud83d\udcc8 History for this one', function () { showTab('history'); setTimeout(function () { pickHistoryDevice(d.id); }, 80); }],
@@ -10162,6 +10269,7 @@ function renderDeviceGrid(hostId, emptyId, list, kind, st) {
   Array.prototype.slice.call(host.children).forEach(function (c) { if (!wanted.has(c)) host.removeChild(c); });
   order.forEach(function (card, i) { if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null); });
   host._cards = next;
+  watchDeviceFeet(host);
 }
 function renderSensorsTab(st) {
   renderDeviceGrid('sensor-cards', 'sensors-empty',
@@ -10641,7 +10749,9 @@ function buildProxyTileCard(t) {
   var level = state === 'offline' ? 'crit' : (state === 'online' ? 'ok' : 'warn');
   var card = el('div', 'card dev proxy-tile ' + level + (state === 'online' ? '' : ' stale'));
   card.dataset.tile = PROXY_TILE_ID;
-  var head = el('div', 'head'), nm = el('div');
+  // (5.53) the band on top, as on every device card
+  var band = deviceBand(card);
+  var head = el('div', 'head'), nm = el('div', 'nm');
   var name = el('div', 'name');
   // (5.47.8) the shield its option in the picker wears, as every card's mark is
   name.appendChild(el('span', 'dev-ic', ICON.sslproxy));
@@ -10650,12 +10760,12 @@ function buildProxyTileCard(t) {
   var dev = deviceById(PROXY_TILE_ID);
   var shown = (dev && dev.name) || t.name || 'SSLProxy';
   name.appendChild(document.createTextNode(shown));
-  if (dev) name.appendChild(objMark(devRef(dev), shown));
   nm.appendChild(name);
-  nm.appendChild(el('div', 'model', ['SSLProxy \u00b7 nginx \u00b7 Suricata', t.host || ''].filter(Boolean).join(' \u00b7 ')));
+  nm.appendChild(el('div', 'model mdl', 'SSLProxy \u00b7 nginx \u00b7 Suricata'));
+  if (t.host) nm.appendChild(el('div', 'desc', t.host));
   head.appendChild(nm);
-  head.appendChild(el('span', 'spacer'));
-  head.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  band.left.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  if (dev) band.left.appendChild(objMark(devRef(dev), shown));
   if (dev && linkAllowed(dev)) {
     var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
     hist.title = 'History and charts of ' + shown;
@@ -10663,7 +10773,7 @@ function buildProxyTileCard(t) {
       e.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return;
       STATE.hDevice = PROXY_TILE_ID; showTab('history');
     };
-    head.appendChild(hist);
+    band.right.appendChild(hist);
   }
   card.appendChild(head);
   // a row for the machine, one for nginx, one for Suricata - the SMS card's look
@@ -10688,9 +10798,10 @@ function buildProxyTileCard(t) {
   if (isNum(sur.packets)) facts.push(sur.packets + ' packets' + (isNum(sur.drops) ? ', ' + sur.drops + ' dropped' : ''));
   if (isNum(t.weighed_hour)) facts.push(t.weighed_hour + ' weighed here, 1 h');
   if (facts.length) card.appendChild(el('div', 'pt-facts', facts.join(' \u00b7 ')));
-  var foot = el('div', 'foot');
-  foot.appendChild(el('span', '', t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet')));
-  if (t.error) foot.appendChild(el('span', 'reason', t.error));
+  // (5.53) the footer band of every device card; what went wrong behind its mark
+  var foot = el('div', 'foot dfoot');
+  footEnd(foot, t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet'),
+          t.error ? [t.error] : [], t.error ? level : '');
   card.appendChild(foot);
   card.title = 'The server in front \u2014 click for more';
   card.addEventListener('click', function (e) {
@@ -10804,7 +10915,9 @@ function renderOverviewCustom(st) {
       rm.innerHTML = iconMarkup('close', 13);
       rm.onclick = overviewRemover(id);
       card.style.position = 'relative';
-      card.appendChild(rm);
+      // (5.53) a device card has its band: the x sits there, after the chart button
+      var bandR = card.querySelector(':scope > .dev-band > .band-r');
+      (bandR || card).appendChild(rm);
     }
     makeOverviewReorderable(card, host, id);
     fresh[id] = {sig: sig, node: card};
@@ -10819,6 +10932,7 @@ function renderOverviewCustom(st) {
     existing.forEach(function (n) { if (order.indexOf(n) < 0) host.removeChild(n); });
     order.forEach(function (n, i) { if (host.children[i] !== n) host.insertBefore(n, host.children[i] || null); });
   }
+  watchDeviceFeet(host);
 }
 var OVERVIEW_CARDS = {};
 function renderOverviewAddControl(st) {
