@@ -3295,6 +3295,9 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      switch sit on the same baseline instead of the switch riding high */
   .heat-window{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);align-items:center;gap:12px}
   .heat-window label{margin:0}
+  .heat-follow{margin-top:10px;align-items:center;gap:12px;flex-wrap:wrap}
+  .heat-follow label{margin:0}
+  .heat-follow-hint{flex-basis:100%}
   .heat-windows{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-top:8px;font-size:12.5px;color:var(--tx-dim)}
   .heat-windows .lbl{flex-basis:100%;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut)}
   .heat-win{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
@@ -10033,7 +10036,33 @@ function buildDeviceCard(d, st) {
       r.appendChild(el('div', 'l', hd.label));
       readings.appendChild(r);
     });
+    // a radiator head's own offset (local_temperature_calibration), signed,
+    // and whether its room keeps it matched to the room thermometer; only on
+    // a head that has one, every other card as it was
+    var calV = deviceCategory(d) === 'valve' ? ((d.values || {}).local_temperature_calibration || {}).value : null;
+    var calFollow = null;
+    if (isNum(calV)) {
+      var calR = el('div', 'reading small valve-offset');
+      var calVal = el('div', 'v');
+      calVal.innerHTML = esc((calV > 0 ? '+' : '') + fmt(calV, 1)) + '<span class="unit">°C</span>';
+      calR.appendChild(calVal);
+      calR.appendChild(el('div', 'l', 'Offset'));
+      var hroom = (((st.heating || {}).rooms) || []).filter(function (hr) {
+        return hr.follow_room && (hr.valves || []).some(function (hv) { return String(hv.target || '').indexOf('zb:' + d.id + ':') === 0; });
+      })[0];
+      if (hroom) {
+        var hv0 = (hroom.valves || []).filter(function (hv) { return String(hv.target || '').indexOf('zb:' + d.id + ':') === 0; })[0] || {};
+        var thN = hroom.thermometer ? ((st.devices || []).filter(function (x) { return x.id === hroom.thermometer; })[0] || {}).name : '';
+        // a line of its own under the facts, so the offset stays one fact
+        // the size of its neighbours
+        calFollow = el('div', 'muted small valve-follows', 'follows ' + (thN || 'the room thermometer')
+          + (isNum(hv0.followed_at) ? ' · matched ' + new Date(hv0.followed_at * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : ''));
+        calFollow.title = 'Its offset is kept matched to the room thermometer (Heating → Follow the room thermometer)';
+      }
+      readings.appendChild(calR);
+    }
     card.appendChild(readings);
+    if (calFollow) card.appendChild(calFollow);
     if (d.has_action && d.actions && d.actions.length) card.appendChild(actionChips(d));
     var trv = thermostatControls(d, st);
     if (trv) card.appendChild(trv);
@@ -12916,6 +12945,7 @@ function renderHeating(st) {
       if (isNum(v.setpoint)) bits.push('holding ' + fmt(v.setpoint, 1) + ' \u00b0C');
       if (isNum(v.local_c)) bits.push('reads ' + fmt(v.local_c, 1) + (isNum(v.calibration) && v.calibration ? ' (offset ' + (v.calibration > 0 ? '+' : '') + fmt(v.calibration, 1) + ')' : ''));
       if (isNum(v.position)) bits.push(fmt(v.position, 0) + ' % open');
+      if (live.follow_room && isNum(v.followed_at)) bits.push('matched ' + new Date(v.followed_at * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}));
       if (v.running) bits.push(v.running === 'heat' || v.running === 'heating' ? 'heating' : v.running);
       if (v.mode) bits.push(v.mode);
       if (v.force && v.force !== 'normal') bits.push('forced ' + v.force);
@@ -13053,6 +13083,19 @@ function renderHeating(st) {
     // (the level lives on the preset buttons above; a second copy here only
     //  invited the two to disagree)
     card.appendChild(temps);
+    // keep the heads' own readings matched to that thermometer, by itself
+    // (off unless asked: the heads are otherwise left exactly as they are)
+    var follow = el('div', 'set-item set-bool heat-follow');
+    follow.appendChild(el('label', '', 'Follow the room thermometer'));
+    var followSw = makeSwitch(!!room.follow_room, function (on) { room.follow_room = on; markHeating(); renderHeating(STATE.status); },
+      {small: true, title: 'Keep the heads matched to the room thermometer: each head\u2019s offset is moved so it reads what the room reads.'});
+    followSw.classList.add('needs-unlock');
+    follow.appendChild(followSw);
+    card.appendChild(follow);
+    var everyMin = h.follow_every_min || 30;
+    follow.appendChild(el('span', 'muted small heat-follow-hint',
+      'adjusts each head\u2019s offset every ' + everyMin + ' min so it reads what the room reads; heads without an offset setting are left alone'
+      + (room.follow_room && !room.thermometer ? ' \u2014 choose a thermometer above first' : '')));
     // the plan
     var plan = el('div', 'heat-plan');
     (room.plan || []).forEach(function (step, si) {
@@ -13160,7 +13203,8 @@ $('heat-save').onclick = function () {
     (HEAT.rows || []).forEach(function (r) {
       rooms[r.id] = {mode: r.mode, comfort_c: r.comfort_c, eco_c: r.eco_c, night_c: r.night_c,
                      plan: r.plan || [], window_stop: r.window_stop !== false, thermometer: r.thermometer || '',
-                     windows: r.windows || [], heated: r.heated !== false, control: r.control !== false};
+                     windows: r.windows || [], heated: r.heated !== false, control: r.control !== false,
+                     follow_room: !!r.follow_room};
     });
     return post('heating-save', {pin: pin, enabled: HEAT.enabled !== false, away: !!HEAT.away,
                                  away_c: HEAT.away_c, away_from: HEAT.away_from || '', away_to: HEAT.away_to || '',
@@ -22103,6 +22147,12 @@ var SETTINGS_LAYOUT = [
      + 'way to set it was to write it into config.json by hand.'],
     ['heating_enforce_tries', 'Give up after (tries)',
      'Give up after this many tries, rather than flattening its battery'],
+    ['|', 'following the room thermometer'],
+    ['heating_follow_every_min', 'Follow the room thermometer: every N min',
+     'A room switched to \u201cFollow the room thermometer\u201d has each head\u2019s offset moved so the head reads '
+     + 'what the room reads \u2014 never oftener than this for any one head, to spare its battery.'],
+    ['heating_follow_min_diff', 'Follow the room thermometer: only when they differ by (\u00b0C)',
+     'Leave a head alone while its reading is within this much of the room thermometer.'],
   ]],
   ['Weather', [
     ['|', 'the forecast'],

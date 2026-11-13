@@ -220,6 +220,12 @@ DEFAULTS = {
     'heating_enforce_delta': 0.4, # how far it has to have wandered before that counts
     'heating_enforce_gap_s': 120, # never tell the same head oftener than this
     'heating_enforce_tries': 3,   # and give up after this many, rather than flattening its battery
+    # A room switched to "follow the room thermometer" has each head's offset
+    # (local_temperature_calibration) moved now and then so the head reads
+    # what the room reads. Not oftener than this, per head ...
+    'heating_follow_every_min': 30,
+    # ... and only when the two disagree by at least this much (\u00b0C)
+    'heating_follow_min_diff': 0.5,
     'watchdog': True,             # notice a device that has gone quiet, and a mesh that keeps losing them
     'binding_watch': True,        # notice a sensor that has lost the configuration telling it to report
     'binding_mend': True,         # and ask for it back the moment the sensor next speaks; off means it
@@ -12092,6 +12098,7 @@ class Daemon(object):
         'watchdog': (0, 1), 'mesh_churn_per_hour': (0, 100), 'digest_at': 'str', 'quiet_at_once': (0, 100),
         'heating_enforce_min': (0, 1440), 'heating_enforce_delta': (0, 10, True),
         'heating_enforce': 'str', 'heating_enforce_gap_s': (5, 3600), 'heating_enforce_tries': (1, 50),
+        'heating_follow_every_min': (15, 240), 'heating_follow_min_diff': (0.1, 5, True),
         'sms_enabled': (0, 1), 'sms_objects_settings': (0, 1), 'sms_https': (0, 1), 'sms_port': (0, 65535), 'sms_poll_s': (0, 3600), 'sms_status_s': (0, 3600),
         'sms_reply': (0, 1), 'sms_timeout_s': (1, 120), 'sms_reply_timeout_s': (0, 120),
         'sms_cmms': 'str', 'sms_multipart_after_push_s': (0, 120), 'sms_send_gap_s': (0, 30, True),
@@ -12617,6 +12624,10 @@ class Daemon(object):
                             ('15', 'put it back after a quarter of an hour'),
                             ('30', 'put it back after half an hour'),
                             ('60', 'put it back after an hour')],
+        'heating_follow_every_min': [('15', 'every 15 minutes'), ('30', 'every 30 minutes'),
+                                     ('45', 'every 45 minutes'), ('60', 'every hour'),
+                                     ('90', 'every hour and a half'), ('120', 'every 2 hours'),
+                                     ('180', 'every 3 hours'), ('240', 'every 4 hours')],
         'sms_send_gap_s': [('0', 'no limit \u2014 as fast as the gateway will take them'),
                            ('1', 'one a second'), ('2', 'one every 2 seconds'),
                            ('5', 'one every 5 seconds'), ('10', 'one every 10 seconds')],
@@ -22634,7 +22645,9 @@ class Daemon(object):
         # (5.44) each on its own: the heating raising once skipped the digest,
         # the watchdogs, root's chores and everything below them, every half
         # minute for as long as it kept raising
-        for name, step in (('the heating', self.heating_apply), ('the monthly summary', self.monthly_summary),
+        for name, step in (('the heating', self.heating_apply),
+                           ('the heads following their rooms', lambda: self.heating_follow()),
+                           ('the monthly summary', self.monthly_summary),
                            ('the daily digest', self.daily_digest), ('the watchdogs', self.check_watchdogs),
                            ("root's chores", self.root_chores)):
             self._beat_step(name, step)
@@ -39879,6 +39892,7 @@ class Daemon(object):
             room.setdefault('hold_until', 0)          # ... good until this time, or until the plan's next step
             room.setdefault('hold_level', '')         # the plan level that was current when it was set
             room.setdefault('thermometer', '')      # a device id; empty = whatever is in the room
+            room.setdefault('follow_room', False)   # keep the heads' offsets matched to the thermometer
             windows = room.get('windows')
             room['windows'] = [str(w) for w in windows] if isinstance(windows, list) else []   # empty = every contact in the room
             plan = room.get('plan')
@@ -39912,7 +39926,8 @@ class Daemon(object):
                 out = {'mode': mode, 'window_stop': bool(room.get('window_stop', True)),
                        'heated': bool(room.get('heated', True)), 'control': bool(room.get('control', True)),
                        'hold_c': room.get('hold_c') if isinstance(room.get('hold_c'), (int, float)) else None,
-                       'hold_until': float(room.get('hold_until') or 0), 'hold_level': str(room.get('hold_level') or '')}
+                       'hold_until': float(room.get('hold_until') or 0), 'hold_level': str(room.get('hold_level') or ''),
+                       'follow_room': bool(room.get('follow_room', False))}
                 thermo = str(room.get('thermometer') or '').strip()
                 out['thermometer'] = thermo if thermo and self.store.device(self.store.resolve(thermo) or thermo) else ''
                 out['windows'] = [str(w) for w in (room.get('windows') or [])
@@ -40223,6 +40238,7 @@ class Daemon(object):
                 'control': bool(settings.get('control', True)),
                 'hold_c': hold, 'hold_until': (settings.get('hold_until') if hold is not None else None),
                 'thermometer': settings.get('thermometer') or '',
+                'follow_room': bool(settings.get('follow_room', False)),
                 'windows': settings.get('windows') or [],
                 'mode': settings.get('mode', 'plan'), 'level': level,
                 'comfort_c': settings.get('comfort_c'), 'eco_c': settings.get('eco_c'),
@@ -40244,7 +40260,8 @@ class Daemon(object):
             })
         return {'enabled': bool(cfg.get('enabled')), 'away': self.away_now(cfg), 'away_switch': bool(cfg.get('away')),
                 'away_from': cfg.get('away_from') or '', 'away_to': cfg.get('away_to') or '',
-                'away_c': cfg.get('away_c'), 'rooms': rooms}
+                'away_c': cfg.get('away_c'), 'rooms': rooms,
+                'follow_every_min': CONFIG.get('heating_follow_every_min') or 30}
 
     HEAT_WORDS = ('comfort', 'eco', 'night', 'max', 'plan', 'manual', 'off', 'next')
 
@@ -40260,6 +40277,7 @@ class Daemon(object):
             heat Loznice 21.5 | +1 | -0.5       hold that room there
             heat Loznice eco 19                 what eco is worth in that room
             heat all eco 19                     ...and in every room
+            heat Loznice follow on | off        keep its heads matched to the room thermometer
 
         Written for a text message: the levels were reachable only through a
         target chosen in advance, and what a level is actually worth could be
@@ -40315,6 +40333,31 @@ class Daemon(object):
                              for r in want)
 
         word = rest[0].lower()
+        # heat ROOM follow on|off|toggle - keep its heads matched to the room thermometer
+        if word == 'follow':
+            cfg = self.heating_config()
+            if len(rest) == 1:
+                return '; '.join('%s %s the room thermometer'
+                                 % (r['name'], 'follows' if (cfg['rooms'].get(r['id']) or {}).get('follow_room')
+                                    else 'does not follow') for r in want)
+            how = rest[1].lower()
+            if how not in ('on', 'off', 'toggle'):
+                return '"%s" is not on, off or toggle' % rest[1][:20]
+            kept = dict(cfg['rooms'])
+            said = []
+            for r in want:
+                settings = dict(kept.get(r['id']) or {})
+                on = (not settings.get('follow_room')) if how == 'toggle' else how == 'on'
+                settings['follow_room'] = on
+                kept[r['id']] = settings
+                said.append('%s %s the room thermometer' % (r['name'], 'follows' if on else 'no longer follows'))
+                if on and not settings.get('thermometer'):
+                    said[-1] += ' (once a thermometer is chosen for it)'
+            self.save_heating({'rooms': kept, '_quiet': True})
+            self.store.add_event('heating', 'follow the room thermometer %s in %s (%s)'
+                                 % (how, ', '.join(r['name'] for r in want), origin), 'info')
+            return '; '.join(said)
+
         # heat ROOM comfort|eco|night|plan|manual|off|next
         if word in self.HEAT_WORDS and len(rest) == 1:
             for r in want:
@@ -40569,9 +40612,136 @@ class Daemon(object):
             'battery_low': bool(payload.get('battery_low')),
             'calibration': num('local_temperature_calibration'),
             'can_calibrate': 'local_temperature_calibration' in (row.get('exposes') or {}),
+            # when "follow the room thermometer" last moved this head's offset
+            'followed_at': (self._follow_memory().get(device_id) or {}).get('at'),
             'mode': str(payload.get('system_mode') or payload.get('preset') or '') or None,
             'force': str(payload.get('force') or '') or None,
         }
+
+    @staticmethod
+    def calibration_for(old, room_c, head_c):
+        """The offset that makes a head read what the room reads. The head
+        reports head_c with its old offset already applied, so the new one is
+        the old one plus the difference - in half degrees, within +-9, which is
+        what the heads take."""
+        old = float(old) if isinstance(old, (int, float)) else 0.0
+        offset = round((old + (float(room_c) - float(head_c))) * 2) / 2.0
+        return max(-9.0, min(9.0, offset))
+
+    # how recent a reading has to be for "follow the room thermometer" to act on it
+    HEAT_FOLLOW_FRESH_S = 1200
+
+    def _follow_memory(self):
+        """{head device id: {'at': when its offset was last moved, 'offset': to
+        what}} - kept in meta, so a restart does not write to a head again
+        before its interval is up."""
+        memory = self.__dict__.get('_heat_follow')
+        if memory is None:
+            try:
+                memory = json.loads(self.store.get_meta('heating_follow') or '{}')
+            except (ValueError, TypeError):
+                memory = {}
+            if not isinstance(memory, dict):
+                memory = {}
+            memory = {str(k): v for k, v in memory.items() if isinstance(v, dict)}
+            self._heat_follow = memory
+        return memory
+
+    def heating_follow(self, force=False):
+        """Keep the heads of a room switched to "follow the room thermometer"
+        reading what the room reads, by moving each head's offset
+        (local_temperature_calibration) - what "Match the room" does by hand.
+
+        Off unless a room asks for it. Careful with the heads' batteries and
+        with its own arithmetic: only on fresh readings of both, only when they
+        disagree by heating_follow_min_diff, never more than once per
+        heating_follow_every_min per head (across restarts too), and only once
+        the head has reported since its last change - until then its reading
+        still carries the old offset, and correcting it again would correct
+        twice. A thermometer that has gone quiet leaves the offset as it is.
+        Runs on the half-minute beat, never on the path a report comes in on."""
+        now = time.time()
+        if not force and now - self.__dict__.get('_heat_follow_ran', 0) < 60:
+            return 0
+        self._heat_follow_ran = now
+        cfg = self.heating_config()
+        wanted = [rid for rid, room in (cfg.get('rooms') or {}).items()
+                  if room.get('follow_room') and room.get('thermometer')]
+        if not wanted or not cfg.get('enabled'):
+            return 0
+        try:
+            every = float(CONFIG.get('heating_follow_every_min') or 30)
+        except (TypeError, ValueError):
+            every = 30.0
+        every_s = max(15.0, min(240.0, every)) * 60
+        try:
+            min_diff = max(0.1, float(CONFIG.get('heating_follow_min_diff') or 0.5))
+        except (TypeError, ValueError):
+            min_diff = 0.5
+        fresh = self.HEAT_FOLLOW_FRESH_S
+        states = {r['id']: r for r in (self.heating_state().get('rooms') or [])}
+        memory = self._follow_memory()
+        targets = None
+        written = 0
+        for rid in wanted:
+            settings = cfg['rooms'][rid]
+            state = states.get(rid)
+            if state is None or settings.get('mode') == 'manual' or not settings.get('heated', True) \
+                    or not settings.get('control', True):
+                continue
+            # a shut room, or one with a window open, waits: the offset is
+            # harmless then, but every write costs a head some battery
+            if state.get('wanted_c') is None or state.get('why') in ('off', 'a window is open') \
+                    or state.get('window_open'):
+                continue
+            thermo = self.store.resolve(settings['thermometer']) or settings['thermometer']
+            t_entry = self.live.get(thermo) or {}
+            t_ts = t_entry.get('ts')
+            room_c = self._reading_of(thermo) if t_entry.get('payload') else None
+            if room_c is None or not isinstance(t_ts, (int, float)) or now - t_ts > fresh:
+                continue                  # no fresh word from the room: no guessing
+            room_c = round(room_c, 1)
+            if targets is None:
+                targets = self.zigbee_targets()
+            for target in self.room_valves(rid, targets):
+                device_id = target['id']
+                if device_id == thermo:
+                    continue
+                row = self.store.device(device_id) or {}
+                if 'local_temperature_calibration' not in (row.get('exposes') or {}):
+                    continue              # a head without an offset is left alone
+                entry = self.live.get(device_id) or {}
+                payload = entry.get('payload') or {}
+                head_c, h_ts = payload.get('local_temperature'), entry.get('ts')
+                if not isinstance(head_c, (int, float)) or not isinstance(h_ts, (int, float)) \
+                        or now - h_ts > fresh:
+                    continue
+                if abs(room_c - float(head_c)) < min_diff - 1e-9:
+                    continue
+                last = memory.get(device_id) or {}
+                last_at = float(last.get('at') or 0)
+                if last_at and (now - last_at < every_s or h_ts <= last_at):
+                    continue              # too soon, or its reading is still from before the change
+                old = payload.get('local_temperature_calibration')
+                offset = self.calibration_for(old, room_c, head_c)
+                old_v = float(old) if isinstance(old, (int, float)) else 0.0
+                if abs(offset - old_v) < 0.01:
+                    continue
+                head_name = row.get('name') or device_id
+                ok, message = self.zigbee_switch(device_id, 'local_temperature_calibration', 'set:=%g' % offset,
+                                                 'following the room thermometer')
+                if not ok:
+                    log('following the room thermometer, %s: %s' % (head_name, message), 'warn')
+                    continue
+                memory[device_id] = {'at': now, 'offset': offset}
+                written += 1
+                thermo_name = (self.store.device(thermo) or {}).get('name') or thermo
+                self.store.add_event('heating', 'kept %s matched to %s: offset %g → %g °C (room %g, head %g)'
+                                     % (head_name, thermo_name, old_v, offset, room_c, float(head_c)), 'info')
+        if written:
+            self.store.set_meta('heating_follow', json.dumps(memory))
+            self._heat_state_cache = None
+        return written
 
     def calibrate_valve(self, target_spec, origin='the dashboard'):
         """Teach a head what the room really reads. A head sits on the
@@ -40588,11 +40758,7 @@ class Daemon(object):
         head_c = payload.get('local_temperature')
         if room_c is None or not isinstance(head_c, (int, float)):
             return False, 'need both the room thermometer and the head to have reported'
-        old = payload.get('local_temperature_calibration')
-        old = float(old) if isinstance(old, (int, float)) else 0.0
-        # the head reports head_c with the old offset already applied
-        offset = round((old + (room_c - float(head_c))) * 2) / 2.0
-        offset = max(-9.0, min(9.0, offset))
+        offset = self.calibration_for(payload.get('local_temperature_calibration'), room_c, head_c)
         ok, message = self.zigbee_switch(device_id, 'local_temperature_calibration', 'set:=%g' % offset,
                                          'calibrating to the room thermometer (%s)' % origin)
         if ok:
