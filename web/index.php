@@ -1993,6 +1993,23 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      is broken where it must be: whole, it made the card, and the phone's page, wider than the screen */
   .dev .name{font-weight:650;font-size:16px;line-height:1.25;overflow-wrap:anywhere}
   .dev .model{color:var(--tx-dim);font-size:12.5px}
+  /* (5.53) the band on top of a device card: its state and its object mark on
+     the left, its chart button (and on the Overview, while editing, its x) on
+     the right. The name below has the card's whole width, and the model and
+     the description are a line each - nothing is shortened, there is simply
+     room. The buttons are the same buttons, only moved up here. */
+  .dev > .dev-band{display:flex;align-items:center;gap:8px;margin:-17px -19px 0;padding:7px 12px 7px 19px;min-height:41px;
+    box-sizing:border-box;background:rgba(255,255,255,.02);border-bottom:1px solid var(--line);
+    border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0}
+  .dev-band .band-l{flex:1 1 auto;min-width:0;line-height:1}
+  .dev-band .band-l > *{vertical-align:middle}
+  .dev-band .band-l .obj-mark{margin-left:6px}
+  .dev-band .band-r{display:flex;align-items:center;gap:6px;flex:none}
+  .dev-band .band-r .dev-hist{margin-left:0}
+  #overview-custom .card.dev .dev-band .ov-remove{position:static}
+  .dev .head > .nm{flex:1 1 auto;min-width:0}
+  .dev .head .model.mdl{color:var(--tx);color:color-mix(in srgb,var(--tx) 80%,var(--tx-dim));font-weight:600;margin-top:4px;overflow-wrap:anywhere}
+  .dev .head .desc{color:var(--tx-dim);font-size:12.5px;margin-top:1px;overflow-wrap:anywhere}
   .dev .readings{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
   .dev .reading .v{font-size:28px;font-weight:680;letter-spacing:-.5px;line-height:1.05}
   .dev .reading .v .unit{font-size:14px;font-weight:600;color:var(--tx-dim);margin-left:2px}
@@ -9969,32 +9986,46 @@ function roomThermostat(d, st, room) {
   return wrap;
 }
 
+// (5.53) The thin band on top of a device card: the state pill and the object
+// mark on the left, the card's buttons on the right (the chart button; on a
+// curated Overview, while editing, the x that takes the card off it).
+function deviceBand(card) {
+  var band = el('div', 'dev-band'), left = el('div', 'band-l'), right = el('div', 'band-r');
+  band.appendChild(left); band.appendChild(right);
+  card.appendChild(band);
+  return {band: band, left: left, right: right};
+}
 // One device (sensor, button, router - anything that isn't a plug) as a card.
 // Shared by the Sensors tab, the Buttons tab, and a curated Overview.
 function buildDeviceCard(d, st) {
     var stale = !d.online;
     var card = el('div', 'card dev ' + d.level + (stale ? ' stale' : ''));
+    // (5.53) the band on top: the state and the object mark, the chart button
+    var band = deviceBand(card);
     var head = el('div', 'head');
-    var nm = el('div');
+    var nm = el('div', 'nm');
     var nmName = el('div', 'name');
     // (5.47.8) the card says what kind of thing it is before its name - the
     // same mark the lists to pick it from wear
     var ic = el('span', 'dev-ic', deviceIcon(d));
     nmName.appendChild(ic);
     nmName.appendChild(document.createTextNode(d.name));
-    nmName.appendChild(objMark(devRef(d), d.name));
     nm.appendChild(nmName);
-    nm.appendChild(el('div', 'model', [[d.vendor, d.model].filter(Boolean).join(' '), d.description, gatewayFirmware(d)].filter(Boolean).join(' · ')));
+    // the model and what it is, a line each rather than one string wrapped over three
+    var mdl = [d.vendor, d.model].filter(Boolean).join(' ');
+    var dsc = [d.description, gatewayFirmware(d)].filter(Boolean).join(' · ');
+    if (mdl) nm.appendChild(el('div', 'model mdl', mdl));
+    if (dsc) nm.appendChild(el('div', 'desc', dsc));
     head.appendChild(nm);
-    head.appendChild(el('span', 'spacer'));
-    head.appendChild(el('span', 'tag ' + (d.availability === 'offline' ? 'crit' : (stale ? 'warn' : (d.level === 'ok' ? 'ok' : d.level))),
+    band.left.appendChild(el('span', 'tag ' + (d.availability === 'offline' ? 'crit' : (stale ? 'warn' : (d.level === 'ok' ? 'ok' : d.level))),
                         d.availability === 'offline' ? 'offline' : (stale ? 'silent' : (d.level === 'ok' ? 'online' : d.level))));
+    band.left.appendChild(objMark(devRef(d), d.name));
     if (linkAllowed(d)) {
       // the way to the charts: a small icon at the top right, shown on hover only - never the name, never the card
       var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
       hist.title = 'History and charts of ' + d.name;
       hist.onclick = function (e) { e.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return; STATE.hDevice = d.id; showTab('history'); };
-      head.appendChild(hist);
+      band.right.appendChild(hist);
     }
     card.appendChild(head);
     var readings = el('div', 'readings');
@@ -10641,7 +10672,9 @@ function buildProxyTileCard(t) {
   var level = state === 'offline' ? 'crit' : (state === 'online' ? 'ok' : 'warn');
   var card = el('div', 'card dev proxy-tile ' + level + (state === 'online' ? '' : ' stale'));
   card.dataset.tile = PROXY_TILE_ID;
-  var head = el('div', 'head'), nm = el('div');
+  // (5.53) the band on top, as on every device card
+  var band = deviceBand(card);
+  var head = el('div', 'head'), nm = el('div', 'nm');
   var name = el('div', 'name');
   // (5.47.8) the shield its option in the picker wears, as every card's mark is
   name.appendChild(el('span', 'dev-ic', ICON.sslproxy));
@@ -10650,12 +10683,12 @@ function buildProxyTileCard(t) {
   var dev = deviceById(PROXY_TILE_ID);
   var shown = (dev && dev.name) || t.name || 'SSLProxy';
   name.appendChild(document.createTextNode(shown));
-  if (dev) name.appendChild(objMark(devRef(dev), shown));
   nm.appendChild(name);
-  nm.appendChild(el('div', 'model', ['SSLProxy \u00b7 nginx \u00b7 Suricata', t.host || ''].filter(Boolean).join(' \u00b7 ')));
+  nm.appendChild(el('div', 'model mdl', 'SSLProxy \u00b7 nginx \u00b7 Suricata'));
+  if (t.host) nm.appendChild(el('div', 'desc', t.host));
   head.appendChild(nm);
-  head.appendChild(el('span', 'spacer'));
-  head.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  band.left.appendChild(el('span', 'tag ' + level, proxyStateWords(state)));
+  if (dev) band.left.appendChild(objMark(devRef(dev), shown));
   if (dev && linkAllowed(dev)) {
     var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
     hist.title = 'History and charts of ' + shown;
@@ -10663,7 +10696,7 @@ function buildProxyTileCard(t) {
       e.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return;
       STATE.hDevice = PROXY_TILE_ID; showTab('history');
     };
-    head.appendChild(hist);
+    band.right.appendChild(hist);
   }
   card.appendChild(head);
   // a row for the machine, one for nginx, one for Suricata - the SMS card's look
@@ -10804,7 +10837,9 @@ function renderOverviewCustom(st) {
       rm.innerHTML = iconMarkup('close', 13);
       rm.onclick = overviewRemover(id);
       card.style.position = 'relative';
-      card.appendChild(rm);
+      // (5.53) a device card has its band: the x sits there, after the chart button
+      var bandR = card.querySelector(':scope > .dev-band > .band-r');
+      (bandR || card).appendChild(rm);
     }
     makeOverviewReorderable(card, host, id);
     fresh[id] = {sig: sig, node: card};
