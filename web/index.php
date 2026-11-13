@@ -1998,7 +1998,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      the right. The name below has the card's whole width, and the model and
      the description are a line each - nothing is shortened, there is simply
      room. The buttons are the same buttons, only moved up here. */
-  .dev > .dev-band{display:flex;align-items:center;gap:8px;margin:-17px -19px 0;padding:7px 12px 7px 19px;min-height:41px;
+  .dev > .dev-band{display:flex;align-items:center;gap:8px;margin:-17px -19px 0;padding:7px 12px 7px 19px;height:41px;
     box-sizing:border-box;background:rgba(255,255,255,.02);border-bottom:1px solid var(--line);
     border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0}
   .dev-band .band-l{flex:1 1 auto;min-width:0;line-height:1}
@@ -2010,48 +2010,25 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .dev .head > .nm{flex:1 1 auto;min-width:0}
   .dev .head .model.mdl{color:var(--tx);color:color-mix(in srgb,var(--tx) 80%,var(--tx-dim));font-weight:600;margin-top:4px;overflow-wrap:anywhere}
   .dev .head .desc{color:var(--tx-dim);font-size:12.5px;margin-top:1px;overflow-wrap:anywhere}
-  /* (5.53, a proposal - three ways for the user to choose from, switched by a
-     class on body: ?foot=a, ?foot=b or ?foot=c; none of them, the footer as it
-     always was) the battery, the signal, the way in and the age in a band at
-     the foot of the card that mirrors the one on top, pinned to the bottom so
-     the bands of a row line up. The warnings stay in it, on a line of their own. */
-  body.foot-a .dev > .dfoot,body.foot-b .dev > .dfoot,body.foot-c .dev > .dfoot{
-    margin:auto -19px -17px;padding:9px 19px 10px;box-sizing:border-box;background:rgba(255,255,255,.02);
-    border-top:1px solid var(--line);border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px)}
-  body.foot-a .dfoot > .reason,body.foot-b .dfoot > .reason,body.foot-c .dfoot > .reason{overflow-wrap:anywhere}
-  /* A: one line - battery and a short bar, the signal, then the way in and the
-     age to the right; a second line only when it does not fit */
-  body.foot-a .dfoot{display:flex;flex-wrap:wrap;align-items:center;gap:5px 12px}
-  body.foot-a .dfoot .batt{min-width:0;gap:6px}
-  body.foot-a .dfoot .batt .bar{flex:none;width:34px;min-width:0;height:5px}
-  body.foot-a .dfoot > .f-via,body.foot-a .dfoot > :not(.f-via) + .f-ago,body.foot-a .dfoot > .f-ago:first-child{margin-left:auto}
-  body.foot-a .dfoot > .reason{flex-basis:100%}
-  /* B: two rows - battery left and signal right, the way in left and the age right */
-  body.foot-b .dfoot{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;align-items:center}
-  body.foot-b .dfoot .batt{grid-column:1;grid-row:1;min-width:0}
-  body.foot-b .dfoot .batt .bar{flex:none;width:56px;min-width:0}
-  body.foot-b .dfoot > .f-lqi{grid-column:2;grid-row:1;justify-self:end}
-  body.foot-b .dfoot > .f-lqi:first-child{grid-column:1;justify-self:start}
-  body.foot-b .dfoot > .f-via{grid-column:1;grid-row:2;min-width:0}
-  body.foot-b .dfoot > .f-ago{grid-column:2;grid-row:2;justify-self:end}
-  body.foot-b .dfoot > .f-ago:first-child,body.foot-b .dfoot > .f-lqi:first-child + .f-ago{grid-row:1}
-  body.foot-b .dfoot > .reason{grid-column:1/-1}
-  /* C: chips, as the action pills - the battery's colour is the chip's, the
-     words "Battery", "LQI" and "via" give way to marks; every tooltip stays */
-  body.foot-c .dfoot{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-  body.foot-c .dfoot > .f-batt,body.foot-c .dfoot > .f-lqi,body.foot-c .dfoot > .f-via,body.foot-c .dfoot > .f-ago,body.foot-c .dfoot > .f-zb{
-    display:inline-flex;align-items:center;gap:5px;min-width:0;padding:2px 9px;border:1px solid var(--line);
-    border-radius:999px;background:var(--panel2);font-size:11.5px;line-height:1.5;opacity:1}
-  body.foot-c .dfoot .f-word,body.foot-c .dfoot .batt .bar{display:none}
-  body.foot-c .dfoot .f-batt::before{content:'\1F50B'}
-  body.foot-c .dfoot .f-batt.f-ok{color:var(--ok);border-color:rgba(63,185,80,.35)}
-  body.foot-c .dfoot .f-batt.f-warn{color:var(--warn);border-color:rgba(210,153,34,.45)}
-  body.foot-c .dfoot .f-batt.f-crit{color:var(--crit);border-color:rgba(248,81,73,.5)}
-  body.foot-c .dfoot .f-lqi .sig{height:11px;margin-right:0;vertical-align:0}
-  body.foot-c .dfoot .f-lqi .sig i:nth-child(4){height:11px}
-  body.foot-c .dfoot .f-via::before{content:'\21B3'}
-  body.foot-c .dfoot .f-ago::before{content:'\1F551'}
-  body.foot-c .dfoot > .reason:not(.f-zb){flex-basis:100%}
+  /* (5.53) the footer band, mirroring the one on top: the battery and the
+     signal, then the way in and the age - always these two rows, of one height
+     on every card, pinned to the foot so the bands of a row line up. Nothing
+     in it is cut: what does not fit is behind the mark before the age. */
+  .dev > .foot.dfoot{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:18px 18px;gap:4px 12px;
+    align-items:center;height:60px;margin:auto -19px -17px;padding:9px 19px 10px;box-sizing:border-box;
+    background:rgba(255,255,255,.02);border-top:1px solid var(--line);
+    border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px);line-height:18px;white-space:nowrap}
+  .dfoot > .f-batt{grid-area:1/1;min-width:0;max-width:100%}
+  .dfoot > .f-batt .bar{flex:none;width:56px;min-width:0}
+  .dfoot > .f-lqi{grid-area:1/2;justify-self:end}
+  .dfoot > .f-via{grid-area:2/1;display:block;min-width:0}
+  .dfoot.f-fold > .f-via{visibility:hidden}
+  .dfoot > .f-end{grid-area:2/2;justify-self:end;display:inline-flex;align-items:center;gap:7px}
+  .f-note{appearance:none;border:0;background:none;padding:0;margin:0;width:18px;height:18px;display:inline-flex;
+    align-items:center;justify-content:center;cursor:help;font:inherit;font-size:14px;line-height:1;color:var(--tx-dim);border-radius:5px}
+  .f-note.warn{color:var(--warn)} .f-note.crit{color:var(--crit)}
+  .f-note:hover,.f-note:focus-visible{background:var(--panel2);outline:none}
+  .f-note[hidden]{display:none}
   .dev .readings{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
   .dev .reading .v{font-size:28px;font-weight:680;letter-spacing:-.5px;line-height:1.05}
   .dev .reading .v .unit{font-size:14px;font-weight:600;color:var(--tx-dim);margin-left:2px}
@@ -10037,6 +10014,56 @@ function deviceBand(card) {
   card.appendChild(band);
   return {band: band, left: left, right: right};
 }
+// (5.53) The end of the footer band's second row: the mark that holds what
+// does not fit in two rows (a warning, the Zigbee age - and the way in, when
+// its name is too long for the width), coloured by how bad it is, then the age.
+// Pointed at, or tapped, it says all of it in the page's own panel.
+function footEnd(foot, age, notes, level) {
+  var end = el('span', 'f-end');
+  var note = el('button', 'f-note');
+  note.type = 'button';
+  note.textContent = '⚠︎';
+  note.onclick = function (e) { e.stopPropagation(); if (note._explainHtml) helpAt(note, note._explainHtml); };
+  end.appendChild(note);
+  end.appendChild(el('span', 'f-ago', age));
+  foot.appendChild(end);
+  foot._notes = notes || [];
+  foot._level = level || '';
+  footNote(foot);
+  return end;
+}
+function footNote(foot) {
+  var note = foot.querySelector(':scope > .f-end > .f-note');
+  if (!note) return;
+  var words = foot._notes.slice();
+  var via = foot.querySelector(':scope > .f-via');
+  if (via && foot.classList.contains('f-fold')) words.push(via.textContent + ' — ' + (via.title || via.dataset.said || ''));
+  note.hidden = !words.length;
+  note.className = 'f-note' + (foot._level ? ' ' + foot._level : '');
+  if (words.length) explain(note, words.join('\n'));
+}
+// A name of the way in too long for the row goes behind the mark rather than
+// being cut: measured whenever a grid of cards is drawn or changes width.
+function fitDeviceFeet(host) {
+  if (!host) return;
+  Array.prototype.forEach.call(host.querySelectorAll('.dev > .dfoot'), function (f) {
+    var via = f.querySelector(':scope > .f-via');
+    if (!via || !f.getClientRects().length) return;
+    var was = f.classList.contains('f-fold');
+    if (was) f.classList.remove('f-fold');
+    var over = via.scrollWidth > via.clientWidth + 1;
+    if (over) f.classList.add('f-fold');
+    if (over !== was) footNote(f);
+  });
+}
+var FEET_RO = typeof ResizeObserver === 'function' ? new ResizeObserver(function (entries) {
+  entries.forEach(function (en) { fitDeviceFeet(en.target); });
+}) : null;
+function watchDeviceFeet(host) {
+  if (!host) return;
+  if (FEET_RO && !host._feetWatched) { FEET_RO.observe(host); host._feetWatched = true; }
+  requestAnimationFrame(function () { fitDeviceFeet(host); });
+}
 // One device (sensor, button, router - anything that isn't a plug) as a card.
 // Shared by the Sensors tab, the Buttons tab, and a curated Overview.
 function buildDeviceCard(d, st) {
@@ -10159,38 +10186,31 @@ function buildDeviceCard(d, st) {
     if (d.has_action && d.actions && d.actions.length) card.appendChild(actionChips(d));
     var trv = thermostatControls(d, st);
     if (trv) card.appendChild(trv);
-    // (5.53, a proposal) dfoot and the f-* names are what the footer band
-    // variants (body.foot-a / foot-b / foot-c) hang on; without one of them
-    // the footer is drawn exactly as it always was
+    // (5.53) the footer band: two rows of one height on every card - the
+    // battery and the signal, then the way in and the age. What used to be
+    // written under them (a warning, the Zigbee age) is behind the mark in
+    // the second row, so no footer is taller than another.
     var foot = el('div', 'foot dfoot');
+    var notes = [], noteLevel = '';
     if (isNum(d.battery)) {
       var bw = el('span', 'batt f-batt');
       var bar = el('span', 'bar'); var fill = el('span');
       var bl = d.battery <= st.thresholds.battery_crit ? 'var(--crit)' : (d.battery <= st.thresholds.battery_warn ? 'var(--warn)' : 'var(--ok)');
       fill.style.width = Math.max(0, Math.min(100, d.battery)) + '%'; fill.style.background = bl;
       bar.appendChild(fill);
-      bw.classList.add(bl === 'var(--crit)' ? 'f-crit' : (bl === 'var(--warn)' ? 'f-warn' : 'f-ok'));
-      var bt = el('span', 'f-txt');
-      bt.appendChild(el('span', 'f-word', 'Battery '));
-      bt.appendChild(document.createTextNode(fmt(d.battery, 0) + '%'));
-      bw.appendChild(bt);
+      bw.appendChild(el('span', '', 'Battery ' + fmt(d.battery, 0) + '%'));
       bw.appendChild(bar);
       foot.appendChild(bw);
     }
     if (isNum(d.linkquality)) {
       var lw = el('span', 'sigwrap f-lqi');
       lw.appendChild(signalBars('lqi', d.linkquality, st.thresholds));
-      var lt = el('span', 'f-txt');
-      lt.appendChild(el('span', 'f-word', 'LQI '));
-      lt.appendChild(document.createTextNode(fmt(d.linkquality, 0)));
-      lw.appendChild(lt);
+      lw.appendChild(el('span', '', 'LQI ' + fmt(d.linkquality, 0)));
       foot.appendChild(lw);
     }
     if (d.via && d.via.name) {
       var neighbour = d.via.relation === 'neighbour';
-      var via = el('span', 'via f-via');
-      via.appendChild(el('span', 'f-word', neighbour ? 'next to ' : 'via '));
-      via.appendChild(document.createTextNode(d.via.name));
+      var via = el('span', 'via f-via', (neighbour ? 'next to ' : 'via ') + d.via.name);
       via.title = (neighbour ? 'A router has no parent \u2014 this is its strongest neighbour, ' + d.via.name
                              : 'Connected through ' + d.via.name)
         + (d.via.type ? ' (' + d.via.type.toLowerCase() + ')' : '')
@@ -10198,7 +10218,10 @@ function buildDeviceCard(d, st) {
         + (d.via.ts ? ' — from the network map ' + ago(d.via.ts) : '');
       foot.appendChild(via);
     }
-    foot.appendChild(el('span', 'f-ago', ago(d.last_seen)));
+    if (d.reasons.length) {
+      notes.push(d.reasons.join('; '));
+      noteLevel = d.level === 'crit' ? 'crit' : 'warn';
+    }
     if (d.zigbee_ts !== undefined && d.zigbee_ts !== null && d.last_seen - d.zigbee_ts > 120) {
       // its readings are being kept fresh over the network, not over Zigbee:
       // say when the device itself last spoke on the mesh, or the age above
@@ -10206,12 +10229,11 @@ function buildDeviceCard(d, st) {
       // is only heard from when Zigbee2MQTT pings it, every ten minutes or
       // so - that is not worth a colour; a quarter of an hour and more is.
       var quiet = d.last_seen - d.zigbee_ts;
-      var zb = el('span', (quiet > 900 ? 'reason' : 'muted small') + ' f-zb', 'Zigbee ' + ago(d.zigbee_ts));
-      zb.title = 'Its own Zigbee report. The figures above are refreshed over the network by its gateway entry, which says nothing about the mesh.'
-        + (quiet > 900 ? '' : ' A mains-powered device with nothing to report is only heard from when the bridge pings it, so a few minutes is normal.');
-      foot.appendChild(zb);
+      notes.push('Zigbee ' + ago(d.zigbee_ts) + ' \u2014 its own Zigbee report. The figures above are refreshed over the network by its gateway entry, which says nothing about the mesh.'
+        + (quiet > 900 ? '' : ' A mains-powered device with nothing to report is only heard from when the bridge pings it, so a few minutes is normal.'));
+      if (quiet > 900 && !noteLevel) noteLevel = 'warn';
     }
-    if (d.reasons.length) foot.appendChild(el('span', 'reason', d.reasons.join('; ')));
+    footEnd(foot, ago(d.last_seen), notes, noteLevel);
     card.appendChild(foot);
     attachCardMenu(card, {head: d.name, rows: [
       ['\ud83d\udcc8 History for this one', function () { showTab('history'); setTimeout(function () { pickHistoryDevice(d.id); }, 80); }],
@@ -10247,6 +10269,7 @@ function renderDeviceGrid(hostId, emptyId, list, kind, st) {
   Array.prototype.slice.call(host.children).forEach(function (c) { if (!wanted.has(c)) host.removeChild(c); });
   order.forEach(function (card, i) { if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null); });
   host._cards = next;
+  watchDeviceFeet(host);
 }
 function renderSensorsTab(st) {
   renderDeviceGrid('sensor-cards', 'sensors-empty',
@@ -10775,9 +10798,10 @@ function buildProxyTileCard(t) {
   if (isNum(sur.packets)) facts.push(sur.packets + ' packets' + (isNum(sur.drops) ? ', ' + sur.drops + ' dropped' : ''));
   if (isNum(t.weighed_hour)) facts.push(t.weighed_hour + ' weighed here, 1 h');
   if (facts.length) card.appendChild(el('div', 'pt-facts', facts.join(' \u00b7 ')));
+  // (5.53) the footer band of every device card; what went wrong behind its mark
   var foot = el('div', 'foot dfoot');
-  foot.appendChild(el('span', 'f-ago', t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet')));
-  if (t.error) foot.appendChild(el('span', 'reason', t.error));
+  footEnd(foot, t.at ? ago(t.at) : (t.looking ? 'looking\u2026' : 'not looked at yet'),
+          t.error ? [t.error] : [], t.error ? level : '');
   card.appendChild(foot);
   card.title = 'The server in front \u2014 click for more';
   card.addEventListener('click', function (e) {
@@ -10908,6 +10932,7 @@ function renderOverviewCustom(st) {
     existing.forEach(function (n) { if (order.indexOf(n) < 0) host.removeChild(n); });
     order.forEach(function (n, i) { if (host.children[i] !== n) host.insertBefore(n, host.children[i] || null); });
   }
+  watchDeviceFeet(host);
 }
 var OVERVIEW_CARDS = {};
 function renderOverviewAddControl(st) {
@@ -17755,12 +17780,6 @@ function lockChanged() {
 // every tile draggable at once, and then a slider on a card could not be
 // dragged without the card going with it.
 var REARRANGE = false;
-// (5.53, a proposal) ?foot=a, ?foot=b or ?foot=c draws a device card's footer
-// as one of the three bands to choose from; without it, as it always was
-(function () {
-  var m = /[?&]foot=([abc])(?:&|$)/.exec(location.search || '');
-  if (m && document.body) document.body.classList.add('foot-' + m[1]);
-})();
 // Write a property only when it differs, so a redraw that changes nothing
 // leaves the page alone.
 function setIf(node, prop, value) {
