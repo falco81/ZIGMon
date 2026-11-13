@@ -223,7 +223,9 @@ for said, what in (({'state': 'ON'}, 'a light switching'),
                    ({'water_leak': True}, 'a leak')):
     woke[:] = []
     d.handle_zigbee('Mixed-Test', json.dumps(said).encode())
-    check(woke == ['now'], '%s waited for the next half second: %r' % (what, woke))
+    # 'now' and no 'soon' - a second 'now' from something else of the daemon's that
+    # happened in the same moment (a loaded machine) is not this change being late
+    check('now' in woke and 'soon' not in woke, '%s waited for the next half second: %r' % (what, woke))
 for said, what in (({'temperature': 21.4}, 'a temperature'),
                    ({'humidity': 41}, 'a humidity'),
                    ({'linkquality': 88}, 'a link quality'),
