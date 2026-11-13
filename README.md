@@ -2083,7 +2083,22 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.52.0**
+Current version: **5.53.0**
+
+5.53.0 — device cards with a head and a foot, nothing cut.
+
+* A device's card (Sensors, Buttons, the Overview) has a band at the top -
+  its state and its objects mark on the left, its chart button (and on the
+  Overview the ×) on the right, each looking and behaving as before - and its
+  name under it across the whole card: names and models no longer broke over
+  two and three lines. The model and what it is are two lines of their own.
+* A band at the foot of every card, one height on every card and lined up
+  along a row: battery and its bar with the link quality, then "via ..." and
+  how long ago. A warning that used to be printed there (offline, a battery
+  running out, a weak signal) is behind a ⚠ - red or amber - that shows it in
+  full on hover or tap. Nothing is cut short anywhere.
+
+`test/review553_tilesH.py`; these checks fail on 5.52.0.
 
 5.52.0 — a radiator head kept matched to the room thermometer.
 
