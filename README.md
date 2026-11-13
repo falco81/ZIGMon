@@ -2083,7 +2083,24 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.51.2**
+Current version: **5.52.0**
+
+5.52.0 — a radiator head kept matched to the room thermometer.
+
+* A head regulates on its own thermometer, which sits on the radiator and
+  reads warm: with the room at 25.6 and the head at 27.5 it shut at 0 % while
+  the room wanted 26. "Match the room" set its offset once; the room card now
+  has "Follow the room thermometer" (off until switched on, per room): every
+  N minutes (Settings - Heating: 15 to 240, 30 by default) each head's offset
+  is set so it reads what the room reads - only when both readings are fresh,
+  differ by at least the minimum (0.5 °C), the head has reported since the
+  last change, and the room is heated (not off, not manual, no window open).
+  A thermometer gone quiet leaves the offset as it is. Each change is an
+  event; the time holds across restarts. Also `heat ROOM follow on|off`.
+* A head's card on the Sensors tab shows its offset (OFFSET -2 °C), and when
+  its room follows, which thermometer and when it was last matched.
+
+`test/review552_heatfollow.py`; these checks fail on 5.51.2.
 
 5.51.2 — the time of the device backups' run looks as the rest.
 
