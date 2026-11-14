@@ -208,8 +208,12 @@ print('a press during a two-second poll still reaches the light in %.0f ms' % to
 # A state - a light, a PIR, a door, a leak - is on the screen at once. The slow
 # numbers wake them together, at most twice a second.
 woke = []
-d.bump = lambda: woke.append('now')
-d.bump_soon = lambda delay=0.5: woke.append('soon')
+# only what handling this very message asks for: the daemon's own threads (a poll that
+# lands, a light from the part above) wake the pages as well, and a loaded machine
+# (the whole suite at once) let one of those fall into the window
+_main = threading.current_thread()
+d.bump = lambda: woke.append('now') if threading.current_thread() is _main else None
+d.bump_soon = lambda delay=0.5: woke.append('soon') if threading.current_thread() is _main else None
 d.store.upsert_device({'id': 'zigbee:Mixed-Test', 'name': 'Mixed-Test', 'source': 'zigbee', 'kind': 'sensor',
                        'exposes': {'state': {}, 'occupancy': {}, 'contact': {}, 'water_leak': {},
                                    'temperature': {}, 'humidity': {}, 'linkquality': {}, 'battery': {}}})
@@ -225,7 +229,7 @@ for said, what in (({'state': 'ON'}, 'a light switching'),
     d.handle_zigbee('Mixed-Test', json.dumps(said).encode())
     # 'now' and no 'soon' - a second 'now' from something else of the daemon's that
     # happened in the same moment (a loaded machine) is not this change being late
-    check('now' in woke and 'soon' not in woke, '%s waited for the next half second: %r' % (what, woke))
+    check(woke == ['now'], '%s waited for the next half second: %r' % (what, woke))
 for said, what in (({'temperature': 21.4}, 'a temperature'),
                    ({'humidity': 41}, 'a humidity'),
                    ({'linkquality': 88}, 'a link quality'),
