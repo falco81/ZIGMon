@@ -1531,6 +1531,10 @@ FW_FILES = {4: os.environ.get('ZIGMON_FW_FILE4', '/etc/sysconfig/iptables'),
 FW_TOOLS = {4: ('iptables', 'iptables-restore', 'iptables-save'),
             6: ('ip6tables', 'ip6tables-restore', 'ip6tables-save')}
 FW_PROTOS = ('tcp', 'udp', 'icmp', 'vrrp', 'any')
+# (5.53.3) a rule may name the port an answer comes FROM: mDNS answers sent by unicast come
+# from port 5353 to whatever port the question went out of. The daemon looks for this name
+# in this file before it asks for such a rule, so an older helper is never handed one
+FW_SPORT = True
 FW_MARK = '# zigmon:'
 FWD_STATE = 'firewalld-rules.json'
 FWD_FIRST = -30000                  # the first rule; one more for every rule after it
@@ -1581,6 +1585,12 @@ def fw_rule_checked(x):
             a, _, b = p.partition('-')
             if not 1 <= int(a) <= 65535 or (b and not int(a) <= int(b) <= 65535):
                 raise Refused('%s is not a port or a range of them' % p)
+    sport = str(x.get('sport') or '').strip()
+    if sport:
+        if proto not in ('tcp', 'udp') or port:
+            raise Refused('a port answers come from is for TCP or UDP, on a rule without a port')
+        if not re.fullmatch(r'[0-9]{1,5}', sport) or not 1 <= int(sport) <= 65535:
+            raise Refused('%s is not a port' % sport[:20])
     src = str(x.get('source') or '').strip()
     if src:
         try:
@@ -1594,8 +1604,11 @@ def fw_rule_checked(x):
     if action not in ('accept', 'drop', 'reject'):
         raise Refused('a rule accepts, drops or rejects')
     note = re.sub(r'[^A-Za-z0-9 ._:/@()+,-]', '', str(x.get('note') or ''))[:120]
-    return {'family': fam, 'proto': proto, 'port': port, 'source': src, 'action': action,
-            'note': note}
+    out = {'family': fam, 'proto': proto, 'port': port, 'source': src, 'action': action,
+           'note': note}
+    if sport:
+        out['sport'] = sport
+    return out
 
 
 # -- iptables --
@@ -1611,6 +1624,8 @@ def fw_args(r):
             a += ['-m', 'multiport', '--dports', r['port'].replace('-', ':')]
         else:
             a += ['--dport', r['port'].replace('-', ':')]
+    if r.get('sport'):
+        a += ['--sport', r['sport']]
     a += ['-m', 'comment', '--comment', '"zigmon: %s"' % (r['note'] or r['proto'])]
     a += ['-j', r['action'].upper()]
     return ' '.join(a)
@@ -1787,6 +1802,8 @@ def rich(r, priority):
     if r['proto'] in ('tcp', 'udp') and r['port']:
         return ['%s port port="%s" protocol="%s" %s' % (head, p, r['proto'], act)
                 for p in r['port'].split(',')]
+    if r['proto'] in ('tcp', 'udp') and r.get('sport'):
+        return ['%s source-port port="%s" protocol="%s" %s' % (head, r['sport'], r['proto'], act)]
     if r['proto'] in ('tcp', 'udp'):
         return ['%s protocol value="%s" %s' % (head, r['proto'], act)]
     if r['proto'] == 'icmp':

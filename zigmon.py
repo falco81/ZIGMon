@@ -18422,13 +18422,35 @@ class Daemon(object):
             items.append({'key': 'pushes', 'title': 'Pushes from battery sensors',
                           'why': 'tcp %s from anywhere: where a Shelly sensor sends what it saw' % port,
                           'rules': both('tcp', port, 'sensor pushes')})
+        # (5.53.3) and the answers: a Shelly box answers a question asking for a unicast reply
+        # from port 5353 to the port the question went out of - with only "to 5353" let in,
+        # zigmon shelly discover heard nothing. Only when root's helper knows such a rule: an
+        # older one would read it as "all of UDP"
+        mdns = both('udp', '5353', 'mDNS')
+        if self.fw_sport_ok():
+            mdns += [dict(x, port='', sport='5353', note='mDNS answers') for x in both('udp', '', 'mDNS answers')]
         items.append({'key': 'mdns', 'title': 'mDNS', 'why': 'udp 5353: how a Shelly box on the '
-                      'network is found by its name',
-                      'rules': both('udp', '5353', 'mDNS')})
+                      'network is found by its name - questions to port 5353 and the answers from it',
+                      'rules': mdns})
         for item in items:
             item['fixed'] = False
             item['on'] = item['key'] not in off
         return items
+
+    def fw_sport_ok(self):
+        """Whether root's helper takes a rule by the port an answer comes from (5.53.3)."""
+        try:
+            path = str(self.helper_file('zigmon_root.py'))
+            mtime = os.stat(path).st_mtime
+            kept = self.__dict__.get('_fw_sport')
+            if kept and kept[0] == (path, mtime):
+                return kept[1]
+            with open(path) as f:
+                ok = 'FW_SPORT = True' in f.read()
+            self._fw_sport = ((path, mtime), ok)
+            return ok
+        except (OSError, TypeError):
+            return False
 
     def fw_rules_out(self, conf=None, access=None):
         """Every rule root is to put in, in order: the rules of your own
@@ -60231,7 +60253,9 @@ def iptables_diagnosis(pal):
     import subprocess
     lines = []
     try:
-        rules = subprocess.run(['iptables', '-S', 'INPUT'],
+        # (5.53.3) every chain, not INPUT alone: the rules zigmon puts in are in a chain of its
+        # own (ZIGMON-IN), jumped to from INPUT, and were never seen here
+        rules = subprocess.run(['iptables', '-S'],
                                capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return lines
@@ -60251,21 +60275,31 @@ def iptables_diagnosis(pal):
                     and '-p ' not in line and '--dport' not in line
                     for line in text.split('\n'))
     policy_drops = policy_drops or catch_all
-    accepts_5353 = any('5353' in line and '-j ACCEPT' in line
-                       for line in text.split('\n'))
+    accepts = [line for line in text.split('\n') if '-j ACCEPT' in line and '-p udp' in line]
+    to_5353 = any(re.search(r'--dports? (\S*,)?5353\b', line) for line in accepts)
+    from_5353 = any(re.search(r'--sports? (\S*,)?5353\b', line) for line in accepts)
     accepts_group = any('224.0.0.251' in line and '-j ACCEPT' in line
                         for line in text.split('\n'))
+    zigmons = '-N ZIGMON-IN' in text
 
     if not policy_drops:
         lines.append(pal.ok('  iptables accepts by default, so the firewall is '
                             'not blocking this.'))
         return lines
-    if accepts_5353:
+    if to_5353 and from_5353:
         lines.append(pal.ok('  iptables already allows mDNS both ways, so the '
                             'firewall is not the problem.'))
         return lines
+    if zigmons:
+        # (5.53.3) zigmon looks after this firewall: the way is its own switch, not a rule by
+        # hand that its next save takes out again
+        lines.append(pal.warn('  The firewall zigmon looks after does not let mDNS %s.'
+                              % ('answers in' if to_5353 else 'in')))
+        lines.append(pal.dim('    Switch mDNS on under Settings - Firewall (it lets in the questions '
+                             'to port 5353 and the answers from it) and save the firewall.'))
+        return lines
 
-    if accepts_group:
+    if accepts_group or to_5353:
         lines.append(pal.warn('  iptables allows the multicast group but not a '
                               'unicast reply.'))
         lines.append(pal.dim('    A proxy answers from port 5353 to whatever '
