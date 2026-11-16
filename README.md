@@ -2083,7 +2083,22 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.53.2**
+Current version: **5.53.3**
+
+5.53.3 — mDNS answers are let in.
+
+* The firewall's mDNS let in only questions to port 5353. A Shelly box asked
+  for a unicast answer replies from port 5353 to the port the question went
+  out of, so `zigmon shelly discover` heard nothing until a rule by hand let
+  `--sport 5353` in. mDNS now lets the answers in as well (iptables and
+  firewalld, IPv4 and IPv6) - only with a root helper that knows such a rule:
+  an older one would have read it as all of UDP. Save the firewall once after
+  the upgrade (Settings - Firewall).
+* `zigmon shelly discover` reads every chain, not INPUT alone - zigmon's own
+  rules are in ZIGMON-IN - and, where zigmon looks after the firewall, points
+  to its mDNS switch rather than to rules by hand that its next save takes out.
+
+`test/review5533_mdns.py`; these checks fail on 5.53.2.
 
 5.53.2 — the heads' sliders in line, and their battery said.
 
