@@ -57591,8 +57591,15 @@ def osup_post(d, b, by):
 # The page (or the command line) writes 'selinux:want' {id, do, by, at}; the tick has root's
 # helper do it (selinux.ask) and keeps what came back in 'selinux:now' - looked at again every
 # half hour. Nothing changes unless somebody asks: a machine with SELinux disabled stays so.
-SE_ACTIONS = ('check', 'prepare', 'enforce', 'permissive', 'report')
-SE_STEPS = ('prepare', 'enforce', 'permissive')
+SE_ACTIONS = ('check', 'look', 'prepare', 'enforce', 'permissive', 'report', 'fix', 'rule_drop')
+SE_STEPS = ('prepare', 'enforce', 'permissive', 'fix', 'rule_drop')
+# 5.55: what SELinux refuses, sorted by what puts it right - the page sends finding ids only
+# (12 hex), root finds each again in the audit log and works out its fix; a request that
+# carries anything of a fix itself is refused here already, and again by root.
+SE_ID_RE = re.compile(r'^[0-9a-f]{12}\Z')
+SE_IDS_MOST = 64
+SE_NOT_FROM_PAGE = ('rule', 'rules', 'allow', 'cil', 'path', 'paths', 'command', 'commands', 'fix', 'fixes',
+                    'boolean', 'booleans', 'port', 'ports', 'type', 'restorecon', 'semanage', 'setsebool')
 SE_EVERY_S = float(os.environ.get('ZIGMON_SELINUX_EVERY_S') or 1800)
 # The first look two minutes after the start, not at once: root's semanage and ausearch take a
 # core for seconds, beside a daemon that has only just begun to answer.
@@ -57654,26 +57661,48 @@ def selinux_view(d):
             'report': {k: rep.get(k) for k in ('id', 'at', 'bytes', 'error')} if rep else {}}
 
 
-def selinux_ask(d, action, by):
-    """A step, a look or a report asked for: done by the tick, at once."""
+def selinux_ids(raw, most=SE_IDS_MOST):
+    """Finding ids as the page sends them - nothing else is taken."""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= most:
+        raise ValueError('one finding id at least, %d at most' % most)
+    out = []
+    for x in raw:
+        if not isinstance(x, str) or not SE_ID_RE.match(x):
+            raise ValueError('a finding id is 12 hex characters - the page sends nothing else')
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def selinux_ask(d, action, by, ids=None):
+    """A step, a look or a report asked for: done by the tick, at once. `ids`: the findings
+    to put right (fix), the local rule to take away (rule_drop) - ids only."""
     if action not in SE_ACTIONS:
-        raise ValueError('check, prepare, enforce, permissive, report or download')
+        raise ValueError('check, look, prepare, enforce, permissive, fix, rule_drop, report or download')
+    if action in ('fix', 'rule_drop'):
+        ids = selinux_ids(ids, 1 if action == 'rule_drop' else SE_IDS_MOST)
     was, now = se_row(d, 'selinux:want'), se_row(d, 'selinux:now')
     # A step asked and not done yet is not put aside by a look or a report: its one row was
     # written over, and "enforcing" never happened - said nowhere.
     if selinux_pending(was, now) in SE_STEPS:
-        if action == 'check':
+        if action in ('check', 'look'):
             return False                    # the step looks again when it is done
         raise ValueError('the step asked a moment ago (%s) is not done yet - ask again after it'
                          % was.get('do'))
-    d._mj_put('selinux:want', {'id': secrets.token_hex(6), 'do': action, 'by': str(by)[:80], 'at': time.time()},
-              bump=True)
+    row = {'id': secrets.token_hex(6), 'do': action, 'by': str(by)[:80], 'at': time.time()}
+    if action in ('fix', 'rule_drop'):
+        row['ids'] = ids
+    d._mj_put('selinux:want', row, bump=True)
     if action == 'report':
         d.store.add_event('control', '%s asked for the SELinux report' % by, 'info')
     elif action in SE_STEPS:
         d.store.add_event('control', '%s asked SELinux: %s' % (by, {
             'prepare': 'made ready (permissive) / what zigmon needs put in', 'enforce': 'enforcing',
-            'permissive': 'permissive again'}[action]), 'warn')
+            'permissive': 'permissive again',
+            'fix': 'put right %d of what it refused (%s)' % (len(ids or []), ', '.join((ids or [])[:8])),
+            'rule_drop': 'take zigmon\'s local rule %s away' % ', '.join(ids or [])}[action]), 'warn')
     kick = getattr(d, '_net_kick', None)
     if kick is not None:
         kick.set()                          # the tick looks now, not in five seconds
@@ -57730,8 +57759,12 @@ def selinux_work(d, do, want, now):
         old = now.get('data') if isinstance(now.get('data'), dict) else {}
         data = old
         try:
-            got = d.root_call('selinux.ask', 'selinux.json', dict(selinux_want(d), do=do),
-                              180 if do in ('check', 'report') else 600)
+            ask = dict(selinux_want(d), do=do)
+            if do in ('fix', 'rule_drop'):
+                # the ids only, as the page sent them; root works out every fix itself
+                ask.update(ids=list(want.get('ids') or []), by=str(want.get('by') or '')[:60])
+            got = d.root_call('selinux.ask', 'selinux.json', ask,
+                              180 if do in ('check', 'look', 'report') else 600)
             if not isinstance(got, dict):
                 raise ValueError('root\'s helper answered with no object - is it of the same version as '
                                  'zigmon? install.sh --upgrade puts it in')
@@ -57748,7 +57781,13 @@ def selinux_work(d, do, want, now):
                 except OSError as e:
                     rep['error'] = 'root made no report: %s' % e
             d._mj_put('selinux:report', rep)
-        if do in SE_STEPS:
+        if do in ('fix', 'rule_drop') and not err:
+            # every step root took an event of its own (5.55)
+            failed = data.get('failed') if isinstance(data, dict) else None
+            for x in said or ['nothing to do - it was put right already']:
+                d.store.add_event('control', 'SELinux: %s' % x, 'bad' if x.startswith('could not') else 'warn')
+            log('SELinux %s: %s' % (do, '; '.join(said) or 'done'), 'bad' if failed else 'warn')
+        elif do in SE_STEPS:
             d.store.add_event('control', 'SELinux: %s' % (err or '; '.join(said) or 'done'),
                               'bad' if err else 'warn')
             log('SELinux %s: %s' % (do, err or '; '.join(said) or 'done'), 'warn')
@@ -57773,6 +57812,24 @@ def selinux_notice(d, data):
                        command='zigmon --selinux-check', link='#control/sec-selinux')
     else:
         d.notice_clear('selinux')
+    # 5.55: what SELinux refused to zigmon, permissive too - said once for each set of it (the
+    # stamp), and gone by itself once nothing of zigmon's is left
+    n = data.get('counts') if isinstance(data.get('counts'), dict) else {}
+    fixable, nb = int(n.get('fixable') or 0), int(n.get('notbutton') or 0)
+    if data.get('mode') in ('Enforcing', 'Permissive') and (fixable or nb):
+        ids = sorted(str(f.get('id')) for f in data.get('findings') or []
+                     if isinstance(f, dict) and f.get('kind') in ('boolean', 'label', 'port', 'rule', 'notbutton'))
+        why = '%d can be put right on the card (Settings - Security - SELinux)' % fixable if fixable else \
+            'nothing of it can be put right from a page'
+        if nb:
+            why += '; %d not for a button - the card says why' % nb
+        d.notice_raise('selinux-refuses', 'warn' if data.get('mode') == 'Enforcing' else 'info',
+                       'SELinux refuses zigmon something - %d can be put right on the card' % fixable, why,
+                       action='Settings - Security - SELinux: put in what is selected; or, as root:',
+                       command='zigmon --selinux-look', link='#control/sec-selinux',
+                       stamp=hashlib.sha256(' '.join(ids).encode()).hexdigest()[:16])
+    else:
+        d.notice_clear('selinux-refuses')
 
 
 def selinux_download(d, by):
@@ -57795,11 +57852,21 @@ def selinux_post(d, b, by):
     act = str(b.get('action') or '')
     if act == 'download':
         return dict(selinux_download(d, by), ok=True)
-    asked = selinux_ask(d, act, by)
+    ids = None
+    if act in ('fix', 'rule_drop'):
+        carried = [k for k in SE_NOT_FROM_PAGE if k in b]
+        if carried:
+            raise ValueError('the page sends finding ids only - root works out every fix itself (%s refused)'
+                             % ', '.join(carried[:3]))
+        ids = b.get('ids') if act == 'fix' else b.get('id')
+    asked = selinux_ask(d, act, by, ids)
     words = {'check': 'asked: SELinux is looked at within seconds',
+             'look': 'asked: SELinux is looked at within seconds',
              'prepare': 'asked: root makes SELinux ready, or puts in what zigmon needs',
              'enforce': 'asked: root switches SELinux to enforcing',
              'permissive': 'asked: root switches SELinux to permissive',
+             'fix': 'asked: root puts right what was selected - and looks again',
+             'rule_drop': 'asked: root takes the rule away - and looks again',
              'report': 'asked: root makes the report - within a minute'}[act]
     return dict(selinux_view(d), message=words if asked else 'a step is going on - it looks again after it')
 
@@ -61318,6 +61385,9 @@ HELP_LINES = [
     ('sudo zigmon --selinux-check', 'SELinux here: the mode, zigmon\u2019s module, its labels, boolean and ports, what was refused'),
     ('sudo zigmon --selinux STEP', 'a step on the way to enforcing: prepare, enforce, permissive (asks first)'),
     ('sudo zigmon --selinux-report [FILE]', 'what SELinux says here, for whoever writes zigmon\u2019s module - no secret in it'),
+    ('sudo zigmon --selinux-look [--json]', 'what SELinux refuses on this machine, sorted by what puts it right - with ids and fixes'),
+    ('sudo zigmon --selinux-fix ID... | --all', 'put right what may be put right, by finding id; lists what root will do and asks (--yes not to)'),
+    ('sudo zigmon --selinux-rules [--take-away ID]', 'zigmon\u2019s local rules (zigmon_local), each with its id; --take-away takes one away (asks, --yes)'),
     ('sudo zigmon --updates', 'the system\u2019s updates: what dnf has waiting, the security ones, a restart'),
     ('sudo zigmon --updates look', 'look for updates now (nothing put in), followed here'),
     ('sudo zigmon --updates update --security', 'update the system now - all, or the security ones only; '
@@ -61497,6 +61567,8 @@ def build_parser():
     p.add_argument('--json', action='store_true', help='machine-readable output where supported')
     p.add_argument('--no-color', action='store_true')
     p.add_argument('-y', '--yes', action='store_true', help='do not ask for confirmation')
+    p.add_argument('--all', action='store_true', help='for --selinux-fix: every finding that can be put right')
+    p.add_argument('--take-away', metavar='ID', help='for --selinux-rules: the local rule to take away')
     p.add_argument('--allow-root', action='store_true',
                    help='run the daemon as root anyway (only with a scratch --config)')
     a = p.add_argument_group('actions')
@@ -61612,6 +61684,17 @@ def build_parser():
                    help='(root) a step on the way to enforcing: prepare (disabled: permissive at the next '
                         'start; permissive: what zigmon needs put in), enforce, permissive - asks first '
                         '(--yes not to)')
+    a.add_argument('--selinux-look', action='store_true',
+                   help='(root) what SELinux refused on this machine since it started, sorted by what puts '
+                        'it right: a boolean, a label, a port, a rule of zigmon\'s; not for a button (and '
+                        'why); not zigmon\'s - each with its id and fix (--json)')
+    a.add_argument('--selinux-fix', nargs='*', metavar='ID',
+                   help='(root) put right the findings with these ids (or --all that can be): root finds each '
+                        'again in the audit log and works out its fix - lists exactly what it will do and '
+                        'asks first (--yes not to); works under enforcing too')
+    a.add_argument('--selinux-rules', action='store_true',
+                   help='(root) zigmon\'s local rules (the module zigmon_local), each with its id; '
+                        '--take-away ID takes one away (the last one: the module goes)')
     a.add_argument('--selinux-report', nargs='?', const='', metavar='FILE',
                    help='(root) what SELinux says here, for whoever writes zigmon\'s module - nothing '
                         'changed, no password, key or token in it (default '
@@ -64602,6 +64685,9 @@ def cmd_selinux(args, pal):
     def helper_run(extra, timeout=900):
         return subprocess.run([sys.executable, '-I', str(helper)] + extra, input=want,
                               capture_output=True, text=True, timeout=timeout)
+    if getattr(args, 'selinux_look', False) or getattr(args, 'selinux_fix', None) is not None or \
+            getattr(args, 'selinux_rules', False):
+        return cmd_selinux_find(args, pal, helper_run)
     if args.selinux_report is not None:
         host = re.sub(r'[^A-Za-z0-9._-]', '', socket.gethostname().split('.')[0])[:60] or 'zigmon'
         out = args.selinux_report or '/root/zigmon-selinux-report-%s-%s.tar.gz' % (host, time.strftime('%Y%m%d-%H%M'))
@@ -64640,6 +64726,164 @@ def cmd_selinux(args, pal):
         except Exception:                               # noqa: BLE001
             pass
     return got.returncode
+
+
+SE_CLI_KINDS = (('fixed', 'Put right just now'), ('boolean', 'A boolean'), ('label', 'A label'),
+                ('port', 'A port'), ('rule', 'A rule of zigmon\u2019s'), ('notbutton', 'Not for a button'),
+                ('other', 'Not zigmon\u2019s'))
+
+
+def selinux_finding_line(f):
+    where = f.get('path') or ('port %s/%s' % (f.get('port'), f.get('proto')) if f.get('port') else f.get('name') or '')
+    return '%s %s -> %s %s { %s }%s' % (f.get('program') or '?', f.get('source'), f.get('target'), f.get('class'),
+                                        f.get('perms'), ('  ' + where) if where else '')
+
+
+def cmd_selinux_find(args, pal, helper_run):
+    """zigmon --selinux-look, --selinux-fix ID... | --all, --selinux-rules [--take-away ID]:
+    what SELinux refuses, sorted by what puts it right, and putting it right - root's helper
+    run here as root, as from the page: ids only, root works out every fix itself."""
+    got = helper_run(['--selinux-check', '--json'])
+    try:
+        c = json.loads(got.stdout or '{}')
+    except ValueError:
+        c = {}
+    if not isinstance(c, dict) or 'mode' not in c:
+        sys.stderr.write(got.stderr)
+        print(pal.crit('root\'s helper said nothing readable - install.sh --upgrade puts in one of this version'))
+        return 2
+    finds = [f for f in c.get('findings') or [] if isinstance(f, dict)]
+    rules = (c.get('local') or {}).get('rules') or []
+    fixable = ('boolean', 'label', 'port', 'rule')
+
+    def go_on(words):
+        if args.yes:
+            return True
+        if not sys.stdin.isatty():
+            print(pal.crit('add --yes to do it without a terminal'))
+            return False
+        try:
+            return input('%s [y/N] ' % words).strip().lower() in ('y', 'yes')
+        except EOFError:
+            return False
+
+    def after(extra):
+        run = helper_run(extra + ['--json'])
+        try:
+            out = json.loads(run.stdout or '{}')
+        except ValueError:
+            out = {}
+        if not isinstance(out, dict) or (not out.get('ok') and out.get('said') and 'mode' not in out):
+            print(pal.crit('refused: %s' % (out.get('said') if isinstance(out, dict) else run.stderr[-300:])))
+            return 1
+        if args.json:
+            print(json.dumps(out, indent=1, sort_keys=True))
+        else:
+            for x in out.get('said') or []:
+                print('  ' + (pal.crit(x) if x.startswith('could not') else pal.ok(x)))
+            n = out.get('counts') or {}
+            print(pal.dim('looked again: %d can be put right, %d not for a button, %d not zigmon\u2019s'
+                          % (n.get('fixable', 0), n.get('notbutton', 0), n.get('other', 0))))
+        try:                                # the page says it at once; nothing lost when it cannot
+            api_call('/api/selinux', method='POST', payload={'action': 'check'}, timeout=5.0)
+        except Exception:                               # noqa: BLE001
+            pass
+        return 1 if out.get('failed') or run.returncode else 0
+
+    if getattr(args, 'selinux_rules', False):
+        if args.take_away:
+            one = [x for x in rules if x.get('id') == args.take_away]
+            if not one:
+                print(pal.crit('zigmon\'s local module has no rule %s - zigmon --selinux-rules lists them'
+                               % args.take_away))
+                return 1
+            print('root takes this rule out of zigmon_local%s:' % (' - the last one: the module goes'
+                                                                   if len(rules) == 1 else ''))
+            print('  ' + one[0].get('rule', ''))
+            if not go_on('Take it away?'):
+                print('nothing done')
+                return 1
+            return after(['--selinux-rule-drop', args.take_away])
+        if args.json:
+            print(json.dumps(c.get('local') or {}, indent=1, sort_keys=True))
+            return 0
+        print(pal.title('zigmon\u2019s local rules (zigmon_local): %d%s' % (
+            len(rules), '' if not rules else ', in the policy' if (c.get('local') or {}).get('in_policy')
+            else ', NOT in the policy')))
+        for x in rules:
+            print('  %s  %s' % (pal.key(x.get('id', '')), x.get('rule', '')))
+            print(pal.dim('                %s - put in %s by %s' % (
+                x.get('why', ''), time.strftime('%Y-%m-%d %H:%M', time.localtime(float(x.get('at') or 0))),
+                x.get('by') or '?')))
+        if rules:
+            print(pal.dim('zigmon --selinux-rules --take-away ID takes one away'))
+        return 0
+
+    if getattr(args, 'selinux_fix', None) is not None:
+        if args.all:
+            ids = [f['id'] for f in finds if f.get('kind') in fixable]
+        else:
+            ids = list(dict.fromkeys(args.selinux_fix))
+        if not ids:
+            print(pal.ok('nothing SELinux refused can be put right here') if args.all else
+                  pal.crit('which? zigmon --selinux-fix ID... (zigmon --selinux-look lists them) or --all'))
+            return 0 if args.all else 2
+        by_id = {f['id']: f for f in finds}
+        todo = []
+        for i in ids:
+            f = by_id.get(i)
+            if f is None:
+                print(pal.crit('%s: no such finding - zigmon --selinux-look lists them' % i))
+                return 1
+            if f.get('kind') not in fixable:
+                print(pal.crit('%s: not for a button - %s' % (i, f.get('why') or f.get('kind'))))
+                return 1
+            todo.append(f)
+        print('root does exactly this - nothing else - and looks again at once:')
+        for f in todo:
+            print('  %s %-8s %s' % (pal.key(f['id']), f['kind'], pal.value(f.get('fix') or '')))
+            print(pal.dim('                        ' + selinux_finding_line(f)))
+        if any(f['kind'] == 'rule' for f in todo):
+            print(pal.dim('the rules go into zigmon\u2019s own local module zigmon_local - each can be taken '
+                          'away again (zigmon --selinux-rules --take-away ID)'))
+        if not go_on('Put it in?'):
+            print('nothing done')
+            return 1
+        return after(['--selinux-fix'] + [f['id'] for f in todo])
+
+    # --selinux-look
+    if args.json:
+        print(json.dumps({k: c.get(k) for k in ('mode', 'config', 'findings', 'counts', 'local', 'ready',
+                                                'problems', 'look_at')}, indent=1, sort_keys=True))
+        return 0
+    n = c.get('counts') or {}
+    print(pal.title('SELinux: %s - what it refused since the machine started' % c.get('mode')))
+    if c.get('mode') not in ('Enforcing', 'Permissive'):
+        print(pal.dim('  nothing is looked at while SELinux is %s' % str(c.get('mode')).lower()))
+        return 0
+    if not n.get('tool'):
+        print(pal.crit('  ausearch is not on this machine - what SELinux refused cannot be read (dnf install audit)'))
+        return 1
+    for kind, words in SE_CLI_KINDS:
+        rows = [f for f in finds if f.get('kind') == kind]
+        if not rows:
+            continue
+        colour = pal.ok if kind == 'fixed' else pal.crit if kind == 'notbutton' else \
+            pal.dim if kind == 'other' else pal.warn
+        print(colour('%s (%d)' % (words, len(rows))))
+        for f in rows:
+            print('  %s %s  %s' % (pal.key(f['id']), selinux_finding_line(f), pal.dim('%d\u00d7' % f.get('count', 1))))
+            if f.get('fix'):
+                print('      -> ' + pal.value(f['fix']))
+            print('      ' + (pal.crit(f.get('why', '')) if kind == 'notbutton' else pal.dim(f.get('why', ''))))
+    if not finds:
+        print(pal.ok('  nothing refused since the machine started'))
+    if n.get('allowed'):
+        print(pal.dim('refused before, allowed now (not counted): %d' % n['allowed']))
+    print(pal.dim('%d can be put right (zigmon --selinux-fix ID... or --all), %d not for a button, %d not '
+                  'zigmon\u2019s; zigmon\u2019s local rules: %d (zigmon --selinux-rules)'
+                  % (n.get('fixable', 0), n.get('notbutton', 0), n.get('other', 0), len(rules))))
+    return 0
 
 
 def cmd_updates(args, pal):
@@ -67087,6 +67331,28 @@ def _console_os_roots(c):
 CONSOLE_MORE['main'].append(("The system's trusted roots", _console_os_roots))
 
 
+def _console_selinux(c):
+    """SELinux from the console (5.55): the checks, what it refuses sorted by what puts it
+    right, putting right all that may be (asked first, as on the page), the local rules, the
+    report - each the command of the same name."""
+    def fix_all():
+        if c.confirm('Put in what can be put right', 'Root finds every finding that can be put right '
+                     'again in the audit log and puts it right: a boolean, a label, a port, a rule of '
+                     'zigmon\'s own local module. Nothing not for a button. It works under enforcing too.',
+                     'Put it in'):
+            c.act('--selinux-fix', '--all', '--yes')
+    return c.sub('SELinux', [
+        ('The checks: the mode, zigmon\'s module, labels, boolean, ports', lambda: c.act('--selinux-check')),
+        ('What SELinux refuses, sorted by what puts it right', lambda: c.act('--selinux-look')),
+        ('Put in all that can be put right', fix_all),
+        ('zigmon\'s local rules (zigmon_local)', lambda: c.act('--selinux-rules')),
+        ('The report, for whoever looks after the policy', lambda: c.act('--selinux-report')),
+    ])
+
+
+CONSOLE_MORE['main'].append(('SELinux', _console_selinux))
+
+
 def _console_shelly_backup(c):
     """The Shelly devices' configuration backups from the console (5.50): every device and how
     it stands; Enter on one backs it up, lists what is kept, restores or exports one - each
@@ -67451,7 +67717,8 @@ def _dispatch(args, pal):
     if getattr(args, 'acme', False) or getattr(args, 'acme_order', None):
         return cmd_acme(args, pal)
     if getattr(args, 'selinux_check', False) or getattr(args, 'selinux', None) or \
-            getattr(args, 'selinux_report', None) is not None:
+            getattr(args, 'selinux_report', None) is not None or getattr(args, 'selinux_look', False) or \
+            getattr(args, 'selinux_fix', None) is not None or getattr(args, 'selinux_rules', False):
         return cmd_selinux(args, pal)
     if getattr(args, 'updates', None):
         return cmd_updates(args, pal)

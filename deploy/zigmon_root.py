@@ -57,6 +57,9 @@ a path it could swap for a link.
   zigmon_root.py --selinux-check [--json] | --selinux-do STEP [--json] | --selinux-report FILE
                                           SELinux (from zigmon --selinux-check, --selinux,
                                           --selinux-report; what is needed on stdin)
+  zigmon_root.py --selinux-fix ID... [--json] | --selinux-rule-drop ID [--json]
+                                          what SELinux refused put right by finding id, a
+                                          local rule taken away (zigmon --selinux-fix, --selinux-rules)
 """
 import base64
 import calendar
@@ -5088,21 +5091,31 @@ def se_nginx_ports():
             for n in seen[:8]]
 
 
-def se_denials(since=0.0):
+def se_denials(since=0.0, text=None, skip=None):
     """What SELinux refused since the machine started - or since zigmon's needs were last put
     in (what was refused before that is what they put right) - for the programs zigmon works
     with, grouped by what was refused, the most first; and those the policy loaded now allows
-    (audit2why: a newer module, a boolean switched on since) told apart, not counted."""
-    got = se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot'], 120, light=True)
-    if got is None:
-        return {'tool': False, 'total': 0, 'groups': [], 'since': since, 'settled': 0}
+    (audit2why: a newer module, a boolean switched on since) told apart, not counted.
+    `text`: what ausearch said, read once for this and the findings (5.55); `skip`: the
+    refusals put right on the card since, by event - they no longer count here either."""
+    if text is None:
+        got = se_run(['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'boot'], 120, light=True)
+        if got is None:
+            return {'tool': False, 'total': 0, 'groups': [], 'since': since, 'settled': 0}
+        text = got.stdout or ''
     groups, lines, total = {}, {}, 0
-    for line in (got.stdout or '').splitlines():
+    for line in text.splitlines():
         if 'avc:' not in line or 'denied' not in line:
             continue
         when = re.search(r'msg=audit\((\d+)(?:\.\d+)?:', line)
         if since and when and int(when.group(1)) < since:
             continue
+        if skip:
+            m0, p0 = SE_AUDIT_ID.search(line), SE_PERMS_RE.search(line)
+            c0 = re.search(r'tclass=([a-z0-9_]+)', line)
+            if m0 and p0 and c0 and (m0.group(1) + ':' + m0.group(2), ' '.join(sorted(set(p0.group(1).split()))),
+                                     c0.group(1)) in skip:
+                continue
         perms = re.search(r'denied\s+\{([^}]*)\}', line)
         sc = re.search(r'scontext=(\S+)', line)
         tc = re.search(r'tcontext=(\S+)', line)
@@ -5115,7 +5128,9 @@ def se_denials(since=0.0):
             continue
         comm = re.search(r'\bcomm=(\S+)', line)
         name = re.search(r'\bname=(\S+)', line)
-        what = ' '.join(x for x in (comm.group(1) if comm else '', name.group(1) if name else '') if x)
+        # a name with a space in it is written in hex: the words as the program has them (5.55)
+        what = ' '.join(x for x in (se_field('comm', comm.group(1)) if comm else '',
+                                    se_field('name', name.group(1)) if name else '') if x)
         total += 1
         key = (st, tt, cl.group(1), perms.group(1).strip())
         lines[key] = line
@@ -5219,8 +5234,18 @@ def se_check(r):
                                              if known is not None else None)))
     probs = out['problems']
     if on:
-        out['denials'] = se_denials(se_applied_at())
+        # what SELinux refused, read once (5.55): counted as before, and every refusal of the
+        # whole machine sorted by what puts it right - the findings
+        got = se_run(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR', '-ts', 'boot'], 300,
+                     light=True)
+        groups = se_findings(got.stdout or '', se_fixed_read(), known) if got is not None else None
+        if got is None:
+            out['denials'] = {'tool': False, 'total': 0, 'groups': [], 'since': se_applied_at(), 'settled': 0}
+        else:
+            skip = {(e, ' '.join(g['perms']), g['class']) for g in groups if g.get('put_right') for e in g['evs']}
+            out['denials'] = se_denials(se_applied_at(), got.stdout or '', skip)
         out['auditd'] = se_auditd()
+        se_look_into(out, groups)
         if out['module'] is False:
             probs.append('zigmon\'s module (%s) is not installed' % SE_MODULE)
         probs.extend('%s is labelled %s, not %s (%s)' % (x['path'], x['label'] or '?', x['want'], x['why'])
@@ -5243,8 +5268,860 @@ def se_check(r):
         if not d['tool']:
             probs.append('ausearch is not on this machine - what SELinux refused cannot be read '
                          '(dnf install audit)')
+        n = out.get('counts') or {}
+        if n.get('fixable'):
+            probs.append('%d thing(s) SELinux refused can be put right here (Settings - Security - SELinux, '
+                         'or zigmon --selinux-fix --all)' % n['fixable'])
+        if n.get('notbutton'):
+            probs.append('%d thing(s) SELinux refused are not for a button - each says why '
+                         '(zigmon --selinux-look)' % n['notbutton'])
     out['ready'] = mode == 'Permissive' and not probs
     return out
+
+
+# ---- What SELinux refuses, sorted by what puts it right (5.55, after fake-igd's kit) -----
+# Every AVC, USER_AVC and SELINUX_ERR since the machine started, read with the records of its
+# event (SYSCALL: the program; PATH: the whole path; the port), grouped by what was refused,
+# each group put to audit2why and sorted into one kind:
+#
+#   allowed   the policy loaded now allows it (a boolean since, a label since): not counted
+#   fixed     put right here a moment ago, nothing refused of it since: not counted
+#   boolean   audit2why names a boolean - the program's own (httpd_* for httpd_t) or one of
+#             SE_BOOLEANS, and never one that allows far more (SE_BOOL_DANGER, which wins
+#             over every list): setsebool -P NAME 1
+#   label     a file of zigmon's not labelled as matchpathcon says: restorecon -R -v PATH,
+#             only ever on zigmon's own places
+#   port      a program zigmon works with binding a port of no type of its own:
+#             semanage port -a -t TYPE (http/ssh/ntp/howl_port_t only), never another's port
+#   rule      nothing of the policy allows it, and exactly that is safe to allow: one rule in
+#             zigmon's own local module (zigmon_local), each in an optional block of its own
+#   notbutton zigmon's, but too much to allow from a page - shown with why, never put right
+#   other     another program of this machine - shown, never put right here
+#
+# A finding's id is a hash of what was refused (12 hex): the same refusal has the same id at
+# every look. The page sends only ids; every fix is worked out here again from the audit log,
+# never taken from a request.
+SE_LIB = os.environ.get('ZIGMON_SELINUX_LIB', '/usr/local/lib/zigmon')
+SE_LOCAL = 'zigmon_local'
+SE_LOCAL_SUB = 'selinux-local'          # in root's own folder: the list, the module, its copy
+SE_FIXED = 'selinux-fixed'              # what was put right on the card, and when
+SE_FIXED_SHOW_S = 900                   # "put right just now" shown this long, then gone
+SE_FIND_MOST = 200
+SE_ID_RE = re.compile(r'^[0-9a-f]{12}\Z')
+SE_TYPE_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}_t\Z')
+SE_WORD_RE = re.compile(r'^[a-z][a-z0-9_]{0,40}\Z')
+SE_BOOL_RE = re.compile(r'^[a-z][a-z0-9_]{1,62}\Z')
+SE_KINDS = ('fixed', 'boolean', 'label', 'port', 'rule', 'notbutton', 'other', 'allowed')
+SE_FIXABLE = ('boolean', 'label', 'port', 'rule')
+# the domains of the tools zigmon's daemon runs (zigmon_server.cil lets them be entered from
+# its NoNewPrivileges unit): a refusal between one of them and the daemon is zigmon's
+SE_TOOL_DOMAINS = ('chronyc_t', 'ssh_t', 'ssh_keygen_t', 'iptables_t')
+# the confined services zigmon works with: theirs only on zigmon's paths and ports
+SE_PARTNERS = ('httpd_t', 'init_t', 'logrotate_t', 'chronyd_t', 'syslogd_t', 'system_cronjob_t',
+               'systemd_tmpfiles_t', 'sshd_t', 'avahi_t', 'mosquitto_t', 'unconfined_service_t')
+# a port of no type of its own given the type of the program that binds it - only these
+SE_PORT_FIX = {'httpd_t': 'http_port_t', 'sshd_t': 'ssh_port_t', 'chronyd_t': 'ntp_port_t',
+               'avahi_t': 'howl_port_t'}
+SE_PORT_GENERIC = ('unreserved_port_t', 'reserved_port_t', 'hi_reserved_port_t', 'ephemeral_port_t', 'port_t')
+# never switched on from a page: a boolean that lets a program far more than one thing
+SE_BOOL_DANGER = re.compile(r'exec|unconfined|_manage_all|_read_all|_write_all|_all_|ptrace|^deny_|^secure_|'
+                            r'^selinuxuser_|unified|full_access|sys_admin|sysadm|secadm|auditadm|cgi|_run_|'
+                            r'sudo|setrlimit|nis_enabled|mount_anyfile|polyinstantiation|_home|user_content|'
+                            r'staff|mmap_files|kernel|module|boot|bpf|privileged|tty|login|'
+                            r'use_nfs|use_cifs|use_fusefs|anon_write|dontaudit|dump_core|'
+                            r'domain_can_|global_ssp|fips_mode')
+# security-sensitive targets: never allowed from here, whatever the permission
+SE_SENSITIVE = re.compile(r'^(shadow_t|passwd_file_t|security_t|selinux_config_t|semanage_\w+|load_policy_\w+|'
+                          r'policy_\w+|default_context_t|file_context_t|setfiles_\w+|kernel_t|proc_kcore_t|'
+                          r'proc_kmsg_t|memory_device_t|sysctl\w*|\w*_key_t|\w*keytab\w*|\w*_keys_t|auditd_\w+|'
+                          r'audit_\w+|audisp_\w+|sudo_\w+|\w*_home_t|\w*_home_dir_t|home_root_t|admin_home_t|'
+                          r'user_tmp_t|boot_t|bootloader_\w+|fixed_disk_device_t|removable_device_t|lvm_\w+|'
+                          r'init_exec_t|systemd_passwd_\w+|chkpwd_\w+|shadow_\w+|login_\w+|local_login_\w+|'
+                          r'cert_t|\w*_cert_t|gpg_\w+|ssh_home_t|sshd_key_t|ssh_keysign_\w+|ssh_agent_\w+|'
+                          r'kmod_\w+|modules_\w+|efivarfs_t|tpm_device_t|xserver_\w+|crack_\w+)\Z')
+# what would let it run, change or reach far more than this
+SE_DANGER_PERMS = frozenset(('execute', 'execute_no_trans', 'entrypoint', 'execmod', 'execmem', 'execstack',
+                             'execheap', 'transition', 'dyntransition', 'ptrace', 'relabelfrom', 'relabelto',
+                             'setexec', 'setcurrent', 'setfscreate', 'setkeycreate', 'setsockcreate', 'mounton',
+                             'mount', 'remount', 'unmount', 'quotaon', 'quotamod', 'swapon', 'load_policy',
+                             'setenforce', 'setbool', 'setsecparam', 'module_load', 'module_request',
+                             'sys_module', 'siginh', 'rlimitinh', 'noatsecure', 'share', 'setrlimit',
+                             'setsched', 'associate', 'audit_control', 'audit_write', 'mac_admin',
+                             'mac_override'))
+# classes of the kernel's or the policy's own (capabilities among them)
+SE_DANGER_CLASSES = frozenset(('security', 'kernel_service', 'key', 'bpf', 'capability', 'capability2',
+                               'cap_userns', 'cap2_userns', 'system', 'service', 'filesystem', 'perf_event',
+                               'lockdown', 'user_namespace', 'dbus', 'passwd', 'context', 'netlink_audit_socket',
+                               'netlink_selinux_socket', 'netlink_kobject_uevent_socket', 'infiniband_pkey',
+                               'infiniband_endport', 'io_uring', 'binder', 'memprotect', 'key_socket',
+                               'kernel', 'nscd', 'x_device', 'x_server', 'security_class'))
+SE_PROCESS_OK = frozenset(('signal', 'sigchld', 'signull', 'sigkill', 'sigstop', 'getattr', 'getsched',
+                           'getpgid', 'getsession', 'getcap'))
+SE_PROCESS2_OK = frozenset(('nnp_transition', 'nosuid_transition'))
+# types many programs share: a write to one is never allowed from here - the file wants a label
+SE_GENERIC = frozenset(('etc_t', 'usr_t', 'bin_t', 'lib_t', 'shlib_t', 'textrel_shlib_t', 'var_t', 'var_lib_t',
+                        'var_run_t', 'var_log_t', 'var_spool_t', 'default_t', 'tmp_t', 'usr_tmp_t', 'root_t',
+                        'file_t', 'unlabeled_t', 'device_t', 'proc_t', 'sysfs_t', 'tmpfs_t', 'mnt_t', 'src_t',
+                        'man_t', 'locale_t', 'etc_runtime_t', 'system_conf_t', 'net_conf_t', 'httpd_config_t',
+                        'httpd_exec_t', 'httpd_sys_content_t', 'httpd_sys_script_exec_t', 'systemd_unit_file_t',
+                        'cron_spool_t', 'system_cron_spool_t'))
+SE_WRITE_PERMS = frozenset(('write', 'append', 'create', 'unlink', 'rename', 'add_name', 'remove_name', 'rmdir',
+                            'reparent', 'setattr', 'link'))
+SE_HEX_FIELDS = ('proctitle', 'name', 'path', 'comm', 'exe', 'cwd')
+SE_FIELD = re.compile(r'(?:^|[\s\'])([a-z_][a-z0-9_]*)=("[^"]*"|[^\s\']*)')
+SE_AUDIT_ID = re.compile(r'msg=audit\((\d+(?:\.\d+)?):(\d+)\)')
+SE_PERMS_RE = re.compile(r'denied\s+\{([^}]*)\}')
+
+
+def se_field(key, value):
+    """One field of an audit record, as the program saw it: quoted is plain; a few fields
+    (proctitle name path comm exe cwd) are written as hex when they hold a space or worse -
+    decoded, and only those: never a port, never a context."""
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    if key in SE_HEX_FIELDS and len(value) % 2 == 0 and re.match(r'^[0-9A-Fa-f]{2,}\Z', value):
+        try:
+            raw = bytes.fromhex(value)
+        except ValueError:
+            return value
+        if key == 'proctitle':
+            raw = raw.replace(b'\0', b' ')
+        return raw.decode('utf-8', 'replace').rstrip('\0')
+    return value
+
+
+def se_fields(line):
+    out = {}
+    for m in SE_FIELD.finditer(line):
+        out.setdefault(m.group(1), se_field(m.group(1), m.group(2)))
+    return out
+
+
+def se_type(ctx):
+    parts = str(ctx or '').split(':')
+    return parts[2] if len(parts) >= 3 else ''
+
+
+def se_clean(text, most=200):
+    """Words from the audit log, for a page and a person: printable, one line, short - a
+    program's name or a path are whatever that program made them."""
+    return re.sub(r'[\x00-\x1f\x7f]', '?', str(text or ''))[:most]
+
+
+def se_events(text):
+    """The audit log's records by event: {event id: {'at', 'avc': [(type, line)], 'syscall',
+    'paths', 'cwd', 'proctitle'}}."""
+    ev = {}
+    for line in (text or '').splitlines():
+        line = line.strip()
+        m = SE_AUDIT_ID.search(line)
+        t = re.match(r'^(?:node=\S+\s+)?type=([A-Z_0-9]+)\s', line)
+        if not m or not t:
+            continue
+        key = m.group(1) + ':' + m.group(2)
+        e = ev.get(key)
+        if e is None:
+            if len(ev) >= 200000:
+                continue
+            e = ev[key] = {'at': float(m.group(1)), 'avc': [], 'syscall': {}, 'paths': [], 'cwd': '',
+                           'proctitle': ''}
+        kind = t.group(1)
+        if kind in ('AVC', 'USER_AVC', 'SELINUX_ERR', 'USER_SELINUX_ERR'):
+            if len(e['avc']) < 32:
+                e['avc'].append((kind, line))
+        elif kind == 'SYSCALL':
+            e['syscall'] = se_fields(line)
+        elif kind == 'PATH':
+            f = se_fields(line)
+            if f.get('name') and len(e['paths']) < 8:
+                e['paths'].append((f['name'], se_type(f.get('obj'))))
+        elif kind == 'CWD':
+            e['cwd'] = se_fields(line).get('cwd', '')
+        elif kind == 'PROCTITLE':
+            e['proctitle'] = se_fields(line).get('proctitle', '')
+    return ev
+
+
+def se_our_paths():
+    """zigmon's own places: a confined program's refusal is zigmon's on one of them."""
+    roots = [SE_LIB, STATE_DIR, OWN_DIR, os.path.dirname(CONFIG_FILE) or '/etc/zigmon', SE_WEB, SE_RUN,
+             '/var/log/zigmon', FULL_DIR, MOSQ_DIR, CERT_DIR, '/etc/logrotate.d/zigmon',
+             '/etc/systemd/system/zigmon.service', '/etc/systemd/system/zigmon-root.service',
+             '/etc/systemd/system/zigmon-root.path', '/etc/systemd/system/zigmon-upgrade.service',
+             '/etc/systemd/system/zigmon-upgrade.path', '/etc/zigmon-console-login',
+             '/etc/profile.d/zz-zigmon-console.sh']
+    if SE_RUN.startswith('/run/'):
+        roots.append('/var' + SE_RUN)
+    roots.extend(NGINX_CANDIDATES)
+    out = []
+    for r in roots:
+        r = os.path.normpath(str(r or ''))
+        if r and r != '/' and r.count('/') >= 2 and r not in out:
+            out.append(r)
+    return out
+
+
+def se_is_ours(path, roots=None):
+    if not path or not path.startswith('/'):
+        return False
+    p = os.path.normpath(path)
+    return any(p == r or p.startswith(r + '/') for r in (roots or se_our_paths()))
+
+
+def se_our_ports():
+    """zigmon's ports, read here from its own files - never from a request: the API, the
+    broker where it is this machine's, the sensors' listener, the ports nginx serves on."""
+    try:
+        with open(CONFIG_FILE) as f:
+            conf = json.load(f)
+    except (OSError, ValueError):
+        conf = {}
+    if not isinstance(conf, dict):
+        conf = {}
+    want = [conf.get('api_port') or 9849, 80, 443]
+    if str(conf.get('mqtt_host') or '127.0.0.1') in ('127.0.0.1', 'localhost', '::1'):
+        want += [conf.get('mqtt_port') or 1883, 1883, 8883]
+    if conf.get('sensor_listen'):
+        want.append(conf.get('sensor_listen_port'))
+    want += [p['port'] for p in se_nginx_ports()]
+    out = set()
+    for p in want:
+        if isinstance(p, bool):
+            continue
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= 65535:
+            out.add(n)
+    return out
+
+
+def se_fixed_read():
+    got = own_read(SE_FIXED)
+    if not isinstance(got, dict):
+        return {}
+    return {k: v for k, v in got.items() if SE_ID_RE.match(str(k)) and isinstance(v, dict)}
+
+
+def se_fixed_write(marks):
+    # the newest 500: an old mark only hides refusals older than itself
+    keep = sorted(marks.items(), key=lambda kv: -float(kv[1].get('at') or 0))[:500]
+    own_write(SE_FIXED, dict(keep))
+
+
+def se_local_dir():
+    d = os.path.join(own_fd(), SE_LOCAL_SUB)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+def se_local_rules():
+    """zigmon's local rules, as root keeps them: [{id, source, target, class, perms, why, ...}]
+    - every one checked again for its shape, whatever is in the file."""
+    try:
+        with open(os.path.join(se_local_dir(), 'rules.json')) as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for x in got if isinstance(got, list) else []:
+        if not isinstance(x, dict):
+            continue
+        perms = x.get('perms')
+        if (SE_ID_RE.match(str(x.get('id') or '')) and SE_TYPE_RE.match(str(x.get('source') or ''))
+                and SE_TYPE_RE.match(str(x.get('target') or '')) and SE_WORD_RE.match(str(x.get('class') or ''))
+                and isinstance(perms, list) and 1 <= len(perms) <= 32
+                and all(SE_WORD_RE.match(str(p)) for p in perms)
+                and not any(r['id'] == x['id'] for r in out)):
+            try:
+                at = float(x.get('at') or 0)
+            except (TypeError, ValueError):
+                at = 0.0
+            out.append({'id': x['id'], 'source': x['source'], 'target': x['target'], 'class': x['class'],
+                        'perms': sorted(set(perms)), 'why': se_clean(x.get('why'), 300),
+                        'program': se_clean(x.get('program'), 64), 'at': at, 'by': se_clean(x.get('by'), 80)})
+    return out[:500]
+
+
+def se_rule_text(x):
+    return '(allow %s %s (%s (%s)))' % (x['source'], x['target'], x['class'], ' '.join(x['perms']))
+
+
+def se_local_text(rules):
+    out = ['; zigmon\'s local rules (%s) - put in from Settings - Security - SELinux ("Put in what is' % SE_LOCAL,
+           '; selected") or zigmon --selinux-fix, each exactly what SELinux refused here and nothing more.',
+           '; Taken away one by one on the same card (or zigmon --selinux-rules --take-away ID);',
+           '; install.sh --uninstall takes the module away. Written by root\'s helper from its own list',
+           '; (%s); never edited by hand - the next change writes it again.' % SE_LOCAL_SUB, '']
+    for x in rules:
+        out.append('; %s - %s (%s)' % (x['id'], re.sub(r'[^ -~]', '?', x.get('why') or '')[:200],
+                                       time.strftime('%Y-%m-%d %H:%M', time.localtime(x.get('at') or 0))))
+        out.append('(optional %s_%s' % (SE_LOCAL, x['id']))
+        out.append('    %s)' % se_rule_text(x))
+    return '\n'.join(out) + '\n'
+
+
+SE_CIL_ONE = re.compile(r'\(optional %s_[0-9a-f]{12} \(allow [a-z][a-z0-9_]*_t [a-z][a-z0-9_]*_t '
+                        r'\([a-z][a-z0-9_]* \([a-z][a-z0-9_]*(?: [a-z][a-z0-9_]*)*\)\)\)\)' % SE_LOCAL)
+
+
+def se_cil_ok(text):
+    """The local module before it goes near semodule: balanced, and nothing but optional
+    blocks of one allow each - in the shapes the list allows."""
+    body = '\n'.join(line.split(';', 1)[0] for line in text.splitlines())
+    depth = 0
+    for ch in body:
+        depth += {'(': 1, ')': -1}.get(ch, 0)
+        if depth < 0:
+            return False
+    if depth:
+        return False
+    flat = re.sub(r'\s+', ' ', body)
+    flat = re.sub(r'\(\s+', '(', flat)
+    flat = re.sub(r'\s+\)', ')', flat).strip()
+    return SE_CIL_ONE.sub('', flat).strip() == ''
+
+
+def se_modules():
+    got = se_run(['semodule', '-l'], 120, light=True)
+    if got is None or got.returncode != 0:
+        return None
+    return {line.split()[0] for line in got.stdout.splitlines() if line.split()}
+
+
+def se_local_put(rules, said):
+    """The local module written again from its list and put into the policy; the last rule
+    taken away: the module taken out. A change semodule refuses raises - the caller puts the
+    list back."""
+    d = se_local_dir()
+    cil = os.path.join(d, SE_LOCAL + '.cil')
+    if not rules:
+        mods = se_modules()
+        if mods is not None and SE_LOCAL in mods:
+            got = se_run(['semodule', '-r', SE_LOCAL], 300)
+            if got is None or got.returncode != 0:
+                raise SeRefused('semodule -r %s: %s' % (SE_LOCAL, se_said(got)))
+            said.append('zigmon\'s local module (%s) taken out of the policy - no rule left in it' % SE_LOCAL)
+        for n in (SE_LOCAL + '.cil', SE_LOCAL + '.cil.in-policy'):
+            try:
+                os.unlink(os.path.join(d, n))
+            except OSError:
+                pass
+        return
+    text = se_local_text(rules)
+    if not se_cil_ok(text):
+        raise SeRefused('the local module came out in a shape it may not have - nothing put in')
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.' + SE_LOCAL + '-', suffix='.cil')
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+        os.fchmod(f.fileno(), 0o600)
+    # semodule names the module after the file: zigmon_local.cil, written whole first
+    os.replace(tmp, cil)
+    got = se_run(['semodule', '-i', cil], 300)
+    if got is None or got.returncode != 0:
+        raise SeRefused('semodule -i %s: %s' % (cil, se_said(got)))
+    shutil.copyfile(cil, cil + '.in-policy')
+    os.chmod(cil + '.in-policy', 0o600)
+    said.append('zigmon\'s local module (%s) put into the policy - %d rule(s) in it' % (SE_LOCAL, len(rules)))
+
+
+def se_local_save(rules):
+    d = se_local_dir()
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.rules-')
+    with os.fdopen(fd, 'w') as f:
+        f.write(json.dumps(rules, indent=1))
+        os.fchmod(f.fileno(), 0o600)
+    os.replace(tmp, os.path.join(d, 'rules.json'))
+
+
+def se_local_back(rules):
+    """A change the policy did not take: the list and the module's file as they were."""
+    d = se_local_dir()
+    cil = os.path.join(d, SE_LOCAL + '.cil')
+    try:
+        se_local_save(rules)
+        if os.path.exists(cil + '.in-policy'):
+            shutil.copyfile(cil + '.in-policy', cil)
+        elif os.path.exists(cil):
+            os.unlink(cil)
+    except OSError:
+        pass
+
+
+def se_local_view(mods=None):
+    rules = se_local_rules()
+    cil = os.path.join(se_local_dir(), SE_LOCAL + '.cil')
+    return {'module': SE_LOCAL, 'in_policy': (SE_LOCAL in mods) if mods is not None else None,
+            'file': cil if os.path.exists(cil) else '',
+            'rules': [dict(x, rule=se_rule_text(x)) for x in rules]}
+
+
+def se_why_blocks(lines):
+    """audit2why on one refusal of each group: {the line, stripped: what audit2why said}."""
+    if not lines:
+        return {}
+    got = se_run(['audit2why'], 300, light=True, data=''.join(x + '\n' for x in lines))
+    if got is None or got.returncode != 0:
+        return {}
+    want = {x.strip(): x for x in lines}
+    by_ev = {}
+    for x in lines:
+        m = SE_AUDIT_ID.search(x)
+        p = SE_PERMS_RE.search(x)
+        if m:
+            by_ev.setdefault((m.groups(), p.group(1).split() if p else None).__repr__(), x.strip())
+    out, cur = {}, None
+    for line in (got.stdout or '').splitlines():
+        m = SE_AUDIT_ID.search(line)
+        if m and re.search(r'type=(USER_)?(AVC|SELINUX_ERR)', line):
+            cur = line.strip() if line.strip() in want else None
+            if cur is None:
+                # an audit2why that writes the line its own way: the same event, the same refusal
+                p = SE_PERMS_RE.search(line)
+                cur = by_ev.get((m.groups(), p.group(1).split() if p else None).__repr__())
+            if cur is not None:
+                out.setdefault(cur, '')
+            continue
+        if cur is not None and len(out[cur]) < 8000:
+            out[cur] += line + '\n'
+    return out
+
+
+def se_matchpathcon(paths):
+    """What the policy says each path should be labelled: {path: type}."""
+    paths = [p for p in paths if p.startswith('/')][:SE_FIND_MOST]
+    if not paths:
+        return {}
+    got = se_run(['matchpathcon'] + paths, 120, light=True)
+    if got is None:
+        return {}
+    out = {}
+    for line in (got.stdout or '').splitlines():
+        m = re.match(r'^(/\S*)\s+(\S+)\s*$', line.strip())
+        if m and se_type(m.group(2)):
+            out[m.group(1)] = se_type(m.group(2))
+    return out
+
+
+def se_port_owners(known, proto, port):
+    return sorted({t for (t, p), spans in (known or {}).items() if p == proto and t not in SE_PORT_GENERIC
+                   and any(lo <= port <= hi for lo, hi in spans)})
+
+
+def se_relabel_target(path, roots):
+    """Where restorecon is run for a refusal on `path`: the path where it still is, else the
+    nearest folder of it that is - never outside zigmon's places, never through a link that
+    leads out of them."""
+    p = os.path.normpath(path)
+    while p and p != '/' and se_is_ours(p, roots):
+        if os.path.lexists(p):
+            return p if se_is_ours(os.path.realpath(p), roots) else ''
+        p = os.path.dirname(p)
+    return ''
+
+
+def se_read_findings(text, roots=None, ports=None):
+    """The groups of what was refused, before they are sorted: {key: group}."""
+    roots = roots or se_our_paths()
+    ports = se_our_ports() if ports is None else ports
+    groups = {}
+    for eid, e in se_events(text).items():
+        sc = e['syscall']
+        argv = (e['proctitle'] or '').split()
+        exe = se_clean(sc.get('exe') or '', 300)
+        zprog = exe.startswith(SE_LIB + '/') or any(a.startswith(SE_LIB + '/') for a in argv[:4]) or \
+            os.path.basename(exe).startswith('zigmon')
+        for kind, line in e['avc']:
+            f = se_fields(line)
+            perms_m = SE_PERMS_RE.search(line)
+            err = kind.endswith('SELINUX_ERR')
+            if not perms_m and not err:
+                continue                       # granted (auditallow), or nothing to read
+            src = se_type(f.get('scontext') or f.get('oldcontext'))
+            tgt = se_type(f.get('tcontext') or f.get('newcontext'))
+            cls = re.sub(r'[^a-z0-9_]', '', str(f.get('tclass') or ('process' if err else '')))[:40]
+            if not src or not tgt or not cls:
+                continue
+            perms = sorted(set(perms_m.group(1).split())) if perms_m else \
+                [re.sub(r'[^a-z0-9_]', '', str(f.get('op') or ''))[:40] or 'error']
+            perms = [p[:40] for p in perms][:32] or ['?']
+            comm = se_clean(f.get('comm') or sc.get('comm') or os.path.basename(f.get('exe') or exe) or '?', 64)
+            exe1 = se_clean(f.get('exe') or exe, 300)
+            name = str(f.get('name') or '')
+            path = ''
+            if str(f.get('path') or '').startswith('/'):
+                path = f['path']
+            else:
+                cand = [(n, t) for n, t in e['paths'] if n not in ('(null)', '?')]
+                pick = next((n for n, t in cand if t == tgt), None) or \
+                    next((n for n, t in cand if name and n.endswith('/' + name)), None) or \
+                    next((n for n, t in cand if n.startswith('/')), None)
+                if pick and not pick.startswith('/') and e['cwd'].startswith('/'):
+                    pick = os.path.join(e['cwd'], pick)
+                path = pick if pick and pick.startswith('/') else ''
+            path = se_clean(os.path.normpath(path), 400) if path else ''
+            name = se_clean(name, 200) if not path and name not in ('(null)', '?') else ''
+            port, proto = 0, ''
+            if cls in ('tcp_socket', 'udp_socket', 'sctp_socket', 'dccp_socket'):
+                for k in ('src', 'dest', 'lport', 'port'):
+                    v = str(f.get(k) or '')
+                    if re.match(r'^\d{1,5}\Z', v) and 1 <= int(v) <= 65535:
+                        port, proto = int(v), cls.split('_')[0]
+                        break
+            where = path or ('port %d/%s' % (port, proto) if port else name)
+            key = (src, tgt, cls, ' '.join(perms), comm, where)
+            g = groups.get(key)
+            if g is None:
+                if len(groups) >= 2000:
+                    continue
+                g = groups[key] = {
+                    'id': hashlib.sha256('|'.join(key).encode('utf-8', 'replace')).hexdigest()[:12],
+                    'source': src, 'target': tgt, 'class': cls, 'perms': perms, 'program': comm, 'exe': exe1,
+                    'path': path, 'name': name, 'port': port, 'proto': proto, 'count': 0,
+                    'first': e['at'], 'last': e['at'], 'permissive': False, 'error': err, 'line': line,
+                    'zprog': False, 'user': kind.startswith('USER_'), 'evs': set()}
+            g['count'] += 1
+            if len(g['evs']) < 20000:
+                g['evs'].add(eid)
+            g['first'] = min(g['first'], e['at'])
+            if e['at'] >= g['last']:
+                g['last'], g['line'] = e['at'], line
+            g['permissive'] = g['permissive'] or str(f.get('permissive') or '') == '1'
+            g['zprog'] = g['zprog'] or zprog
+    for g in groups.values():
+        g['ours'] = bool(
+            g['zprog']
+            or (g['source'] in SE_TOOL_DOMAINS and g['target'] == 'unconfined_service_t')
+            or (g['source'] in SE_PARTNERS + SE_TOOL_DOMAINS
+                and (se_is_ours(g['path'], roots) or (g['port'] and g['port'] in ports))))
+    return groups
+
+
+def se_danger(g):
+    """Why it is not for a button, or ''."""
+    perms, cls, tgt = set(g['perms']), g['class'], g['target']
+    if g.get('error'):
+        return 'an error of the policy itself (%s) - no rule put in here changes it' % ' '.join(g['perms'])
+    if not (SE_TYPE_RE.match(g['source']) and SE_TYPE_RE.match(tgt) and SE_WORD_RE.match(cls)
+            and perms and all(SE_WORD_RE.match(p) for p in perms)):
+        return 'not the shape of a rule this helper writes - never put right from here'
+    if SE_SENSITIVE.match(tgt) or SE_SENSITIVE.match(g['source']):
+        return '%s is security-sensitive (%s) - never allowed from here' % (
+            tgt if SE_SENSITIVE.match(tgt) else g['source'], cls)
+    bad = sorted(p for p in perms if p in SE_DANGER_PERMS or p.startswith('exec'))
+    if bad:
+        return '%s { %s } would let it run, change or reach far more than this - never allowed from here' % (
+            cls, ' '.join(bad))
+    if cls in SE_DANGER_CLASSES:
+        return '%s is a class of the kernel\'s or the policy\'s own - never allowed from here' % cls
+    if cls == 'process' and not perms <= SE_PROCESS_OK:
+        return 'process { %s } would let it reach far more than this - never allowed from here' % ' '.join(
+            sorted(perms - SE_PROCESS_OK))
+    if cls == 'process2' and not perms <= SE_PROCESS2_OK:
+        return 'process2 { %s } - never allowed from here' % ' '.join(sorted(perms - SE_PROCESS2_OK))
+    if 'name_bind' in perms and tgt.endswith('_port_t') and tgt not in SE_PORT_GENERIC:
+        return '%s is another service\'s port type - a port is never taken from it here' % tgt
+    return ''
+
+
+def se_bool_ok(name, source):
+    """A boolean audit2why names is switched on from here only when it is the program's own
+    (httpd_* for httpd_t) or on SE_BOOLEANS - and never when it is one of SE_BOOL_DANGER, which
+    wins over every list."""
+    if not isinstance(name, str) or not SE_BOOL_RE.match(name) or SE_BOOL_DANGER.search(name):
+        return False
+    stem = source[:-2] if source.endswith('_t') else source
+    return name in SE_BOOLEANS or (len(stem) >= 3 and name.startswith(stem + '_'))
+
+
+def se_sort(g, why, matched, known, local, fixed, now):
+    """One group's kind, why, and what puts it right (or nothing)."""
+    g['fix'], g['fix_kind'], g['why'] = '', '', ''
+    mark = fixed.get(g['id'])
+    if mark and g['last'] <= float(mark.get('at') or 0):
+        g['put_right'] = True
+        if now - float(mark['at']) <= SE_FIXED_SHOW_S:
+            g['kind'], g['fixed_at'] = 'fixed', float(mark['at'])
+            g['why'] = 'put right %s - it goes at the next look' % time.strftime('%H:%M', time.localtime(mark['at']))
+        else:
+            g['kind'], g['why'] = 'allowed', 'put right since'
+        return
+    if not g['ours']:
+        g['kind'] = 'other'
+        g['why'] = 'not zigmon\'s: %s (%s) is another program of this machine - look at it with whoever ' \
+                   'looks after it' % (g['program'], g['source'])
+        return
+    if 'would be allowed by active policy' in why or any(
+            x['source'] == g['source'] and x['target'] == g['target'] and x['class'] == g['class']
+            and set(g['perms']) <= set(x['perms']) for x in local):
+        g['kind'], g['why'] = 'allowed', 'the policy loaded now allows it'
+        return
+    danger = se_danger(g)
+    if danger:
+        g['kind'], g['why'] = 'notbutton', danger
+        return
+    if re.search(r'(?i)constraint', why):
+        g['kind'], g['why'] = 'notbutton', 'a constraint of the policy (audit2why) - an allow rule does not change it'
+        return
+    if re.search(r'(?i)missing role|role allow', why):
+        g['kind'], g['why'] = 'notbutton', 'a role of the policy (audit2why) - no rule put in here changes it'
+        return
+    if g['path'] and se_is_ours(g['path']):
+        want = matched.get(g['path'])
+        if want and want != g['target']:
+            now_label = se_label(g['path']) if os.path.lexists(g['path']) else None
+            if now_label and (now_label == want or se_label_ok(now_label, want)):
+                g['kind'], g['why'] = 'allowed', '%s is labelled %s since' % (g['path'], want)
+                return
+            target = se_relabel_target(g['path'], se_our_paths())
+            if target:
+                g['kind'], g['fix_kind'], g['relabel'] = 'label', 'label', target
+                g['fix'] = 'restorecon -R -v %s' % target
+                g['why'] = '%s is labelled %s - the policy says %s' % (g['path'], g['target'], want)
+                return
+    if g['port'] and g['perms'] == ['name_bind'] and g['source'] in SE_PORT_FIX \
+            and g['target'] in SE_PORT_GENERIC and g['proto'] in ('tcp', 'udp'):
+        kind = SE_PORT_FIX[g['source']]
+        owners = se_port_owners(known, g['proto'], g['port'])
+        if kind in owners or (kind == 'http_port_t' and 'http_cache_port_t' in owners):
+            g['kind'], g['why'] = 'allowed', 'port %d/%s is %s since' % (g['port'], g['proto'], kind)
+            return
+        if owners:
+            g['kind'] = 'notbutton'
+            g['why'] = 'port %d/%s is %s\'s - another service\'s port is never taken from here' % (
+                g['port'], g['proto'], ', '.join(owners))
+            return
+        if known is None:
+            g['kind'] = 'notbutton'
+            g['why'] = 'semanage is not on this machine - the port cannot be looked at ' \
+                       '(dnf install policycoreutils-python-utils)'
+            return
+        g['kind'], g['fix_kind'], g['port_type'] = 'port', 'port', kind
+        g['fix'] = 'semanage port -a -t %s -p %s %d' % (kind, g['proto'], g['port'])
+        g['why'] = 'port %d/%s has no type of its own - %s may bind it once it is %s' % (
+            g['port'], g['proto'], g['source'], kind)
+        return
+    names = re.findall(r'setsebool -P ([A-Za-z0-9_]+) (?:1|on|true)\b', why)
+    if names:
+        ok = [n for n in names if se_bool_ok(n, g['source'])]
+        if ok:
+            pick = next((n for n in ok if n in SE_BOOLEANS), ok[0])
+            g['kind'], g['fix_kind'], g['boolean'] = 'boolean', 'boolean', pick
+            g['fix'] = 'setsebool -P %s 1' % pick
+            g['why'] = 'audit2why: the boolean %s allows it' % pick
+            return
+        g['kind'] = 'notbutton'
+        g['why'] = 'audit2why names only a boolean that allows far more (%s) - never switched on from here' % (
+            ', '.join(names[:3]))
+        return
+    if set(g['perms']) & SE_WRITE_PERMS and g['target'] in SE_GENERIC:
+        g['kind'] = 'notbutton'
+        g['why'] = '%s is a type many programs share - a write to it is never allowed from here; the file ' \
+                   'wants a label of its own' % g['target']
+        return
+    g['kind'], g['fix_kind'] = 'rule', 'rule'
+    g['fix'] = se_rule_text(g)
+    g['why'] = 'nothing of the policy allows it: a rule of zigmon\'s own local module allows exactly this'
+
+
+def se_findings(text, fixed=None, known=None):
+    """Every refusal since the machine started, grouped and sorted (see above). `known`: the
+    port types as semanage says (None: not there)."""
+    now = time.time()
+    fixed = se_fixed_read() if fixed is None else fixed
+    groups = list(se_read_findings(text).values())
+    ours = [g for g in groups if g['ours']]
+    whys = se_why_blocks([g['line'] for g in ours][:SE_FIND_MOST * 2])
+    matched = se_matchpathcon(sorted({g['path'] for g in ours if g['path'] and se_is_ours(g['path'])}))
+    local = se_local_rules()
+    for g in groups:
+        se_sort(g, whys.get(g['line'].strip(), '') if g['ours'] else '', matched, known, local, fixed, now)
+    order = {k: i for i, k in enumerate(SE_KINDS)}
+    groups.sort(key=lambda g: (order.get(g['kind'], 99), -g['count'], g['id']))
+    return groups
+
+
+def se_finding_out(g):
+    """A finding as the page and the command line get it: nothing of the raw record."""
+    keep = ('id', 'kind', 'source', 'target', 'class', 'program', 'exe', 'path', 'name', 'port', 'proto',
+            'first', 'last', 'permissive', 'why', 'fix', 'fix_kind', 'user', 'fixed_at')
+    out = {k: g.get(k) for k in keep if g.get(k) not in (None, '', 0, False)}
+    out['perms'] = ' '.join(g['perms'])
+    out['count'] = g['count']
+    return out
+
+
+def se_look_into(out, groups):
+    """se_check's part for the findings: the list, the counts, zigmon's local rules."""
+    out['look_at'] = time.time()
+    out['local'] = se_local_view(se_modules())
+    if groups is None:
+        out['findings'], out['counts'] = [], {'tool': False, 'fixable': 0, 'notbutton': 0}
+        return
+    counts = {k: 0 for k in SE_KINDS}
+    for g in groups:
+        counts[g['kind']] = counts.get(g['kind'], 0) + 1
+    counts['fixable'] = sum(counts[k] for k in SE_FIXABLE)
+    counts['tool'] = True
+    counts['total'] = len(groups)
+    shown = [g for g in groups if g['kind'] != 'allowed'][:SE_FIND_MOST]
+    out['findings'] = [se_finding_out(g) for g in shown]
+    counts['shown'] = len(out['findings'])
+    out['counts'] = counts
+
+
+def se_ids(r, most=64):
+    ids = r.get('ids')
+    if not isinstance(ids, list) or not 1 <= len(ids) <= most:
+        raise SeRefused('one finding id at least, %d at most' % most)
+    out = []
+    for x in ids:
+        if not isinstance(x, str) or not SE_ID_RE.match(x):
+            raise SeRefused('a finding id is 12 hex characters - the page sends nothing else')
+        if x not in out:
+            out.append(x)
+    return out
+
+
+# A request for a fix names finding ids and nothing else: what is put right is worked out here
+# from the audit log. A key of any other name - a rule, a path, a command - refuses it whole.
+SE_FIX_KEYS = frozenset(('do', 'ids', 'id', 'until', 'by', 'at', 'booleans', 'ports', 'facts'))
+
+
+def se_only_ids(r):
+    extra = sorted(str(k) for k in r if k not in SE_FIX_KEYS)
+    if extra:
+        raise SeRefused('a request names finding ids only - root works out every fix itself (%s refused)'
+                        % ', '.join(re.sub(r'[^A-Za-z0-9_-]', '', k)[:20] for k in extra[:4]))
+
+
+def se_by(r):
+    return re.sub(r'[^A-Za-z0-9 ._@()-]', '', str(r.get('by') or 'the command line'))[:60] or 'the command line'
+
+
+def se_fix(r):
+    """Put right what the ids name - each found again in the audit log, its fix worked out
+    again here. An id not found, or one not for a button, refuses the whole request: nothing is
+    done then. Works under enforcing too. -> (said, failed, ids done)"""
+    se_only_ids(r)
+    ids = se_ids(r)
+    mode = se_mode()
+    if mode not in ('Enforcing', 'Permissive'):
+        raise SeRefused('SELinux is %s here - nothing to put right' % (
+            'not on this machine' if mode == 'absent' else mode.lower()))
+    got = se_run(['ausearch', '-m', 'AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR', '-ts', 'boot'], 300, light=True)
+    if got is None:
+        raise SeRefused('ausearch is not on this machine (dnf install audit)')
+    fixed = se_fixed_read()
+    by_id = {g['id']: g for g in se_findings(got.stdout or '', fixed, se_ports())}
+    todo = []
+    for i in ids:
+        g = by_id.get(i)
+        if g is None:
+            raise SeRefused('finding %s is not in the audit log - look again (nothing was done)' % i)
+        if g['kind'] in ('fixed', 'allowed'):
+            continue
+        if g['kind'] not in SE_FIXABLE:
+            raise SeRefused('finding %s is not for a button: %s (nothing was done)' % (i, g['why']))
+        todo.append(g)
+    said, failed, done = [], [], []
+    for g in [x for x in todo if x['kind'] == 'boolean']:
+        name = g['boolean']
+        if not se_bool_ok(name, g['source']):           # the lists again, at the moment of it
+            failed.append('%s: the boolean %s is not one switched on from here' % (g['id'], name))
+            continue
+        got = se_run(['setsebool', '-P', name, 'on'], 300)
+        if got is None or got.returncode != 0:
+            failed.append('%s: setsebool -P %s 1: %s' % (g['id'], name, se_said(got)))
+            continue
+        said.append('%s: the boolean %s on (%s: %s -> %s %s)' % (g['id'], name, g['program'], g['source'],
+                                                                g['target'], g['class']))
+        done.append(g)
+    roots = se_our_paths()
+    for g in [x for x in todo if x['kind'] == 'label']:
+        target = se_relabel_target(g['path'], roots)
+        if not target or target != g.get('relabel'):
+            failed.append('%s: %s is not there any more' % (g['id'], g.get('relabel') or g['path']))
+            continue
+        got = se_run(['restorecon', '-R', '-v', target], 300)
+        if got is None or got.returncode != 0:
+            failed.append('%s: restorecon -R -v %s: %s' % (g['id'], target, se_said(got)))
+            continue
+        said.append('%s: %s labelled as the policy says (restorecon)' % (g['id'], target))
+        done.append(g)
+    for g in [x for x in todo if x['kind'] == 'port']:
+        kind = SE_PORT_FIX.get(g['source'])
+        if not kind or kind != g.get('port_type'):
+            failed.append('%s: no port type of its own for %s' % (g['id'], g['source']))
+            continue
+        owners = se_port_owners(se_ports(), g['proto'], g['port'])
+        if owners:
+            failed.append('%s: port %d/%s is %s\'s - never taken from another service' % (
+                g['id'], g['port'], g['proto'], ', '.join(owners)))
+            continue
+        # -a only, never -m: a port of another type is that service's
+        got = se_run(['semanage', 'port', '-a', '-t', kind, '-p', g['proto'], str(g['port'])], 300)
+        if got is None or got.returncode != 0:
+            failed.append('%s: semanage port -a %d/%s: %s' % (g['id'], g['port'], g['proto'], se_said(got)))
+            continue
+        said.append('%s: port %d/%s labelled %s' % (g['id'], g['port'], g['proto'], kind))
+        done.append(g)
+    new = [x for x in todo if x['kind'] == 'rule']
+    if new:
+        rules = se_local_rules()
+        before = list(rules)
+        added = []
+        for g in new:
+            if se_danger(g):                             # the lists again
+                failed.append('%s: %s' % (g['id'], se_danger(g)))
+                continue
+            if not any(x['id'] == g['id'] for x in rules):
+                rules.append({'id': g['id'], 'source': g['source'], 'target': g['target'], 'class': g['class'],
+                              'perms': list(g['perms']), 'why': '%s: %s' % (g['program'], g['why']),
+                              'program': g['program'], 'at': time.time(), 'by': se_by(r)})
+            added.append(g)
+        if added:
+            words = ['%s: rule %s' % (g['id'], se_rule_text(g)) for g in added]
+            put = []
+            try:
+                se_local_save(rules)
+                se_local_put(rules, put)
+                said.extend(words + put)
+                done.extend(added)
+            except (SeRefused, OSError) as e:
+                se_local_back(before)
+                failed.append('the local module could not be put in: %s' % str(e)[:300])
+    if done:
+        now = time.time()
+        for g in done:
+            fixed[g['id']] = {'at': now, 'kind': g['kind'], 'what': g['fix'][:300],
+                              'key': [g['source'], g['target'], g['class'], ' '.join(g['perms'])]}
+        se_fixed_write(fixed)
+    return said, failed, [g['id'] for g in done]
+
+
+def se_rule_drop(r):
+    """One of zigmon's local rules taken away (the last one: the module taken out)."""
+    se_only_ids(r)
+    ids = se_ids(r, most=1)
+    rules = se_local_rules()
+    gone = [x for x in rules if x['id'] == ids[0]]
+    if not gone:
+        raise SeRefused('zigmon\'s local module has no rule %s' % ids[0])
+    keep = [x for x in rules if x['id'] != ids[0]]
+    said = ['%s: rule %s taken away' % (ids[0], se_rule_text(gone[0]))]
+    se_local_save(keep)
+    try:
+        se_local_put(keep, said)
+    except (SeRefused, OSError):
+        se_local_back(rules)
+        raise
+    fixed = se_fixed_read()
+    if fixed.pop(ids[0], None) is not None:
+        se_fixed_write(fixed)                    # refused again from now on, it comes back
+    return said
 
 
 def se_restorecon(said):
@@ -5306,11 +6183,25 @@ def se_apply(bools, ports, said, mark=True):
 
 def se_do(r):
     do = r.get('do')
+    if do == 'look':
+        do = 'check'                    # a look is the check with the findings (5.55): the same
     left = []
     bools, ports = se_want_checked(r, left)
     said = list(left)
     if do == 'check':
         return se_check(r)
+    if do in ('fix', 'rule_drop'):
+        # what the page selected, by finding id only - every fix worked out here; works
+        # under enforcing too. Looked at again at once.
+        if do == 'fix':
+            said, failed, ids = se_fix(r)
+        else:
+            said, failed, ids = se_rule_drop(r), [], []
+        out = se_check(r)
+        out['said'] = said + ['could not: %s' % x for x in failed]
+        out['failed'] = failed
+        out['fixed_now'] = ids
+        return out
     if do == 'report':
         data = se_report_bytes(r)
         write_here(SE_REPORT_FILE, data)
@@ -5370,7 +6261,7 @@ def se_do(r):
         se_config_set('permissive')
         said.append('SELinux is permissive, and stays so after a restart')
     else:
-        raise SeRefused('check, prepare, enforce, permissive or report')
+        raise SeRefused('check, look, prepare, enforce, permissive, fix, rule_drop or report')
     out = se_check(r)
     out['said'] = said
     return out
@@ -5522,6 +6413,23 @@ def se_report_parts(r):
     parts['modules.txt'] = '==== zigmon\n' + '\n'.join(x for x in mods.splitlines() if 'zigmon' in x.lower()) + \
         '\n\n==== %s\n%s\n==== in the policy\n%s\n' % (SE_CIL, se_read(SE_CIL) or '(not there)',
                                                        se_read(SE_CIL + '.in-policy') or '(none put in yet)')
+    local_cil = os.path.join(se_local_dir(), SE_LOCAL + '.cil.in-policy')
+    parts['modules.txt'] += '\n==== %s (zigmon\'s local rules, put in from the card)\n%s\n' % (
+        SE_LOCAL, se_read(local_cil) or '(no local rule put in)')
+    # the whole machine (5.55): every process, boolean, port type and module, what was changed
+    # here, every listening socket - for whoever looks after the machine's policy, not zigmon's
+    # alone. The names of programs, never their arguments.
+    parts['os/processes.txt'] = se_out(['ps', '-eo', 'label,user,pid,ppid,comm'], 60, light=False, tool=False)
+    parts['os/booleans.txt'] = bools
+    parts['os/ports.txt'] = ports
+    full = se_out(['semodule', '-lfull'], 300)
+    parts['os/modules.txt'] = full if not full.startswith('(') and 'stderr' not in full[:200] else mods
+    local = []
+    for what in ('boolean', 'port', 'fcontext', 'login', 'user', 'module', 'permissive'):
+        local.append('==== semanage %s -l -C\n%s' % (what, se_out(['semanage', what, '-l', '-C'], 300)))
+    parts['os/local-changes.txt'] = '\n'.join(local)
+    parts['os/semanage-export.txt'] = se_out(['semanage', 'export'], 300)
+    parts['os/listening.txt'] = se_out(['ss', '-lntupZ'], 60, light=False, tool=False)
     parts['README.txt'] = (
         'zigmon - what SELinux says on this machine, for whoever writes zigmon\'s module (%s).\n'
         'Made %s. Nothing was changed to make it.\n\n'
@@ -5530,7 +6438,10 @@ def se_report_parts(r):
         'audit2why.txt   why; audit2allow.te: what would allow it - a hint, never to be loaded\n'
         'labels.txt      the labels of zigmon\'s files and what the policy says they should be\n'
         'processes.txt   the domains the programs run in; ports.txt, booleans.txt, modules.txt\n'
-        'system.txt      the system, the policy and the packages; zigmon.json: what zigmon uses\n\n'
+        'system.txt      the system, the policy and the packages; zigmon.json: what zigmon uses\n'
+        'os/             the whole machine: processes.txt (every process, its domain), booleans.txt,\n'
+        '                ports.txt, modules.txt, local-changes.txt (semanage ... -l -C),\n'
+        '                semanage-export.txt, listening.txt (ss -lntupZ)\n\n'
         'No password, key or token is in it: zigmon\'s own are blotted out wherever they turn up,\n'
         'and the audit records that hold a command line (PROCTITLE, EXECVE) are left out. The\n'
         'refusals still name the programs and files of others on this machine: look through\n'
@@ -5586,6 +6497,15 @@ def se_words(c):
     for g in d['groups'][:15]:
         lines.append('    %4dx %s -> %s %s { %s } %s' % (g['count'], g['source'], g['target'], g['class'],
                                                          g['perms'], g['what']))
+    n = c.get('counts') or {}
+    if n.get('tool'):
+        lines.append('  findings: %d can be put right, %d not for a button, %d not zigmon\'s (zigmon --selinux-look)'
+                     % (n.get('fixable', 0), n.get('notbutton', 0), n.get('other', 0)))
+    for f in c.get('findings') or []:
+        if f.get('kind') in SE_FIXABLE:
+            lines.append('    %s %-8s %s' % (f['id'], f['kind'], f.get('fix') or ''))
+    if (c.get('local') or {}).get('rules'):
+        lines.append('  zigmon\'s local rules (%s): %d' % (SE_LOCAL, len(c['local']['rules'])))
     if c.get('auditd') is False:
         lines.append('  FAIL auditd does not run')
     if c.get('ready'):
@@ -5631,8 +6551,13 @@ def se_cli(argv):
               '%s (%d kB)' % (path, len(data) >> 10))
         return 0
     step = 'check' if argv[0] == '--selinux-check' else (argv[1] if len(argv) > 1 else '')
+    ask = {}
+    if argv[0] in ('--selinux-fix', '--selinux-rule-drop'):
+        # finding ids only, as from the page: root finds each again and works out its fix
+        step = 'fix' if argv[0] == '--selinux-fix' else 'rule_drop'
+        ask = {'ids': [a for a in argv[1:] if not a.startswith('--')], 'by': 'root on the command line'}
     try:
-        c = se_do(dict(want, do=step))
+        c = se_do(dict(want, do=step, **ask))
     except Refused as e:
         print(json.dumps({'ok': False, 'said': str(e)}) if '--json' in argv else 'refused: %s' % e,
               file=sys.stdout if '--json' in argv else sys.stderr)
@@ -5645,7 +6570,7 @@ def se_cli(argv):
         print(se_words(c))
     if step == 'check':
         return 0 if c['mode'] in ('absent', 'Disabled') or not c['problems'] else 1
-    return 0
+    return 1 if c.get('failed') else 0
 
 
 # ---- the requests ---------------------------------------------------------------
@@ -5978,7 +6903,8 @@ def main(argv):
                         return 1
                 full_restore(path, parts, from_page=False, say=print)
             return 0
-        if argv[:1] in (['--selinux-check'], ['--selinux-do'], ['--selinux-report']):
+        if argv[:1] in (['--selinux-check'], ['--selinux-do'], ['--selinux-report'], ['--selinux-fix'],
+                        ['--selinux-rule-drop']):
             # SELinux, from the zigmon command as root: what the
             # configuration needs on stdin, checked here as the dashboard's is
             return se_cli(argv)

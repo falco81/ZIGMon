@@ -5504,6 +5504,49 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .se-err{margin:0;padding:8px 12px;border-radius:10px;background:var(--crit-bg);color:var(--crit);font-size:13px}
   .se-btns{margin-top:auto;padding-top:4px}
   .se-rep{margin:0 0 8px}
+  /* what SELinux refuses, sorted by what puts it right (5.55) */
+  .se-node.se-wide{max-width:none}
+  .sef{display:flex;flex-direction:column;gap:10px;min-width:0}
+  .sef-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:14px}
+  .sef-grp,.sef-local{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;min-width:0}
+  .sef-grp{border-left:3px solid var(--line);display:flex;flex-direction:column}
+  .sef-grp.sef-c-fix,.sef-grp.sef-c-ok{border-left-color:var(--ok)}
+  .sef-grp.sef-c-rule{border-left-color:var(--warn)}
+  .sef-grp.sef-c-bad{border-left-color:var(--crit)}
+  .sef-gh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;border-bottom:1px solid var(--line);
+          background:var(--panel2);font-size:13.5px}
+  .sef-gh input,.sef-lead input{accent-color:var(--info);width:15px;height:15px;margin:0;cursor:pointer}
+  .sef-n{font-size:11.5px;line-height:1;padding:3px 7px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--tx-dim)}
+  .sef-gw{color:var(--tx-dim);flex:1 1 240px;min-width:0}
+  .sef-dot{width:8px;height:8px;border-radius:50%;background:var(--tx-dim);flex:0 0 auto}
+  .sef-dot-bad{background:var(--crit)} .sef-dot-ok{background:var(--ok)}
+  .sef-row{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px}
+  .sef-row:last-child{border-bottom:0}
+  .sef-grp.sef-c-ok .sef-row{background:var(--ok-bg)}
+  .sef-grp.sef-c-ok .sef-avc{text-decoration:line-through;color:var(--ok)}
+  .sef-lead{flex:0 0 16px;display:flex;justify-content:center;padding-top:2px}
+  .sef-ic{font-size:13px;line-height:1.2} .sef-ic-ok{color:var(--ok)} .sef-ic-bad{color:var(--crit)} .sef-ic-grey{color:var(--tx-dim)}
+  .sef-m{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 auto}
+  .sef-l1{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;min-width:0}
+  .sef-avc{overflow-wrap:anywhere;font-size:12.5px}
+  .sef-l2{color:var(--tx-dim);overflow-wrap:anywhere}
+  .sef-l2 .mono{font-size:12px}
+  .sef-fix{display:flex;gap:6px;align-items:flex-start;min-width:0}
+  .sef-arrow{color:var(--tx-dim)}
+  .sef-fix code,.sef-rule{font-family:var(--mono,ui-monospace,monospace);font-size:12px;overflow-wrap:anywhere;min-width:0}
+  .sef-fix code{color:var(--info);background:var(--info-bg);border:1px solid rgba(88,166,255,.35);border-radius:6px;padding:1px 7px}
+  .sef-why{color:var(--tx-dim);overflow-wrap:anywhere}
+  .sef-why.bad{color:var(--crit)} .sef-why.ok{color:var(--ok)}
+  .sef-cnt{flex:0 0 auto;color:var(--tx-dim);font-size:12px}
+  .sef-put{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .sef-lrow{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 12px;border-bottom:1px solid var(--line)}
+  .sef-lrow:last-child{border-bottom:0}
+  .sef-lrow .sef-drop{flex:0 0 auto}
+  .se-conf{margin:6px 0 10px;padding-left:18px;display:flex;flex-direction:column;gap:8px;font-size:13px}
+  .se-conf code{font-family:var(--mono,ui-monospace,monospace);font-size:12px;overflow-wrap:anywhere}
+  @media (max-width:640px){
+    .sef-row{padding:8px 10px;gap:8px} .sef-lrow{flex-wrap:wrap} .sef-gw{flex-basis:100%}
+  }
 </style>
 </head>
 <body class="app-shell">
@@ -35846,7 +35889,7 @@ function drawConsoleSwitch(cs) {
    refused. The steps - made ready and permissive, what zigmon needs put in, enforcing,
    permissive again - are asked of root's helper; nothing happens by itself. While a step is
    asked and not done, the card asks again every two seconds. */
-var SE = {d: null, poll: null, rep: null, first: false};
+var SE = {d: null, poll: null, rep: null, first: false, off: {}};
 function loadSelinux(quiet) {
   var host = $('se-host');
   if (!host) return;
@@ -35933,6 +35976,205 @@ function seReport(btn) {
     SE.rep = {words: String((e && e.message) || e), bad: true};
   }).then(function () { zbusy(btn, false); drawSelinux(); });
 }
+/* ---- What SELinux refuses, sorted by what puts it right (5.55) ----------------------------
+   Root reads every refusal since the machine started with the records of its event, puts each
+   kind of it to audit2why and sorts it: a boolean, a label, a port, a rule of zigmon's (each
+   ticked, put in by "Put in what is selected"), not for a button (red, with why), not zigmon's
+   (grey). The page sends only the ids; root finds them again and works out every fix itself.
+   zigmon's local rules are listed with "Take it away". */
+var SE_KINDS = [
+  {k: 'fixed', t: 'Put right just now', c: 'ok', w: ''},
+  {k: 'boolean', t: 'A boolean', c: 'fix', w: 'audit2why names a boolean of the program’s own that allows it - switched on for good (setsebool -P).'},
+  {k: 'label', t: 'A label', c: 'fix', w: 'The file is not labelled as the policy says it should be - restorecon puts it right.'},
+  {k: 'port', t: 'A port', c: 'fix', w: 'A port with no type of its own - given the type of the program that uses it.'},
+  {k: 'rule', t: 'A rule of zigmon’s', c: 'rule', w: 'Nothing of the policy allows it: exactly this, and nothing more, goes into zigmon’s own local module (zigmon_local).'},
+  {k: 'notbutton', t: 'Not for a button', c: 'bad', w: 'zigmon’s, but what it would take is too much to allow from here - each says why, and what an admin could look at.'},
+  {k: 'other', t: 'Not zigmon’s', c: 'grey', w: 'Other programs of this machine - shown, never put right here.'}
+];
+var SE_FIXABLE = {boolean: 1, label: 1, port: 1, rule: 1};
+var SE_KIND_WORD = {boolean: 'boolean', label: 'label', port: 'port', rule: 'rule'};
+function seAgo(ts) {
+  var s = Math.max(0, Date.now() / 1000 - Number(ts || 0));
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + ' min ago';
+  if (s < 172800) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' days ago';
+}
+function seWhere(f) {
+  return f.path || (f.port ? 'port ' + f.port + '/' + (f.proto || 'tcp') : f.name || '');
+}
+function seAvc(f) { return f.source + ' → ' + f.target + ' ' + f['class'] + ' { ' + f.perms + ' }'; }
+function seSelected(s) {
+  return ((s || {}).findings || []).filter(function (f) { return SE_FIXABLE[f.kind] && !SE.off[f.id]; });
+}
+function seAskIds(action, payload, b) {
+  if (b) zbusy(b, true);
+  return post('selinux-do', Object.assign({action: action}, payload)).then(function (x) {
+    if (b) zbusy(b, false);
+    if (x.message) toast(x.message, true);
+    SE.d = x;
+    drawSelinux();
+    sePoll(true);
+    return x;
+  }, function (e) { if (b) zbusy(b, false); zoops(e); });
+}
+function seFindRow(f, K, busy) {
+  var r = el('div', 'sef-row');
+  r.dataset.id = f.id;
+  var lead = el('span', 'sef-lead');
+  if (SE_FIXABLE[f.kind]) {
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = !SE.off[f.id];
+    cb.disabled = busy;
+    cb.setAttribute('aria-label', 'put this one in');
+    cb.onchange = function () { if (cb.checked) delete SE.off[f.id]; else SE.off[f.id] = 1; drawSelinux(); };
+    lead.appendChild(cb);
+  } else {
+    lead.appendChild(el('span', 'sef-ic sef-ic-' + K.c, {ok: '✓', bad: '⊗', grey: '⦸'}[K.c] || '•'));
+  }
+  r.appendChild(lead);
+  var m = el('div', 'sef-m');
+  var l1 = el('div', 'sef-l1');
+  l1.appendChild(el('b', 'sef-prog', f.program || '?'));
+  l1.appendChild(el('span', 'mono sef-avc', seAvc(f)));
+  m.appendChild(l1);
+  var l2 = el('div', 'sef-l2 small');
+  var where = seWhere(f);
+  if (where) l2.appendChild(el('span', 'mono', where + '  '));
+  l2.appendChild(el('span', '', (f.count > 1 ? f.count + ' times' : 'once') + ', last ' + seAgo(f.last) +
+    (f.permissive ? ' (permissive: let through, written down)' : '')));
+  m.appendChild(l2);
+  if (f.fix) {
+    var l3 = el('div', 'sef-fix');
+    l3.appendChild(el('span', 'sef-arrow', '→'));
+    l3.appendChild(el('code', '', f.fix));
+    m.appendChild(l3);
+  }
+  if (f.why) m.appendChild(el('div', 'sef-why small' + (f.kind === 'notbutton' ? ' bad' : f.kind === 'fixed' ? ' ok' : ''), f.why));
+  r.appendChild(m);
+  r.appendChild(el('span', 'sef-cnt mono', (f.count || 1) + '×'));
+  return r;
+}
+function seFindings(box, n, s) {
+  var finds = s.findings || [];
+  var counts = s.counts || {};
+  var busy = !!n.pending;
+  var wrap = el('div', 'sef');
+  wrap.id = 'se-find';
+  var hd = el('div', 'sef-h');
+  hd.appendChild(el('b', '', 'What SELinux refuses'));
+  hd.appendChild(el('span', 'muted small', 'since the machine started'));
+  wrap.appendChild(hd);
+  if (counts.tool === false) {
+    wrap.appendChild(el('p', 'note small', 'What SELinux refused cannot be read: ausearch is not on this machine (dnf install audit).'));
+    box.appendChild(wrap);
+    return;
+  }
+  if (!finds.length) {
+    wrap.appendChild(el('p', 'note small sef-none', 'Nothing refused since the machine started' +
+      (counts.allowed ? ' - ' + counts.allowed + ' refused before and allowed now, not counted.' : '.')));
+  }
+  SE_KINDS.forEach(function (K) {
+    var rows = finds.filter(function (f) { return f.kind === K.k; });
+    if (!rows.length) return;
+    var g = el('div', 'sef-grp sef-c-' + K.c);
+    g.dataset.kind = K.k;
+    var gh = el('div', 'sef-gh');
+    if (SE_FIXABLE[K.k]) {
+      var all = el('input');
+      all.type = 'checkbox';
+      all.className = 'sef-all';
+      var on = rows.filter(function (f) { return !SE.off[f.id]; }).length;
+      all.checked = on === rows.length;
+      all.indeterminate = on > 0 && on < rows.length;
+      all.disabled = busy;
+      all.setAttribute('aria-label', 'select all of ' + K.t);
+      all.onchange = function () {
+        rows.forEach(function (f) { if (all.checked) delete SE.off[f.id]; else SE.off[f.id] = 1; });
+        drawSelinux();
+      };
+      gh.appendChild(all);
+    } else {
+      gh.appendChild(el('span', 'sef-dot sef-dot-' + K.c));
+    }
+    gh.appendChild(el('b', '', K.t));
+    gh.appendChild(el('span', 'sef-n', String(rows.length)));
+    if (K.w) gh.appendChild(el('span', 'sef-gw small', K.w));
+    g.appendChild(gh);
+    rows.forEach(function (f) { g.appendChild(seFindRow(f, K, busy)); });
+    wrap.appendChild(g);
+  });
+  var fixable = finds.filter(function (f) { return SE_FIXABLE[f.kind]; });
+  if (fixable.length) {
+    var sel = seSelected(s);
+    var bar = el('div', 'sef-put');
+    var put = cmdButton('Put in what is selected (' + sel.length + ')', 'shield', 'primary');
+    put.id = 'se-put';
+    put.disabled = busy || !sel.length;
+    put.onclick = function () { seConfirmFix(n, seSelected(s), put); };
+    bar.appendChild(put);
+    bar.appendChild(el('span', 'muted small', 'Under enforcing too - nothing has to be switched off for it. What was put right is looked at again at once.'));
+    wrap.appendChild(bar);
+  }
+  box.appendChild(wrap);
+}
+function seConfirmFix(n, sel, put) {
+  if (!sel.length) return;
+  var ids = sel.map(function (f) { return f.id; });
+  zmodal('Put in what is selected on ' + (n.node || 'this machine') + '?', function (body) {
+    body.appendChild(el('p', 'note', 'Root does exactly this - nothing else - and looks again at once:'));
+    var ul = el('ul', 'se-conf');
+    ul.id = 'se-conf';
+    sel.forEach(function (f) {
+      var li = el('li', '');
+      li.appendChild(el('b', '', SE_KIND_WORD[f.kind] + ' '));
+      li.appendChild(el('code', '', f.fix));
+      li.appendChild(el('br'));
+      li.appendChild(el('span', 'small muted', (f.program || '?') + ': ' + seAvc(f) + (seWhere(f) ? '  ' + seWhere(f) : '')));
+      ul.appendChild(li);
+    });
+    body.appendChild(ul);
+    body.appendChild(el('p', 'note small', (sel.some(function (f) { return f.kind === 'rule'; })
+      ? 'The rules go into zigmon’s own local module zigmon_local - each can be taken away again below. ' : '') +
+      'Every step is written in Events. It works under enforcing too.'));
+  }, [{words: 'No, leave it', close: true},
+      {words: 'Put it in', cls: 'primary', close: true, once: true, icon: 'check',
+       go: function () { seAskIds('fix', {ids: ids}, put); }}], 'narrow');
+}
+function seLocalRules(box, n, s) {
+  var loc = s.local || {};
+  var rules = loc.rules || [];
+  if (!rules.length) return;
+  var lr = el('div', 'sef-local');
+  lr.id = 'se-local';
+  var h = el('div', 'sef-gh');
+  h.appendChild(el('b', '', 'zigmon’s local rules'));
+  h.appendChild(el('span', 'sef-n', String(rules.length)));
+  h.appendChild(el('span', 'sef-gw small', loc.in_policy === false ? 'zigmon_local - NOT in the policy: put one in again, or take them away' : 'zigmon_local, in the policy'));
+  lr.appendChild(h);
+  rules.forEach(function (x) {
+    var row = el('div', 'sef-lrow');
+    var t = el('div', 'sef-m');
+    t.appendChild(el('code', 'sef-rule', x.rule));
+    t.appendChild(el('span', 'small muted', (x.why || '') + ' - put in ' + (x.at ? new Date(x.at * 1000).toLocaleString() : '?') + (x.by ? ' by ' + x.by : '')));
+    row.appendChild(t);
+    var drop = cmdButton('Take it away', 'cancel', 'small');
+    drop.className += ' sef-drop';
+    drop.dataset.id = x.id;
+    drop.disabled = !!n.pending;
+    drop.onclick = function () {
+      zconfirm('Take this rule away on ' + (n.node || 'this machine') + '?',
+        'Root takes ' + x.rule + ' out of zigmon’s local module (zigmon_local) and puts the module in again' +
+        (rules.length === 1 ? ' - it is the last rule: the module goes (semodule -r zigmon_local)' : '') +
+        '. Refused again from then on, it comes back on this card.',
+        'Take it away', function () { seAskIds('rule_drop', {id: x.id}, drop); });
+    };
+    row.appendChild(drop);
+    lr.appendChild(row);
+  });
+  box.appendChild(lr);
+}
 function seModeWords(m) {
   return {Enforcing: 'enforcing', Permissive: 'permissive', Disabled: 'disabled', absent: 'not on this machine'}[m] || 'not looked at yet';
 }
@@ -35975,7 +36217,8 @@ function drawSelinux() {
 function seNode(n) {
   var s = n.state || {};
   var m = s.mode || '';
-  var box = el('div', 'se-node se-' + (m || 'unknown').toLowerCase());
+  var box = el('div', 'se-node se-' + (m || 'unknown').toLowerCase() +
+    (s.findings && (m === 'Permissive' || m === 'Enforcing') ? ' se-wide' : ''));
   box.id = 'se-node';
   var head = el('div', 'se-head');
   var nm = el('div', 'se-name');
@@ -36063,17 +36306,26 @@ function seNode(n) {
     var known = s.module !== false && !(s.labels || []).some(function (x) { return x.ok === false; }) &&
       !(s.booleans || []).some(function (x) { return x.on === false; }) &&
       !(s.ports || []).some(function (x) { return x.labelled === false; });
-    if (d.total && known) {
+    /* the findings below say what each one is and put it right (5.55); without them (a helper
+       of before) the hint as it was */
+    if (d.total && known && !s.findings) {
       var hint = el('div', 'se-verdict bad');
       hint.appendChild(el('b', '', 'zigmon does not know this one yet'));
       hint.appendChild(el('span', 'small', 'Everything zigmon knows it needs is in place - what was refused is something its module does not cover yet. "Put in what zigmon needs" changes nothing for it: download the report (top right) and send it, so that the module learns it.'));
       box.appendChild(hint);
     }
+    if (s.findings) {
+      seFindings(box, n, s);
+      seLocalRules(box, n, s);
+    }
+    var fc = s.counts || {};
     var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'ready' : 'bad'));
     verdict.id = 'se-verdict';
     verdict.appendChild(el('b', '', m === 'Enforcing' ? (probs.length ? 'Enforcing - but something is not as zigmon needs it' : 'Enforcing - and everything zigmon needs is there')
       : s.ready ? 'Ready for enforcing' : 'Not ready for enforcing yet'));
-    if (m === 'Permissive' && !s.ready) verdict.appendChild(el('span', 'small', 'Let it run a day or two as it is used - sign-ins, the pages, the one-tap links, a backup, an upgrade - then look again.'));
+    if (m === 'Permissive' && !s.ready) verdict.appendChild(el('span', 'small', (fc.fixable ? fc.fixable + ' thing(s) SELinux refused can be put right here - "Put in what is selected" above. ' : '') +
+      (fc.notbutton ? fc.notbutton + ' thing(s) are not for a button - each says why; the report is for whoever looks after zigmon’s module. ' : '') +
+      'Let it run a day or two as it is used - sign-ins, the pages, the one-tap links, a backup, an upgrade - then look again.'));
     if (m === 'Enforcing' && probs.length) verdict.appendChild(el('span', 'small', probs.slice(0, 3).join('; ')));
     box.appendChild(verdict);
   }
