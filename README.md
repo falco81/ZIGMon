@@ -2083,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.53.3**
+Current version: **5.54.0**
+
+5.54.0 — the pages follow an upgrade while everything restarts.
+
+* Whoever runs an upgrade - root's helper, or `install.sh --upgrade` by hand -
+  writes how far it is into one small file beside the pages
+  (`.upgrade.json`, never served by nginx): running step N of M, done, or
+  failed with the reason; a killed or stopped run ends as failed, never
+  running for ever. A write that fails never stops an upgrade.
+* PHP reads it straight from disk: while the daemon does not answer during an
+  upgrade, the pages get "being upgraded" instead of "not answering", and
+  `/api/healthz` says maintenance. Without a fresh file everything is exactly
+  as before.
+* The page: a band under the header with the progress, the step and how long
+  it has not answered; "In maintenance" instead of red errors; the sign-in
+  page shows the band too. At the end the page loads the new version once by
+  itself - not while something is being typed or not saved ("Load it again"
+  then). A failed upgrade: a red band with the reason and a way to Upgrades,
+  closed once per upgrade.
+
+`test/review554_upgradeui.py`; these checks fail on 5.53.3.
 
 5.53.3 — mDNS answers are let in.
 
