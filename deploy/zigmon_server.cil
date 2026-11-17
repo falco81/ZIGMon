@@ -26,3 +26,26 @@
 (optional zigmon_server_systemd_runtime
     (allow init_t httpd_var_run_t (dir (getattr setattr search open read)))
     (allow init_t httpd_var_run_t (file (getattr setattr))))
+
+; zigmon.service runs with NoNewPrivileges=yes. A program the daemon runs that has a domain of
+; its own is started in it by a transition - which NoNewPrivileges forbids unless the policy
+; says that transition may go (nnp_transition, nosuid_transition): under enforcing the program
+; would not run at all ("unconfined_service_t -> chronyc_t process2 { nnp_transition }" was
+; refused so to another application of the same shape). Only the transition, only into the
+; domains of the tools the daemon really runs, each in a block of its own (a policy without
+; one of the types still takes the rest):
+;   chronyc     the version of chrony (Settings - About - the software here)
+;   iptables    its version (the same list)
+;   ssh, scp, sftp   the router and the server in front (ssh), backups to SFTP and SCP
+;               destinations, the version of OpenSSH
+;   ssh-keygen  the key made for the router, the server in front and the backups
+; Settings - Security - SELinux says what else is refused, and puts a narrow rule of it into
+; zigmon's local module (zigmon_local) when asked.
+(optional zigmon_server_nnp_chronyc
+    (allow unconfined_service_t chronyc_t (process2 (nnp_transition nosuid_transition))))
+(optional zigmon_server_nnp_iptables
+    (allow unconfined_service_t iptables_t (process2 (nnp_transition nosuid_transition))))
+(optional zigmon_server_nnp_ssh
+    (allow unconfined_service_t ssh_t (process2 (nnp_transition nosuid_transition))))
+(optional zigmon_server_nnp_ssh_keygen
+    (allow unconfined_service_t ssh_keygen_t (process2 (nnp_transition nosuid_transition))))

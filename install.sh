@@ -1918,13 +1918,21 @@ do_uninstall() {
     run rm -f /etc/profile.d/zz-zigmon-console.sh /etc/zigmon-console-login "$CONSOLE_SYSCTL"
     run rm -f "$SYSTEM_STAMP"
     run rm -f "$UNIT_FILE" "$LOGROTATE_FILE" "$BIN_LINK"
-    # zigmon's SELinux module goes with it; the mode, the booleans and the
-    # ports are the machine's and stay as they are
+    # zigmon's SELinux modules go with it - its own and the local rules put in
+    # from Settings - Security - SELinux (zigmon_local); the mode, the booleans
+    # and the ports are the machine's and stay as they are
     if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="zigmon_server"{f=1} END{exit !f}'; then
         if run semodule -r zigmon_server; then
             good "SELinux: zigmon's module (zigmon_server) taken out of the policy"
         else
             warn "SELinux: zigmon's module could not be taken out: semodule -r zigmon_server"
+        fi
+    fi
+    if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="zigmon_local"{f=1} END{exit !f}'; then
+        if run semodule -r zigmon_local; then
+            good "SELinux: zigmon's local rules (zigmon_local) taken out of the policy"
+        else
+            warn "SELinux: zigmon's local rules could not be taken out: semodule -r zigmon_local"
         fi
     fi
     run rm -rf "$LIB_DIR" "$WEB_DIR"
