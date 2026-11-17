@@ -2083,7 +2083,30 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.54.0**
+Current version: **5.55.0**
+
+5.55.0 — SELinux: everything it refuses, sorted by what puts it right.
+
+* Settings - Security - SELinux, "What SELinux refuses": every refusal since
+  the machine started, read with the program, the path or the port, grouped,
+  put to audit2why and sorted - a boolean, a label, a port, a rule of
+  zigmon's own (a second module, zigmon_local, each rule optional and
+  removable), not for a button (with why: security-sensitive targets,
+  executing, capabilities, writes to shared types, another service's port),
+  not zigmon's. "Put in what is selected" lists exactly what root will do
+  first; the page sends only the findings' ids and root works out every fix
+  itself from the audit log. Dangerous booleans, other services' ports and
+  paths outside zigmon's are never touched. Works under enforcing too.
+* zigmon_server lets the tools zigmon runs from its service (chronyc,
+  iptables, ssh/scp/sftp, ssh-keygen) start in their own domain under
+  NoNewPrivileges.
+* The report gains the whole machine (os/: processes, booleans, ports,
+  modules, local changes, semanage export, listening sockets) - still without
+  zigmon's passwords and tokens. A notice when something can be put right.
+* `zigmon --selinux-look`, `--selinux-fix ID... | --all`, `--selinux-rules
+  [--take-away ID]`, and a SELinux menu in the console.
+
+`test/review555_selinux2.py`; these checks fail on 5.54.0.
 
 5.54.0 — the pages follow an upgrade while everything restarts.
 
