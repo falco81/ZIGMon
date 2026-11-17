@@ -20823,12 +20823,19 @@ class Daemon(object):
                 and str(kept.get('stamp') or '') != __version__:
             self.notice_clear('root-parts', 'taken back')
         force = bool(self.__dict__.pop('_parts_force', False))
+        # (5.54) not judged while an upgrade goes on - also one run by hand,
+        # known only from the file beside the pages - and judged again at once
+        # when it is over: install.sh has written its facts by then
+        light = self.upgrade_state_light()
+        if self.__dict__.get('_upgrade_light_was') and not light:
+            force = True
+        self._upgrade_light_was = light
         if force or time.time() - float(self.__dict__.get('_parts_at') or 0) >= self.ROOT_PARTS_EVERY_S:
             self._parts_at = time.time()
             got = None
             # Look again (force) looks at once, the five minutes after a start too
             if (force or time.time() - float(getattr(self, 'started', 0) or 0) >= self.ROOT_PARTS_SETTLE_S) \
-                    and not self.upgrade_state_light():
+                    and not light:
                 got = self.root_parts_check()
             if got and got.get('stale'):
                 self.notice_raise(
@@ -20849,9 +20856,27 @@ class Daemon(object):
     ROOT_PARTS_SETTLE_S = float(os.environ.get('ZIGMON_ROOT_PARTS_SETTLE_S') or 300)
 
     def upgrade_state_light(self):
-        """An upgrade going on, read from its status alone."""
+        """An upgrade going on, read from its status alone - or (5.54) from the
+        file beside the pages, which install.sh --upgrade writes also when it
+        is run by hand, with no request through the dashboard."""
         st = self.upgrade_status()
-        return st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800
+        if st.get('state') == 'running' and time.time() - float(st.get('at') or 0) < 1800:
+            return True
+        return self.upgrade_pages_running()
+
+    # (5.54) where root's helper and install.sh write how far an upgrade is, for the pages
+    PAGES_UPGRADE_FILE = os.environ.get('ZIGMON_PAGES_UPGRADE_FILE') or '/var/www/zigmon/.upgrade.json'
+
+    def upgrade_pages_running(self):
+        """Whether the file beside the pages says an upgrade runs (written in
+        the last 30 min, not in the future). Read only; anything odd is no."""
+        try:
+            with open(self.PAGES_UPGRADE_FILE, 'rb') as f:
+                got = json.loads(f.read(8192).decode('utf-8', 'replace'))
+            at = float(got.get('at') or 0) if isinstance(got, dict) else 0.0
+            return bool(at) and got.get('state') == 'running' and -5 <= time.time() - at < 1800
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
 
     def root_parts_check(self):
         """Whether the parts root installs are as install.sh of this version

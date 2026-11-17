@@ -76,7 +76,7 @@ if [[ -t 1 ]]; then
 else
     C_HEAD=""; C_OK=""; C_WARN=""; C_BAD=""; C_DIM=""; C_OFF=""
 fi
-step()  { printf '\n%s==> %s%s\n' "$C_HEAD" "$1" "$C_OFF"; }
+step()  { printf '\n%s==> %s%s\n' "$C_HEAD" "$1" "$C_OFF"; [[ -z "${UPG_ON:-}" ]] || upgrade_step "$1"; }
 say()   { printf '    %s\n' "$1"; }
 note()  { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
 good()  { printf '    %s%s%s\n' "$C_OK" "$1" "$C_OFF"; }
@@ -155,6 +155,134 @@ confirm() {      # confirm "question" [default y|n]
     answer="${answer:-$default}"
     [[ "$answer" =~ ^[Yy] ]]
 }
+
+# ---- (5.54) how far an upgrade is, for the pages ----------------------------
+# During --upgrade zigmon restarts, and then nginx and PHP: the pages would say
+# "not answering" right when they should say "being upgraded, wait". So each
+# step is written to one small file beside the pages, which PHP reads from the
+# disk without asking zigmon: $WEB_DIR/.upgrade.json - a dot name, which nginx
+# never serves (location ~ /\. { deny all; }); root's, 0644, written to a
+# temporary file and renamed over it, never half written. Nothing secret in it.
+# Started by root's upgrade helper (deploy/zigmon_upgrade.py) the numbering
+# goes on from the helper's own parts (ZIGMON_UPGRADE_PRE) and the end is the
+# helper's to say; run by hand, this says "done" itself. A run that fails, is
+# stopped with Ctrl-C or killed (INT, HUP, TERM) ends as "failed" from the
+# EXIT trap - never "running" for ever. Writing it never fails an upgrade: a
+# write that does not go is left out.
+UPG_ON=""; UPG_ENDED=""; UPG_PART=0; UPG_PARTS=0; UPG_PRE=0; UPG_POST=0
+UPG_ID=""; UPG_STARTED=0; UPG_FROM=""; UPG_BY=""; UPG_DOWN=false; UPG_WORDS=""
+
+upgrade_text() {         # $1 made the inside of a JSON string: control characters a space, cut to $2 bytes
+    local s=""
+    s="$(printf '%s' "$1" | LC_ALL=C tr '\001-\037\177' ' ' | head -c "${2:-160}")" || true
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+upgrade_tell() {         # upgrade_tell running|done|failed "words" ["what went wrong"]
+    [[ -n "$UPG_ON" ]] || return 0
+    {
+        local dir="$WEB_DIR" tmp=""
+        [[ -d "$dir" && ! -L "$dir" ]] || return 0
+        tmp="$(mktemp "$dir/.upgrade.json.XXXXXX" 2>/dev/null)" || return 0
+        if printf '{"state":"%s","id":"%s","version":"%s","from":"%s","by":"%s","part":%d,"parts":%d,"words":"%s","started":%d,"at":%d,"said":"%s","downgrade":%s}\n' \
+                "$1" "$UPG_ID" "$VERSION" "$UPG_FROM" "$(upgrade_text "$UPG_BY" 100)" "$UPG_PART" "$UPG_PARTS" \
+                "$(upgrade_text "${2:-}" 160)" "$UPG_STARTED" "$(date +%s)" "$(upgrade_text "${3:-}" 400)" \
+                "$UPG_DOWN" > "$tmp" 2>/dev/null \
+            && chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$dir/.upgrade.json" 2>/dev/null; then
+            :
+        else
+            rm -f "$tmp" 2>/dev/null
+        fi
+    } || true
+    return 0
+}
+
+upgrade_step() {         # from step(): one part more
+    [[ -n "$UPG_ON" ]] || return 0
+    UPG_PART=$((UPG_PART + 1))
+    (( UPG_PART + UPG_POST <= UPG_PARTS )) || UPG_PARTS=$((UPG_PART + UPG_POST))
+    UPG_WORDS="$1"
+    upgrade_tell running "$1"
+}
+
+upgrade_parts_count() {  # the steps do_upgrade takes on this machine (step() calls; cli_gate adds its own)
+    local n=12           # preflight, program, Python, systemd, helpers, clock, console, console at login,
+                         # backup tools, starting, checking, what changed in deploy/
+    if [[ -d "$SELINUX_ETC" ]] || command -v getenforce >/dev/null 2>&1; then n=$((n + 1)); fi
+    if [[ -n "$WITH_WEB" && -d "$WEB_DIR" ]]; then n=$((n + 1)); fi                     # Dashboard files
+    if [[ -n "$WITH_WEB" && -f /etc/php-fpm.d/www.conf ]]; then n=$((n + 1)); fi       # PHP
+    printf '%d' "$n"
+}
+
+upgrade_watch() {        # upgrade_watch VERSION-BEFORE: from here on the pages follow it
+    [[ -z "$DRY_RUN" ]] || return 0
+    UPG_ID="$(printf '%s' "${ZIGMON_UPGRADE_ID:-}" | tr -cd 'A-Za-z0-9' | head -c 64)" || true
+    [[ -n "$UPG_ID" ]] || UPG_ID="cli$(date +%s)$$"
+    UPG_STARTED="${ZIGMON_UPGRADE_STARTED:-}"
+    [[ "$UPG_STARTED" =~ ^[0-9]{1,12}$ ]] || UPG_STARTED="$(date +%s)"
+    UPG_PRE="${ZIGMON_UPGRADE_PRE:-0}"; [[ "$UPG_PRE" =~ ^[0-9]{1,2}$ ]] || UPG_PRE=0
+    UPG_POST="${ZIGMON_UPGRADE_POST:-0}"; [[ "$UPG_POST" =~ ^[0-9]{1,2}$ ]] || UPG_POST=0
+    UPG_FROM="${ZIGMON_UPGRADE_FROM:-${1:-}}"
+    [[ "$UPG_FROM" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || UPG_FROM=""
+    if [[ -n "${ZIGMON_UPGRADE_PAGES_BY:-}" ]]; then
+        UPG_BY="$ZIGMON_UPGRADE_PAGES_BY"
+    elif [[ -n "${ZIGMON_UPGRADE_FROM_PAGES:-}" ]]; then
+        UPG_BY="${ZIGMON_UPGRADE_BY:-somebody} on the dashboard"
+    else
+        UPG_BY="${SUDO_USER:-root} on the command line"
+    fi
+    UPG_DOWN=false
+    if [[ -n "${ZIGMON_UPGRADE_DOWNGRADE:-}" ]]; then
+        UPG_DOWN=true
+    elif [[ -n "$UPG_FROM" && "$UPG_FROM" != "$VERSION" ]] \
+            && [[ "$(printf '%s\n%s\n' "$UPG_FROM" "$VERSION" | sort -V | head -n 1)" == "$VERSION" ]]; then
+        UPG_DOWN=true    # by hand, to an older version than the one there
+    fi
+    UPG_PART=$UPG_PRE
+    UPG_PARTS=$((UPG_PRE + $(upgrade_parts_count) + UPG_POST))
+    UPG_ON="yes"
+    trap 'upgrade_exit $?' EXIT
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
+    [[ "$UPG_PRE" -gt 0 ]] || upgrade_tell running "install.sh --upgrade starts"
+}
+
+upgrade_finish() {       # the last line of do_upgrade: done - unless root's helper says it
+    [[ -n "$UPG_ON" && -z "$UPG_ENDED" ]] || return 0
+    UPG_ENDED="yes"
+    [[ "$UPG_POST" -gt 0 ]] || upgrade_tell done "zigmon $VERSION runs"
+    return 0
+}
+
+upgrade_exit() {         # the EXIT trap: an end nobody said is a failure
+    local rc="${1:-1}"
+    [[ -n "$UPG_ON" && -z "$UPG_ENDED" ]] || return 0
+    UPG_ENDED="yes"
+    if [[ "$rc" == 0 ]]; then
+        [[ "$UPG_POST" -gt 0 ]] || upgrade_tell done "zigmon $VERSION runs"
+        return 0
+    fi
+    local how="exit $rc" said
+    case "$rc" in
+        130) how="stopped with Ctrl-C, exit 130" ;;
+        129) how="its terminal went away, exit 129" ;;
+        143) how="stopped by SIGTERM, exit 143" ;;
+    esac
+    said="install.sh --upgrade stopped ($how) at step $UPG_PART${UPG_WORDS:+ ($UPG_WORDS)}"
+    if [[ "$UPG_POST" -gt 0 && "$rc" != 130 && "$rc" != 129 && "$rc" != 143 ]]; then
+        # root's helper puts the version before back and then says how it ended
+        upgrade_tell running "$said - root puts ${UPG_FROM:-the version before} back"
+    elif [[ "$UPG_POST" -gt 0 ]]; then
+        upgrade_tell failed "$UPG_WORDS" "$said"
+    else
+        upgrade_tell failed "$UPG_WORDS" "$said - what it said is on the command line it was run on; zigmon may be half put in, run it again"
+    fi
+    return 0
+}
+# ---- (5.54) end -------------------------------------------------------------
 
 usage() {
     cat <<EOF
@@ -1531,6 +1659,7 @@ cli_gate() {
     if [[ -n "${ZIGMON_UPGRADE_FROM_PAGES:-}" ]]; then
         fail "refused from the dashboard: $said"
     fi
+    [[ -z "${UPG_ON:-}" ]] || UPG_PARTS=$((UPG_PARTS + 1))  # (5.54) a step more than counted
     step "This version is put in on the command line"
     warn "$said"
     good "this is the command line: going on"
@@ -1577,6 +1706,7 @@ do_upgrade() {
     if [[ -f "$LIB_DIR/zigmon.py" ]]; then
         had="$(sed -n "s/^__version__ = '\(.*\)'/\1/p" "$LIB_DIR/zigmon.py" | head -n 1)"
     fi
+    upgrade_watch "$had"     # 5.54: the pages follow it, a part per step
     cli_gate                 # 5.44: before anything is changed
     preflight
     install_program
@@ -1774,6 +1904,7 @@ MPATCH
     start_service
     verify
     report_deploy_changes "$had"
+    upgrade_finish           # 5.54: done (or root's helper says it)
 }
 
 do_uninstall() {

@@ -236,12 +236,35 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/status');
         exit;
     }
+    if ($what === 'upgrade-state') {
+        // (5.54) how far an upgrade is, from the file beside these pages -
+        // answered without the daemon, which is what restarts in the middle
+        // of one; who asked and why it failed only to somebody signed in
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'error' => 'upgrade-state is a GET']);
+            exit;
+        }
+        echo json_encode(zigmon_upgrade_state(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
     if ($what === 'health') {
         zigmon_relay('/api/health');
         exit;
     }
     if ($what === 'healthz') {
         // otp's /healthz: 200 in service, 503 in maintenance - the code says it
+        // (5.54) and while an upgrade goes on, said by its file: maintenance
+        // too, also when the daemon does not answer or was upgraded by hand
+        $zigmon_up = zigmon_upgrading();
+        if ($zigmon_up !== null && $zigmon_up['state'] === 'running') {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store');
+            zigmon_upgrade_answer('/api/healthz', $zigmon_up);
+            exit;
+        }
         zigmon_relay('/api/healthz');
         exit;
     }
@@ -1595,11 +1618,49 @@ function h($value): string
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+// (5.54) An upgrade going on, from the file beside these pages (see
+// zigmon_upgrading). With nobody signed in and the daemon not answering in
+// the middle of one, this page cannot know whether the house shows itself or
+// wants a sign-in: it shows the sign-in page with the upgrade on it, which
+// loads itself again once the daemon answers - and the right page with it.
+$upg_now = zigmon_upgrading();
+$upg_signin = $whoami === null && $upg_now !== null && $upg_now['state'] === 'running' && zigmon_session() === '';
+
+/** (5.54) The band of an upgrade on the sign-in page, drawn here from the
+ *  file: every word escaped. Who asked and why it failed are not said to
+ *  somebody not signed in. */
+function zigmon_signin_upband(?array $u): string
+{
+    if ($u === null || $u['state'] === 'done') {
+        return '<div class="upband" id="upband" hidden></div>';
+    }
+    $u = zigmon_upgrade_shown($u, false);
+    $v = $u['version'] !== '' ? $u['version'] : 'a new version';
+    $failed = $u['state'] === 'failed';
+    $head = $failed ? ($u['downgrade'] ? 'Going back to zigmon ' . $v . ' failed' : 'The upgrade to zigmon ' . $v . ' failed')
+        : 'zigmon is being ' . ($u['downgrade'] ? 'taken back to ' : 'upgraded to ') . $v;
+    $parts = (int) $u['parts'];
+    $part = (int) $u['part'];
+    $pc = $failed ? 100 : ($parts > 0 ? (int) round(100 * max(0, $part - 1) / $parts) : min(10, $part * 3));
+    $step = $parts > 0 ? ' · step ' . $part . ' of ' . $parts : ($part > 0 ? ' · step ' . $part : '');
+    $out = '<div class="upband' . ($failed ? ' bad' : '') . '" id="upband" role="status">'
+        . '<b class="upband-head" id="upband-head">' . h($head) . '</b>'
+        . '<div class="upband-sub" id="upband-sub">' . h($u['from'] !== '' ? 'from ' . $u['from'] : '') . '</div>';
+    if (!$failed) {
+        $out .= '<div class="up-bar"><span id="upband-fill" style="width:' . $pc . '%"></span></div>'
+            . '<div class="upband-sub" id="upband-step">' . h($pc . ' %' . ($u['words'] !== '' ? ' · ' . $u['words'] : '') . $step) . '</div>';
+    }
+    $out .= '<div class="upband-sub" id="upband-line">' . h($failed
+        ? 'The version before it runs again. An administrator finds what went wrong under Settings - Upgrades.'
+        : 'Signing in works again once zigmon answers - this page loads itself again then.') . '</div></div>';
+    return $out;
+}
+
 // ---- The sign-in page (5.19) ------------------------------------------------
 // A house that does not show itself to whoever reaches the page shows this
 // instead, as otp does: a name, a password, and nothing of the house until
 // they are right. A house that does show itself signs in from the page.
-if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
+if (($who === null && is_array($whoami) && empty($whoami['public_view'])) || $upg_signin) {
 ?>
 <!doctype html>
 <html lang="en">
@@ -1654,10 +1715,21 @@ if ($who === null && is_array($whoami) && empty($whoami['public_view'])) {
   /* an iPad on its side, or the app on its home screen: clear of the edges (5.43) */
   .signin{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   [hidden]{display:none!important}
+  /* (5.54) an upgrade going on: the band over the card */
+  .signin{flex-direction:column;gap:14px}
+  .upband{width:min(420px,100%);background:#2a2412;border:1px solid #d29922;border-radius:12px;padding:12px 14px;font-size:13px}
+  .upband.bad{background:#2d1517;border-color:var(--crit)}
+  .upband-head{display:block;color:#d29922;font-size:14px}
+  .upband.bad .upband-head{color:var(--crit)}
+  .upband-sub{color:var(--tx-dim);margin-top:4px;overflow-wrap:anywhere}
+  .upband .up-bar{height:6px;border-radius:3px;background:var(--panel2);margin-top:8px;overflow:hidden}
+  .upband .up-bar span{display:block;height:100%;background:#d29922;transition:width .4s}
+  .upband a{color:var(--info)}
 </style>
 </head>
 <body>
 <div class="signin">
+  <?= zigmon_signin_upband($upg_now) ?>
   <div class="card">
     <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/>
@@ -1818,6 +1890,72 @@ if ($pk_name || $pk_pin) { ?>
     if (pin.value.length === maxlen) pinForm.requestSubmit ? pinForm.requestSubmit() : pinGo.click();
   });
   shown();
+}());
+/* (5.54) an upgrade going on: how far it is, asked every two seconds of the
+   pages themselves (they answer without zigmon), and the page loaded again
+   once zigmon answers after it was away - or once the upgrade is over. Not
+   while somebody is typing a name or a password: then a link to do it. */
+(function () {
+  var band = document.getElementById('upband');
+  if (!band) return;
+  // only a running one is followed: a failed one is said and left as it is
+  var seen = !band.hidden && !band.classList.contains('bad'), away = <?= $whoami === null ? 'true' : 'false' ?>,
+      held = false, gone = 0;
+  function txt(id, words) { var e = document.getElementById(id); if (e) e.textContent = words; }
+  function typing() {             // the name field has the focus from the start: what is in them counts
+    var f = document.querySelectorAll('input');
+    for (var i = 0; i < f.length; i++) if (f[i].value) return true;
+    return false;
+  }
+  function often() {             // never a loop of reloads: three a minute at most
+    var t = [], now = Date.now();
+    try { t = JSON.parse(sessionStorage.getItem('zigmon-signin-reloads') || '[]') || []; } catch (e) { t = []; }
+    t = t.filter(function (x) { return typeof x === 'number' && now - x < 60000; });
+    if (t.length >= 3) return true;
+    t.push(now);
+    try { sessionStorage.setItem('zigmon-signin-reloads', JSON.stringify(t)); } catch (e) {}
+    return false;
+  }
+  function again() {
+    if (typing() || often()) {
+      if (held) return;
+      held = true;
+      var line = document.getElementById('upband-line');
+      if (!line) return;
+      line.textContent = 'zigmon answers again. ';
+      var a = document.createElement('a');
+      a.href = '#'; a.textContent = 'Load the page again';
+      a.onclick = function (e) { e.preventDefault(); location.reload(); };
+      line.appendChild(a);
+      return;
+    }
+    location.reload();
+  }
+  function ask() {
+    fetch('?api=upgrade-state', {credentials: 'same-origin', cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (d) {
+      var u = d && d.upgrading;
+      if (u && u.state === 'running') {
+        seen = true; gone = 0;
+        var v = u.version || 'a new version', parts = +u.parts || 0, part = +u.part || 0;
+        var pc = parts ? Math.max(0, Math.min(99, Math.round(100 * Math.max(0, part - 1) / parts))) : Math.min(10, part * 3);
+        band.hidden = false;
+        txt('upband-head', 'zigmon is being ' + (u.downgrade ? 'taken back to ' : 'upgraded to ') + v);
+        txt('upband-sub', u.from ? 'from ' + u.from : '');
+        txt('upband-step', pc + ' %' + (u.words ? ' \u00b7 ' + u.words : '') + (parts ? ' \u00b7 step ' + part + ' of ' + parts : (part ? ' \u00b7 step ' + part : '')));
+        var fill = document.getElementById('upband-fill');
+        if (fill) fill.style.width = pc + '%';
+        if (!held) txt('upband-line', d.api ? 'zigmon answers; it restarts once more with the new version - this page loads itself again then.'
+          : 'zigmon is restarting with the new version - asked again every two seconds; this page loads itself again once it answers.');
+      } else if (seen && (!u || u.state !== 'running')) {
+        gone++;
+      }
+      if (d.api && (away || (seen && gone > 0))) { again(); return; }
+      if (!d.api) away = true;
+    }).catch(function () {
+      if (seen && !held) txt('upband-line', 'These pages cannot be reached - nginx and PHP restart with the new version; asked again every two seconds.');
+    });
+  }
+  if (seen) setInterval(ask, 2000);
 }());
 </script>
 </body>
@@ -3041,6 +3179,28 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .maint-band[hidden]{display:none}
   .maint-band:not([hidden]){margin-bottom:14px}
   .maint-band .change-words b{color:var(--warn)}
+  /* (5.54) an upgrade going on: one band for it - the maintenance band stands
+     aside while it is there, it says the same */
+  .maint-band.upg-aside{display:none}
+  .upband{position:sticky;top:0;z-index:58;display:flex;gap:6px 14px;align-items:flex-start;justify-content:space-between;
+    flex-wrap:wrap;padding:10px 18px;background:color-mix(in srgb, var(--warn) 14%, var(--panel));border-bottom:1px solid var(--warn);
+    margin-bottom:14px}
+  .upband[hidden]{display:none}
+  .upband.bad{background:color-mix(in srgb, var(--crit) 14%, var(--panel));border-bottom-color:var(--crit)}
+  .upband.good{background:color-mix(in srgb, var(--ok) 12%, var(--panel));border-bottom-color:var(--ok)}
+  .upband .upband-words{flex:1 1 420px;min-width:0}
+  .upband .upband-head{color:var(--warn);font-weight:650}
+  .upband.bad .upband-head{color:var(--crit)}
+  .upband.good .upband-head{color:var(--ok)}
+  .upband .upband-sub{color:var(--tx-dim);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+  .upband .upband-said{color:var(--tx);font-size:13px;margin-top:4px;overflow-wrap:anywhere}
+  .upband .upband-bar{height:7px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-top:8px;max-width:620px}
+  .upband .upband-bar span{display:block;height:100%;background:var(--warn);border-radius:99px;transition:width .4s ease}
+  .upband .upband-step{color:var(--tx-dim);font-size:12.5px;margin-top:4px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .upband a{color:var(--info);cursor:pointer}
+  .upband .upband-tools{display:flex;gap:8px;align-items:center}
+  .upband .upband-x{background:none;border:0;color:var(--tx-dim);font-size:20px;line-height:1;cursor:pointer;padding:2px 6px}
+  .upband .upband-x:hover{color:var(--tx)}
   /* (5.44) the notices for an administrator, as upsmon draws them: a card "To
      be done by hand" at the top of the pane they belong to, a band each -
      tinted in its level's colour, a coloured left edge, an icon, a bold
@@ -4257,7 +4417,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     body.app-shell > #alertband{flex:none}
     /* the bands above the page keep their height (5.36.1): one shrunk by the
        column ran its words over the header under it */
-    body.app-shell > #changes, body.app-shell > #maint-band{flex:none}
+    body.app-shell > #changes, body.app-shell > #maint-band, body.app-shell > #upband{flex:none}
     body.app-shell > .wrap{flex:1 1 auto;min-height:0;width:100%;max-width:none;display:flex;flex-direction:column}
     body.app-shell .wrap > *{flex-shrink:0}
     body.app-shell .wrap > .tabs{margin-bottom:16px}
@@ -5538,6 +5698,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
 </div>
 <div id="changes" class="changes" role="alert" hidden></div>
 <div id="maint-band" class="maint-band" role="status" hidden></div>
+<div id="upband" class="upband" role="status" aria-live="polite" hidden></div>
 <div class="wrap">
 
 <header>
@@ -6976,6 +7137,11 @@ sudo ./install.sh --upgrade                # a backup first, and the old one put
 'use strict';
 window.ZIGMON_WHO = <?= $who_js ?>;
 var INITIAL = <?= $initial ?>;
+// (5.54) an upgrade going on, as the file beside these pages said it when this
+// page was made, and what these pages are (they change in the middle of one)
+var UPG_FIRST = <?= json_encode(zigmon_upgrade_shown($upg_now, $who !== null), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE) ?>;
+var UPG_API_AT_LOAD = <?= $status ? 'true' : 'false' ?>;
+var PAGES_STAMP = <?= json_encode(zigmon_pages_stamp()) ?>;
 var REFRESH_MS = 5000;
 var COLORS = ['#58a6ff','#3fb950','#f0883e','#a371f7','#d29922','#f85149','#39d2c0','#e2a9f5','#79c0ff','#ffa657'];
 var STATE = { status: null, paused: false, tab: 'overview', ovRange: '24h', hRange: '24h',
@@ -7034,6 +7200,8 @@ function shortStamp(ts, spanS) {
   return pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 function toast(message, ok) {
+  // (5.54) no red toast while zigmon is away in an upgrade: the band says it
+  if (!ok && typeof UPG === 'object' && UPG && UPG.away && upgradeExpected()) return;
   var t = $('toast');
   t.textContent = message;
   t.className = 'toast show ' + (ok ? 'ok' : 'bad');
@@ -7044,6 +7212,9 @@ function toast(message, ok) {
 // page stops throwing it up at every refused read - and offers again the
 // moment they go looking somewhere else (another tab or section).
 var VIEWLOCK = { asking: false, declined: false };
+// (5.54) an upgrade going on, as the page last heard of it (upgradeHeard)
+var UPG = {u: null, seenAt: 0, skew: 0, away: 0, phpAway: 0, sawRunning: false, reloading: false, held: false,
+           timer: null, watchUntil: 0, asking: false, dismissed: {}};
 // Declared here rather than beside the card it draws: the render loop asks
 // for the scripts long before that point in the file, and a var assigned
 // later is undefined when it gets there - which threw, and took everything
@@ -7102,6 +7273,16 @@ function api(what, options) {
         var err = new Error(r.status === 413 ? 'the web server refused the request as too large (HTTP 413) \u2014 raise client_max_body_size in nginx to 6m'
           : 'the web server answered HTTP ' + r.status + ' instead of JSON' + (/<title>([^<]*)/.test(text) ? ' (' + RegExp.$1.trim() + ')' : ''));
         err.status = r.status; throw err;
+      }
+      // (5.54) zigmon not answering while it is being upgraded: PHP says so
+      // from the file beside the pages. Expected - the band says it, and no
+      // red toast does (zoops), nor "Dashboard offline" (tick)
+      if (r.status === 503 && data && data.upgrading && typeof data.upgrading === 'object') {
+        upgradeHeard(data.upgrading);
+        if (data.upgrading.state === 'running') upgradeAway(false);
+        var eu = new Error(data.error || 'zigmon is being upgraded - it answers again in a moment');
+        eu.status = 503; eu.upgrading = true;
+        throw eu;
       }
       // A view that wants the PIN offers to unlock - but only when a person
       // asked for it. The Public API tab asks for two of those once a second
@@ -7463,9 +7644,12 @@ function attentionItems(st) {
       why: esc(n.why || '') + (n.command ? '<br><code>' + esc(n.command) + '</code>' : ''), link: n.link, notice: n.key,
       when: n.at ? 'since ' + ago(n.at) : ''});
   });
-  if (!st.connected) items.push({level: 'crit', who: 'MQTT broker', why: 'The daemon is not connected to ' + esc(st.broker || 'the broker') + (st.last_error ? ' — ' + esc(st.last_error) : '') + '. Nothing from Zigbee2MQTT reaches the dashboard until it is back.'});
+  // (5.54) zigmon restarting in an upgrade finds the broker and the bridge
+  // again within seconds: not a problem while it goes on
+  var upgrading = upgradeExpected();
+  if (!st.connected && !upgrading) items.push({level: 'crit', who: 'MQTT broker', why: 'The daemon is not connected to ' + esc(st.broker || 'the broker') + (st.last_error ? ' — ' + esc(st.last_error) : '') + '. Nothing from Zigbee2MQTT reaches the dashboard until it is back.'});
   var b = st.bridge || {};
-  if (st.connected && b.state !== 'online') items.push({level: 'crit', who: 'Zigbee2MQTT', why: 'The bridge reports ' + esc(b.state || 'no state') + ' — the Zigbee network is not being served.'});
+  if (st.connected && b.state !== 'online' && !upgrading) items.push({level: 'crit', who: 'Zigbee2MQTT', why: 'The bridge reports ' + esc(b.state || 'no state') + ' — the Zigbee network is not being served.'});
   (st.devices || []).forEach(function (d) {
     if (d.level !== 'warn' && d.level !== 'crit') return;
     items.push({level: d.level, who: d.name, id: d.id,
@@ -30073,6 +30257,7 @@ document.addEventListener('selectionchange', function () {
 });
 
 function applyStatus(st) {
+  upgradeFromStatus(st);                     // (5.54) zigmon answers; an upgrade in it, or none
   if (userHolding()) {
     // keep the data, keep the long poll, draw nothing
     STATE.status = st;
@@ -30096,6 +30281,7 @@ function applyStatus(st) {
   setIf(pill, 'className', 'pill ' + st.level);
   setIf($('pill-text'), 'textContent', levelWord(st.level) + (st.connected ? '' : ' — broker unreachable'));
   if (setFavicon.last !== st.level) setFavicon(st.level);
+  if (upgradeExpected()) upgradeDraw();      // (5.54) the pill says "In maintenance" while it goes on
   waitLoop();
   renderLock();
   setIf(document, 'title', (st.level === 'ok' ? '' : (st.level === 'crit' ? '⚠ ' : '● ')) + 'Sensors — ' + st.counts.devices + ' devices');
@@ -30218,6 +30404,13 @@ function tick(force) {
     if (WAIT.retry) { clearTimeout(WAIT.retry); WAIT.retry = null; WAIT.running = false; waitLoop(); }
     afterStatus(force);
   }).catch(function (e) {
+    // (5.54) zigmon - or nginx and PHP - restarting in an upgrade is expected:
+    // the band says how long, not "Dashboard offline" in red
+    var gone = !!e && (e.upgrading || !e.status || e.status >= 500);
+    if (gone && (e.upgrading || upgradeExpected())) {
+      upgradeAway(!e.upgrading);
+      if (upgradeExpected()) return;
+    }
     $('pill').className = 'pill crit'; $('pill-text').textContent = 'Dashboard offline';
     $('updated-label').textContent = 'Error';
     $('updated-time').textContent = e.message;
@@ -30291,7 +30484,12 @@ function typingIn(host) {
 }
 function rootUnlockedHost(host) { if (host && host.dataset.locked === '1') { host.dataset.locked = ''; host.innerHTML = ''; } }
 function zbusy(b, on) { if (!b) return; b.disabled = !!on; b.classList.toggle('busy', !!on); }
-function zoops(e) { if (e && e.stopped) return; toast(String((e && e.message) || e), false); }
+function zoops(e) {
+  if (e && e.stopped) return;
+  // (5.54) zigmon restarting in an upgrade: the band says it, not a red toast
+  if (e && (e.upgrading || (upgradeExpected() && (!e.status || e.status >= 500)))) return;
+  toast(String((e && e.message) || e), false);
+}
 function rootPost(what, body) { return post(what, body || {}); }
 /* Until root has done what was asked, by the request it was handed: the
    answer of an older one, or of another kind, is not this one's. The daemon
@@ -33199,6 +33397,13 @@ function loadUpgrade(quiet) {
     if (!UP.loaded) UP.loaded = d.version;
     drawUpgrade(d);
   }).catch(function (e) {
+    // (5.54) zigmon away in an upgrade: what the file beside the pages says
+    if ((e && e.upgrading) || upgradeExpected()) {
+      upgradePlanFromFile();
+      if ($('up-retry')) $('up-retry').textContent = 'zigmon is restarting - asking again…';
+      upAgain(2000);
+      return;
+    }
     /* the daemon being put in is restarting: asked again until it answers */
     if (running && UP.misses++ < 200) {
       if ($('up-retry')) $('up-retry').textContent = 'zigmon is restarting - asking again…';
@@ -33475,6 +33680,7 @@ function drawUpgrade(d) {
   lg.textContent = (d.log || []).length ? d.log.join('\n') : '–';
   if ($('up-log-node')) $('up-log-node').textContent = d.node || '';
   if (d.running) upAgain(3000);
+  if (d.running || d.asked) upgradeWatchFor(120000);      // (5.54) the band, as soon as root writes it
 }
 
 /* Going back to an older version (5.22): what root will do, said before it is
@@ -34243,6 +34449,254 @@ function renderChanges(st) {
   });
   tickChanges();
 }
+/* ==== (5.54) An upgrade going on: the band, the pill, the reload ===============
+   Whoever runs an upgrade - root's helper, install.sh --upgrade, also by hand -
+   writes how far it is to a file beside these pages, which PHP reads from the
+   disk without zigmon: merged into the status as `upgrading` while zigmon
+   answers, the answer to every call it does not answer meanwhile (503 with
+   `upgrading` - expected, so no red toast and no "Dashboard offline"), and
+   ?api=upgrade-state, which needs no zigmon at all. So the page says what
+   goes on while zigmon, and then nginx and PHP, restart: a band under the
+   header with the step and a bar, the pill "In maintenance", every two
+   seconds asked again; at "done" (having seen it run) it loads the pages of
+   the new version once - not with something typed and not saved, then a
+   link; at "failed" a red band with the reason, closed for that upgrade for
+   good by its x. Every word in it is put in as text, never as markup. */
+// (UPG itself is declared beside VIEWLOCK, at the top: api() reaches it from the first call)
+function upgradeExpected() { return !!(UPG.u && UPG.u.state === 'running'); }
+function upgradeKey(u) { return String((u && (u.key || u.id)) || ((u && u.version) || '') + '|' + ((u && u.started) || '')); }
+function upgradePercent(u) {
+  if (!u) return 0;
+  if (u.state === 'done' || u.state === 'failed') return 100;
+  var parts = +u.parts || 0, part = +u.part || 0;
+  if (!parts) return Math.min(10, part * 3);
+  return Math.max(0, Math.min(99, Math.round(100 * Math.max(0, part - 1) / parts)));
+}
+function upgradeTo(u) { return 'zigmon ' + ((u && u.version) || 'a new version'); }
+function upgradeStepWords(u) {
+  var parts = +u.parts || 0, part = +u.part || 0;
+  return upgradePercent(u) + ' %' + (u.words ? ' · ' + u.words : '')
+    + (parts ? ' · step ' + part + ' of ' + parts : (part ? ' · step ' + part : ''));
+}
+// What the file said, from wherever it came: the status, a 503 of a call
+// zigmon did not answer, or ?api=upgrade-state. Nothing (null) is "no
+// upgrade" - but one seen running is kept for a minute: its file goes with
+// the pages' folder for a moment when the version before is put back.
+function upgradeHeard(u) {
+  try {
+    if (u && typeof u === 'object' && /^(running|done|failed)$/.test(String(u.state))) {
+      if (UPG.u && upgradeKey(UPG.u) !== upgradeKey(u)) { UPG.sawRunning = false; UPG.held = false; }
+      UPG.u = u;
+      UPG.seenAt = Date.now();
+      if (typeof u.now === 'number') UPG.skew = u.now - Date.now() / 1000;
+      if (u.state === 'running') UPG.sawRunning = true;
+    } else if (UPG.u && !(UPG.u.state === 'running' && Date.now() - UPG.seenAt < 60000)) {
+      UPG.u = null;
+    }
+    upgradeDraw();
+    upgradeEnd();
+    upgradePace();
+  } catch (e) { /* the band is a help; it never stops the page */ }
+}
+function upgradeFromStatus(st) {
+  UPG.away = 0; UPG.phpAway = 0;
+  upgradeHeard(st && st.upgrading);
+}
+// zigmon (and maybe nginx and PHP with it) not answering while one goes on
+function upgradeAway(phpToo) {
+  UPG.away = UPG.away || Date.now();
+  UPG.phpAway = phpToo ? (UPG.phpAway || Date.now()) : 0;
+  upgradeDraw();
+  upgradePace();
+}
+// Asked for an upgrade on this page: the band comes as soon as root has
+// taken the request and written the file, not at the next status
+function upgradeWatchFor(ms) {
+  UPG.watchUntil = Math.max(UPG.watchUntil, Date.now() + (ms || 120000));
+  upgradePace();
+}
+function upgradePace() {
+  var want = !!(UPG.u && (UPG.u.state === 'running' || UPG.away)) || Date.now() < UPG.watchUntil;
+  if (want && !UPG.timer) UPG.timer = setInterval(upgradeTick, 2000);
+  else if (!want && UPG.timer) { clearInterval(UPG.timer); UPG.timer = null; }
+}
+function upgradeTick() {
+  if (UPG.reloading) return;
+  if (!(UPG.u && (UPG.u.state === 'running' || UPG.away)) && Date.now() >= UPG.watchUntil) { upgradePace(); return; }
+  if (UPG.u && !UPG.away) {
+    // zigmon answers: the status, which carries it, every two seconds
+    if (!document.hidden) tick(true);
+    upgradeDraw();
+    return;
+  }
+  if (UPG.asking) return;
+  UPG.asking = true;
+  fetch('?api=upgrade-state', {credentials: 'same-origin', cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (d) {
+    UPG.phpAway = 0;
+    upgradeHeard(d && d.upgrading);
+    // zigmon answers again: the status says the rest (and takes "away" off)
+    if (d && d.api && UPG.away) tick(true);
+  }).catch(function () {
+    if (UPG.away) UPG.phpAway = UPG.phpAway || Date.now();
+    upgradeDraw();
+  }).then(function () { UPG.asking = false; });
+}
+// Something on the page not saved, or being typed: the end of an upgrade does
+// not load the page again under it. When unsure, it is held.
+function pageHasUnsaved() {
+  try {
+    var a = document.activeElement;
+    if (a && a !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)
+        && a.id !== 'app-find') return true;
+    var zm = $('zmodal');
+    if (zm && !zm.hidden) return true;
+    var names = Object.keys(window);
+    for (var i = 0; i < names.length; i++) {
+      if (!/^[A-Z][A-Z0-9_]+$/.test(names[i])) continue;
+      try {
+        var o = window[names[i]];
+        if (o && typeof o === 'object' && o.dirty === true) return true;
+      } catch (e) { /* not ours */ }
+    }
+    return /Unsaved changes|not saved yet/.test(document.body.innerText || '');
+  } catch (e) {
+    return true;
+  }
+}
+function upgradeEnd() {
+  var u = UPG.u;
+  if (!u || u.state !== 'done' || !UPG.sawRunning || UPG.reloading || UPG.away) return;
+  var key = upgradeKey(u), had = '';
+  try { had = sessionStorage.getItem('zigmon-upgrade-reloaded') || ''; } catch (e) { had = ''; }
+  if (had === key) return;                               // loaded once for it already
+  if (UPG.held || pageHasUnsaved()) { UPG.held = true; upgradeDraw(); return; }
+  try { sessionStorage.setItem('zigmon-upgrade-reloaded', key); } catch (e) {}
+  UPG.reloading = true;
+  upgradeDraw();
+  setTimeout(function () { location.reload(); }, 1200);
+}
+function upgradeDismissed(u) {
+  var key = upgradeKey(u);
+  if (UPG.dismissed[key]) return true;
+  try { return localStorage.getItem('zigmon-upgrade-failed-seen') === key; } catch (e) { return false; }
+}
+function upgradeDismiss(u) {
+  var key = upgradeKey(u);
+  UPG.dismissed[key] = true;
+  try { localStorage.setItem('zigmon-upgrade-failed-seen', key); } catch (e) {}
+  upgradeDraw();
+}
+function upgradeOpenPane() {
+  location.hash = '#control/sys-upgrade';
+  showTab('control');
+  showControlSection('sys-upgrade');
+}
+function upgradeDraw() {
+  var box = $('upband');
+  if (!box) return;
+  var u = UPG.u;
+  var shown = !!u && (u.state === 'running' || (u.state === 'done' && UPG.sawRunning && (UPG.reloading || UPG.held))
+    || (u.state === 'failed' && !upgradeDismissed(u)));
+  var mb = $('maint-band');
+  if (mb) mb.classList.toggle('upg-aside', !!(shown && u.state === 'running'));
+  if (!shown) {
+    if (!box.hidden) { box.hidden = true; box.innerHTML = ''; }
+    return;
+  }
+  var now = Date.now() / 1000 + UPG.skew;
+  box.hidden = false;
+  box.className = 'upband' + (u.state === 'failed' ? ' bad' : (u.state === 'done' ? ' good' : ''));
+  box.innerHTML = '';
+  var words = el('div', 'upband-words');
+  var head = u.state === 'running' ? (u.version ? 'zigmon is being ' + (u.downgrade ? 'taken back to ' : 'upgraded to ') + u.version
+      : 'zigmon is being ' + (u.downgrade ? 'taken back to an older version' : 'upgraded'))
+    : u.state === 'done' ? upgradeTo(u) + ' is in'
+    : (u.downgrade ? 'Going back to ' + upgradeTo(u) + ' failed' : 'The upgrade to ' + upgradeTo(u) + ' failed');
+  words.appendChild(el('div', 'upband-head', head));
+  var sub = [];
+  if (u.from) sub.push('from ' + u.from);
+  if (u.by) sub.push('asked by ' + u.by);
+  if (u.started && u.state === 'running') sub.push(sysSpan(now - u.started) + ' so far');
+  else if (u.started && u.at) sub.push('took ' + sysSpan(u.at - u.started));
+  if (sub.length) words.appendChild(el('div', 'upband-sub', sub.join(' · ')));
+  if (u.state === 'running') {
+    var bar = el('div', 'upband-bar'), fill = el('span');
+    fill.style.width = upgradePercent(u) + '%';
+    bar.appendChild(fill);
+    words.appendChild(bar);
+    words.appendChild(el('div', 'upband-step', upgradeStepWords(u)));
+    var line;
+    if (UPG.away && UPG.phpAway) line = 'These pages cannot be reached for ' + sysSpan((Date.now() - UPG.phpAway) / 1000)
+      + ' - nginx and PHP restart with the new version; asked again every two seconds.';
+    else if (UPG.away) line = 'zigmon is restarting with the new version - not answering for ' + sysSpan((Date.now() - UPG.away) / 1000)
+      + ', asked again every two seconds.';
+    else line = 'zigmon.service and these pages restart once - the house stops following its sensors for a minute or so. '
+      + 'This page follows it and loads the new version by itself.';
+    words.appendChild(el('div', 'upband-sub upband-line', line));
+  } else if (u.state === 'done') {
+    if (UPG.reloading) words.appendChild(el('div', 'upband-sub upband-line', 'Loading the pages of the new version…'));
+    else {
+      var held = el('div', 'upband-sub upband-line', 'Something on this page is not saved yet, so it is not loaded again by itself. ');
+      var again = el('a', 'upband-again', 'Load it again');
+      again.href = '#';
+      again.onclick = function (e) { e.preventDefault(); location.reload(); };
+      held.appendChild(again);
+      words.appendChild(held);
+    }
+  } else {
+    if (u.said) words.appendChild(el('div', 'upband-said', u.said));
+    var more = el('div', 'upband-sub upband-line', 'What install.sh said is in Settings → Upgrades. ');
+    var open = el('a', 'upband-open', 'Open Upgrades');
+    open.href = '#control/sys-upgrade';
+    open.onclick = function (e) { e.preventDefault(); upgradeOpenPane(); };
+    more.appendChild(open);
+    words.appendChild(more);
+  }
+  box.appendChild(words);
+  if (u.state === 'failed') {
+    var tools = el('div', 'upband-tools');
+    var x = el('button', 'upband-x', '×');
+    x.type = 'button';
+    x.title = 'Close - not shown again for this upgrade';
+    x.setAttribute('aria-label', 'Close');
+    x.onclick = function () { upgradeDismiss(u); };
+    tools.appendChild(x);
+    box.appendChild(tools);
+  }
+  if (u.state === 'running') {
+    // the pill says it too, whatever the last status said
+    setIf($('pill'), 'className', 'pill warn');
+    setIf($('pill-text'), 'textContent', 'In maintenance');
+    if (UPG.away) {
+      setIf($('updated-label'), 'textContent', 'Upgrading');
+      setIf($('updated-time'), 'textContent', 'not answering for ' + sysSpan((Date.now() - UPG.away) / 1000));
+      if (setFavicon.last !== 'warn') setFavicon('warn');
+    }
+  }
+  if (UPG.away && STATE.tab === 'control' && CONTROL_SEC === 'sys-upgrade') upgradePlanFromFile();
+}
+// Settings - Upgrades while zigmon does not answer: the upgrade as the file
+// says it, where root's own record is drawn while zigmon answers
+function upgradePlanFromFile() {
+  var u = UPG.u, ph = $('up-plan'), card = $('up-plan-card');
+  if (!u || !ph || !card || !isUnlocked()) return;
+  card.hidden = false;
+  ph.innerHTML = '';
+  ph.appendChild(el('p', 'note', 'To ' + (u.version || '?') + (u.from ? ' from ' + u.from : '')
+    + ' · as the upgrade writes it beside these pages, while zigmon does not answer'));
+  ph.appendChild(upBar(upgradePercent(u), u.state === 'failed' ? 'bad' : (u.state === 'done' ? 'good' : ''), upgradeStepWords(u), true));
+  var row = {step: u.parts ? u.part + ' of ' + u.parts : String(u.part || '-'), words: u.words || '', at: u.at};
+  ph.appendChild(zTable(['Step', 'How far', 'What happened', 'When'], [row], function (r) {
+    var tr = el('tr');
+    tr.appendChild(el('td', 'mono', r.step));
+    tr.appendChild(el('td', '', upgradePercent(u) + ' %'));
+    tr.appendChild(el('td', '', r.words));
+    tr.appendChild(el('td', 'muted', r.at ? ago(r.at) : '-'));
+    return tr;
+  }, 'plain'));
+  if (u.said) ph.appendChild(el('p', 'note bad', u.said));
+}
+/* ==== (5.54) end ================================================================= */
 /* -- this server in maintenance: the band on every page (otp 1.0.37) ----------- */
 function renderMaintBand(st) {
   var box = $('maint-band');
@@ -37136,6 +37590,13 @@ function pickOverviewRange(r) {
 rangeButtons($('ov-ranges'), ['6h', '24h', '7d'], STATE.ovRange, pickOverviewRange);
 
 if (INITIAL) applyStatus(INITIAL);
+// (5.54) an upgrade the file beside the pages spoke of when this page was made
+try {
+  if (UPG_FIRST) {
+    upgradeHeard(UPG_FIRST);
+    if (!UPG_API_AT_LOAD && UPG_FIRST.state === 'running') upgradeAway(false);
+  }
+} catch (e) { /* the band is a help; it never stops the page */ }
 var wanted = (location.hash || '#overview').substring(1);
 var wantedSec = wanted.split('/')[1] || '';
 wanted = wanted.split('/')[0];

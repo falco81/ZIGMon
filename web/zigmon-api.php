@@ -224,6 +224,182 @@ function zigmon_get(string $path, float $timeout = 10.0): ?array
     return is_array($data) ? $data : null;
 }
 
+// ---- (5.54) an upgrade going on, read from the disk --------------------------
+// Whoever runs an upgrade - root's helper (deploy/zigmon_upgrade.py) and
+// install.sh --upgrade - writes how far it is to one small file beside these
+// pages. It is read here straight from the disk, never through the daemon:
+// the daemon is what restarts in the middle of it, and then nginx and PHP.
+// A dot name, which nginx never serves (location ~ /\. { deny all; }); read
+// from this one fixed place only; believed for display and nothing else.
+// "running" is believed for 30 min after it was written (longer than
+// install.sh may take), "done" and "failed" for 10 min. Anything else - no
+// file, older, written in the future, a state that is none of the three, not
+// JSON - is as if there were no file, and every page behaves as it always did.
+const ZIGMON_UPGRADE_FILE = __DIR__ . '/.upgrade.json';
+const ZIGMON_UPGRADE_RUNNING_S = 1800;
+const ZIGMON_UPGRADE_ENDED_S = 600;
+
+/** One line of text from the file: control and format characters out
+ *  (a bidi override included), cut to $most letters. */
+function zigmon_upgrade_text($value, int $most): string
+{
+    if (!is_string($value)) {
+        return '';
+    }
+    $text = preg_replace('/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/u', ' ', $value);
+    if (!is_string($text)) {                 // not UTF-8 after all
+        return '';
+    }
+    return trim(zigmon_cut(trim($text), $most));
+}
+
+/** A version: digits and dots, or nothing. */
+function zigmon_upgrade_version($value): string
+{
+    return is_string($value) && preg_match('/^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$/', $value) ? $value : '';
+}
+
+/** The upgrade going on (or ended within 10 min), checked field by field;
+ *  null when there is none. Read once per request. $now for the checks. */
+function zigmon_upgrading(?int $now = null): ?array
+{
+    static $held = false;
+    if ($now === null && $held !== false) {
+        return $held;
+    }
+    $got = null;
+    try {
+        $got = zigmon_upgrade_read($now ?? time());
+    } catch (\Throwable $e) {
+        $got = null;
+    }
+    if ($now === null) {
+        $held = $got;
+    }
+    return $got;
+}
+
+function zigmon_upgrade_read(int $now): ?array
+{
+    $path = ZIGMON_UPGRADE_FILE;
+    clearstatcache(true, $path);
+    if (!@is_file($path) || @is_link($path)) {
+        return null;
+    }
+    $size = @filesize($path);
+    if ($size === false || $size < 2 || $size > 8192) {
+        return null;
+    }
+    $raw = @file_get_contents($path, false, null, 0, 8193);
+    if (!is_string($raw) || $raw === '') {
+        return null;
+    }
+    $in = json_decode($raw, true, 4, JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_array($in)) {
+        return null;
+    }
+    $state = $in['state'] ?? '';
+    if (!in_array($state, ['running', 'done', 'failed'], true)) {
+        return null;
+    }
+    $at = $in['at'] ?? null;
+    if (!is_int($at) && !is_float($at)) {
+        return null;
+    }
+    $at = (int) $at;
+    if ($at <= 0 || $at > $now + 5) {         // written in the future: not believed
+        return null;
+    }
+    if ($now - $at > ($state === 'running' ? ZIGMON_UPGRADE_RUNNING_S : ZIGMON_UPGRADE_ENDED_S)) {
+        return null;
+    }
+    $int = function ($v, int $most): int {
+        return (is_int($v) && $v >= 0 && $v <= $most) ? $v : 0;
+    };
+    $parts = $int($in['parts'] ?? 0, 999);
+    $part = $int($in['part'] ?? 0, 999);
+    if ($parts > 0 && $part > $parts) {
+        $part = $parts;
+    }
+    $started = $int($in['started'] ?? 0, PHP_INT_MAX);
+    if ($started > $at || $started < $at - 86400) {
+        $started = 0;
+    }
+    $id = is_string($in['id'] ?? null) ? substr((string) preg_replace('/[^A-Za-z0-9]/', '', $in['id']), 0, 64) : '';
+    return [
+        'state'     => $state,
+        'id'        => $id,
+        // the same upgrade to the page without the id itself: what it keeps
+        // its "reloaded once" and "seen it fail" by
+        'key'       => substr(hash('sha256', 'zigmon-upgrade|' . $id . '|' . $started), 0, 16),
+        'version'   => zigmon_upgrade_version($in['version'] ?? ''),
+        'from'      => zigmon_upgrade_version($in['from'] ?? ''),
+        'by'        => zigmon_upgrade_text($in['by'] ?? '', 100),
+        'part'      => $part,
+        'parts'     => $parts,
+        'words'     => zigmon_upgrade_text($in['words'] ?? '', 160),
+        'started'   => $started,
+        'at'        => $at,
+        'said'      => zigmon_upgrade_text($in['said'] ?? '', 400),
+        'downgrade' => ($in['downgrade'] ?? false) === true,
+        'now'       => $now,
+    ];
+}
+
+/** What of it a page is shown: who asked, why it failed and its id only to
+ *  somebody signed in. */
+function zigmon_upgrade_shown(?array $u, bool $signed_in): ?array
+{
+    if ($u === null) {
+        return null;
+    }
+    if (!$signed_in) {
+        unset($u['by'], $u['said'], $u['id']);
+    }
+    return $u;
+}
+
+/** Whether this request carries a sign-in the daemon takes - asked of the
+ *  daemon (PHP cannot tell a good token from a made-up one); while the daemon
+ *  does not answer, nobody is. Asked at most once per request. */
+function zigmon_upgrade_signed_in(): bool
+{
+    static $known = null;
+    if ($known !== null) {
+        return $known;
+    }
+    $known = false;
+    if (zigmon_session() === '') {
+        return false;
+    }
+    [$st, $body] = zigmon_call('/api/auth/whoami', 'GET', null, 3.0);
+    if ($st === 200) {
+        $who = json_decode((string) $body, true);
+        $known = is_array($who) && is_array($who['who'] ?? null);
+    }
+    return $known;
+}
+
+/** The answer to a call the daemon did not answer while an upgrade goes on:
+ *  "being upgraded", which the page expects, not "not responding". */
+function zigmon_upgrade_answer(string $path, array $u): void
+{
+    http_response_code(503);
+    header('Retry-After: 2');
+    $v = $u['version'] !== '' ? $u['version'] : 'a new version';
+    $out = ['ok' => false, 'upgrading' => zigmon_upgrade_shown($u, false),
+            'error' => 'zigmon is being ' . ($u['downgrade'] ? 'taken back to ' : 'upgraded to ') . $v
+                       . ' - it answers again in a moment'];
+    if ($path === '/api/healthz') {
+        // otp's /healthz: 503 in maintenance - what watches this machine sees
+        // maintenance, not a machine that is down
+        $out['state'] = 'in maintenance';
+        $out['why'] = 'being upgraded to ' . $v;
+        $out['version'] = $u['from'];
+    }
+    echo json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+}
+
 /** Pass a daemon reply straight through to the browser. */
 function zigmon_relay(string $path, string $method = 'GET', ?array $payload = null,
                       float $timeout = 10.0, array $extra = []): void
@@ -232,6 +408,11 @@ function zigmon_relay(string $path, string $method = 'GET', ?array $payload = nu
     header('Cache-Control: no-store');
 
     if ($method !== 'GET' && $path !== '/api/tap' && zigmon_token() === null) {
+        $upgrading = zigmon_upgrading();                       // (5.54) the token goes with the daemon
+        if ($upgrading !== null && $upgrading['state'] === 'running') {
+            zigmon_upgrade_answer($path, $upgrading);
+            return;
+        }
         http_response_code(503);
         echo json_encode(['ok' => false, 'error' =>
             'the API token is unreadable — is zigmon.service running, and is '
@@ -241,13 +422,65 @@ function zigmon_relay(string $path, string $method = 'GET', ?array $payload = nu
 
     [$status, $body] = zigmon_call($path, $method, $payload, $timeout, $extra);
     if ($status === 0) {
+        $upgrading = zigmon_upgrading();                       // (5.54)
+        if ($upgrading !== null) {
+            zigmon_upgrade_answer($path, $upgrading);
+            return;
+        }
         http_response_code(503);
         echo json_encode(['ok' => false, 'error' =>
             'the monitoring daemon is not responding — is zigmon.service running?']);
         return;
     }
+    if ($path === '/api/status' && $status === 200) {
+        $body = zigmon_upgrade_merge($body);                   // (5.54)
+    }
     http_response_code($status);
     echo zigmon_squeeze($body);
+}
+
+/** (5.54) The status with the upgrade in it as "upgrading", so the page shows
+ *  it at once - before anything restarts. Put in front of what the daemon
+ *  said, never decoded and encoded again: the status is a third of a megabyte
+ *  and its {} must stay {}. Nothing going on: the body exactly as it came. */
+function zigmon_upgrade_merge(string $body): string
+{
+    $u = zigmon_upgrading();
+    if ($u === null) {
+        return $body;
+    }
+    $trim = ltrim($body);
+    if ($trim === '' || $trim[0] !== '{' || ltrim(substr($trim, 1)) === '' || ltrim(substr($trim, 1))[0] === '}') {
+        return $body;
+    }
+    $shown = json_encode(zigmon_upgrade_shown($u, zigmon_upgrade_signed_in()),
+                         JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($shown)) {
+        return $body;
+    }
+    return '{"upgrading":' . $shown . ',' . substr($trim, 1);
+}
+
+/** (5.54) ?api=upgrade-state: answered without the daemon. What the pages on
+ *  the disk are (they change in the middle of an upgrade: the page loads
+ *  them again once it is over), and whether the daemon answers now. */
+function zigmon_upgrade_state(): array
+{
+    [$st] = zigmon_call('/api/health', 'GET', null, 3.0);
+    $api = $st === 200;
+    $u = zigmon_upgrading();
+    return ['ok' => true, 'upgrading' => zigmon_upgrade_shown($u, $api && zigmon_upgrade_signed_in()),
+            'pages' => zigmon_pages_stamp(), 'api' => $api, 'now' => time()];
+}
+
+/** What the pages on the disk are: index.php's size and time, hashed. */
+function zigmon_pages_stamp(): string
+{
+    $page = __DIR__ . '/index.php';
+    clearstatcache(true, $page);
+    $mtime = @filemtime($page);
+    $size = @filesize($page);
+    return substr(hash('sha256', 'pages|' . (int) $mtime . '|' . (int) $size), 0, 12);
 }
 
 /**

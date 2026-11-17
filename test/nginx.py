@@ -604,3 +604,22 @@ for _need, _why in (('session.upload_progress.enabled = 0',
         print('install.sh: %s' % _why)
         raise SystemExit(1)
 print('the installer hardens PHP and says which version carries the fix, on a fresh machine and an upgrade')
+
+# (5.54) How far an upgrade is lies beside the pages, in .upgrade.json (and
+# its temporary files while they are written, .upgrade.json.*): PHP reads it
+# from the disk; the web server must never hand it out. A dot name is refused
+# by "location ~ /\. { deny all; }" - which has to be there, a regex location
+# (so it is weighed before "location /" serves the file), and nothing before
+# it in the list of regexes may take a dot name and serve it.
+_home_live = '\n'.join(l for l in _home.splitlines() if not l.strip().startswith('#'))
+_dot = re.search(r'location\s+~\s+/\\\.\s*\{\s*deny\s+all;\s*\}', _home_live)
+if not _dot:
+    print('nginx-zigmon.conf has no "location ~ /\\. { deny all; }": .upgrade.json would be served')
+    raise SystemExit(1)
+for _m in re.finditer(r'location\s+~\*?\s*(?:"([^"]*)"|([^\s{]+))\s*\{', _home_live[:_dot.start()]):
+    _expr = _m.group(1) if _m.group(1) is not None else _m.group(2)
+    for _probe in ('/.upgrade.json', '/.upgrade.json.Ab12Cd'):
+        if re.search(_expr, _probe):
+            print('location %s comes before the dot rule and takes %s' % (_expr, _probe))
+            raise SystemExit(1)
+print('the dot rule refuses .upgrade.json, and no regex before it takes it')

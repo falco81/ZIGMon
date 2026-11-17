@@ -569,6 +569,97 @@ def status(**fields):
     write_safely(os.path.join(UPGRADE_DIR, 'status.json'), json.dumps(fields))
 
 
+# ---- (5.54) how far it is, for the pages ----------------------------------------------
+# status.json above is the daemon's to read, and the daemon is what restarts in
+# the middle of an upgrade. So how far it is is also written to one small file
+# beside the pages, which PHP reads straight from the disk while zigmon - and
+# then nginx and PHP themselves - restart: the pages keep showing the upgrade
+# instead of "not answering". A dot name, which nginx never serves
+# (location ~ /\. { deny all; }); root's, 0644, written whole and renamed;
+# nothing secret in it. install.sh --upgrade writes it too, a part per step, so
+# this writes the steps before it (taking the request, checking the package, the
+# backup), the one after it (asking the new version) and how it ended.
+#
+#   {"state": "running|done|failed", "id", "version", "from", "by", "part",
+#    "parts", "words", "started", "at", "said", "downgrade"}
+#
+# parts is 0 until install.sh has counted its steps (it says so in its first
+# write); writing it never makes an upgrade fail - a write that does not go is
+# left out, and the pages say "not answering" as they always did.
+PAGES_NAME = '.upgrade.json'
+PRE_PARTS, POST_PARTS = 3, 1       # before install.sh: request, backup, install.sh; after: asking it
+PAGES = {}
+
+
+def pages_begin(ident='', by='', downgrade=False):
+    PAGES.clear()
+    PAGES.update({'id': re.sub(r'[^A-Za-z0-9]', '', str(ident or ''))[:64] or os.urandom(6).hex(),
+                  'by': _plain(by, 100), 'started': int(time.time()), 'version': '',
+                  'from': installed_version(), 'downgrade': bool(downgrade), 'parts': 0, 'part': 0})
+
+
+def pages_tell(state, part=None, words='', said=''):
+    """The file beside the pages, written whole. Never raises."""
+    tmp, dfd = None, None
+    try:
+        if not PAGES:
+            return
+        if part is not None:
+            PAGES['part'] = int(part)
+        parts = int(PAGES.get('parts') or 0)
+        if parts and PAGES['part'] > parts:
+            PAGES['parts'] = parts = PAGES['part']
+        ver = lambda v: v if re.match(r'^[0-9]+(\.[0-9]+){1,3}$', str(v or '')) else ''   # noqa: E731
+        body = json.dumps({'state': state, 'id': PAGES.get('id', ''), 'version': ver(PAGES.get('version')),
+                           'from': ver(PAGES.get('from')), 'by': PAGES.get('by', ''),
+                           'part': PAGES['part'], 'parts': parts, 'words': _plain(words, 160),
+                           'started': int(PAGES.get('started') or time.time()), 'at': int(time.time()),
+                           'said': _plain(said, 400), 'downgrade': bool(PAGES.get('downgrade'))})
+        dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        tmp = '%s.%d.%s' % (PAGES_NAME, os.getpid(), os.urandom(4).hex())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            os.fchmod(f.fileno(), 0o644)
+            f.write(body + '\n')
+        os.replace(tmp, PAGES_NAME, src_dir_fd=dfd, dst_dir_fd=dfd)
+        tmp = None
+    except Exception:                                   # noqa: BLE001 - never the upgrade's undoing
+        pass
+    finally:
+        if dfd is not None:
+            if tmp:
+                try:
+                    os.unlink(tmp, dir_fd=dfd)
+                except OSError:
+                    pass
+            try:
+                os.close(dfd)
+            except OSError:
+                pass
+
+
+def pages_read_back():
+    """What install.sh counted (it writes the same file): its parts, when the
+    file is this upgrade's."""
+    try:
+        if not PAGES:
+            return
+        path = os.path.join(WEB_DIR, PAGES_NAME)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return
+            got = json.loads(f.read(8192).decode('utf-8', 'replace'))
+        if isinstance(got, dict) and got.get('id') == PAGES.get('id'):
+            n, p = int(got.get('parts') or 0), int(got.get('part') or 0)
+            if 0 < n <= 200:
+                PAGES['parts'] = n
+            if 0 < p <= 200:
+                PAGES['part'] = p
+    except Exception:                                   # noqa: BLE001 - only a count
+        pass
+
+
 # ---- the program as it is, to go back to ----------------------------------------
 def keep_program(work):
     """A copy of the program as it is now - the library, the dashboard and the
@@ -751,6 +842,12 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         say('zigmon %s, signed by %s, %d files - checked' % (info['version'], info['signed_by'],
                                                             info['files']))
         at('backup')
+        if PAGES:                                                     # (5.54)
+            PAGES['version'] = info['version']
+            PAGES['from'] = info.get('installed') or PAGES.get('from') or ''
+            PAGES['downgrade'] = bool(downgrade)
+            pages_tell('running', 2, 'the program as it is kept, to go back to' if back
+                       else 'a backup of the whole installation first')
         if back:
             say('going back from %s to %s: the database is left as it is (the highest version '
                 'it has seen is %s, and nothing between changed how it is read) - no backup of '
@@ -763,6 +860,16 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'LANG': 'C.UTF-8', 'ZIGMON_UPGRADE_FROM_PAGES': '1', 'TERM': 'dumb',
                'ZIGMON_UPGRADE_BY': str(by)[:100]}
+        if PAGES:
+            # (5.54) install.sh goes on numbering the parts where this left
+            # off, writes its steps into the same file, and leaves the last
+            # part - asking the new version - and the end to this
+            env.update({'ZIGMON_UPGRADE_ID': PAGES['id'], 'ZIGMON_UPGRADE_STARTED': str(PAGES['started']),
+                        'ZIGMON_UPGRADE_FROM': PAGES.get('from') or '',
+                        'ZIGMON_UPGRADE_PRE': str(PRE_PARTS), 'ZIGMON_UPGRADE_POST': str(POST_PARTS),
+                        'ZIGMON_UPGRADE_DOWNGRADE': '1' if downgrade else '',
+                        'ZIGMON_UPGRADE_PAGES_BY': PAGES.get('by') or ''})
+            pages_tell('running', PRE_PARTS, 'install.sh --upgrade starts')
         at('installing')
         say('running %s/install.sh --upgrade --yes' % info['top'])
         p = subprocess.Popen(['bash', os.path.join(src, 'install.sh'), '--upgrade', '--yes'],
@@ -796,13 +903,24 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
             rc = rc or -9
         say('install.sh ended with %d' % rc)
         at('checking')
+        if PAGES:                                                     # (5.54)
+            pages_read_back()
+            last = max(int(PAGES.get('parts') or 0), int(PAGES.get('part') or 0) + 1)
+            if rc == 0:
+                PAGES['parts'] = last
+                pages_tell('running', last, 'asking zigmon %s whether it answers' % info['version'])
         ok, why = (False, 'install.sh failed') if rc != 0 else answers(info['version'], say)
         say(why)
         if ok and back:
             put_away(back['away'], say)
         if not ok:
             at('rolling back')
+            back_words = 'zigmon %s %s - putting %s back' % (
+                info['version'], 'did not go in' if rc != 0 else 'did not answer', info.get('installed') or
+                'the version before')
+            pages_tell('running', None, back_words)                   # (5.54)
             put_program_back(saved, say)
+            pages_tell('running', None, back_words)                   # it went with the pages folder
             back, why_back = answers(info['installed'], say) if info['installed'] else (False, '')
             if info['installed']:
                 say(why_back if back else 'the version put back does not answer either: %s' % why_back)
@@ -810,6 +928,24 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         return 0, info, lines
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def pages_end(rc, info):
+    """(5.54) How it ended, for the pages."""
+    v = info.get('version') or PAGES.get('version') or '?'
+    if rc == 0 and not info.get('rolled_back'):
+        last = max(int(PAGES.get('parts') or 0), int(PAGES.get('part') or 0))
+        if last:
+            PAGES['parts'] = last
+        pages_tell('done', last or None, 'zigmon %s runs' % v)
+    elif info.get('rolled_back'):
+        had = info.get('installed') or PAGES.get('from') or ''
+        pages_tell('failed', None, 'taken back', 'zigmon %s %s - %s' % (
+            v, 'did not go in (install.sh --upgrade ended with %d)' % rc if info.get('why') == 'install.sh failed'
+            else 'was put in but %s' % (info.get('why') or 'did not answer'),
+            ('%s runs again' % had) if had else 'the version before it is back'))
+    else:
+        pages_tell('failed', None, 'failed', 'the upgrade to zigmon %s ended with %d' % (v, rc))
 
 
 def serve_request():
@@ -858,22 +994,31 @@ def serve_request():
         now['version'] = re.sub(r'[^0-9.]', '', str(r.get('version') or ''))[:20]
         status(id=ident, state='running', step='checking the package', version=now['version'],
                pid=os.getpid())
+        # (5.54) the pages: taken, and the package being checked
+        pages_begin(ident, '%s on the dashboard' % str(r.get('by') or 'somebody')[:80],
+                    r.get('downgrade') is True)
+        PAGES['version'] = now['version']
+        pages_tell('running', 1, 'root takes the request and checks the package\'s signature')
         rc, info, _ = put_in(os.path.join(UPGRADE_DIR, name), ident,
                              re.sub(r'[^0-9a-f]', '', str(r.get('sha') or ''))[:64],
                              str(r.get('by') or 'the dashboard')[:100], log_to, step,
                              downgrade=r.get('downgrade') is True)
         if info.get('rolled_back'):
+            pages_end(rc, info)                                       # (5.54) the pages first:
             status(id=ident, state='failed', rc=rc, version=info['version'], rolled_back=True,
                    said='zigmon %s was put in but %s - the version before it is back'
                         % (info['version'], info.get('why') or 'did not answer'),
                    tail=log_lines[-40:])
         else:
-            status(id=ident, state='done' if rc == 0 else 'failed', rc=rc,
+            pages_end(rc, info)                                       # a status that does not write
+            status(id=ident, state='done' if rc == 0 else 'failed', rc=rc,  # must not leave them running
                    version=info['version'], tail=log_lines[-40:])
     except Refused as e:
+        pages_tell('failed', None, 'refused', str(e))                 # (5.54)
         log_to('refused: %s' % e)
         status(id=ident, state='failed', rc=-1, said=str(e), tail=log_lines[-40:])
     except Exception as e:                       # noqa: BLE001 - said, never lost
+        pages_tell('failed', None, 'the upgrade broke', 'the upgrade broke: %s' % e)
         log_to('broke: %s' % e)
         status(id=ident, state='failed', rc=-2, said='the upgrade broke: %s' % e,
                tail=log_lines[-40:])
@@ -900,12 +1045,21 @@ def main(argv):
     if len(argv) >= 2 and argv[0] == '--needs-cli':           # (5.44) for install.sh
         return needs_cli_of_folder(argv[1])
     if len(argv) >= 2 and argv[0] == '--run':
+        # (5.54) the pages follow this one too
+        pages_begin('', '%s on the command line' % (os.environ.get('SUDO_USER') or 'root'),
+                    '--downgrade' in argv[2:])
+        pages_tell('running', 1, 'root checks the package\'s signature')
         try:
             rc, info, _ = put_in(os.path.abspath(argv[1]), log_to=print,
                                  downgrade='--downgrade' in argv[2:])
         except Refused as e:
+            pages_tell('failed', None, 'refused', str(e))
             print('refused: %s' % e)
             return 1
+        except BaseException as e:
+            pages_tell('failed', None, 'the upgrade broke', 'the upgrade broke: %s' % (str(e) or type(e).__name__))
+            raise
+        pages_end(rc, info)
         return rc
     if not argv:
         return serve_request()
