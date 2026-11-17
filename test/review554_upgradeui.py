@@ -726,7 +726,10 @@ const say = (k, v) => { out.seen[k] = v; };
             html: b ? b.innerHTML : '', pill: (document.getElementById('pill-text') || {}).textContent || '',
             pillCls: (document.getElementById('pill') || {}).className || '',
             red: (window.__red || []).slice(), xss: !!window.__xss,
-            maint: !!document.getElementById('maint-band') && getComputedStyle(document.getElementById('maint-band')).display};
+            maint: !!document.getElementById('maint-band') && getComputedStyle(document.getElementById('maint-band')).display,
+            // (5.54.0) blue while it runs, as the kit has it
+            headColor: b && b.querySelector('.upband-head') ? getComputedStyle(b.querySelector('.upband-head')).color : '',
+            border: b ? getComputedStyle(b).borderTopColor : ''};
   });
   const shot = (p, n) => p.screenshot({path: job.shots + '/' + n + '.png'});
   try {
@@ -883,6 +886,8 @@ def seen(k):
 
 check(not seen('a0').get('band'), 'a band with no upgrade: %r' % seen('a0'))
 a1 = seen('a1')
+check(a1.get('headColor') == 'rgb(88, 166, 255)' and a1.get('border') == 'rgb(88, 166, 255)',
+      'the running band is not blue as in the kit: %r / %r' % (a1.get('headColor'), a1.get('border')))
 check(a1.get('band') and 'zigmon is being upgraded to 5.99.0' in a1.get('text', '') and 'from 5.98.0' in a1['text']
       and 'asked by owner on the dashboard' in a1['text'] and 'step 1 of 16' in a1['text']
       and a1.get('pill') == 'In maintenance' and 'warn' in a1.get('pillCls', ''),

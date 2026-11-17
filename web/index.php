@@ -1717,13 +1717,13 @@ if (($who === null && is_array($whoami) && empty($whoami['public_view'])) || $up
   [hidden]{display:none!important}
   /* (5.54) an upgrade going on: the band over the card */
   .signin{flex-direction:column;gap:14px}
-  .upband{width:min(420px,100%);background:#2a2412;border:1px solid #d29922;border-radius:12px;padding:12px 14px;font-size:13px}
+  .upband{width:min(420px,100%);background:#14243a;border:1px solid #58a6ff;border-radius:12px;padding:12px 14px;font-size:13px}
   .upband.bad{background:#2d1517;border-color:var(--crit)}
-  .upband-head{display:block;color:#d29922;font-size:14px}
+  .upband-head{display:block;color:#58a6ff;font-size:14px}
   .upband.bad .upband-head{color:var(--crit)}
   .upband-sub{color:var(--tx-dim);margin-top:4px;overflow-wrap:anywhere}
   .upband .up-bar{height:6px;border-radius:3px;background:var(--panel2);margin-top:8px;overflow:hidden}
-  .upband .up-bar span{display:block;height:100%;background:#d29922;transition:width .4s}
+  .upband .up-bar span{display:block;height:100%;background:#58a6ff;transition:width .4s}
   .upband a{color:var(--info)}
 </style>
 </head>
@@ -3183,19 +3183,20 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      aside while it is there, it says the same */
   .maint-band.upg-aside{display:none}
   .upband{position:sticky;top:0;z-index:58;display:flex;gap:6px 14px;align-items:flex-start;justify-content:space-between;
-    flex-wrap:wrap;padding:10px 18px;background:color-mix(in srgb, var(--warn) 14%, var(--panel));border-bottom:1px solid var(--warn);
-    margin-bottom:14px}
+    flex-wrap:wrap;padding:12px 18px;background:color-mix(in srgb, var(--info) 12%, var(--panel));border:1px solid var(--info);
+    border-radius:12px;margin:0 0 14px}
+  /* (5.54.0) blue while it runs, as the kit draws it; red when it failed, green when done */
   .upband[hidden]{display:none}
-  .upband.bad{background:color-mix(in srgb, var(--crit) 14%, var(--panel));border-bottom-color:var(--crit)}
-  .upband.good{background:color-mix(in srgb, var(--ok) 12%, var(--panel));border-bottom-color:var(--ok)}
+  .upband.bad{background:color-mix(in srgb, var(--crit) 14%, var(--panel));border-color:var(--crit)}
+  .upband.good{background:color-mix(in srgb, var(--ok) 12%, var(--panel));border-color:var(--ok)}
   .upband .upband-words{flex:1 1 420px;min-width:0}
-  .upband .upband-head{color:var(--warn);font-weight:650}
+  .upband .upband-head{color:var(--info);font-weight:650}
   .upband.bad .upband-head{color:var(--crit)}
   .upband.good .upband-head{color:var(--ok)}
   .upband .upband-sub{color:var(--tx-dim);font-size:13px;margin-top:2px;overflow-wrap:anywhere}
   .upband .upband-said{color:var(--tx);font-size:13px;margin-top:4px;overflow-wrap:anywhere}
   .upband .upband-bar{height:7px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-top:8px;max-width:620px}
-  .upband .upband-bar span{display:block;height:100%;background:var(--warn);border-radius:99px;transition:width .4s ease}
+  .upband .upband-bar span{display:block;height:100%;background:var(--info);border-radius:99px;transition:width .4s ease}
   .upband .upband-step{color:var(--tx-dim);font-size:12.5px;margin-top:4px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
   .upband a{color:var(--info);cursor:pointer}
   .upband .upband-tools{display:flex;gap:8px;align-items:center}
