@@ -2083,7 +2083,16 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.55.0**
+Current version: **5.55.1**
+
+5.55.1 — the SELinux card looks as the kit draws it.
+
+* Nothing refused is a green box with a tick ("SELinux refused nothing on this
+  machine"), not a grey line; "Ready for enforcing" is green; the card's steps
+  ("Switch to enforcing", "Put in what is selected", "Make it ready") are solid
+  blue buttons, and "Switch to enforcing" wears a lock only while it is locked.
+
+`test/review555_selinux2.py`; these checks fail on 5.55.0.
 
 5.55.0 — SELinux: everything it refuses, sorted by what puts it right.
 

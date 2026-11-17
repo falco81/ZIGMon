@@ -1038,7 +1038,9 @@ check(ENF_BAD.get('mode') == 'Enforcing' and (ENF_BAD.get('counts') or {}).get('
       and len((ENF_BAD.get('local') or {}).get('rules') or []) == 1, 'the enforcing state: %r' % ENF_BAD.get('counts'))
 check(ENF_OK.get('mode') == 'Enforcing' and not ENF_OK.get('problems') and (ENF_OK.get('local') or {}).get('rules'),
       'the calm enforcing state: %r' % ENF_OK.get('problems'))
-SEEDS = {'perm': (PERM, 'check', []), 'enf_bad': (ENF_BAD, 'check', []), 'enf_ok': (ENF_OK, 'check', []),
+# (5.55.1) permissive, ready: nothing missing, nothing refused - the state of the first real server
+PERM_OK = dict(ENF_OK, mode='Permissive', config='permissive', ready=True, problems=[])
+SEEDS = {'perm': (PERM, 'check', []), 'perm_ok': (PERM_OK, 'check', []), 'enf_bad': (ENF_BAD, 'check', []), 'enf_ok': (ENF_OK, 'check', []),
          'dis': (DIS, 'check', []),
          'made': (MADE, 'prepare', ['%s: SELINUX=permissive' % SE_CONFIG, 'the files are labelled at the next start '
                                     'of the machine', 'zigmon\'s module (zigmon_server) installed',
@@ -1098,6 +1100,11 @@ async function card(p) {
             local: Array.from(c.querySelectorAll('.sef-lrow')).map(r => r.innerText),
             steps: Array.from(c.querySelectorAll('.se-btns button')).map(b => ({t: b.innerText.trim(), off: b.disabled})),
             said: txt('#se-said'), buttons: c.querySelectorAll('button').length,
+            // (5.55.1) as the kit: the calm green box, the verdict's colour, the step's look
+            calm: q('.se-calm') ? getComputedStyle(q('.se-calm')).backgroundColor : null,
+            verdictCls: (q('#se-verdict') || {}).className || '',
+            enfBg: q('#se-enforce') ? getComputedStyle(q('#se-enforce')).backgroundColor : null,
+            enfLock: q('#se-enforce') ? /data-ic="lock"|lock/.test(q('#se-enforce').innerHTML) : null,
             node: !!document.getElementById('se-node'),
             wide: c.scrollWidth <= c.clientWidth + 1};
   });
@@ -1162,6 +1169,7 @@ let P = null;
   await waitDone(p);
   out.dropped = await card(p);
   await at('enf_ok', '05-enforcing-nothing-refused.png');
+  await at('perm_ok', '11-permissive-ready.png');
   await at('enf_bad', '06-enforcing-something-refused.png');
   await at('dis', '08-disabled.png');
   await at('made', '09-made-ready.png');
@@ -1282,6 +1290,13 @@ eo = r.get('enf_ok') or {}
 check(eo.get('mode') == 'ENFORCING' and eo.get('verdict', '').startswith('Enforcing - and everything zigmon needs is there')
       and [x['t'] for x in eo.get('steps') or []] == ['Back to permissive'] and len(eo.get('local') or []) == 1
       and 'Nothing refused since the machine started' in eo.get('text', ''), 'enforcing, nothing refused: %r' % eo)
+check(eo.get('calm') and eo.get('calm') != 'rgba(0, 0, 0, 0)', 'nothing refused is not the kit\'s green box: %r'
+      % eo.get('calm'))
+po = r.get('perm_ok') or {}
+check('good' in po.get('verdictCls', '') and po.get('verdict', '').startswith('Ready for enforcing')
+      and po.get('enfBg') == 'rgb(31, 111, 235)' and po.get('calm'),
+      'permissive and ready: not green, or the step is not the kit\'s solid button: %r'
+      % {k: po.get(k) for k in ('verdictCls', 'verdict', 'enfBg', 'enfLock', 'calm')})
 eb = r.get('enf_bad') or {}
 check(eb.get('mode') == 'ENFORCING' and eb.get('put') == 'Put in what is selected (5)' and not eb.get('putOff')
       and 'Enforcing - but something' in eb.get('verdict', ''), 'enforcing, something refused: %r'

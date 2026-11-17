@@ -5658,6 +5658,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .se-verdict{display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);
               background:var(--panel);font-size:13.5px}
   .se-verdict.good{border-color:rgba(63,185,80,.5);background:var(--ok-bg)}
+  /* (5.55.1) as the kit: nothing refused is a green box with a tick; the card's main steps
+     are solid blue buttons */
+  .se-calm{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:10px;
+    border:1px solid rgba(63,185,80,.5);background:var(--ok-bg);margin:4px 0}
+  .se-calm-ic{width:30px;height:30px;border-radius:50%;flex:0 0 30px;display:inline-flex;align-items:center;justify-content:center;
+    background:rgba(63,185,80,.18);color:var(--ok);font-weight:700}
+  .se-calm b{display:block;color:var(--tx);font-size:14px} .se-calm span:not(.se-calm-ic){color:var(--tx);font-size:13px}
+  #sec-selinux .btn.primary,.se-btns .btn.primary,.sef-put .btn.primary{background:#1f6feb;border-color:#1f6feb;color:#fff}
   .se-verdict.ready{border-color:rgba(88,166,255,.5);background:var(--info-bg)}
   .se-verdict.bad{border-color:rgba(210,153,34,.5);background:var(--warn-bg)}
   .se-said{margin:0;list-style:none;padding:8px 12px;display:flex;flex-direction:column;gap:2px;border-radius:10px;
@@ -36527,8 +36535,15 @@ function seFindings(box, n, s) {
     return;
   }
   if (!finds.length) {
-    wrap.appendChild(el('p', 'note small sef-none', 'Nothing refused since the machine started' +
+    // (5.55.1) the calm state as the kit draws it: a green box with a tick, not a grey line
+    var calm = el('div', 'sef-none se-calm');
+    calm.appendChild(el('span', 'se-calm-ic', '\u2713'));
+    var cw = el('div', '');
+    cw.appendChild(el('b', '', 'SELinux refused nothing on this machine'));
+    cw.appendChild(el('span', '', 'Nothing since the machine started' +
       (counts.allowed ? ' - ' + counts.allowed + ' refused before and allowed now, not counted.' : '.')));
+    calm.appendChild(cw);
+    wrap.appendChild(calm);
   }
   SE_KINDS.forEach(function (K) {
     var rows = finds.filter(function (f) { return f.kind === K.k; });
@@ -36774,7 +36789,7 @@ function seNode(n) {
       seLocalRules(box, n, s);
     }
     var fc = s.counts || {};
-    var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'ready' : 'bad'));
+    var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'good' : 'bad'));
     verdict.id = 'se-verdict';
     verdict.appendChild(el('b', '', m === 'Enforcing' ? (probs.length ? 'Enforcing - but something is not as zigmon needs it' : 'Enforcing - and everything zigmon needs is there')
       : s.ready ? 'Ready for enforcing' : 'Not ready for enforcing yet'));
@@ -36807,7 +36822,8 @@ function seNode(n) {
     row.appendChild(prep);
   }
   if (m === 'Permissive') {
-    var enf = cmdButton('Switch to enforcing', 'lock', s.ready ? 'primary' : '');
+    // (5.55.1) the lock only while it is locked; ready, it is the step to take
+    var enf = cmdButton('Switch to enforcing', s.ready ? 'shield' : 'lock', s.ready ? 'primary' : '');
     enf.id = 'se-enforce';
     enf.disabled = !!n.pending || !s.ready;
     if (!s.ready) enf.title = 'Once nothing is missing and nothing was refused';
