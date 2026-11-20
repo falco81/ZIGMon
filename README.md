@@ -2083,7 +2083,35 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.55.1**
+Current version: **5.55.2**
+
+5.55.2 — a hunt for bugs in what came lately.
+
+* Firewall: the mDNS answers (from port 5353) are let in only from private,
+  link-local and unique-local networks - a source port is the sender's to
+  choose, and from anywhere it let any UDP in that said so.
+* `/api/healthz` says "in maintenance" only while an upgrade runs - not for ten
+  minutes after one ended with zigmon down.
+* SELinux: a rule of zigmon_local hides a refusal only while the module is in
+  the policy (after an uninstall or `semodule -r` the refusal shows again, to
+  be put right).
+* Heating: following the room thermometer no longer corrects the same
+  difference twice (the head's echo of the new offset with its old reading);
+  "Match the room" by hand counts for the interval.
+* Certificates: the missing link is fetched only over http/https (no ftp
+  redirect), within ten seconds in all.
+* Shelly: a box written as `http(s)://...` no longer stops the warm
+  connections of every box nor hides its commands from the poll; a restart
+  seen while the firmware could not be read is read again until it is; a
+  scheduled backup set late in the evening is caught up after midnight, and a
+  night is not marked done before its job started; a command asked again
+  carries the next digest count (no extra round trip); a refused certificate
+  is not written down again on every poll; a kept or spare HTTPS connection
+  is used again only if the box's current pin or CA still accepts it.
+* Settings: a fold opened in a pane that redraws itself (Upgrades, Automatic
+  certificates, SELinux) stays open.
+
+`test/review556_hunt_a.py`, `_b`, `_c`, `_d`; these checks fail on 5.55.1.
 
 5.55.1 — the SELinux card looks as the kit draws it.
 
