@@ -423,7 +423,10 @@ function zigmon_relay(string $path, string $method = 'GET', ?array $payload = nu
     [$status, $body] = zigmon_call($path, $method, $payload, $timeout, $extra);
     if ($status === 0) {
         $upgrading = zigmon_upgrading();                       // (5.54)
-        if ($upgrading !== null) {
+        // (5.56) /healthz says "in maintenance" only while one runs: an upgrade
+        // that ended (done or failed) with zigmon not answering is a machine
+        // that is down, and what watches it must not hold its alerts for it
+        if ($upgrading !== null && ($path !== '/api/healthz' || $upgrading['state'] === 'running')) {
             zigmon_upgrade_answer($path, $upgrading);
             return;
         }

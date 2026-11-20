@@ -5936,6 +5936,13 @@ def se_findings(text, fixed=None, known=None):
     whys = se_why_blocks([g['line'] for g in ours][:SE_FIND_MOST * 2])
     matched = se_matchpathcon(sorted({g['path'] for g in ours if g['path'] and se_is_ours(g['path'])}))
     local = se_local_rules()
+    if local:
+        # (5.56) a rule of the list allows only while its module is in the policy: taken out
+        # (install.sh --uninstall, semodule -r by hand) the list stays in root's folder, and
+        # what it allowed was counted "allowed now" - hidden, with no button to put it back
+        mods = se_modules()
+        if mods is not None and SE_LOCAL not in mods:
+            local = []
     for g in groups:
         se_sort(g, whys.get(g['line'].strip(), '') if g['ours'] else '', matched, known, local, fixed, now)
     order = {k: i for i, k in enumerate(SE_KINDS)}
