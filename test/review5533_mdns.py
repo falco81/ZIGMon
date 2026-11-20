@@ -61,8 +61,12 @@ d = zigmon.Daemon()
 try:
     mdns = [x for x in d.fw_auto() if x['key'] == 'mdns'][0]
     sports = [x for x in mdns['rules'] if x.get('sport') == '5353']
-    check(len(sports) == 2 and {x['family'] for x in sports} == {4, 6} and all(not x['port'] for x in sports),
+    check(len(sports) == 6 and {x['family'] for x in sports} == {4, 6} and all(not x['port'] for x in sports),
           'the mDNS function does not let the answers in: %r' % mdns['rules'])
+    # (5.55.2) never from anywhere: a source port is the sender's to choose
+    check(all(x.get('source') for x in sports) and '192.168.0.0/16' in {x['source'] for x in sports}
+          and 'fe80::/10' in {x['source'] for x in sports},
+          'the answers are let in from anywhere: %r' % [x.get('source') for x in sports])
     for x in mdns['rules']:
         root.fw_rule_checked(x)                       # every one of them taken by root
     old = W / 'zigmon_root.py'

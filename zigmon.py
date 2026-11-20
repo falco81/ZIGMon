@@ -10023,6 +10023,10 @@ def battery_span(d):
 # (5.52) how far back a cell's history is read for its fall: a year (hourly rows are kept two)
 BATTERY_LOOK_DAYS = 365
 
+# (5.55.2) where an mDNS answer may come from: the private, link-local and unique-local networks
+MDNS_ANSWER_FROM = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', 'fe80::/10', 'fc00::/7')
+
+
 class Daemon(object):
     def __init__(self, storage=None):
         open_log()
@@ -18428,7 +18432,10 @@ class Daemon(object):
         # older one would read it as "all of UDP"
         mdns = both('udp', '5353', 'mDNS')
         if self.fw_sport_ok():
-            mdns += [dict(x, port='', sport='5353', note='mDNS answers') for x in both('udp', '', 'mDNS answers')]
+            # (5.55.2) from the networks a Shelly box answers from only: a source port is the
+            # sender's to choose, and "from 5353" from anywhere let any UDP in that said so
+            mdns += [dict(x, port='', sport='5353', note='mDNS answers')
+                     for x in both('udp', '', 'mDNS answers', sources=MDNS_ANSWER_FROM)]
         items.append({'key': 'mdns', 'title': 'mDNS', 'why': 'udp 5353: how a Shelly box on the '
                       'network is found by its name - questions to port 5353 and the answers from it',
                       'rules': mdns})
