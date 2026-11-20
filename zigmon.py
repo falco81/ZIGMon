@@ -1834,8 +1834,26 @@ class ShellyRPC(object):
             return 0, None
         return len(spares), time.monotonic() - spares[0][1]
 
+    @staticmethod
+    def _conn_trusted(conn, conf):
+        """(5.56) Whether an HTTPS connection opened a moment ago would be
+        accepted under the box's setting as it is now. A connection on the
+        wire, or a spare half way through its handshake, when the CA was
+        changed or a new certificate trusted was put back after
+        forget_connections had cleared the box - and used again, held to the
+        setting that had just been replaced. Plain HTTP has nothing to hold."""
+        had = getattr(conn, 'conf', None)
+        if had is None or conf is None:
+            return True
+        if (had.get('ca') or '') != (conf.get('ca') or ''):
+            return False
+        if conf.get('ca'):
+            return True
+        pin = conf.get('pin') or ''
+        return not pin or getattr(conn, 'box_fp', None) == pin
+
     @classmethod
-    def _take_warm(cls, host, window, tls=False):
+    def _take_warm(cls, host, window, tls=False, conf=None):
         """The freshest spare of a box that is still good, or None."""
         conn, stale = None, []
         with cls._conn_guard:
@@ -1843,7 +1861,8 @@ class ShellyRPC(object):
             while spares and conn is None:
                 one, opened = spares.pop()
                 if time.monotonic() - opened >= window or not cls._sock_open(one.sock) \
-                        or isinstance(one, http.client.HTTPSConnection) != bool(tls):
+                        or isinstance(one, http.client.HTTPSConnection) != bool(tls) \
+                        or (tls and not cls._conn_trusted(one, conf)):
                     stale.append(one)
                 else:
                     conn = one
@@ -1863,7 +1882,10 @@ class ShellyRPC(object):
         takes one of the few requests a second the box will answer - and on a
         four-socket strip switched as one scene, that was the one that got the
         fourth socket refused and retried a second later."""
-        host = str(host or '')
+        # (5.56) as the client keys it: a config.json box written as
+        # "https://10.0.0.5" was asked about by that whole word and never seen
+        # being switched, so its poll went on talking over the command
+        host = cls.split_scheme(host)[0]
         if time.time() - cls._cmd_at.get(host, 0.0) < within:
             return True
         gate = cls._gates.get(host)
@@ -2090,6 +2112,12 @@ class ShellyRPC(object):
             try:
                 for attempt, wait in enumerate(ladder):
                     self.timeout = wait
+                    if attempt and known:
+                        # (5.56) signed again, with the next nc: the box may
+                        # have had the first and only its answer was lost, and
+                        # it takes an nc once - the same header again was
+                        # answered 401 and cost a challenge more
+                        auth = self._digest_header(known, 'POST', '/rpc')
                     try:
                         status, reply, headers = self._post(body, auth)
                         break
@@ -2227,7 +2255,7 @@ class ShellyRPC(object):
         want = max(1, int(CONFIG.get('plug_commands_at_once') or 1))
         if want == 1:
             return 1
-        return 1 if cls._crowded.get(str(host or ''), 0) > time.time() else want
+        return 1 if cls._crowded.get(cls.split_scheme(host)[0], 0) > time.time() else want
 
     @classmethod
     def cooling(cls, host, within=4.0):
@@ -2236,7 +2264,7 @@ class ShellyRPC(object):
         What it has left to answer with belongs to whatever a person is
         waiting on, not to a reading that comes round every fifteen seconds
         anyway. One round skipped at most."""
-        when, _times = cls._rate_limited.get(str(host or ''), (0.0, 0))
+        when, _times = cls._rate_limited.get(cls.split_scheme(host)[0], (0.0, 0))
         return bool(when) and (time.time() - when) < float(within)
 
     def _gate(self):
@@ -2386,6 +2414,7 @@ class ShellyRPC(object):
         # So a kept connection is only used again if it was used a moment ago,
         # which is exactly when it helps: the four commands of one scene.
         window = float(CONFIG.get('plug_keepalive_s') or 0)
+        conf = self._tls_conf() if self.tls else None
         for attempt in (0, 1):
             conn = None
             # (5.44) A few kept per box, not one. The four sockets of a strip
@@ -2417,6 +2446,8 @@ class ShellyRPC(object):
                         stale.append(one)
                     elif isinstance(one, http.client.HTTPSConnection) != self.tls:
                         stale.append(one)       # (5.52) kept from before HTTPS was switched on or off
+                    elif self.tls and not self._conn_trusted(one, conf):
+                        stale.append(one)       # (5.56) kept from before its CA or certificate changed
                     else:
                         conn = one
                 # whatever is older than the one taken is older still
@@ -2431,7 +2462,7 @@ class ShellyRPC(object):
                 # (5.44.1) nothing kept from a moment ago - the usual case, the
                 # first press after a quiet spell: the warm spare, connected
                 # already, instead of a handshake on the way of the command
-                conn = self._take_warm(self.host, window, self.tls)
+                conn = self._take_warm(self.host, window, self.tls, conf)
             fresh = conn is None
             if not fresh:
                 # A kept connection carries the timeout of whoever opened it -
@@ -2443,7 +2474,7 @@ class ShellyRPC(object):
             if fresh and not self.tls:
                 conn = http.client.HTTPConnection(self._box_address(host), port, timeout=self.timeout)
             elif fresh:
-                conn = ShellyHTTPS(self._box_address(host), port, self.timeout, self.host, host, self._tls_conf())
+                conn = ShellyHTTPS(self._box_address(host), port, self.timeout, self.host, host, conf)
             started = time.perf_counter()
             if CONFIG.get('debug'):
                 log('http -> %s POST /rpc %s%s %s' % (self.host, 'fresh' if fresh else 'kept',
@@ -2628,7 +2659,7 @@ class ShellyHTTPS(http.client.HTTPSConnection):
         http.client.HTTPConnection.connect(self)
         try:
             self.sock = self._context.wrap_socket(self.sock, server_hostname=self.box_name)
-            ShellyRPC.tls_check(self.box, self.sock, self.conf)
+            self.box_fp = ShellyRPC.tls_check(self.box, self.sock, self.conf)
         except BaseException:
             ShellyRPC._close_quietly(self.sock)
             self.sock = None
@@ -22847,7 +22878,10 @@ class Daemon(object):
         recent = time.time() - self.WARM_RECENT_S
         hosts = collections.Counter()
         for p in list(self.plugs.values()):
-            host = str(p.cfg.get('host') or '')
+            # (5.56) the bare address, as ShellyRPC keys its spares: "https://.."
+            # from config.json was split at its colon into a port and the
+            # ValueError ended every round - no box had a spare any more
+            host = ShellyRPC.split_scheme(str(p.cfg.get('host') or ''))[0]
             if not host or p.cfg.get('monitor_only') or str(p.cfg.get('host_state') or '') == 'disabled':
                 continue
             if p.cfg.get('mqtt') and CONFIG.get('mqtt_only'):
@@ -22911,7 +22945,8 @@ class Daemon(object):
         # replaced well inside the window: a command that takes one a moment
         # before the next is due still has a good margin
         renew = max(0.2, window * 0.7)
-        down = {str(p.cfg.get('host') or '') for p in list(self.plugs.values()) if p.known_down}
+        down = {ShellyRPC.split_scheme(str(p.cfg.get('host') or ''))[0] for p in list(self.plugs.values())
+                if p.known_down}
         due, soonest = [], renew
         for host, sockets in hosts.items():
             if host in down:
@@ -23199,6 +23234,12 @@ class Daemon(object):
         restarted = isinstance(up, (int, float)) and isinstance(seen, (int, float)) and up < seen
         if isinstance(up, (int, float)):
             p.uptime_seen = up
+        if restarted:
+            # (5.56) the restart is seen once - its uptime is the lower one from
+            # now on - so it is kept as "due" until a read is made: a read
+            # skipped for a command or one that failed (a box still coming up
+            # from its update) left the old firmware on the card for six hours
+            p.info_at = 0
         return not p.info or restarted or now - (getattr(p, 'info_at', 0) or 0) >= self.PLUG_INFO_EVERY_S
 
     def poll_plug(self, p, force=False):
@@ -24601,6 +24642,11 @@ class Daemon(object):
             self.store.add_event('plug', words, 'info', self._shelly_tls_device(host))
 
     def _shelly_tls_refused(self, host, seen, pinned):
+        if (self.shelly_tls_settings().get(host) or {}).get('seen') == seen:
+            # (5.56) told already: every poll, warm spare and command of a box
+            # refused rewrote the settings row with nothing changed in it
+            return
+
         def change(entry):
             if entry.get('seen') == seen:
                 return False
@@ -58624,9 +58670,14 @@ def sbk_due(d, now=None):
     now = now or datetime.now()
     hh, mm = [int(x) for x in s['at'].split(':')]
     at, here = hh * 60 + mm, now.hour * 60 + now.minute
-    if here < at or here > at + 180:
+    if at <= here <= at + 180:
+        day = now.strftime('%Y-%m-%d')
+    elif here < at and here + 1440 <= at + 180:
+        # (5.56) a late evening time's three hours run past midnight: at 00:20
+        # the 23:30 run of the day before is still due (it was let go)
+        day = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
         return None
-    day = now.strftime('%Y-%m-%d')
     return None if d.store.get_meta('sbk:day') == day else day
 
 
@@ -58650,9 +58701,14 @@ def sbk_tick(d, now=None):
         return None
     day = sbk_due(d, now)
     if day:
-        d.store.set_meta('sbk:day', day)
         steps = []
-        sbk_job_start(d, 'scheduled', 'zigmon (on the clock)', steps, lambda: sbk_scheduled(d, steps))
+        try:
+            sbk_job_start(d, 'scheduled', 'zigmon (on the clock)', steps, lambda: sbk_scheduled(d, steps))
+        except ValueError:
+            # (5.56) a backup by hand began a moment ago: the night's run is not
+            # marked as made - it starts once that one has ended
+            return None
+        d.store.set_meta('sbk:day', day)
         return 'scheduled'
     if time.time() - SBK_STARTED < SBK_FIRST_CHECK_S or SBK_CHECKING['on'] or not sbk_in_use(d):
         return None
