@@ -9649,6 +9649,22 @@ def web_opener(url, *handlers, purpose=''):
     return urllib.request.build_opener(_webproxy_handler(webproxy_full(purpose)), *handlers)
 
 
+def _aia_redirects():
+    """A redirect handler for a CA Issuers address: http and https only, a few."""
+    import urllib.error
+    import urllib.request
+
+    class AiaRedirects(urllib.request.HTTPRedirectHandler):
+        max_redirections = 4
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if urlsplit(newurl).scheme.lower() not in ('http', 'https'):
+                raise urllib.error.HTTPError(newurl, code, 'redirected to an address that is not http or https',
+                                             headers, fp)
+            return urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+    return AiaRedirects()
+
+
 def web_open(req, timeout=30, context=None, purpose=''):
     """urllib.request.urlopen for what zigmon asks of the web - through the
     proxy only for purpose='updates' (web_opener)."""
@@ -18943,8 +18959,20 @@ class Daemon(object):
         if was and time.time() - was[0] < 86400:
             return list(was[1])
         req = urllib.request.Request(url, headers={'User-Agent': 'zigmon/%s' % __version__})
-        with web_open(req, timeout=self.TLS_AIA_TIMEOUT_S, purpose='acme') as r:
-            raw = r.read(self.TLS_AIA_MAX + 1)
+        # A redirect is followed to http or https only - urllib's own went on
+        # to ftp:// as well, to any host and port it named - and the whole of
+        # it within the time: the timeout is per read, and an answer that came
+        # a byte at a time held the request for as long as it liked.
+        end = time.time() + self.TLS_AIA_TIMEOUT_S
+        with web_opener(url, _aia_redirects(), purpose='acme').open(req, timeout=self.TLS_AIA_TIMEOUT_S) as r:
+            raw = b''
+            while len(raw) <= self.TLS_AIA_MAX:
+                if time.time() > end:
+                    raise TimeoutError('it took longer than %d s' % self.TLS_AIA_TIMEOUT_S)
+                part = r.read1(4096) if hasattr(r, 'read1') else r.read(4096)
+                if not part:
+                    break
+                raw += part
         if not raw or len(raw) > self.TLS_AIA_MAX:
             return []
         got = self._tls_aia_read(raw)
@@ -40715,6 +40743,19 @@ class Daemon(object):
             self._heat_follow = memory
         return memory
 
+    @staticmethod
+    def _follow_unmeasured(last, cal, head_c):
+        """Whether a head has taken the offset last written to it but not yet
+        measured again: its report carries the new offset beside the reading it
+        had before the change. Zigbee2MQTT answers a write with the head's whole
+        state - the new offset and the old, cached local_temperature - so the
+        report's time alone said "reported since" and the next pass corrected
+        the same difference a second time."""
+        if not isinstance(last, dict) or not isinstance(last.get('head'), (int, float)) \
+                or not isinstance(last.get('offset'), (int, float)) or not isinstance(cal, (int, float)):
+            return False
+        return abs(float(cal) - float(last['offset'])) < 0.01 and abs(float(head_c) - float(last['head'])) < 1e-6
+
     def heating_follow(self, force=False):
         """Keep the heads of a room switched to "follow the room thermometer"
         reading what the room reads, by moving each head's offset
@@ -40791,6 +40832,8 @@ class Daemon(object):
                 if last_at and (now - last_at < every_s or h_ts <= last_at):
                     continue              # too soon, or its reading is still from before the change
                 old = payload.get('local_temperature_calibration')
+                if self._follow_unmeasured(last, old, head_c):
+                    continue
                 offset = self.calibration_for(old, room_c, head_c)
                 old_v = float(old) if isinstance(old, (int, float)) else 0.0
                 if abs(offset - old_v) < 0.01:
@@ -40801,7 +40844,7 @@ class Daemon(object):
                 if not ok:
                     log('following the room thermometer, %s: %s' % (head_name, message), 'warn')
                     continue
-                memory[device_id] = {'at': now, 'offset': offset}
+                memory[device_id] = {'at': now, 'offset': offset, 'head': float(head_c)}
                 written += 1
                 thermo_name = (self.store.device(thermo) or {}).get('name') or thermo
                 self.store.add_event('heating', 'kept %s matched to %s: offset %g → %g °C (room %g, head %g)'
@@ -40830,6 +40873,16 @@ class Daemon(object):
         ok, message = self.zigbee_switch(device_id, 'local_temperature_calibration', 'set:=%g' % offset,
                                          'calibrating to the room thermometer (%s)' % origin)
         if ok:
+            # the follow job told of it, as of its own write: the head's
+            # echo carries the new offset beside its old reading, and a pass a
+            # minute later corrected the same difference a second time
+            try:
+                memory = self._follow_memory()
+                memory[device_id] = {'at': time.time(), 'offset': offset, 'head': float(head_c)}
+                self.store.set_meta('heating_follow', json.dumps(memory))
+                self._heat_state_cache = None
+            except Exception as e:                      # noqa: BLE001 - the offset is set all the same
+                log('calibrating %s: %s' % (device_id, e), 'warn')
             self.store.add_event('heating', 'calibrated %s to %g \u00b0C (room reads %g, head read %g)'
                                  % ((self.store.device(device_id) or {}).get('name') or device_id, offset, room_c, head_c), 'info')
             return True, 'offset set to %+g \u00b0C' % offset
