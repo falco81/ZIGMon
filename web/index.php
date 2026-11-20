@@ -30515,6 +30515,17 @@ function rootTimer(sec, fn, ms) {
     fn(true);
   }, ms || 5000);
 }
+/* A fold of a pane that is drawn again every few seconds (rootTimer, a poll)
+   stays as it was left: the pane is built anew each time, and a <details>
+   opened to read - the changelog of the version waiting, what SELinux refused,
+   the steps of the last order - snapped shut under the reader at the next
+   draw. Kept by a name of its own, as UP.tailOpen keeps install.sh's lines. */
+var FOLD_OPEN = {};
+function foldKept(det, key, opened) {
+  if (Object.prototype.hasOwnProperty.call(FOLD_OPEN, key) ? FOLD_OPEN[key] : !!opened) det.open = true;
+  det.addEventListener('toggle', function () { FOLD_OPEN[key] = det.open; });
+  return det;
+}
 function rootLocked(host, words, again) {
   if (!host || host.dataset.locked === '1') return;
   host.dataset.locked = '1';
@@ -32770,7 +32781,7 @@ function drawAcme() {
     if (st.ok === false && st.said) c.appendChild(acSaid(false, st.said, st.failed_at, 'The last order'));
     /* What the last order did, step by step (otp 1.0.175). */
     if ((st.steps || []).length) {
-      var det = el('details', 'acme-steps-done');
+      var det = foldKept(el('details', 'acme-steps-done'), 'acme-steps:' + t.target);
       det.appendChild(el('summary', 'small muted', 'What the last order did'));
       var t0 = st.steps[0][0];
       st.steps.forEach(function (x) {
@@ -33679,7 +33690,7 @@ function drawUpgrade(d) {
       + (p.source ? ' · fetched from ' + p.source + ' by ' : ' · sent by ') + (p.by || '?') + ' · ' + ago(p.at)));
     pk.appendChild(box);
     if (p.changelog) {
-      var det = el('details', 'zfold');
+      var det = foldKept(el('details', 'zfold'), 'up-changelog:' + p.version);
       det.appendChild(el('summary', '', 'What changed in ' + p.version));
       det.appendChild(el('pre', 'zlines', p.changelog));
       pk.appendChild(det);
@@ -33851,7 +33862,7 @@ function drawUpBack(d) {
     if (good.length) host.appendChild(rows(good, true));
     else host.appendChild(el('p', 'note', 'No version at the address may be gone back to.'));
     if (bad.length) {
-      var det = el('details', 'zfold');
+      var det = foldKept(el('details', 'zfold'), 'up-back-refused');
       det.style.marginTop = '12px';
       det.appendChild(el('summary', '', bad.length + ' older version(s) it may not go back to' + (b.floor ? ' - below ' + b.floor : '')));
       var reasons = [];
@@ -36755,7 +36766,7 @@ function seNode(n) {
     box.appendChild(list);
     (s.left_out || []).forEach(function (x) { box.appendChild(el('p', 'note small', x)); });
     if ((d.groups || []).length) {
-      var det = el('details', 'se-avc');
+      var det = foldKept(el('details', 'se-avc'), 'se-avc');
       det.id = 'se-avc';
       det.appendChild(el('summary', '', 'What was refused (' + d.groups.length + ')'));
       var wrap = el('div', 'se-avc-wrap');
