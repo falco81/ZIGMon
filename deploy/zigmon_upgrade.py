@@ -36,6 +36,7 @@ replaced is put back and started again, and the dashboard is told why.
                                     put in on the command line here (5.44;
                                     install.sh asks, exit 3 when it must)
 """
+import fcntl
 import grp
 import hashlib
 import json
@@ -68,6 +69,9 @@ MOST_PACKED = 64 * 1024 * 1024
 MOST_UNPACKED = 256 * 1024 * 1024
 MOST_FILES = 5000
 INSTALL_LIMIT_S = 20 * 60      # under TimeoutStartSec=25min
+# one upgrade at a time: see lock_take() below. In root's own folder (0700),
+# which no rollback touches; install.sh --upgrade run by hand takes the same
+LOCK_FILE = os.environ.get('ZIGMON_UPGRADE_LOCK') or os.path.join(OWN_DIR, 'upgrade.lock')
 TOP = re.compile(r'^zigmon-([0-9]+(?:\.[0-9]+){2,3})$')
 # what an upgrade replaces, and what goes back when the new one does not answer
 PROGRAM = (LIB_DIR, WEB_DIR)
@@ -531,6 +535,103 @@ def inspect(path, extract_to=None):
     return out
 
 
+# ---- one upgrade at a time --------------------------------------------------------
+# Two upgrades at once - a --run by hand while the dashboard's runs, or
+# install.sh --upgrade by hand beside either - would run two install.sh over
+# each other, and the second would end as failed over the first one's files
+# for the pages. So an upgrade or a downgrade holds an flock on LOCK_FILE from
+# taking its request to its end (install.sh, the check, the rollback). An
+# flock goes with the process that holds it - also when it is killed with
+# SIGKILL - so it never outlives an upgrade; there is no pid file to go stale.
+# The descriptor is not handed to install.sh (close-on-exec): a helper killed
+# by hand must not leave the lock held by what it started. What the file says
+# (who, to what, since when) is only read to say why a second one was not
+# started; it is written by the one that holds the lock.
+LOCK = {'fd': None, 'info': {}}
+
+
+def lock_words(info):
+    """Why a second upgrade is not started, from what the holder wrote."""
+    info = info if isinstance(info, dict) else {}
+    down = info.get('downgrade') is True
+    what = 'another %s is running' % ('downgrade' if down else 'upgrade')
+    bits = []
+    v = str(info.get('version') or '')
+    if _VER_RE.match(v):
+        bits.append(('back to %s' if down else 'to %s') % v)
+    try:
+        bits.append('started %s' % time.strftime('%H:%M', time.localtime(float(info['started']))))
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        pass
+    by = _plain(info.get('by'), 100)
+    if by:
+        if bits:
+            bits[-1] += ' by %s' % by
+        else:
+            bits.append('by %s' % by)
+    return '%s%s - this one was not started' % (what, (' (%s)' % ', '.join(bits)) if bits else '')
+
+
+def _lock_write():
+    fd = LOCK['fd']
+    if fd is None:
+        return
+    try:
+        body = json.dumps(LOCK['info']).encode('utf-8')
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, body + b'\n', 0)
+    except OSError:
+        pass                                            # only words for a second one
+
+
+def lock_take(what, by='', version='', downgrade=False):
+    """Take the lock for this whole upgrade. None when taken (or when it cannot
+    be had at all - then this goes on as before there was one); the words to
+    refuse with when another upgrade holds it."""
+    if LOCK['fd'] is not None:
+        return None
+    try:
+        os.makedirs(os.path.dirname(LOCK_FILE), mode=0o700, exist_ok=True)
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            raw = os.pread(fd, 4096, 0)
+            info = json.loads(raw.decode('utf-8', 'replace') or '{}')
+        except (OSError, ValueError):
+            info = {}
+        os.close(fd)
+        return lock_words(info)
+    except OSError:
+        os.close(fd)                                    # no flock on that file system
+        return None
+    LOCK['fd'] = fd
+    LOCK['info'] = {'what': what, 'by': _plain(by, 100), 'version': version or '',
+                    'downgrade': bool(downgrade), 'started': int(time.time()), 'pid': os.getpid()}
+    _lock_write()
+    return None
+
+
+def lock_note(**fields):
+    """What became known after the lock was taken (the version, who)."""
+    if LOCK['fd'] is None:
+        return
+    LOCK['info'].update(fields)
+    _lock_write()
+
+
+def lock_drop():
+    fd, LOCK['fd'] = LOCK['fd'], None
+    if fd is not None:
+        try:
+            os.close(fd)                                # closing it lets it go
+        except OSError:
+            pass
+
+
 # ---- writing where zigmon may also write: never through a link ---------------
 def write_safely(path, data, mode=0o640):
     dfd, name = _where(path)
@@ -564,7 +665,11 @@ def read_small(path, most=65536):
         return f.read(most + 1)[:most]
 
 
+STATUS_EXTRA = {}       # who asked, and since when: said to a second one that is refused
+
+
 def status(**fields):
+    fields = dict(STATUS_EXTRA, **fields)
     fields['at'] = time.time()
     write_safely(os.path.join(UPGRADE_DIR, 'status.json'), json.dumps(fields))
 
@@ -825,6 +930,7 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         unpacked = os.path.join(work, 'x')
         os.makedirs(unpacked, mode=0o700)
         info = inspect(copy, extract_to=unpacked)
+        lock_note(version=info['version'], downgrade=bool(downgrade))     # for a second one's words
         back = None
         # (5.44) a release that must be put in on the command line is not put
         # in from here - whatever the dashboard said; install.sh --upgrade,
@@ -859,7 +965,9 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None, s
         src = os.path.join(unpacked, info['top'])
         env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'LANG': 'C.UTF-8', 'ZIGMON_UPGRADE_FROM_PAGES': '1', 'TERM': 'dumb',
-               'ZIGMON_UPGRADE_BY': str(by)[:100]}
+               'ZIGMON_UPGRADE_BY': str(by)[:100],
+               # this holds the lock of the upgrade: install.sh must not take it again
+               'ZIGMON_UPGRADE_LOCK_HELD': '1'}
         if PAGES:
             # (5.54) install.sh goes on numbering the parts where this left
             # off, writes its steps into the same file, and leaves the last
@@ -951,11 +1059,68 @@ def pages_end(rc, info):
 def serve_request():
     """What systemd starts when request.json appears."""
     taken = os.path.join(UPGRADE_DIR, 'request.taken')
+    busy = lock_take('request', 'the dashboard')
+    if busy:
+        return refuse_request(busy)
     try:
         dfd = up_fd()
         os.replace('request.json', 'request.taken', src_dir_fd=dfd, dst_dir_fd=dfd)
     except FileNotFoundError:
+        lock_drop()
         return 0
+    try:
+        return _serve_taken(taken)
+    finally:
+        lock_drop()
+
+
+def refuse_request(busy):
+    """A request while another upgrade holds the lock: taken out of the way at
+    once (left where it is, the path unit would start this again and again)
+    and answered as its own - failed, with why. The other upgrade's files are
+    not touched: request.taken, last.log and the file beside the pages are
+    never written here, and status.json only when the one running is not a
+    request of the dashboard's (a --run or install.sh by hand, which write
+    no status.json) - it is then the answer to this request alone."""
+    holder = ''
+    try:
+        dfd = up_fd()
+        os.replace('request.json', 'request.refused', src_dir_fd=dfd, dst_dir_fd=dfd)
+    except FileNotFoundError:
+        return 0                                        # nothing asked: nothing to say
+    except OSError as e:
+        print('refused: %s (and the request could not be put aside: %s)' % (busy, e), file=sys.stderr)
+        return 0
+    ident, version, down = '', '', False
+    try:
+        r = json.loads(read_small(os.path.join(UPGRADE_DIR, 'request.refused')).decode('utf-8'))
+        if isinstance(r, dict):
+            ident = re.sub(r'[^A-Za-z0-9]', '', str(r.get('id') or ''))[:64]
+            version = re.sub(r'[^0-9.]', '', str(r.get('version') or ''))[:20]
+            down = r.get('downgrade') is True
+    except (ValueError, OSError, Refused):
+        pass
+    finally:
+        try:
+            os.unlink('request.refused', dir_fd=up_fd())
+        except OSError:
+            pass
+    try:
+        with open(LOCK_FILE, 'rb') as f:
+            holder = str((json.loads(f.read(4096).decode('utf-8', 'replace') or '{}') or {}).get('what') or '')
+    except (OSError, ValueError, AttributeError):
+        holder = 'request'                              # not known: as if it were one
+    print('refused: %s' % busy, file=sys.stderr)
+    if holder != 'request':
+        try:
+            status(id=ident, state='failed', rc=-1, version=version, downgrade=down, said=busy,
+                   refused='busy', tail=['refused: %s' % busy])
+        except OSError:
+            pass
+    return 0
+
+
+def _serve_taken(taken):
     ident = ''
     log_path = os.path.join(UPGRADE_DIR, 'last.log')
     log_lines = []
@@ -992,6 +1157,10 @@ def serve_request():
         if not re.match(r'^zigmon-[0-9.]+\.tar\.gz$', name):
             raise Refused('the request names no package')
         now['version'] = re.sub(r'[^0-9.]', '', str(r.get('version') or ''))[:20]
+        by_words = '%s on the dashboard' % _plain(r.get('by') or 'somebody', 80)
+        lock_note(by=by_words, version=now['version'], downgrade=r.get('downgrade') is True)
+        STATUS_EXTRA.update(by=by_words, started=int(time.time()),   # for the daemon's words
+                            downgrade=r.get('downgrade') is True)
         status(id=ident, state='running', step='checking the package', version=now['version'],
                pid=os.getpid())
         # (5.54) the pages: taken, and the package being checked
@@ -1045,9 +1214,15 @@ def main(argv):
     if len(argv) >= 2 and argv[0] == '--needs-cli':           # (5.44) for install.sh
         return needs_cli_of_folder(argv[1])
     if len(argv) >= 2 and argv[0] == '--run':
+        by_words = '%s on the command line' % (os.environ.get('SUDO_USER') or 'root')
+        # one upgrade at a time: refused before anything - the pages' file,
+        # status.json and the log are the running one's
+        busy = lock_take('run', by_words, downgrade='--downgrade' in argv[2:])
+        if busy:
+            print('refused: %s' % busy, file=sys.stderr)
+            return 1
         # (5.54) the pages follow this one too
-        pages_begin('', '%s on the command line' % (os.environ.get('SUDO_USER') or 'root'),
-                    '--downgrade' in argv[2:])
+        pages_begin('', by_words, '--downgrade' in argv[2:])
         pages_tell('running', 1, 'root checks the package\'s signature')
         try:
             rc, info, _ = put_in(os.path.abspath(argv[1]), log_to=print,

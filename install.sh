@@ -284,6 +284,93 @@ upgrade_exit() {         # the EXIT trap: an end nobody said is a failure
 }
 # ---- (5.54) end -------------------------------------------------------------
 
+# ---- one upgrade at a time --------------------------------------------------
+# root's upgrade helper (deploy/zigmon_upgrade.py) holds an flock on this file
+# for the whole of an upgrade or a downgrade; --upgrade run by hand takes the
+# same one before it does anything (before the pages are told), and is refused
+# while another upgrade holds it. Run by the helper (ZIGMON_UPGRADE_LOCK_HELD,
+# or ZIGMON_UPGRADE_FROM_PAGES from a helper older than the lock) it takes
+# nothing: its helper holds it. Held on fd 9 until this ends - an flock goes
+# with the last process that has it open, also when it is killed, so nothing
+# is left to go stale. Without flock (util-linux) it goes on as it always did.
+UPG_LOCK_FILE="${ZIGMON_UPGRADE_LOCK:-${ZIGMON_ROOT_OWN:-/var/lib/zigmon-root}/upgrade.lock}"
+
+upgrade_lock_words() {   # upgrade_lock_words FILE: why this one is not started, from what the holder wrote
+    local words=""
+    words="$(python3 -I - "$1" 2>/dev/null <<'LOCKWORDS'
+import json, re, sys, time
+try:
+    with open(sys.argv[1], 'rb') as f:
+        info = json.loads(f.read(4096).decode('utf-8', 'replace') or '{}')
+except Exception:
+    info = {}
+info = info if isinstance(info, dict) else {}
+down = info.get('downgrade') is True
+bits = []
+v = str(info.get('version') or '')
+if re.match(r'^[0-9]+(\.[0-9]+){2,3}$', v):
+    bits.append(('back to %s' if down else 'to %s') % v)
+try:
+    bits.append('started %s' % time.strftime('%H:%M', time.localtime(float(info['started']))))
+except Exception:
+    pass
+by = re.sub(r'[\x00-\x1f\x7f]+', ' ', str(info.get('by') or '')).strip()[:100]
+if by:
+    if bits:
+        bits[-1] += ' by %s' % by
+    else:
+        bits.append('by %s' % by)
+print('another %s is running%s - this one was not started'
+      % ('downgrade' if down else 'upgrade', (' (%s)' % ', '.join(bits)) if bits else ''))
+LOCKWORDS
+)" || true
+    printf '%s' "${words:-another upgrade is running - this one was not started}"
+}
+
+upgrade_lock() {         # upgrade_lock VERSION-BEFORE: the first thing --upgrade does
+    [[ -z "$DRY_RUN" ]] || return 0
+    if [[ -n "${ZIGMON_UPGRADE_LOCK_HELD:-}" || -n "${ZIGMON_UPGRADE_FROM_PAGES:-}" ]]; then
+        return 0         # root's helper runs this and holds the lock itself
+    fi
+    if ! command -v flock >/dev/null 2>&1; then
+        warn "flock (util-linux) is not on this machine: nothing keeps another upgrade from running at the same time - going on"
+        return 0
+    fi
+    local dir rc=0
+    dir="$(dirname "$UPG_LOCK_FILE")"
+    if [[ ! -d "$dir" ]] && ! install -d -m 700 "$dir" 2>/dev/null; then
+        warn "could not make $dir for the upgrade lock - going on without it"
+        return 0
+    fi
+    if [[ -L "$UPG_LOCK_FILE" ]] || ! { exec 9<>"$UPG_LOCK_FILE"; } 2>/dev/null; then
+        warn "could not open the upgrade lock $UPG_LOCK_FILE - going on without it"
+        return 0
+    fi
+    flock -n 9 || rc=$?
+    if [[ $rc -eq 1 ]]; then
+        local words
+        words="$(upgrade_lock_words "$UPG_LOCK_FILE")"
+        exec 9>&-
+        fail "$words"
+    elif [[ $rc -ne 0 ]]; then
+        exec 9>&-
+        warn "could not take the upgrade lock $UPG_LOCK_FILE (flock said $rc) - going on without it"
+        return 0
+    fi
+    # held: what a second one is told (written whole over the old words; the
+    # lock is on fd 9, which this does not close)
+    local by="${SUDO_USER:-root} on the command line (install.sh --upgrade)" down=false
+    if [[ -n "${1:-}" && "$1" != "$VERSION" ]] \
+            && [[ "$(printf '%s\n%s\n' "$1" "$VERSION" | sort -V | head -n 1)" == "$VERSION" ]]; then
+        down=true
+    fi
+    printf '{"what":"install.sh","by":"%s","version":"%s","from":"%s","downgrade":%s,"started":%d,"pid":%d}\n' \
+        "$(upgrade_text "$by" 100)" "$VERSION" "$(upgrade_text "${1:-}" 20)" "$down" "$(date +%s)" "$$" \
+        > "$UPG_LOCK_FILE" 2>/dev/null || true
+    return 0
+}
+# ---- one upgrade at a time: end ---------------------------------------------
+
 usage() {
     cat <<EOF
 zigmon installer $VERSION — AlmaLinux 9
@@ -1706,6 +1793,7 @@ do_upgrade() {
     if [[ -f "$LIB_DIR/zigmon.py" ]]; then
         had="$(sed -n "s/^__version__ = '\(.*\)'/\1/p" "$LIB_DIR/zigmon.py" | head -n 1)"
     fi
+    upgrade_lock "$had"      # one upgrade at a time: refused before the pages are told
     upgrade_watch "$had"     # 5.54: the pages follow it, a part per step
     cli_gate                 # 5.44: before anything is changed
     preflight

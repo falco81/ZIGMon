@@ -20240,6 +20240,34 @@ class Daemon(object):
             pass
         return False
 
+    def upgrade_busy_words(self, st):
+        """Why a second upgrade or downgrade is not started while one runs or
+        waits for root: to what, since when and by whom, as far as its status
+        says (root's helper refuses a second one too, with the same words)."""
+        if not st.get('running'):
+            # asked for and not taken: the status is not of that one (yet)
+            return 'an upgrade is asked for already and root has not taken it yet - this one was not started'
+        cur = st.get('status') or {}
+        down = cur.get('downgrade') is True
+        bits = []
+        v = str(cur.get('version') or '')
+        if re.match(r'^[0-9]+(\.[0-9]+){2,3}$', v):
+            bits.append(('back to %s' if down else 'to %s') % v)
+        when = cur.get('started') or cur.get('at')
+        try:
+            if when:
+                bits.append('started %s' % time.strftime('%H:%M', time.localtime(float(when))))
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+        by = re.sub(r'[\x00-\x1f\x7f]+', ' ', str(cur.get('by') or '')).strip()[:100]
+        if by:
+            if bits:
+                bits[-1] += ' by %s' % by
+            else:
+                bits.append('by %s' % by)
+        return 'another %s is running%s - this one was not started' % (
+            'downgrade' if down else 'upgrade', (' (%s)' % ', '.join(bits)) if bits else '')
+
     def upgrade_start(self, who=''):
         if osup_updating(self):
             raise ValueError('the system is being updated - upgrade zigmon when that is done')
@@ -20248,7 +20276,7 @@ class Daemon(object):
         if not pkg:
             raise ValueError('send the package first')
         if st['running'] or st['asked']:
-            raise ValueError('an upgrade is going on already')
+            raise ValueError(self.upgrade_busy_words(st))
         if not st['helper']:
             raise ValueError('this machine cannot put a version in by itself yet: zigmon-upgrade.path '
                              'is not installed. Upgrade it once on the command line '
@@ -20267,7 +20295,8 @@ class Daemon(object):
         os.replace(str(tmp), str(self.upgrade_dir('request.json')))
         with open(str(self.upgrade_dir('status.json')) + '.new', 'w') as f:
             json.dump({'id': ident, 'state': 'running', 'step': 'waiting for root',
-                       'version': pkg['version'], 'at': time.time()}, f)
+                       'version': pkg['version'], 'at': time.time(), 'started': int(time.time()),
+                       'by': '%s on the dashboard' % (who or 'somebody')}, f)
         os.replace(str(self.upgrade_dir('status.json')) + '.new', str(self.upgrade_dir('status.json')))
         self.store.set_meta('upgrade_asked', json.dumps({'id': ident, 'version': pkg['version'],
                                                          'from': __version__, 'at': int(time.time())}))
@@ -20531,7 +20560,7 @@ class Daemon(object):
         if not pkg or not pkg.get('older'):
             raise ValueError('send or fetch the older version first')
         if st['running'] or st['asked']:
-            raise ValueError('an upgrade is going on already')
+            raise ValueError(self.upgrade_busy_words(st))
         busy = self.downgrade_busy()
         if busy:
             raise ValueError(busy)
@@ -20553,7 +20582,8 @@ class Daemon(object):
         os.replace(str(tmp), str(self.upgrade_dir('request.json')))
         with open(str(self.upgrade_dir('status.json')) + '.new', 'w') as f:
             json.dump({'id': ident, 'state': 'running', 'step': 'waiting for root',
-                       'version': pkg['version'], 'at': time.time(), 'downgrade': True}, f)
+                       'version': pkg['version'], 'at': time.time(), 'downgrade': True,
+                       'started': int(time.time()), 'by': '%s on the dashboard' % (who or 'somebody')}, f)
         os.replace(str(self.upgrade_dir('status.json')) + '.new', str(self.upgrade_dir('status.json')))
         self.store.set_meta('upgrade_asked', json.dumps({'id': ident, 'version': pkg['version'],
                                                          'from': __version__, 'at': int(time.time()),
