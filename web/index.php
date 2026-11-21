@@ -5617,6 +5617,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .sbk-state.info{background:var(--info-bg);color:var(--info);border-color:rgba(88,166,255,.3)} .sbk-state.info .dot{background:var(--info)}
   .sbk-states{display:flex;flex-wrap:wrap;gap:5px;min-width:0}
   .sbk-why{display:block;color:var(--tx-dim);font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+  .sbk-orph{margin-top:18px} .sbk-orph h3{margin:0 0 4px;font-size:15px;color:var(--warn)}
+  .sbk-orph .note{margin:0 0 10px;max-width:900px} .sbk-gone .sbk-ic{opacity:.55}
   .sbk-dlg ul{margin:6px 0 10px;padding-left:20px} .sbk-dlg li{margin:2px 0}
   .sbk-dlg .sbk-risk{color:var(--warn)}
   @media (max-width:760px){
@@ -36960,6 +36962,7 @@ function drawSbk() {
   [['Devices', String(c.devices || 0), ''], ['Backed up', String(c.backed_up || 0), c.backed_up ? 'ok' : 'dim'],
    ['Differ', String(c.differ || 0), c.differ ? 'warn' : 'dim'], ['Never backed up', String(c.never || 0), c.never ? 'warn' : 'dim'],
    ['Not supported', String(c.unsupported || 0), 'dim'], ['Not reachable', String(c.unreachable || 0), c.unreachable ? 'warn' : 'dim'],
+   ['Orphaned', String(c.orphaned || 0) + (c.orphaned ? ' · ' + (c.orphan_devices || 0) + ' device(s)' : ''), c.orphaned ? 'warn' : 'dim'],
    ['Last scheduled run', last, ''], ['Next run', s.on && d.next ? d.next.replace('T', ' ') : 'off', s.on ? '' : 'dim']].forEach(function (f) {
     var t = el('div', 'fact ' + f[2]);
     t.appendChild(el('span', 'k', f[0]));
@@ -36982,6 +36985,97 @@ function drawSbk() {
     list.appendChild(sbkRow(x, busy, step, queue, job.kind, looking === x.box));
   });
   host.appendChild(list);
+  if ((d.orphans || []).length) host.appendChild(sbkOrphans(d.orphans, busy));
+}
+/* (5.56) The backups kept for devices that are not configured now - taken out of Settings →
+   Devices, or never looked at under this id. Never deleted by themselves: listed here, each
+   device downloadable and deletable by hand; the same device configured again (any name, any
+   address - it is known by its id) has them back by itself. */
+function sbkOrphans(list, busy) {
+  var box = el('div', 'sbk-orph');
+  box.id = 'sbk-orphans';
+  var n = list.reduce(function (a, o) { return a + (o.count || 0); }, 0);
+  box.appendChild(el('h3', '', 'Backups of devices that are not configured now (' + n + ')'));
+  box.appendChild(el('p', 'note small', 'Kept until deleted here - nothing deletes them by itself. A device configured again, under any name or address, '
+    + 'is known by its own id and has its backups back. They cannot be restored to another device.'));
+  var wrap = el('div', 'sbk-list');
+  list.forEach(function (o) { wrap.appendChild(sbkOrphanRow(o, busy)); });
+  box.appendChild(wrap);
+  return box;
+}
+function sbkOrphanWhat(o) {
+  return [o.model || o.app || 'Shelly', o.fw ? 'fw ' + o.fw : '', o.mac ? 'MAC ' + o.mac.toUpperCase().replace(/(..)(?!$)/g, '$1:') : o.dev].filter(Boolean).join(' · ');
+}
+function sbkOrphanRow(o, busy) {
+  var r = el('div', 'sbk-dev sbk-gone');
+  r.dataset.dev = o.dev;
+  r.appendChild(el('div', 'sbk-ic', ICON.plug));
+  var n = el('div', 'sbk-name');
+  n.appendChild(el('b', '', o.label || o.dev));
+  n.appendChild(el('span', 'sbk-sub', sbkOrphanWhat(o)));
+  if (o.mac && o.name && o.name !== o.dev) n.appendChild(el('span', 'sbk-sub mono', o.dev));
+  r.appendChild(n);
+  var st = el('div', 'sbk-states');
+  var p = el('span', 'sbk-state warn');
+  p.appendChild(el('span', 'dot'));
+  p.appendChild(el('span', '', 'not configured now'));
+  p.title = o.host ? 'It was at ' + o.host : '';
+  st.appendChild(p);
+  r.appendChild(st);
+  var l = el('div', 'sbk-last');
+  l.appendChild(document.createTextNode('Newest ')); l.appendChild(el('b', '', o.newest ? ago(o.newest) : '?'));
+  l.appendChild(document.createTextNode(' · ' + o.count + ' kept · ' + sbkSize(o.size)));
+  if (o.newest) l.title = stamp(o.newest);
+  r.appendChild(l);
+  var a = el('div', 'sbk-acts');
+  var dl = cmdButton('Download', 'download', 'small');
+  dl.title = 'The newest backup (it holds the Wi-Fi password)';
+  dl.onclick = function () { sbkDownloadAsk(o, (o.backups || [])[0]); };
+  var del = cmdButton('Delete…', 'trash', 'small danger');
+  del.disabled = busy;
+  del.onclick = function () { sbkOrphanList(o); };
+  [dl, del].forEach(function (b) { a.appendChild(b); });
+  r.appendChild(a);
+  return r;
+}
+function sbkOrphanList(o) {
+  zmodal('Backups of ' + (o.label || o.dev), function (body) {
+    body.classList.add('sbk-dlg');
+    body.appendChild(el('p', 'note', sbkOrphanWhat(o) + ' · id ' + o.dev + '. Not configured now: these cannot be restored until it is configured again.'));
+    var wrap = zTable(['Made', 'Firmware', 'Size', ''], o.backups || [], function (b) {
+      var tr = el('tr');
+      var w = el('td');
+      w.appendChild(el('div', '', stamp(b.at).slice(0, 16)));
+      w.appendChild(el('div', 'muted small', (b.by ? 'by ' + b.by : '') + (b.why ? ' · ' + b.why : '')));
+      tr.appendChild(w);
+      tr.appendChild(el('td', 'mono small', b.fw || '?'));
+      tr.appendChild(el('td', 'num', sbkSize(b.size)));
+      var a = el('td', 'acts');
+      var dl = iconButton('download', 'Download it (it holds the Wi-Fi password)');
+      dl.onclick = function () { sbkDownloadAsk(o, b); };
+      var del = iconButton('trash', 'Delete it');
+      del.classList.add('sbk-del');
+      del.onclick = function () {
+        zconfirm('Delete this backup of ' + (o.label || o.dev) + '?', 'The backup made ' + stamp(b.at).slice(0, 16)
+          + ' is deleted from the database. It cannot be undone.', 'Delete it', function () {
+          sbkAsk({action: 'delete', id: b.id}).then(function (x) {
+            var again = (x.orphans || []).filter(function (y) { return y.dev === o.dev; })[0];
+            if (again) sbkOrphanList(again);
+          }, function () {});
+        });
+      };
+      [dl, del].forEach(function (y) { a.appendChild(y); });
+      tr.appendChild(a);
+      return tr;
+    }, 'plain|No backup kept.');
+    wrap.classList.add('sbk-backups');
+    body.appendChild(wrap);
+  }, [{words: 'Close', close: true},
+      {words: 'Delete all ' + o.count + '…', cls: 'danger', icon: 'trash', once: true, go: function () {
+        zconfirm('Delete every backup of ' + (o.label || o.dev) + ' (' + o.count + ')?', 'Every backup kept of ' + (o.label || o.dev)
+          + ' (' + o.dev + ') is deleted from the database. It cannot be undone - download one first if it may be wanted.',
+          'Delete them all', function () { sbkAsk({action: 'delete_device', dev: o.dev}).catch(function () {}); });
+      }}], 'medium');
 }
 function sbkJobBox(job) {
   var box = el('div', 'sbk-job' + (job.running ? '' : ' done'));
