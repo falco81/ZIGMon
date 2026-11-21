@@ -58322,6 +58322,131 @@ def sbk_store(d, box, look, raw, manifest, created, by, why):
     return rid, len(old)
 
 
+# (5.56) The backups are kept under the box's own id (Shelly.GetDeviceInfo `id`, such as
+# shellyplugsg3-aabbccddeeff - its MAC at its end), the dev column; under 'host:ADDRESS' only
+# while no answer of the box had said its id. A box taken out of the configuration leaves its
+# backups behind: "kept for a device no longer here" - never deleted by itself, said in the
+# section, a notice while there are any, deleted only by hand. The same box configured again
+# (under another name, at another address) is known by its id - or by its MAC, which its id
+# ends with - and has its backups back.
+SBK_ORPHANS_SEEN = {'sig': None}
+
+
+def sbk_mac_of(dev, mac=''):
+    """The box's MAC, as 12 lowercase hex digits: the one it said, else the end of its id; ''
+    when neither reads as one."""
+    m = re.sub(r'[^0-9a-f]', '', str(mac or '').lower())
+    if len(m) == 12:
+        return m
+    got = re.search(r'-([0-9a-f]{12})$', str(dev or '').lower())
+    return got.group(1) if got else ''
+
+
+def sbk_config_devs(d, boxes=None):
+    return {b['dev']: b for b in (boxes if boxes is not None else sbk_boxes(d)).values()}
+
+
+def sbk_rekey(d, box, look, by='zigmon'):
+    """A box that has just answered with its id takes back what is its own: the backups kept
+    under its address before any answer said its id, and those kept under an id with its MAC
+    that no configured box has now (the same box, its id spelled otherwise). Only on its own
+    answer - an id is never guessed. Each move is an event."""
+    dev = str(look.get('id') or '')
+    if not dev:
+        return 0
+    moved = 0
+    configured = set(sbk_config_devs(d))
+    mac = sbk_mac_of(dev, look.get('mac'))
+    with d.store.lock:
+        devs = [r[0] for r in d.store.db.execute('SELECT DISTINCT dev FROM shelly_backups').fetchall()]
+    for old in devs:
+        if old == dev:
+            continue
+        if old == 'host:' + box['box']:
+            how = 'kept under its address %s' % box['box']
+        elif mac and old not in configured and not old.startswith('host:') and sbk_mac_of(old) == mac:
+            how = 'kept under %s (the same MAC)' % old
+        else:
+            continue
+        with d.store.lock:
+            n = d.store.db.execute('UPDATE shelly_backups SET dev=? WHERE dev=?', (dev, old)).rowcount
+        if n:
+            moved += n
+            d.store.add_event('plug', '%d configuration backup(s) %s now belong to %s, by its own id %s'
+                              % (n, how, box['label'], dev), 'info', 'plug:' + box['names'][0])
+    return moved
+
+
+def sbk_orphans(d, boxes=None, rows=False):
+    """The backups whose device is not one of the configured boxes (as each was last looked
+    at), one entry per device: what it was (as stored with its newest backup), how many, the
+    newest's date, their size."""
+    configured = sbk_config_devs(d, boxes)
+    with d.store.lock:
+        got = [dict(r) for r in d.store.db.execute(
+            'SELECT dev, COUNT(*) AS count, MAX(at) AS newest, SUM(size) AS size FROM shelly_backups GROUP BY dev'
+        ).fetchall()]
+    out = []
+    for g in got:
+        if g['dev'] in configured:
+            continue
+        kept = sbk_rows(d, g['dev'])
+        top = kept[0] if kept else {}
+        one = {'dev': g['dev'], 'name': top.get('name') or '', 'host': top.get('host') or '',
+               'model': top.get('model') or '', 'app': top.get('app') or '', 'fw': top.get('fw') or '',
+               'mac': sbk_mac_of(g['dev']), 'count': int(g['count'] or 0), 'newest': g['newest'],
+               'size': int(g['size'] or 0)}
+        one['label'] = one['name'] or g['dev']
+        if rows:
+            one['backups'] = [sbk_row_public(r) for r in kept]
+        out.append(one)
+    out.sort(key=lambda o: -(o['newest'] or 0))
+    return out
+
+
+def sbk_orphans_sync(d, force=False):
+    """The notice of the backups kept for devices no longer configured (gone by itself when
+    none is left), and an event for each device whose backups are paired with a configured
+    box again. Cheap when nothing moved: the configured ids and the rows are compared first."""
+    boxes = sbk_boxes(d)
+    with d.store.lock:
+        n, top = d.store.db.execute('SELECT COUNT(*), MAX(id) FROM shelly_backups').fetchone()
+    sig = (tuple(sorted(sbk_config_devs(d, boxes))), n, top)
+    if not force and SBK_ORPHANS_SEEN['sig'] == sig:
+        return None
+    SBK_ORPHANS_SEEN['sig'] = sig
+    orphans = sbk_orphans(d, boxes)
+    try:
+        was = json.loads(d.store.get_meta('sbk:orphans') or '{}')
+    except ValueError:
+        was = {}
+    was = was if isinstance(was, dict) else {}
+    configured = sbk_config_devs(d, boxes)
+    for dev in sorted(was):
+        b = configured.get(dev)
+        if b is None:
+            continue
+        kept = len(sbk_rows(d, dev))
+        if kept:
+            d.store.add_event('plug', '%d configuration backup(s) of %s belong to %s again' % (kept, dev, b['label']),
+                              'info', 'plug:' + b['names'][0])
+    now = {o['dev']: o['count'] for o in orphans}
+    if now != was:
+        d.store.set_meta('sbk:orphans', json.dumps(now))
+    if not orphans:
+        d.notice_clear('shellybackup-orphans')
+        return orphans
+    total = sum(o['count'] for o in orphans)
+    d.notice_raise('shellybackup-orphans', 'info', 'Backups of devices no longer configured',
+                   '%d backup(s) belong to devices no longer configured (%s) - Settings → Device backups'
+                   % (total, ', '.join(o['label'] for o in orphans)[:300]),
+                   action='Settings - Devices - Device backups: keep them, download them, or delete them by hand '
+                          '(nothing is deleted by itself; the same device configured again has them back)',
+                   link='#control/dev-backups',
+                   stamp=hashlib.sha256(json.dumps(sorted(now)).encode()).hexdigest()[:16])
+    return orphans
+
+
 def sbk_check_box(d, box, quiet=False):
     """Look at one box now and keep what was seen; an event (and the notice) when its
     configuration starts to differ from its newest backup. A box that does not answer is
@@ -58339,6 +58464,13 @@ def sbk_check_box(d, box, quiet=False):
         'initial')})
     if was.get('fp') != look['fp']:
         st['fp_since'] = now if was.get('fp') else (was.get('fp_since') or now)
+    # (5.56) its own answer said its id: what was kept for it under its address (or its MAC)
+    # is its own again - before its newest backup is looked up
+    sbk_state_put(d, box['box'], st)
+    try:
+        sbk_rekey(d, box, look)
+    except sqlite3.Error as e:
+        log('device backups: re-pairing %s: %s' % (box['label'], e), 'debug')
     box = dict(box, dev=sbk_dev_of(box, st))
     newest = (sbk_rows(d, box['dev']) or [None])[0]
     differs = bool(newest) and newest.get('fp') != look['fp']
@@ -58350,6 +58482,7 @@ def sbk_check_box(d, box, quiet=False):
                           'plug:' + box['names'][0])
     try:
         sbk_notice(d)
+        sbk_orphans_sync(d)
     except Exception as e:                              # noqa: BLE001 - the look stands
         log('device backups: the notice: %s' % e, 'debug')
     return st
@@ -58557,6 +58690,8 @@ def sbk_backup_box(d, box, by, why, say=lambda w: None, careful=False):
         raise ValueError('the archive is encrypted - its key is not kept here, so it is not kept either')
     say('looking at it again')
     after = sbk_look(rpc)
+    # (5.56) what was kept for it under its address is its own first: the newest N of all
+    sbk_rekey(d, box, after)
     rid, dropped = sbk_store(d, box, after, raw, manifest, b.get('created'), by, why)
     now = int(time.time())
     was = sbk_states(d).get(box['box']) or {}
@@ -58568,6 +58703,7 @@ def sbk_backup_box(d, box, by, why, say=lambda w: None, careful=False):
     sbk_state_put(d, box['box'], st2)
     try:
         sbk_notice(d)
+        sbk_orphans_sync(d)
     except Exception as e:                              # noqa: BLE001
         log('device backups: the notice: %s' % e, 'debug')
     return {'id': rid, 'size': len(raw), 'model': after['model'], 'fw': after['fw'], 'dropped': dropped}
@@ -58786,7 +58922,12 @@ def sbk_next(d, now=None):
 def sbk_tick(d, now=None):
     """From root_chores, every half minute: the scheduled run when it is due, else a look at
     the boxes not looked at for six hours - only once the feature is in use, and never in the
-    first ten minutes of the daemon."""
+    first ten minutes of the daemon. (5.56) Before all of it: the backups of devices no longer
+    configured looked at - a notice, never a deletion - when the devices or the rows moved."""
+    try:
+        sbk_orphans_sync(d)
+    except Exception as e:                              # noqa: BLE001 - the rest still runs
+        log('device backups: the orphans: %s' % e, 'debug')
     if SBK_JOB['running'] or not d.plugs:
         return None
     day = sbk_due(d, now)
@@ -58830,7 +58971,8 @@ def sbk_view(d):
     states = sbk_states(d)
     devices = []
     counts = {'devices': 0, 'backed_up': 0, 'differ': 0, 'never': 0, 'unsupported': 0, 'unreachable': 0}
-    for b in sorted(sbk_boxes(d).values(), key=lambda x: x['names'][0].lower()):
+    boxes = sbk_boxes(d)
+    for b in sorted(boxes.values(), key=lambda x: x['names'][0].lower()):
         st = states.get(b['box']) or {}
         rows = sbk_rows(d, b['dev'])
         newest = rows[0] if rows else None
@@ -58868,7 +59010,11 @@ def sbk_view(d):
         run = {}
     job = {k: SBK_JOB.get(k) for k in ('running', 'kind', 'by', 'started', 'ended', 'said', 'id')}
     job['steps'] = [dict(x) for x in SBK_JOB.get('steps') or []]
-    return {'ok': True, 'settings': s, 'devices': devices, 'counts': counts, 'job': job,
+    # (5.56) the backups kept for devices no longer configured: listed, never deleted by themselves
+    orphans = sbk_orphans(d, boxes, rows=True)
+    counts['orphaned'] = sum(o['count'] for o in orphans)
+    counts['orphan_devices'] = len(orphans)
+    return {'ok': True, 'settings': s, 'devices': devices, 'orphans': orphans, 'counts': counts, 'job': job,
             'checking': bool(SBK_CHECKING['on']), 'checking_box': SBK_CHECKING.get('box') or '', 'run': run if isinstance(run, dict) else {},
             'next': sbk_next(d), 'keep_most': 50, 'chunk': SBK_CHUNK}
 
@@ -58878,7 +59024,7 @@ def sbk_post(d, b, by):
     act = str(b.get('action') or '')
     if not d.store.get_meta('sbk:used'):
         d.store.set_meta('sbk:used', '1')
-    if act in ('backup', 'restore', 'delete') and SBK_JOB['running']:
+    if act in ('backup', 'restore', 'delete', 'delete_device') and SBK_JOB['running']:
         raise ValueError('a backup or a restore is going on - wait for it to end')
     if act == 'check':
         boxes = [sbk_find_box(d, b['box'])] if b.get('box') else None
@@ -58937,7 +59083,8 @@ def sbk_post(d, b, by):
         else:
             box = next((x for x in sbk_boxes(d).values() if x['dev'] == rows[0]['dev']), None)
             if box is None:
-                raise ValueError('the device of backup %s is not configured here any more' % rid)
+                raise ValueError('the device of backup %s (%s) is not configured here now - its backups are kept '
+                                 'until deleted, and come back to it once it is configured again' % (rid, rows[0]['dev']))
         steps = [sbk_step(box, 'working', 'starting')]
 
         def work():
@@ -58971,6 +59118,7 @@ def sbk_post(d, b, by):
                 d.store.db.execute('DELETE FROM shelly_backups WHERE id=?', (rid,))
             d.store.add_event('control', '%s deleted the stored configuration backup %d of %s (%s)' % (
                 by, rid, r.get('name') or r['dev'], time.strftime('%Y-%m-%d %H:%M', time.localtime(r['at']))), 'info')
+            sbk_orphans_sync(d, force=True)
             return dict(sbk_view(d), message='deleted')
         raw = bytes(r.get('data') or b'')
         safe = re.sub(r'[^A-Za-z0-9._-]', '', str(r['dev']))[:60] or 'shelly'
@@ -58979,6 +59127,22 @@ def sbk_post(d, b, by):
         return {'ok': True, 'name': 'shelly-%s-%s.zip' % (safe, time.strftime('%Y%m%d-%H%M', time.localtime(r['at']))),
                 'file': base64.b64encode(raw).decode('ascii'), 'mime': 'application/zip', 'bytes': len(raw),
                 'sha256': r.get('sha256')}
+    if act == 'delete_device':
+        # (5.56) every backup of a device that is not configured now - by hand, never by itself
+        dev = str(b.get('dev') or '').strip()
+        if not dev:
+            raise ValueError('which device? its id, as the backups of devices not configured now list it')
+        one = next((o for o in sbk_orphans(d) if o['dev'] == dev), None)
+        if one is None:
+            if dev in sbk_config_devs(d):
+                raise ValueError('%s is configured here - its backups are deleted one by one' % dev[:80])
+            raise ValueError('no backup is kept for %s' % dev[:80])
+        with d.store.lock:
+            n = d.store.db.execute('DELETE FROM shelly_backups WHERE dev=?', (dev,)).rowcount
+        d.store.add_event('control', '%s deleted all %d stored configuration backup(s) of %s (%s), a device not '
+                          'configured now' % (by, n, one['label'], dev), 'info')
+        sbk_orphans_sync(d, force=True)
+        return dict(sbk_view(d), message='deleted %d backup(s) of %s' % (n, one['label']), deleted=n)
     raise ValueError('unknown action %r' % act[:40])
 
 
@@ -61550,6 +61714,7 @@ HELP_LINES = [
     ('sudo zigmon --shelly-backup restore 12', 'put one back - the device restarts with its files replaced (asks first)'),
     ('sudo zigmon --shelly-backup export 12 FILE', 'the archive into a file (mode 0600) - it holds the Wi-Fi password; delete 12 forgets one'),
     ('sudo zigmon --shelly-backup schedule on 03:40 keep=5', 'back up by itself every night, only what changed; off stops it'),
+    ('sudo zigmon --shelly-backup orphans', 'the backups of devices not configured now (--json); delete-device ID forgets all of one (asks first)'),
     ('sudo zigmon --os-roots', 'the system\u2019s trusted roots: the authorities zigmon added, the machine\u2019s list'),
     ('sudo zigmon --os-roots-add FILE', 'add a company\u2019s root or intermediate to the trust of the whole machine'),
     ('sudo zigmon --os-roots-remove SHA256', 'take one zigmon added out of it again'),
@@ -61832,8 +61997,8 @@ def build_parser():
     a.add_argument('--shelly-backup', nargs='*', metavar='WORDS',
                    help='(root) the configuration backups of the Shelly sockets and lights (Settings - Device '
                         'backups): list, check [NAME], now NAME|all, stored NAME, restore ID, export ID FILE, '
-                        'delete ID, schedule on|off|HH:MM|keep=N - a backup or a restore restarts the device '
-                        'and asks first (--yes not to)')
+                        'delete ID, schedule on|off|HH:MM|keep=N, orphans, delete-device ID - a backup or a '
+                        'restore restarts the device and asks first (--yes not to)')
     a.add_argument('--os-roots', action='store_true',
                    help='(root) the system\u2019s trusted roots (Control - Certificates): the authorities '
                         'zigmon added to the trust of the whole machine, and what the machine has')
@@ -64356,7 +64521,8 @@ def cmd_acme_push(args, pal):
     return 0
 
 
-SBK_CLI_VERBS = ('list', 'check', 'now', 'stored', 'restore', 'export', 'delete', 'schedule')
+SBK_CLI_VERBS = ('list', 'check', 'now', 'stored', 'restore', 'export', 'delete', 'schedule', 'orphans',
+                 'delete-device')
 
 
 def sbk_cli_words(words):
@@ -64367,12 +64533,14 @@ def sbk_cli_words(words):
     if verb not in SBK_CLI_VERBS:
         raise ValueError('--shelly-backup: one of %s, not %r' % (', '.join(SBK_CLI_VERBS), verb[:30]))
     rest = words[1:]
-    need = {'now': 1, 'stored': 1, 'restore': 1, 'export': 2, 'delete': 1, 'schedule': 1}.get(verb, 0)
+    need = {'now': 1, 'stored': 1, 'restore': 1, 'export': 2, 'delete': 1, 'schedule': 1,
+            'delete-device': 1}.get(verb, 0)
     if len(rest) < need:
         raise ValueError('--shelly-backup %s needs %s' % (verb, {
             'now': 'a socket or light (or all)', 'stored': 'a socket or light', 'restore': 'the number of a backup',
             'export': 'the number of a backup and a file', 'delete': 'the number of a backup',
-            'schedule': 'on, off, HH:MM and/or keep=N'}[verb]))
+            'schedule': 'on, off, HH:MM and/or keep=N',
+            'delete-device': 'the id of a device not configured now (--shelly-backup orphans lists them)'}[verb]))
     if verb in ('restore', 'export', 'delete') and not rest[0].isdigit():
         raise ValueError('the number of a backup, as --shelly-backup stored NAME lists them')
     if verb == 'schedule':
@@ -64430,7 +64598,8 @@ def sbk_cli_follow(pal, ident, quiet=False):
 
 
 def cmd_shelly_backup(args, pal):
-    """zigmon --shelly-backup [list|check|now|stored|restore|export|delete|schedule ...] (5.50):
+    """zigmon --shelly-backup [list|check|now|stored|restore|export|delete|schedule|orphans|
+    delete-device ...] (5.50):
     Settings - Devices - Device backups on the command line, through the daemon as the page
     asks it - an administrator's there, root's key here."""
     try:
@@ -64475,12 +64644,41 @@ def cmd_shelly_backup(args, pal):
             'on' if s.get('on') else 'off', s.get('at'), s.get('keep') or 5,
             ('; next %s' % out['next'].replace('T', ' ')) if out.get('next') else '')))
         return 0
+    if verb == 'delete-device':
+        v = _sbkc_view()
+        if v is None:
+            return 2
+        dev = rest[0]
+        o = next((o for o in v.get('orphans') or [] if o.get('dev', '').lower() == dev.lower()), None)
+        if o is None:
+            print(pal.crit('no backup is kept for a device %s that is not configured now - zigmon --shelly-backup '
+                           'orphans lists them' % dev))
+            return 1
+        sbk_asked = sbk_cli_ask(pal, args, 'All %d backup(s) of %s (%s), a device not configured now, are deleted '
+                                'from the database - it cannot be undone' % (o.get('count') or 0, o.get('label'),
+                                                                             o.get('dev')))
+        if not sbk_asked:
+            print('nothing deleted')
+            return 1 if sbk_asked is False else 2
+        out = _sbkc_post({'action': 'delete_device', 'dev': o.get('dev')})
+        if out is None:
+            return 1
+        print(pal.ok(out.get('message') or 'deleted'))
+        return 0
     if verb in ('restore', 'export', 'delete'):
         rid = int(rest[0])
         v = _sbkc_view()
         if v is None:
             return 2
         hit = [(x, b) for x in v.get('devices') or [] for b in x.get('backups') or [] if b.get('id') == rid]
+        # (5.56) ...and those of the devices not configured now: exported or deleted, never restored
+        gone = [(x, b) for x in v.get('orphans') or [] for b in x.get('backups') or [] if b.get('id') == rid]
+        if gone and verb == 'restore':
+            print(pal.crit('backup %d is of %s (%s), a device not configured now - configure it again (any name, '
+                           'any address: it is known by its id) and its backups are its own again'
+                           % (rid, gone[0][0].get('label'), gone[0][0].get('dev'))))
+            return 1
+        hit += gone
         if not hit:
             print(pal.crit('there is no backup %d - zigmon --shelly-backup stored NAME lists them' % rid))
             return 1
@@ -64569,6 +64767,28 @@ def cmd_shelly_backup(args, pal):
     v = _sbkc_view()
     if v is None:
         return 2
+    if verb == 'orphans':
+        orphans = v.get('orphans') or []
+        if js:
+            print(json.dumps(orphans, indent=2, ensure_ascii=False))
+            return 0
+        print(pal.title('backups of devices that are not configured now - %d device(s), %d backup(s); kept until '
+                        'deleted by hand' % (len(orphans), sum(o.get('count') or 0 for o in orphans))))
+        for o in orphans:
+            print('  %s  %s' % (pal.bold(o.get('label') or o.get('dev')), pal.dim('%s, fw %s, %s%s' % (
+                o.get('model') or '?', o.get('fw') or '?', ('MAC %s' % o['mac']) if o.get('mac') else o.get('dev'),
+                (', was at %s' % o['host']) if o.get('host') else ''))))
+            print('      id %s: %d kept, the newest %s, %s KB in all' % (
+                o.get('dev'), o.get('count') or 0, _sbkc_day(o.get('newest')), max(1, (o.get('size') or 0) // 1024)))
+            for b in o.get('backups') or []:
+                print(pal.dim('      %5d  %s  fw %s  %d KB' % (b['id'], _sbkc_day(b.get('at')), b.get('fw') or '?',
+                                                          max(1, (b.get('size') or 0) // 1024))))
+        if not orphans:
+            print(pal.dim('  none - every backup kept is of a device configured here'))
+        else:
+            print(pal.dim('export ID FILE downloads one; delete ID forgets one; delete-device ID forgets all of one. '
+                          'The same device configured again has them back.'))
+        return 0
     if verb == 'stored':
         x = _sbkc_device(v, rest[0])
         if x is None:
@@ -64590,7 +64810,7 @@ def cmd_shelly_backup(args, pal):
         print(json.dumps(v, indent=2, ensure_ascii=False))
         return 0
     s, c = v.get('settings') or {}, v.get('counts') or {}
-    print(pal.title('the Shelly devices\' configuration backups - %d _sbkc_device(s), %d backed up, %d differ, %d never, '
+    print(pal.title('the Shelly devices\' configuration backups - %d device(s), %d backed up, %d differ, %d never, '
                     '%d not supported' % (c.get('devices', 0), c.get('backed_up', 0), c.get('differ', 0),
                                           c.get('never', 0), c.get('unsupported', 0))))
     words = {'same': pal.ok('up to date'), 'differs': pal.warn('differs'), 'never': pal.warn('never backed up'),
@@ -64604,6 +64824,9 @@ def cmd_shelly_backup(args, pal):
             print(pal.dim('      ' + x['why']))
     if not v.get('devices'):
         print(pal.dim('  no Shelly socket or light is configured'))
+    if c.get('orphaned'):
+        print(pal.warn('%d backup(s) of %d device(s) not configured now - kept until deleted by hand: '
+                       'zigmon --shelly-backup orphans' % (c['orphaned'], c.get('orphan_devices') or 0)))
     run = v.get('run') or {}
     print(pal.dim('scheduled: %s%s; last run %s' % (
         'on at %s, the newest %d kept' % (s.get('at'), s.get('keep') or 5) if s.get('on') else 'off',
@@ -67595,6 +67818,46 @@ def _console_shelly_backup(c):
                      'Back them up'):
             c.act('--shelly-backup', 'now', 'all', '--yes')
 
+    def _sbkn_orphans():
+        # (5.56) the backups of devices not configured now: kept until deleted here, never by themselves
+        got = c.out('--shelly-backup', 'orphans')
+        rows = got if isinstance(got, list) else []
+        if not rows:
+            c.note('Not configured now', 'Every backup kept is of a device configured here.')
+            return
+        pick = c.choose('Backups of devices that are not configured now (%d)' % len(rows), [
+            (o['dev'], '%s  %s, %d kept, the newest %s' % (o.get('label') or o['dev'], o.get('model') or '?',
+                                                          o.get('count') or 0,
+                                                          time.strftime('%Y-%m-%d', time.localtime(o.get('newest') or 0))))
+            for o in rows])
+        o = next((x for x in rows if x['dev'] == pick), None)
+        if o is None:
+            return
+        what = c.choose(o.get('label') or o['dev'], [
+            ('export', 'Export the newest into a file (it holds the Wi-Fi password)'),
+            ('one', 'Delete one of them'),
+            ('all', 'Delete all %d of them' % (o.get('count') or 0))],
+            'id %s - the same device configured again has them back' % o['dev'])
+        backups = o.get('backups') or []
+        if what == 'export' and backups:
+            rid = backups[0]['id']
+            path = c.ask_one('Export backup %s' % rid, 'File', '/root/shelly-backup-%s.zip' % rid,
+                             'written with mode 0600 - it holds the device\'s Wi-Fi password and cloud token')
+            if path:
+                c.act('--shelly-backup', 'export', str(rid), path)
+        elif what == 'one' and backups:
+            rid = c.choose('Delete which', [(b['id'], '%s  fw %s' % (
+                time.strftime('%Y-%m-%d %H:%M', time.localtime(b.get('at') or 0)), b.get('fw') or '?'))
+                for b in backups])
+            if rid is not None and c.confirm('Delete backup %s' % rid, 'It is deleted from the database - it cannot '
+                                             'be undone.', 'Delete it', danger=True):
+                c.act('--shelly-backup', 'delete', str(rid), '--yes')
+        elif what == 'all':
+            if c.confirm('Delete all backups of %s' % (o.get('label') or o['dev']),
+                         'All %d are deleted from the database - it cannot be undone.' % (o.get('count') or 0),
+                         'Delete them all', danger=True):
+                c.act('--shelly-backup', 'delete-device', o['dev'], '--yes')
+
     def _sbkn_schedule(on):
         if on:
             at = c.ask_one('Scheduled backups', 'Every day at (HH:MM)', '03:40',
@@ -67609,6 +67872,7 @@ def _console_shelly_backup(c):
         ('The devices (Enter: back up, restore, export)', _sbkn_devices),
         ('Look at every device again (nothing restarts)', lambda: c.act('--shelly-backup', 'check')),
         ('Back up all that differ (each restarts)', _sbkn_all_that_differ),
+        ('Backups of devices not configured now: export, delete', _sbkn_orphans),
         ('Scheduled backups on, at an hour', lambda: _sbkn_schedule(True)),
         ('Scheduled backups off', lambda: _sbkn_schedule(False)),
     ])
