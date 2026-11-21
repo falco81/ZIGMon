@@ -2083,7 +2083,27 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.55.2**
+Current version: **5.56.0**
+
+5.56.0 — one upgrade at a time; backups of devices no longer here.
+
+* Root's upgrade helper and `install.sh --upgrade` run by hand take one lock
+  (`/var/lib/zigmon-root/upgrade.lock`, held with flock - gone with the
+  process, never stale). A second upgrade or downgrade is refused at once -
+  "another upgrade is running (to X, started HH:MM by Y) - this one was not
+  started" - and the running one's files are not touched. Without the flock
+  command install.sh warns and goes on as before.
+* Settings - Device backups: backups of devices that are not configured now
+  are a group of their own at the bottom, with an "Orphaned" count and a
+  notice; never deleted by themselves - "Delete..." one, or all of such a
+  device's, after a question. A device configured again with the same Shelly
+  id (or MAC) gets its backups back, also under another name or address;
+  backups kept under an address before its id was known move to the id once
+  the box answers with it. Each move is an event. Also
+  `zigmon --shelly-backup orphans` and `delete-device DEVID`.
+
+`test/review557_upglock.py`, `test/review557_sbkorphans.py`; these checks fail
+on 5.55.2.
 
 5.55.2 — a hunt for bugs in what came lately.
 
