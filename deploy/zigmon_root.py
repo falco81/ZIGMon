@@ -4930,8 +4930,12 @@ def se_run(cmd, timeout=120, light=False, data=None):
         return None
     cmd = [exe] + list(cmd[1:])
     if light:
+        # (5.56.2) best effort at its lowest, not idle: the idle class gets
+        # the disk only when nobody else wants it, and on a slow disk kept
+        # busy (a man-db rebuild after an update, an integrity check) that
+        # was never - semodule -l alone outlasted the daemon's three minutes
         if shutil.which('ionice'):
-            cmd = [shutil.which('ionice'), '-c', '3'] + cmd
+            cmd = [shutil.which('ionice'), '-c', '2', '-n', '7'] + cmd
         if shutil.which('nice'):
             cmd = [shutil.which('nice'), '-n', '19'] + cmd
     try:

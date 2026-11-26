@@ -21335,13 +21335,22 @@ class Daemon(object):
                 break
             time.sleep(0.2)
         # not answered: the question taken back, when it is still ours
+        taken = True
         try:
             p = self.root_dir(ask)
             if json.loads(Path(p).read_text() or '{}').get('id') == ask_id:
                 os.unlink(str(p))
-        except (OSError, ValueError, AttributeError):
+                taken = False
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError, AttributeError):
+            taken = False
         busy = self.root_busy()
+        if taken:
+            # (5.56.2) root took the question and is still at it: its path unit
+            # runs - telling the user to look at it sent them the wrong way
+            raise ValueError('root took the question and had not finished it in %d s - '
+                             'a slow or busy disk? It answers the next look' % wait)
         raise ValueError('root did not answer in %d s%s' % (
             wait, ' - it is still at what was asked before (a backup takes minutes)' if busy
             else ' - is zigmon-root.path running?  systemctl status zigmon-root.path'))
@@ -57985,8 +57994,9 @@ def selinux_work(d, do, want, now):
             if do in ('fix', 'rule_drop'):
                 # the ids only, as the page sent them; root works out every fix itself
                 ask.update(ids=list(want.get('ids') or []), by=str(want.get('by') or '')[:60])
-            got = d.root_call('selinux.ask', 'selinux.json', ask,
-                              180 if do in ('check', 'look', 'report') else 600)
+            # (5.56.2) ten minutes for a look too: on a slow, busy disk the tools
+            # that load the whole policy take minutes, and three were not enough
+            got = d.root_call('selinux.ask', 'selinux.json', ask, 600)
             if not isinstance(got, dict):
                 raise ValueError('root\'s helper answered with no object - is it of the same version as '
                                  'zigmon? install.sh --upgrade puts it in')

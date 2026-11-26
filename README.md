@@ -2098,6 +2098,13 @@ Current version: **5.56.2**
   again every half a minute, which on a slow disk was a good part of what the
   disk did. They are kept five minutes now (erasing rows still forgets them
   at once).
+* The SELinux card said "root did not answer in 180 s - is zigmon-root.path
+  running?" on a disk kept busy after an update and a restart. The path unit
+  ran; root's tools (semodule, semanage, ausearch) waited in the idle I/O
+  class, which gets the disk only when nobody else wants it. They run as
+  best effort at the lowest level now, a look waits ten minutes as a step
+  does, and a question root took and has not finished is said as that.
+  (Root's helper changes: install.sh --upgrade puts it in, as always.)
 
 5.56.1 — --diag keeps secrets off the screen; a closed page is no error.
 
