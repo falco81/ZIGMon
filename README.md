@@ -2083,7 +2083,20 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.56.0**
+Current version: **5.56.1**
+
+5.56.1 — --diag keeps secrets off the screen; a closed page is no error.
+
+* `zigmon --diag` printed the Duo secret and integration keys, a Shodan key
+  and a password inside an address (notify_ntfy = https://user:PASSWORD@...)
+  in full; they are starred like every other secret now (`--secret` still
+  shows them).
+* A page that gave up waiting - a slow disk after a restart - broke the pipe
+  while the headers of the answer went out, and the error answer tried after
+  it broke again: two tracebacks in the log for one closed tab. Said nothing
+  now, as a closed page is not an error.
+
+`test/review5561_quiet.py`; these checks fail on 5.56.0.
 
 5.56.0 — one upgrade at a time; backups of devices no longer here.
 

@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.56.0'
+__version__ = '5.56.1'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -46859,24 +46859,19 @@ class ApiHandler(BaseHTTPRequestHandler):
             # the database
             log('an answer held a number that is not finite; it has been left out', 'warn')
             body = json.dumps(scrub_nan(obj), ensure_ascii=False, allow_nan=False).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        self._send_body(status, body)
 
     def _send_body(self, status, body):
         """An answer already turned into JSON."""
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.end_headers()
+        # (5.56.1) the headers inside the try as well: a page that gave up waiting (a slow
+        # disk after a restart) broke the pipe at end_headers, and the error answer tried
+        # after it broke again - two tracebacks in the log for one closed tab
         try:
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -50748,7 +50743,13 @@ SHOW_SECRETS = False       # --secret: print what is ordinarily starred out
 
 def secret_key(key):
     """Whether a setting's value is one to keep off the screen."""
-    return bool(re.search(r'password|token|secret|api_key|ssh_key|^pin$|^acme_dns_key$', str(key)))
+    # (5.56.1) and the keys of Duo (duo_skey, duo_ikey) and Shodan (intel_shodan_key), which
+    # the pattern missed: `zigmon --diag` printed them in full
+    return bool(re.search(r'password|token|secret|api_key|ssh_key|^pin$|^acme_dns_key$|skey$|ikey$|^intel_shodan_key$',
+                          str(key)))
+
+
+_URL_USERINFO = re.compile(r'(?i)\b([a-z][a-z0-9+.-]*://)([^/@\s:]*):([^/@\s]+)@')
 
 
 def shown_value(key, value):
@@ -50759,7 +50760,13 @@ def shown_value(key, value):
     to anyone who ran it. Now anything that looks like a secret is hidden,
     and --secret is the one way to see it.
     """
-    if not value or not secret_key(key) or SHOW_SECRETS:
+    if not value or SHOW_SECRETS:
+        return value
+    if not secret_key(key):
+        # (5.56.1) a password inside an address (notify_ntfy = https://user:PASSWORD@host/topic)
+        # is a secret whatever the setting is called
+        if isinstance(value, str) and '@' in value:
+            return _URL_USERINFO.sub(lambda m: m.group(1) + m.group(2) + ':' + '*' * 8 + '@', value)
         return value
     return '*' * min(8, max(4, len(str(value))))
 
