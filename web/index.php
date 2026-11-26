@@ -25292,12 +25292,12 @@ function dbJobsBusy(button, on) {
   DB_JOBS.forEach(function (id) { var b = $(id); if (b) b.disabled = !!on; });
   if (button) button.classList.toggle('busy', !!on);
 }
-function dbJob(button, what, blurb, action, describe, prefix) {
+function dbJob(button, what, blurb, action, describe, prefix, send) {
   if (button && button.disabled) return;
   withPin(what, blurb, function (pin) {
     var finish = dbRunStart(what, prefix);
     dbJobsBusy(button, true);
-    return post(action, {pin: pin}).then(function (r) {
+    return (send || post)(action, {pin: pin}).then(function (r) {
       dbJobsBusy(button, false);
       var text = describe(r);
       finish(true, text);
@@ -25309,9 +25309,21 @@ function dbJob(button, what, blurb, action, describe, prefix) {
     });
   });
 }
+// (5.56.2) the daemon checks on a thread of its own and answers 'still
+// running' after a while, so a check that outlasts the web server's two
+// minutes on a slow disk is asked after again instead of ending in a 504
+function dbCheckPost(what, body) {
+  return post(what, body).then(function (r) {
+    if (r && r.running) {
+      return new Promise(function (ok) { setTimeout(ok, 1500); }).then(function () { return dbCheckPost(what, body); });
+    }
+    return r;
+  });
+}
 $('db-check').onclick = function () {
-  dbJob(this, 'Check the database', 'SQLite integrity check; read-only, a few seconds at most.', 'db-check',
-    function (r) { return r.ok && r.lines && r.lines[0] === 'ok' ? 'Database is healthy' : 'Problems: ' + (r.lines || []).join('; '); });
+  dbJob(this, 'Check the database', 'SQLite integrity check; read-only. A large file on a slow disk can take a few minutes.', 'db-check',
+    function (r) { return r.ok && r.lines && r.lines[0] === 'ok' ? 'Database is healthy' : 'Problems: ' + (r.lines || []).join('; '); },
+    undefined, dbCheckPost);
 };
 $('db-optimize').onclick = function () {
   dbJob(this, 'Optimise the database', 'ANALYZE + VACUUM. Writes pause while it runs; a large file can take a minute.', 'db-optimize',

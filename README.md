@@ -2083,7 +2083,21 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.56.1**
+Current version: **5.56.2**
+
+5.56.2 — the integrity check of a large database no longer ends in a 504.
+
+* Check integrity ran inside the request: a 500 MB file on a slow virtual
+  disk took longer than the web server's two minutes, the page showed
+  "HTTP 504 Gateway Time-out" while the check went on unseen, and a second
+  click started a second check beside the first, each reading the whole file.
+  The check now runs on a thread of its own, one at a time; the request
+  answers "still running" after 20 s and the page asks again until the
+  outcome is in.
+* The header's row counts walk the whole samples table; they were counted
+  again every half a minute, which on a slow disk was a good part of what the
+  disk did. They are kept five minutes now (erasing rows still forgets them
+  at once).
 
 5.56.1 — --diag keeps secrets off the screen; a closed page is no error.
 

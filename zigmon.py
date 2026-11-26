@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.56.1'
+__version__ = '5.56.2'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -1685,6 +1685,12 @@ ROOT_RUN_LOCK = threading.Lock()
 def root_run_now(run, timeout):
     with ROOT_RUN_LOCK:
         subprocess.run(run.split() if ' ' in run else [run], capture_output=True, timeout=timeout)
+
+
+# how long /api/db/check waits for the check before answering 'still running'
+DB_CHECK_WAIT = 20.0
+# how long the header's row counts are kept before they are counted again
+STATS_KEEP = 300
 
 
 class PlugError(Exception):
@@ -9112,13 +9118,17 @@ class Storage(object):
         thing the dashboard did after a restart, and `zigmon check` reported
         the daemon as answering in 1592 ms because of it.
 
-        So: the figures are counted on a thread of their own and kept for half
-        a minute; whoever asks gets what is in hand - the last count, or the
+        So: the figures are counted on a thread of their own and kept for five
+        minutes; whoever asks gets what is in hand - the last count, or the
         one this daemon wrote down before it was restarted - and the fresh
         count lands a moment later. `wait=True` is for the one caller that
         needs them now (before a VACUUM, while the file is still free)."""
         cached = self._stats_cache
-        if cached and time.time() - cached[0] < 30:
+        # (5.56.2) five minutes, not thirty seconds: a count walks the whole
+        # samples table, and on a slow virtual disk that walk every half a
+        # minute was a good part of what the disk did. The figures are the
+        # header's, and whatever erases rows forgets them at once anyway.
+        if cached and time.time() - cached[0] < STATS_KEEP:
             return dict(cached[1])
         guard = getattr(self, '_stats_guard', None)
         if guard is None:
@@ -17892,6 +17902,65 @@ class Daemon(object):
             st = f.stat()
             out.append({'file': f.name, 'bytes': st.st_size, 'ts': int(st.st_mtime)})
         return out
+
+    def db_check_job(self, wait=20.0):
+        """The integrity check, one at a time, on a thread of its own (5.56.2).
+
+        Starts a check unless one is running, then waits up to `wait` seconds
+        for it. The answer is the outcome when it is in, or {running: True}
+        with the seconds so far; asking again joins the same check. A finished
+        outcome is handed out for a minute after, so a page that asked while it
+        ran still gets it."""
+        job = getattr(self, '_db_check', None)
+        guard = getattr(self, '_db_check_guard', None)
+        if guard is None:
+            guard = self._db_check_guard = threading.Lock()
+        with guard:
+            job = getattr(self, '_db_check', None)
+            fresh = job and job.get('done') and time.time() - job['done'] < 60
+            if not job or (job.get('done') and not fresh):
+                job = self._db_check = {'started': time.time(), 'event': threading.Event()}
+
+                def work(job=job):
+                    try:
+                        log('integrity check started (%s)'
+                            % human_size(self.store.stats().get('bytes') or 0))
+                        outcome = self.store.integrity_check()
+                        log('integrity check finished in %.1fs: %s'
+                            % (time.time() - job['started'],
+                               'ok' if outcome.get('ok') else '; '.join(outcome.get('lines') or [])),
+                            'info' if outcome.get('ok') else 'error')
+                        self._db_check_notice(outcome)
+                    except Exception as e:                   # noqa: BLE001
+                        log('integrity check failed: %s' % e, 'error')
+                        outcome = {'ok': False, 'lines': ['the check could not run: %s' % e],
+                                   'foreign_key_problems': 0}
+                    job['outcome'] = outcome
+                    job['done'] = time.time()
+                    job['event'].set()
+                threading.Thread(target=work, name='db-check', daemon=True).start()
+        job['event'].wait(max(0.0, float(wait or 0)))
+        if job.get('done'):
+            return dict(job['outcome'], ok=True, running=False,
+                        seconds=round(job['done'] - job['started'], 1))
+        return {'ok': True, 'running': True, 'seconds': round(time.time() - job['started'], 1)}
+
+    def _db_check_notice(self, outcome):
+        # (5.44) a database that fails its check is a notice until one passes
+        try:
+            if outcome.get('ok'):
+                self.notice_clear('db-integrity')
+            else:
+                self.notice_raise('db-integrity', 'crit', 'The database fails its integrity check',
+                                  'SQLite says: %s%s.' % ('; '.join(outcome.get('lines') or [])[:300],
+                                                          (' - and %d foreign key problem(s)'
+                                                           % outcome['foreign_key_problems'])
+                                                          if outcome.get('foreign_key_problems') else ''),
+                                  action='Put a backup of the database back, or check it again once mended',
+                                  foot='This band goes by itself once a check of the database passes.',
+                                  link='#control/sys-data')
+        except Exception as e:                   # noqa: BLE001
+            log('notices: %s' % e, 'debug')
 
     def db_backup_now(self, suffix='', spare=None):
         directory = self.backup_dir()
@@ -49484,28 +49553,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
                     return self._error(403, err)
-                log('integrity check started (%s)' % human_size(d.store.stats().get('bytes') or 0))
-                started = time.time()
-                outcome = d.store.integrity_check()
-                log('integrity check finished in %.1fs: %s'
-                    % (time.time() - started, 'ok' if outcome.get('ok') else '; '.join(outcome.get('lines') or [])),
-                    'info' if outcome.get('ok') else 'error')
-                # (5.44) a database that fails its check is a notice until one passes
-                try:
-                    if outcome.get('ok'):
-                        d.notice_clear('db-integrity')
-                    else:
-                        d.notice_raise('db-integrity', 'crit', 'The database fails its integrity check',
-                                       'SQLite says: %s%s.' % ('; '.join(outcome.get('lines') or [])[:300],
-                                                               (' - and %d foreign key problem(s)'
-                                                                % outcome['foreign_key_problems'])
-                                                               if outcome.get('foreign_key_problems') else ''),
-                                       action='Put a backup of the database back, or check it again once mended',
-                                       foot='This band goes by itself once a check of the database passes.',
-                                       link='#control/sys-data')
-                except Exception as e:                   # noqa: BLE001
-                    log('notices: %s' % e, 'debug')
-                return self._send(200, dict(outcome, ok=True))
+                # (5.56.2) on a thread of its own: on a slow disk the check of
+                # a 500 MB file outlasts the web server's two minutes, and the
+                # page got a 504 while the check went on unseen - and a second
+                # click started a second one beside it. The request waits a
+                # while; if the check is still going it says so, and the page
+                # asks again until the answer is in.
+                return self._send(200, d.db_check_job(wait=DB_CHECK_WAIT))
             if path == '/api/mqtt/ghosts':
                 err = d.check_pin(body.get('pin'), body.get('session'))
                 if err:
