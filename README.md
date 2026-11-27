@@ -2083,7 +2083,30 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.57.0**
+Current version: **5.58.0**
+
+5.58.0 — desktop alerts on conditions of any device; ZIGMon Notifier 1.2.0 with sounds, volume and a monitor of its own.
+
+* Settings - Messages - Desktop app: each key has Conditions - any device
+  (thermometers, thermostats, sockets, weather, ...), any reading it reports,
+  and a test: > ≥ < ≤ = ≠, between, outside, is / is not, contains, is on /
+  is off, changes; numbers with an optional hysteresis so a reading hovering
+  at the line does not flap. The editor shows the readings as they are now
+  and a sentence of what will alert and whether it is met now. Up to 50 per
+  key; only the key's own computer hears them, and a restart does not fire a
+  condition that was already true.
+* ZIGMon Notifier 1.2.0 lists the conditions beside the sensors (the
+  condition in words, the value now) and alerts when one becomes true and,
+  if asked, when it clears.
+* Alert settings in the app: eight sounds (chime, doorbell, bell, beeps,
+  pulse, alarm, siren, klaxon) or an own .wav file, a sound of its own for
+  each sensor, how long it plays (once up to until dismissed), the volume,
+  when an alert closes by itself (never up to 15 minutes) and which monitor
+  alerts appear on (the primary one, the one with the pointer, or a given
+  display). All remembered.
+* The app's text fields put the caret at the start again (it sat far into
+  every field), and the sensor names in Watched sensors are readable on the
+  dark list.
 
 5.57.0 — ZIGMon Notifier: a Windows app that brings a triggered sensor to the front.
 
