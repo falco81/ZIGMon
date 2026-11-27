@@ -132,8 +132,8 @@ export class ZigmonClient {
     return parseCatalog((await this.call("catalog", { creds, query: deckQuery(decks), timeoutMs: 25_000 })).json);
   }
 
-  async state(creds: Credentials, ids: string[]): Promise<StateAnswer> {
-    return parseStateAnswer((await this.call("state", { creds, query: { ids: ids.join(",") } })).json);
+  async state(creds: Credentials, ids: string[], decks: DeckInfo[] = []): Promise<StateAnswer> {
+    return parseStateAnswer((await this.call("state", { creds, query: { ids: ids.join(","), ...deckQuery(decks) } })).json);
   }
 
   async wait(creds: Credentials, after: number, boot: string, ids: string[], decks: DeckInfo[], signal?: AbortSignal): Promise<WaitAnswer> {

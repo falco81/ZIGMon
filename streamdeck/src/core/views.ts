@@ -412,8 +412,8 @@ export class ActionView implements HubView {
         return {
           icon: iconPix(m.icon, c, 40, m.level === "unknown" ? undefined : c),
           name: { value: m.label },
-          value: { value: m.detail && m.detail.includes(m.value) ? m.detail : m.value + (m.detail ? " \u00b7 " + m.detail : ""), color: c },
-          art: pillArt(176, 30, words[m.level], c, m.level !== "unknown"),
+          value: { value: m.value, color: c },
+          art: pillArt(176, 30, m.detail ? m.detail.charAt(0).toUpperCase() + m.detail.slice(1) : words[m.level], c, m.level !== "unknown"),
         };
       }
     }

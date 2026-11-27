@@ -404,7 +404,7 @@ export class Hub {
   private async fetchStates(creds: Credentials, ids: string[]): Promise<void> {
     if (!this.client || ids.length === 0) return;
     try {
-      const s = await this.client.state(creds, ids);
+      const s = await this.client.state(creds, ids, this.d.decks());
       const changed = new Set<string>();
       for (const [id, st] of s.items) {
         this.setState(id, st);

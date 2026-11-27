@@ -364,7 +364,7 @@ function connectionCard(): HTMLElement {
           ? "The server shows a different certificate than the one you trusted. If ZIGMon's certificate was renewed, compare the new fingerprint with ZIGMon's Settings → Security; otherwise someone may be in the way."
           : "Windows does not trust this server's certificate (self-signed?). Compare its fingerprint with the one in ZIGMon before trusting it."]));
         const fpParts = st.cert.fingerprint.split(":");
-        card.append(h("div", "fp", [fpParts.slice(0, 16).join(":"), h("br"), fpParts.slice(16).join(":")]));
+        card.append(h("div", "fp", [0, 8, 16, 24].flatMap((i) => [fpParts.slice(i, i + 8).join(":"), i < 24 ? h("br") : ""])));
         const kv = h("dl", "kv", [
           h("dt", "", ["Issued to"]), h("dd", "", [st.cert.subject || "—"]),
           h("dt", "", ["Issued by"]), h("dd", "", [st.cert.issuer || "—"]),
