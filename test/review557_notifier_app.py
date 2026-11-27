@@ -543,6 +543,8 @@ else:
             shutil.copy2(HERE / f, t / f)
         if (t / 'windows' / 'dist').exists():
             shutil.rmtree(t / 'windows' / 'dist')
+        if (t / 'streamdeck' / 'dist').exists():
+            shutil.rmtree(t / 'streamdeck' / 'dist')     # (5.59) the Stream Deck plugin's: review559_deck's
         shutil.copy(TPUB, t / 'deploy' / 'release-keys' / 'zigmon-test-throwaway.pub')
         if files:
             dist(t / 'windows' / 'dist', with_sig=False)
