@@ -1,0 +1,5 @@
+node_modules/
+out/
+*.sdPlugin/bin/
+*.sdPlugin/logs/
+*.sdPlugin/ui/pi.js

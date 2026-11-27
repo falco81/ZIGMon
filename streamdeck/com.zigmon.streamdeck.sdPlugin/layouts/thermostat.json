@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/layout.json",
+  "id": "zigmon-thermostat",
+  "controller": "Encoder",
+  "items": [
+    {
+      "key": "art",
+      "type": "pixmap",
+      "rect": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "zOrder": 0,
+      "value": ""
+    },
+    {
+      "key": "name",
+      "type": "text",
+      "rect": [
+        12,
+        6,
+        112,
+        18
+      ],
+      "zOrder": 1,
+      "value": "",
+      "font": {
+        "size": 12,
+        "weight": 600
+      },
+      "color": "#8B94A3",
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "value",
+      "type": "text",
+      "rect": [
+        12,
+        24,
+        112,
+        34
+      ],
+      "zOrder": 1,
+      "value": "",
+      "font": {
+        "size": 28,
+        "weight": 700
+      },
+      "color": "#E6E9EF",
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "target",
+      "type": "text",
+      "rect": [
+        12,
+        58,
+        112,
+        20
+      ],
+      "zOrder": 1,
+      "value": "",
+      "font": {
+        "size": 15,
+        "weight": 700
+      },
+      "color": "#F0883E",
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    },
+    {
+      "key": "mode",
+      "type": "text",
+      "rect": [
+        12,
+        78,
+        112,
+        18
+      ],
+      "zOrder": 1,
+      "value": "",
+      "font": {
+        "size": 12,
+        "weight": 600
+      },
+      "color": "#8B94A3",
+      "alignment": "left",
+      "text-overflow": "ellipsis"
+    }
+  ]
+}

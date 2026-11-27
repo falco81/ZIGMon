@@ -1,0 +1,79 @@
+/**
+ * The messages between the property inspectors and the plugin (sendToPlugin /
+ * sendToPropertyInspector). The inspectors never talk to ZIGMon themselves and never see
+ * the key: they ask the plugin, which answers with what may be shown.
+ */
+import type { Hub } from "./hub.js";
+import { fits, type ActionKind } from "./views.js";
+
+export type PiRequest =
+  | { t: "hello" }
+  | { t: "catalog" }
+  | { t: "preview" }
+  | { t: "connect"; address: string }
+  | { t: "cancel" }
+  | { t: "pin"; fingerprint: string }
+  | { t: "unpin" }
+  | { t: "disconnect" }
+  | { t: "retry" }
+  | { t: "update" };
+
+export type PiReply = Record<string, unknown> & { t: string };
+
+export function statusMessage(hub: Hub): PiReply {
+  return { t: "status", status: hub.status() as unknown as Record<string, unknown> };
+}
+
+export function catalogMessage(hub: Hub, kind: ActionKind): PiReply {
+  const items = hub.allItems().filter((i) => fits(kind, i)).map((i) => {
+    const st = hub.state(i.id) ?? i.state;
+    return {
+      id: i.id, name: i.name, room: i.room, kind: i.kind, icon: i.icon, cap: i.cap, allowed: i.allowed, hold: i.hold,
+      actions: i.actions, attrs: i.attrs, valueText: st.valueText, on: st.on, online: st.online,
+    };
+  });
+  return { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };
+}
+
+export function previewMessage(preview?: () => string | null): PiReply[] {
+  const img = preview?.();
+  return img ? [{ t: "preview", image: img }] : [];
+}
+
+export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview?: () => string | null): Promise<PiReply[]> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const m = raw as Record<string, unknown>;
+  switch (m.t) {
+    case "hello":
+      return [statusMessage(hub), catalogMessage(hub, kind), ...previewMessage(preview)];
+    case "preview":
+      return previewMessage(preview);
+    case "catalog":
+      return [catalogMessage(hub, kind)];
+    case "connect": {
+      const r = await hub.connect(typeof m.address === "string" ? m.address : "");
+      return [{ t: "connect", ok: r.ok, error: r.error ?? "" }, statusMessage(hub)];
+    }
+    case "cancel":
+      hub.cancelPairing();
+      return [statusMessage(hub)];
+    case "pin": {
+      const r = await hub.pinCertificate(typeof m.fingerprint === "string" ? m.fingerprint : "");
+      return [{ t: "pin", ok: r.ok, error: r.error ?? "" }, statusMessage(hub)];
+    }
+    case "unpin":
+      await hub.unpin();
+      return [statusMessage(hub)];
+    case "disconnect":
+      await hub.disconnect();
+      return [statusMessage(hub), catalogMessage(hub, kind)];
+    case "retry":
+      hub.retryNow();
+      return [statusMessage(hub)];
+    case "update":
+      void hub.installUpdate();
+      return [statusMessage(hub)];
+    default:
+      return [];
+  }
+}
