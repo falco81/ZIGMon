@@ -25,6 +25,12 @@
 #                                    repository, so what is on GitHub is the
 #                                    unpacked package, file for file
 #
+# (5.57) windows/dist/notifier.json, the manifest of ZIGMon Notifier the package
+# carries, is signed here with the same key into windows/dist/notifier.json.sig
+# (when that is missing or not by this key), checked against deploy/release-keys,
+# and put in the package; a new signature is to be committed with the release.
+# No windows/dist: a package without the app, as before.
+#
 # The version is read from zigmon.py and must be the same in install.sh,
 # tools/snort-debug.py and README.md (with an entry of its own there).
 set -euo pipefail
@@ -68,11 +74,57 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 S="$WORK/zigmon-$V"
 mkdir -p "$S"
+# (5.57) the desktop app's manifest, signed by the release key - the app checks it
+# before it replaces itself with the exe the manifest describes
+NTF_DIST="windows/dist"
+NTF_SIG=""
+if [[ -f "$NTF_DIST/notifier.json" ]]; then
+    [[ -f "$NTF_DIST/ZigmonNotifier.exe" ]] || { echo "$NTF_DIST/notifier.json without $NTF_DIST/ZigmonNotifier.exe"; exit 1; }
+    python3 -I - "$NTF_DIST/notifier.json" "$NTF_DIST/ZigmonNotifier.exe" <<'NTFCHECK' || exit 1
+import hashlib, json, os, sys
+raw = open(sys.argv[1], 'rb').read()
+try:
+    m = json.loads(raw.decode('utf-8'))
+except ValueError:
+    sys.exit('windows/dist/notifier.json does not read')
+exe = open(sys.argv[2], 'rb').read()
+if m.get('product') != 'ZIGMon Notifier' or m.get('file') != 'ZigmonNotifier.exe':
+    sys.exit('windows/dist/notifier.json is not of ZIGMon Notifier')
+if m.get('size') != len(exe) or m.get('sha256') != hashlib.sha256(exe).hexdigest():
+    sys.exit('windows/dist/notifier.json does not describe windows/dist/ZigmonNotifier.exe (build it again: windows/build.sh)')
+print('desktop app: ZIGMon Notifier %s, %d bytes' % (m.get('version'), len(exe)))
+NTFCHECK
+    openssl pkey -in "$KEY" -pubout -out "$WORK/release-key.pub" 2>/dev/null \
+        || { echo "the private key does not read"; exit 1; }
+    if [[ ! -f "$NTF_DIST/notifier.json.sig" ]] || ! openssl pkeyutl -verify -pubin -inkey "$WORK/release-key.pub" -rawin \
+            -in "$NTF_DIST/notifier.json" -sigfile "$NTF_DIST/notifier.json.sig" >/dev/null 2>&1; then
+        openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$NTF_DIST/notifier.json" -out "$NTF_DIST/notifier.json.sig"
+        echo "$NTF_DIST/notifier.json signed into $NTF_DIST/notifier.json.sig"
+    fi
+    ntf_ok=""
+    for k in deploy/release-keys/*.pub; do
+        if openssl pkeyutl -verify -pubin -inkey "$k" -rawin -in "$NTF_DIST/notifier.json" \
+                -sigfile "$NTF_DIST/notifier.json.sig" >/dev/null 2>&1; then
+            ntf_ok="$(basename "$k" .pub)"; break
+        fi
+    done
+    [[ -n "$ntf_ok" ]] || { echo "$NTF_DIST/notifier.json.sig does not verify against deploy/release-keys"; exit 1; }
+    echo "$NTF_DIST/notifier.json signed by $ntf_ok"
+    if [[ -n "$(git status --porcelain -- "$NTF_DIST/notifier.json.sig")" ]]; then
+        NTF_SIG="$NTF_DIST/notifier.json.sig"
+        echo "$NTF_SIG is new: it must be committed with the release"
+    fi
+fi
 git ls-files | grep -v -E '^(release/|LICENSE.md$|MANIFEST$|MANIFEST.sig$|release.json$)' | while read -r f; do
     [[ -f "$f" ]] || continue
     mkdir -p "$S/$(dirname "$f")"
     cp -p "$f" "$S/$f"
 done
+# (5.57) the signature just made is in the package though git does not have it yet
+if [[ -n "$NTF_SIG" ]]; then
+    mkdir -p "$S/$NTF_DIST"
+    cp -p "$NTF_SIG" "$S/$NTF_SIG"
+fi
 cd "$S"
 find . -name __pycache__ -prune -exec rm -rf {} +
 # (5.44) release.json - before MANIFEST, so the signature covers it
@@ -123,7 +175,7 @@ if d.get("version") is None or d.get("said"):
 print("checked: zigmon %s, signed by %s, %d files" % (d["version"], d["signed_by"], d["files"]))'
 echo "release/zigmon-$V.tar.gz signed by $ok"
 if [[ -f "$HERE/release.json" ]]; then
-    echo "now:  git add release/zigmon-$V.tar.gz release/zigmon-$V.release.json release/zigmon-$V.release.json.sig release.json MANIFEST MANIFEST.sig && git commit -m 'Release $V' && git push"
+    echo "now:  git add release/zigmon-$V.tar.gz release/zigmon-$V.release.json release/zigmon-$V.release.json.sig release.json MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG} && git commit -m 'Release $V' && git push"
 else
-    echo "now:  git add release/zigmon-$V.tar.gz MANIFEST MANIFEST.sig && git commit -m 'Release $V' && git push"
+    echo "now:  git add release/zigmon-$V.tar.gz MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG} && git commit -m 'Release $V' && git push"
 fi

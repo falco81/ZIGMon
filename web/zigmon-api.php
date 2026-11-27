@@ -22,10 +22,10 @@ const ZIGMON_TOKEN = '/run/zigmon/api-token';
  * who was asking, so the daemon saw 127.0.0.1 - the relay itself, which no
  * block applies to and nothing is counted against.
  */
-function zigmon_download_context(int $timeout = 30, string $session = '')
+function zigmon_download_context(int $timeout = 30, string $session = '', array $extra = [])
 {
     $who = preg_replace('/[^0-9a-fA-F:.]/', '', (string) ($_SERVER['REMOTE_ADDR'] ?? ''));
-    $headers = ['X-Zigmon-Client: ' . $who];
+    $headers = array_merge(['X-Zigmon-Client: ' . $who], $extra);
     // the sign-in in a header on this side too: in the address it is in
     // whatever logs the daemon's own requests
     $session = preg_replace('/[^A-Za-z0-9_-]/', '', $session);
@@ -44,6 +44,53 @@ function zigmon_session(): string
 {
     $session = (string) ($_COOKIE[ZIGMON_COOKIE] ?? '');
     return preg_match('/^[A-Za-z0-9_-]{20,80}$/', $session) ? $session : '';
+}
+
+/**
+ * (5.57) A file the daemon sends, streamed through as it comes: its type, its
+ * name and its length, never held whole in PHP's memory. A refusal is the
+ * daemon's own JSON with its own status - never a file of that name.
+ * $extra are header lines, each already cut down to what it may hold.
+ */
+function zigmon_relay_download(string $path, int $timeout, string $session, array $extra, string $name): void
+{
+    $url = 'http://' . ZIGMON_HOST . ':' . ZIGMON_PORT . $path;
+    $fh = @fopen($url, 'rb', false, zigmon_download_context($timeout, $session, $extra));
+    if ($fh === false) {
+        http_response_code(503);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo json_encode(['ok' => false, 'error' => 'the daemon is not responding']);
+        return;
+    }
+    $status = 0;
+    $length = '';
+    foreach (($http_response_header ?? []) as $h) {
+        if (preg_match('#^HTTP/\S+\s+(\d+)#', $h, $m)) { $status = (int) $m[1]; $length = ''; }
+        if (preg_match('/^Content-Length:\s*(\d{1,12})\s*$/i', $h, $m)) { $length = $m[1]; }
+    }
+    header('Cache-Control: no-store');
+    if ($status !== 200) {
+        $body = (string) stream_get_contents($fh, 65536);
+        fclose($fh);
+        http_response_code($status ?: 502);
+        header('Content-Type: application/json; charset=utf-8');
+        $said = json_decode($body, true);
+        echo is_array($said) ? json_encode($said, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+                             : json_encode(['ok' => false, 'error' => 'refused']);
+        return;
+    }
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . preg_replace('/[^A-Za-z0-9._-]/', '', $name) . '"');
+    header('X-Content-Type-Options: nosniff');
+    if ($length !== '') {
+        header('Content-Length: ' . $length);
+    }
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    fpassthru($fh);
+    fclose($fh);
 }
 
 /** The sign-in of a download: the same cookie. */

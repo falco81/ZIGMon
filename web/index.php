@@ -225,7 +225,7 @@ if (isset($_GET['api'])) {
     // download taken away before its owner fetched it. The page fetches all
     // of these itself (same-origin); a shortcut or curl says nothing and is
     // let through as before.
-    if ((preg_match('/-download$/', $what) || $what === 'export') && zigmon_foreign_request()) {
+    if ((preg_match('/-download$/', $what) || $what === 'export' || $what === 'notifier-app') && zigmon_foreign_request()) {
         http_response_code(403);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode(['ok' => false, 'error' => 'refused: this request was sent by another site']);
@@ -674,6 +674,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/osup');
         exit;
     }
+    if ($what === 'notifier-app' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.57) ZIGMon Notifier itself, for an administrator to take to a computer:
+        // the exe in this package, behind the sign-in in the daemon
+        zigmon_relay_download('/api/notifier/app', 60, zigmon_download_session(), [], 'ZigmonNotifier.exe');
+        exit;
+    }
     if ($what === 'notifier-keys' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.57) the desktop notifier's keys: their names, sensors and last use - never a
         // key - an administrator's, behind the sign-in in the daemon
@@ -1034,12 +1040,18 @@ if (isset($_GET['api'])) {
             exit;
         }
         $do = (string) ($_GET['do'] ?? '');
-        if (!in_array($do, ['hello', 'sensors', 'wait'], true)) {
+        if (!in_array($do, ['hello', 'sensors', 'wait', 'update', 'download'], true)) {
             http_response_code(400);
-            echo json_encode(['ok' => false, 'error' => 'do is hello, sensors or wait']);
+            echo json_encode(['ok' => false, 'error' => 'do is hello, sensors, wait, update or download']);
             exit;
         }
         $key = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($_SERVER['HTTP_X_ZIGMON_NOTIFIER'] ?? '')), 0, 80);
+        if ($do === 'download') {
+            // the app's new version: the exe streamed through with its own headers
+            zigmon_relay_download('/api/notifier/download', 30, '', ['X-Zigmon-Notifier: ' . $key],
+                                  'ZigmonNotifier.exe');
+            exit;
+        }
         $ask = '';
         if ($do === 'wait') {
             $after = preg_replace('/\D/', '', substr((string) ($_GET['after'] ?? '0'), 0, 18));
@@ -5699,6 +5711,26 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ntf-none{display:flex;flex-direction:column;gap:2px;padding:16px;color:var(--tx-dim);font-size:13.5px}
   .ntf-none b{color:var(--tx)}
   .ntf-foot{margin-top:12px}
+  .ntf-get{display:flex;gap:14px;align-items:flex-start;margin:4px 0 14px;padding:14px 16px;border:1px solid rgba(88,166,255,.3);
+    border-radius:12px;background:linear-gradient(180deg,var(--info-bg),transparent 140%)}
+  .ntf-get.none{border-color:var(--line);background:var(--panel)}
+  .ntf-get-ic{flex:0 0 auto;width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    background:var(--panel2);color:var(--info);border:1px solid var(--line)}
+  .ntf-get.none .ntf-get-ic{color:var(--tx-mut)}
+  .ntf-get-ic svg{width:20px;height:20px}
+  .ntf-get-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .ntf-get-title{font-weight:700;font-size:15px}
+  .ntf-get-said{margin:0;color:var(--tx-dim);font-size:13.5px}
+  .ntf-get-row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+  .ntf-get-row .btn{max-width:100%;white-space:normal;text-align:left}
+  .ntf-get-size{font-size:12.5px;color:var(--tx-dim)}
+  .ntf-sha{display:flex;gap:8px;align-items:baseline;padding:6px 10px;border:1px solid var(--line);border-radius:8px;
+    background:var(--panel);max-width:100%;box-sizing:border-box;width:fit-content}
+  .ntf-sha .k{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--tx-mut);flex:0 0 auto}
+  .ntf-sha .v{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--tx-dim);
+    overflow-wrap:anywhere;word-break:break-all;min-width:0}
+  .ntf-get-note{margin:0;font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
+  .ntf-get-note a{color:var(--info)}
   .ntf-dlg .ntf-field{margin-top:14px}
   .ntf-dlg .ntf-flabel{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--tx-mut);line-height:1.35;margin:0 0 6px}
   .ntf-dlg .ntf-modes{display:flex;flex-direction:column;gap:8px}
@@ -5737,6 +5769,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .ntf-key .ntf-acts{grid-area:acts;justify-content:flex-start}
     .ntf-card .facts{grid-template-columns:repeat(2,minmax(0,1fr))}
     .ntf-card .ntf-top{margin-left:0}
+    .ntf-get{padding:12px;gap:10px} .ntf-get-ic{width:32px;height:32px}
+    .ntf-get-row .btn{width:100%;justify-content:center}
     .ntf-dlg .push-code.ntf-secret{font-size:14px}
   }
   /* ---- Settings - Security - SELinux (otp 1.0.233's card, one machine) ---- */
@@ -37498,6 +37532,7 @@ function drawNtf() {
     + 'button pressed. It signs in with a key made here, one for each computer. A key is read-only: it lists the sensors '
     + 'it was given and hears what they do, and it cannot switch, change or read anything else. The key is shown once, '
     + 'when it is made - only its fingerprint is kept here. Taken away, the computer holding it is refused at once.'));
+  host.appendChild(ntfGet(d.app));
   var tiles = el('div', 'facts');
   var live = keys.filter(function (k) { return k.last_at && Date.now() / 1000 - k.last_at < 600; }).length;
   [['Keys', keys.length + ' of ' + most, keys.length ? '' : 'dim'], ['Connected now', String(live), live ? 'ok' : 'dim'],
@@ -37520,8 +37555,54 @@ function drawNtf() {
   }
   keys.forEach(function (k) { list.appendChild(ntfRow(k)); });
   host.appendChild(list);
-  host.appendChild(el('p', 'note small ntf-foot', 'In the app: right-click its icon by the clock → Connection…, the address above and '
-    + 'the key, then Test. The app asks this dashboard over HTTPS as the browser does, and waits there for what happens.'));
+  host.appendChild(el('p', 'note small ntf-foot', (d.app ? 'Download the app above and start it on the computer - nothing to '
+    + 'install, it is one file. Then right-click' : 'In the app: right-click') + ' its icon by the clock → Connection…, the address '
+    + 'above and the key, then Test. '
+    + 'The app asks this dashboard over HTTPS as the browser does, and waits there for what happens.'));
+}
+/* Get the app (5.57): the exe this package carries, its SHA-256 and what it needs - or that
+   this package has none. It updates itself from this server later, checking the release
+   key's signature. */
+var NTF_RUNTIME = 'https://dotnet.microsoft.com/download/dotnet/10.0';
+function ntfGet(app) {
+  var box = el('div', 'ntf-get' + (app ? '' : ' none'));
+  box.id = 'ntf-get';
+  var ic = el('div', 'ntf-get-ic');
+  ic.innerHTML = iconMarkup('download');
+  box.appendChild(ic);
+  var main = el('div', 'ntf-get-main');
+  main.appendChild(el('div', 'ntf-get-title', 'Get the app'));
+  if (!app) {
+    main.appendChild(el('p', 'ntf-get-said', 'The app is not in this package.'));
+    box.appendChild(main);
+    return box;
+  }
+  var row = el('div', 'ntf-get-row');
+  var b = cmdButton('Download ZIGMon Notifier ' + app.version + ' for Windows', 'download', 'primary');
+  b.id = 'ntf-download';
+  b.onclick = function () {
+    zbusy(b, true);
+    downloadBehindPin('notifier-app', 'ZigmonNotifier.exe').then(function () { zbusy(b, false); });
+  };
+  row.appendChild(b);
+  row.appendChild(el('span', 'ntf-get-size', hlBytes(app.size) + ' · ZigmonNotifier.exe'));
+  main.appendChild(row);
+  var sha = el('div', 'ntf-sha');
+  sha.appendChild(el('span', 'k', 'SHA-256'));
+  sha.appendChild(el('span', 'v mono', app.sha256 || ''));
+  sha.id = 'ntf-sha';
+  main.appendChild(pushCopy(sha, app.sha256 || ''));
+  var need = el('p', 'ntf-get-note');
+  need.appendChild(document.createTextNode('Needs the .NET 10 Desktop Runtime (Microsoft, free) - Windows offers it on the first '
+    + 'start if it is missing: '));
+  var a = el('a', '', NTF_RUNTIME);
+  a.href = NTF_RUNTIME; a.target = '_blank'; a.rel = 'noopener noreferrer';
+  need.appendChild(a);
+  main.appendChild(need);
+  main.appendChild(el('p', 'ntf-get-note', 'Updates arrive with ZIGMon’s own updates; the app updates itself from this server '
+    + '(it checks the signature of ZIGMon’s release key).'));
+  box.appendChild(main);
+  return box;
 }
 function ntfRow(k) {
   var r = el('div', 'ntf-key');

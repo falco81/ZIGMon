@@ -629,9 +629,36 @@ install_program() {
     done
     run ln -sfn "$LIB_DIR/zigmon.py" "$BIN_LINK"
     good "$LIB_DIR/zigmon.py, command \"zigmon\""
+    install_notifier_app
     if [[ -z "$DRY_RUN" ]]; then
         python3 -c 'import paho.mqtt.client' 2>/dev/null || fail "python3-paho-mqtt is not importable; dnf install -y python3-paho-mqtt"
     fi
+}
+
+# (5.57) ZIGMon Notifier, the Windows tray app: the exe, its manifest and the
+# manifest's signature by a release key, from windows/dist into $LIB_DIR/notifier,
+# where the daemon hands them to the dashboard's administrator and to the app
+# updating itself. All three or none: a package without them leaves nothing of an
+# older one behind, so a stale app is never offered.
+NOTIFIER_FILES=(ZigmonNotifier.exe notifier.json notifier.json.sig)
+install_notifier_app() {
+    local dest="$LIB_DIR/notifier" f all="yes"
+    for f in "${NOTIFIER_FILES[@]}"; do
+        [[ -f "$SOURCE_DIR/windows/dist/$f" ]] || all=""
+    done
+    if [[ -n "$all" ]]; then
+        run install -d -m 755 "$dest"
+        for f in "${NOTIFIER_FILES[@]}"; do
+            run install -m 644 "$SOURCE_DIR/windows/dist/$f" "$dest/$f"
+        done
+        good "$dest: ZIGMon Notifier $(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' "$SOURCE_DIR/windows/dist/notifier.json" | head -n1)"
+    elif [[ -d "$dest" ]]; then
+        for f in "${NOTIFIER_FILES[@]}"; do
+            [[ -e "$dest/$f" ]] && run rm -f "$dest/$f"
+        done
+        note "this package carries no desktop app: none is offered from $dest"
+    fi
+    return 0
 }
 
 write_config() {

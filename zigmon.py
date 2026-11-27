@@ -11992,10 +11992,117 @@ class Daemon(object):
     def notifier_hello(self, key):
         self._ntf_setup()
         seen = [s for s in self.notifier_sensors() if self.notifier_may_see(key, s['id'])]
+        app = self.notifier_app()
         return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
                 'house': socket.gethostname().split('.')[0] or 'zigmon',
                 'key': {'name': key.get('name') or '', 'devices': len(seen), 'hint': key.get('hint') or ''},
-                'boot': self.notifier_boot, 'seq': self._ntf_seq}
+                'boot': self.notifier_boot, 'seq': self._ntf_seq,
+                # (5.57) the app this server hands out, for the app to update itself from
+                'app': None if app is None else {'version': app['version']}}
+
+    # ---- the app itself (5.57): ZIGMon Notifier shipped with ZIGMon, fetched from here --------
+    # install.sh puts the three files of windows/dist into <lib>/notifier/: the exe, its
+    # manifest (notifier.json: product, file, version, size, sha256, runtime) and the manifest's
+    # Ed25519 signature by a release key. The app checks that signature itself before it
+    # replaces itself; here the files are only checked to agree - the exe of the size and the
+    # SHA-256 the manifest says, read once for each change of the files (never 50 MB a request).
+    NOTIFIER_APP_MOST = 50 * 1024 * 1024
+    NOTIFIER_APP_FILE = 'ZigmonNotifier.exe'
+
+    def notifier_app_dir(self):
+        """Where the app's files are: CONFIG['notifier_dir'] when set (tests), else beside
+        zigmon.py - notifier/ as installed, windows/dist/ in the source tree."""
+        given = str(CONFIG.get('notifier_dir') or '').strip()
+        if given:
+            return Path(given)
+        here = Path(os.path.realpath(__file__)).parent
+        for one in (here / 'notifier', here / 'windows' / 'dist'):
+            if (one / 'notifier.json').is_file():
+                return one
+        return here / 'notifier'
+
+    def notifier_app(self):
+        """The app in this package, checked, or None: {'version', 'size', 'sha256', 'manifest'
+        (the exact bytes signed), 'sig' (64 bytes), 'path', 'stat' (of the exe as checked)}."""
+        where = self.notifier_app_dir()
+        names = (self.NOTIFIER_APP_FILE, 'notifier.json', 'notifier.json.sig')
+        stamp = [str(where)]
+        try:
+            for n in names:
+                st = os.stat(where / n)
+                stamp.append((n, st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            stamp = None
+        lock = self.__dict__.setdefault('_ntf_app_lock', threading.Lock())
+        with lock:
+            got = self.__dict__.get('_ntf_app')
+            if got is not None and got[0] == stamp:
+                return got[1]
+            out, why = None, ''
+            if stamp is None:
+                why = ''                          # not in this package: nothing to warn of
+            else:
+                try:
+                    out, why = self._notifier_app_check(where, stamp[1][1:])
+                except (OSError, ValueError) as e:
+                    out, why = None, str(e)[:200]
+            if why:
+                log('the desktop notifier in %s is not offered: %s' % (where, why), 'warn')
+            self._ntf_app = (stamp, out)
+            return out
+
+    def _notifier_app_check(self, where, exe_stamp):
+        man = (where / 'notifier.json').read_bytes()
+        sig = (where / 'notifier.json.sig').read_bytes()
+        if len(man) > 4096:
+            return None, 'notifier.json is far too big'
+        if len(sig) != 64:
+            return None, 'notifier.json.sig is not a signature (%d bytes, not 64)' % len(sig)
+        try:
+            info = json.loads(man.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError):
+            return None, 'notifier.json does not read'
+        if not isinstance(info, dict):
+            return None, 'notifier.json does not read'
+        version, size, sha = info.get('version'), info.get('size'), info.get('sha256')
+        if info.get('product') != 'ZIGMon Notifier' or info.get('file') != self.NOTIFIER_APP_FILE:
+            return None, 'notifier.json is not of ZIGMon Notifier'
+        if not (isinstance(version, str) and re.match(r'^\d{1,5}(\.\d{1,5}){1,3}$', version)):
+            return None, 'notifier.json has no version'
+        if not (isinstance(size, int) and not isinstance(size, bool) and 0 < size <= self.NOTIFIER_APP_MOST):
+            return None, 'notifier.json has no size up to 50 MB'
+        if not (isinstance(sha, str) and re.match(r'^[0-9a-f]{64}$', sha)):
+            return None, 'notifier.json has no SHA-256'
+        path = where / self.NOTIFIER_APP_FILE
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            st = os.fstat(fh.fileno())
+            if (st.st_mtime_ns, st.st_size, st.st_ino) != tuple(exe_stamp):
+                return None, 'the exe changed while it was read - asked again next time'
+            if st.st_size != size:
+                return None, 'the exe is %d bytes, notifier.json says %d' % (st.st_size, size)
+            while True:
+                lump = fh.read(1 << 20)
+                if not lump:
+                    break
+                h.update(lump)
+        if not hmac.compare_digest(h.hexdigest(), sha):
+            return None, 'the exe is not the one notifier.json describes (its SHA-256 differs)'
+        return {'version': version, 'size': size, 'sha256': sha, 'manifest': man, 'sig': sig,
+                'path': path, 'stat': (st.st_mtime_ns, st.st_size, st.st_ino)}, ''
+
+    def notifier_app_short(self):
+        """What the pages and hello say of it: {'version', 'size', 'sha256'} or None."""
+        app = self.notifier_app()
+        return None if app is None else {'version': app['version'], 'size': app['size'], 'sha256': app['sha256']}
+
+    def notifier_update(self):
+        app = self.notifier_app()
+        if app is None:
+            return {'ok': True, 'available': False}
+        return {'ok': True, 'available': True, 'version': app['version'], 'size': app['size'],
+                'sha256': app['sha256'], 'manifest': base64.b64encode(app['manifest']).decode('ascii'),
+                'sig': base64.b64encode(app['sig']).decode('ascii')}
 
     def notifier_sensors_for(self, key):
         self._ntf_setup()
@@ -47203,7 +47310,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # archives hold the boxes' Wi-Fi passwords and cloud tokens
                      '/api/shellybackup',
                      # the keys of the desktop notifier (5.57): who may watch which sensors
-                     '/api/notifier/keys')
+                     '/api/notifier/keys',
+                     # the app itself, for an administrator to hand to a computer (5.57)
+                     '/api/notifier/app')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -47501,8 +47610,24 @@ class ApiHandler(BaseHTTPRequestHandler):
         status, out = push_request(d, path[len('/api/acme-push/'):], got, 'POST')
         return self._send(status, out)
 
-    def _send_file(self, path, download_name):
-        size = path.stat().st_size
+    def _send_notifier_app(self, d):
+        """The exe of the desktop notifier (5.57) - the file as it was checked against its
+        manifest: opened first, and refused when it is no longer that file."""
+        app = d.notifier_app()
+        if app is None:
+            return self._error(404, 'the desktop app is not in this package')
+        try:
+            fh = open(app['path'], 'rb')
+        except OSError:
+            return self._error(404, 'the desktop app is not in this package')
+        with fh:
+            st = os.fstat(fh.fileno())
+            if (st.st_mtime_ns, st.st_size, st.st_ino) != app['stat']:
+                return self._error(503, 'the desktop app is being replaced - ask again in a while')
+            return self._send_file(app['path'], d.NOTIFIER_APP_FILE, fh=fh)
+
+    def _send_file(self, path, download_name, fh=None):
+        size = os.fstat(fh.fileno()).st_size if fh is not None else path.stat().st_size
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream')
         self.send_header('Content-Length', str(size))
@@ -47510,9 +47635,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         try:
-            with open(path, 'rb') as fh:
+            with (contextlib.nullcontext(fh) if fh is not None else open(path, 'rb')) as src:
                 while True:
-                    chunk = fh.read(256 * 1024)
+                    chunk = src.read(256 * 1024)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
@@ -47648,13 +47773,14 @@ class ApiHandler(BaseHTTPRequestHandler):
         return self._send(404, {'ok': False, 'error': answer})
 
     def _notifier(self, d, which, q):
-        """The desktop notifier's three roads (5.57): hello, sensors, wait. The key in
+        """The desktop notifier's roads (5.57): hello, sensors, wait - and update and
+        download, the app's own new version from this server. The key in
         X-Zigmon-Notifier is the whole of their authority - no API token, no sign-in, whatever
         the view is set to - and it can only look. A wrong one is counted as a wrong one-tap
         secret is, against the address the request really came from."""
         who = self._caller()
-        if which not in ('hello', 'sensors', 'wait'):
-            return self._error(400, 'hello, sensors or wait')
+        if which not in ('hello', 'sensors', 'wait', 'update', 'download'):
+            return self._error(400, 'hello, sensors, wait, update or download')
         if not d.tap_may_try(who):
             d.note_anomaly(who, 'too-many', 'past the limit')
             return self._error(429, 'too many tries')
@@ -47669,6 +47795,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._send(200, d.notifier_hello(key))
         if which == 'sensors':
             return self._send(200, d.notifier_sensors_for(key))
+        if which == 'update':
+            return self._send(200, d.notifier_update())
+        if which == 'download':
+            return self._send_notifier_app(d)
         after = str(q.get('after') or '0').strip()
         boot = re.sub(r'[^0-9a-f]', '', str(q.get('boot') or '').lower())[:32]
         if not re.match(r'^\d{1,18}$', after):
@@ -47761,7 +47891,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 raw = urlparse(self.path).query
                 return self._tap(d, path[len('/api/tap/'):], 'link',
                                  ask=bool(re.match(r'(^|.*&)ask(=|&|$)', raw)))
-            if path.startswith('/api/notifier/') and path != '/api/notifier/keys':
+            if path.startswith('/api/notifier/') and path not in ('/api/notifier/keys', '/api/notifier/app'):
                 # (5.57) the desktop notifier: its own key in its own header is the whole
                 # of its authority, as a one-tap link's secret is - before the sign-in and
                 # the view, which it does not need; it can only look
@@ -48519,7 +48649,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 where = re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip())
                 return self._send(200, {'ok': True, 'keys': d.notifier_keys_view(),
                                         'sensors': d.notifier_sensors(), 'most': d.NOTIFIER_MOST,
-                                        'address': where})
+                                        'address': where, 'app': d.notifier_app_short()})
+            if path == '/api/notifier/app':
+                # the app itself (5.57), as a download for the page: an administrator's
+                # (ALWAYS_LOCKED), asked again here so a road moved out of that list never opens
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send_notifier_app(d)
             if path == '/api/shellybackup':
                 # the configuration backups of the Shelly boxes (5.50): an
                 # administrator's (ALWAYS_LOCKED), asked again here so a road
