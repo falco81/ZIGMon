@@ -10271,6 +10271,7 @@ class Daemon(object):
         self._intel_kick = threading.Event()
         self._intel_worker = None
         self._change = threading.Condition()
+        self._ntf_setup()                # (5.57) the desktop notifier's ring and its boot
         self.client = None
         self._stop = threading.Event()
         # Friendly name -> id, prefilled from the database so a report or a
@@ -11729,6 +11730,319 @@ class Daemon(object):
     def _truthy(value):
         return value in (True, 1) or str(value).strip().lower() in ('true', 'on', '1', 'yes')
 
+    # ---- the desktop notifier (5.57): a Windows tray app told of the edges ----------------
+    # An administrator makes a key (Settings - Messages - Desktop app); the app holds it and
+    # asks, by a long poll through the relay, what the sensors it may see did. The key is
+    # read-only - it lists those sensors and hears their edges, nothing else - and only its
+    # hash is kept. Each edge goes into a ring in memory, numbered per start of the daemon
+    # (boot), and a condition wakes whoever waits.
+    NOTIFIER_MOST = 20
+    NOTIFIER_RING = 500
+    NOTIFIER_BATCH = 50
+    NOTIFIER_WAIT_S = 25.0
+    NOTIFIER_WAITERS_MOST = 40
+    # key -> kind, in the order a device's own kind is decided
+    NOTIFIER_EDGE_KEYS = (('occupancy', 'motion'), ('presence', 'motion'), ('contact', 'contact'),
+                          ('water_leak', 'leak'), ('smoke', 'smoke'), ('gas', 'gas'),
+                          ('carbon_monoxide', 'co'), ('tamper', 'tamper'), ('vibration', 'vibration'))
+    NOTIFIER_WHAT = {'motion': ('motion', 'no motion'), 'contact': ('opened', 'closed'),
+                     'leak': ('water leak', 'dry'), 'smoke': ('smoke', 'no smoke'), 'gas': ('gas', 'no gas'),
+                     'co': ('carbon monoxide', 'clear'), 'tamper': ('tampered', 'closed again'),
+                     'vibration': ('vibration', 'still')}
+    # where a key's last use is written down at most this often (it is kept in memory always)
+    NOTIFIER_SEEN_EVERY_S = 60
+
+    def _ntf_setup(self):
+        """The ring, its number and its condition - made once, at the start."""
+        if self.__dict__.get('_ntf_cond') is None:
+            self.notifier_boot = secrets.token_hex(6)
+            self._ntf_ring = collections.deque(maxlen=self.NOTIFIER_RING)
+            self._ntf_seq = 0
+            self._ntf_state = {}          # (device, kind) -> (at, active): the last edge heard
+            self._ntf_seen = {}           # key id -> (at, from): the last use, in memory
+            self._ntf_waiting = 0
+            self._ntf_cond = threading.Condition()
+
+    def notifier_edges(self, device_id, before, said):
+        """The edges in one report, into the ring. On the broker's thread: a look at a few
+        keys of what was said, and nothing written anywhere but memory."""
+        if self.__dict__.get('_ntf_cond') is None or getattr(self, '_retained_msg', False):
+            return
+        edges_now = None
+        for key, kind in self.NOTIFIER_EDGE_KEYS:
+            if key not in said:
+                continue
+            value = said[key]
+            if value is None or value == '':
+                continue
+            on = self._truthy(value)
+            active = (not on) if kind == 'contact' else on
+            was = before.get(key)
+            if was is not None and was != '':
+                if self._truthy(was) == on:
+                    continue                      # the same again: no edge
+            elif not active:
+                continue                          # first heard, and quiet: nothing happened
+            if edges_now is None:
+                edges_now = []
+            edges_now.append((kind, key, active, self.NOTIFIER_WHAT[kind][0 if active else 1]))
+        act = said.get('action')
+        if act not in (None, '') and str(act).strip():
+            # every press is a press, the same button twice included
+            if edges_now is None:
+                edges_now = []
+            edges_now.append(('button', 'action', True, 'pressed: %s' % str(act).strip()[:60]))
+        if not edges_now:
+            return
+        now = time.time()
+        with self._ntf_cond:
+            for kind, key, active, what in edges_now:
+                self._ntf_seq += 1
+                self._ntf_ring.append((self._ntf_seq, now, device_id, kind, key, active, what))
+                self._ntf_state[(device_id, kind)] = (now, active)
+            self._ntf_cond.notify_all()
+
+    # -- the keys --
+    def notifier_keys(self):
+        """The keys as kept: id, name, devices, created, by, last_at, last_from, hint, hash."""
+        try:
+            rows = json.loads(self.store.get_meta('notifier_keys') or '[]')
+        except ValueError:
+            rows = []
+        if not isinstance(rows, list):
+            return []
+        return [dict(r) for r in rows if isinstance(r, dict) and r.get('id') and r.get('hash')]
+
+    def _ntf_put(self, rows):
+        self.store.set_meta('notifier_keys', json.dumps(rows))
+
+    def notifier_keys_view(self):
+        """The keys as an administrator sees them: never the hash, the last use as it is now."""
+        self._ntf_setup()
+        out = []
+        for r in self.notifier_keys():
+            seen = self._ntf_seen.get(r['id'])
+            last_at, last_from = r.get('last_at'), r.get('last_from')
+            if seen and (not last_at or seen[0] > float(last_at)):
+                last_at, last_from = seen
+            out.append({'id': r['id'], 'name': r.get('name') or '', 'devices': list(r.get('devices') or []),
+                        'created': r.get('created'), 'by': r.get('by') or '', 'last_at': last_at,
+                        'last_from': last_from or None, 'hint': r.get('hint') or ''})
+        return out
+
+    def notifier_find(self, given):
+        """The key a header carries, or None: its hash compared with every kept one."""
+        given = str(given or '')
+        if not given.startswith('zmn_') or len(given) > 80:
+            return None
+        digest = hashlib.sha256(given.encode('utf-8')).hexdigest()
+        hit = None
+        for r in self.notifier_keys():
+            # every one compared, the first match kept: the time does not say which it was
+            if hmac.compare_digest(str(r.get('hash') or ''), digest) and hit is None:
+                hit = r
+        return hit
+
+    def notifier_key_by_id(self, kid):
+        return next((r for r in self.notifier_keys() if r['id'] == kid), None)
+
+    def notifier_seen(self, key, who):
+        """A key used: kept in memory every time, written down at most once a minute."""
+        self._ntf_setup()
+        now = time.time()
+        who = str(who or '')[:60]
+        self._ntf_seen[key['id']] = (now, who)
+        if now - float(key.get('last_at') or 0) < self.NOTIFIER_SEEN_EVERY_S:
+            return
+        rows = self.notifier_keys()
+        for r in rows:
+            if r['id'] == key['id']:
+                r['last_at'], r['last_from'] = now, who
+        self.store.set_meta('notifier_keys', json.dumps(rows), deferred=True)
+
+    def notifier_post(self, body, by):
+        """create / update / delete - an administrator's, asked for the PIN before this."""
+        self._ntf_setup()
+        act = str(body.get('action') or '')
+        rows = self.notifier_keys()
+        known = {s['id'] for s in self.notifier_sensors()}
+
+        def clean_name(v):
+            name = re.sub(r'[\x00-\x1f\x7f]', '', str(v or '')).strip()
+            if not name:
+                raise ValueError('a key needs a name - the computer it is for, say')
+            if len(name) > 60:
+                raise ValueError('a name is at most 60 characters')
+            return name
+
+        def clean_devices(v):
+            if v in (None, ''):
+                return []
+            if not isinstance(v, list):
+                raise ValueError('devices is a list of device ids')
+            out = []
+            for one in v[:500]:
+                one = str(one or '').strip()
+                if not one:
+                    continue
+                if one not in known:
+                    raise ValueError('%s is not a sensor that can trigger' % one[:60])
+                if one not in out:
+                    out.append(one)
+            return out
+
+        def said(devs):
+            return 'every sensor' if not devs else ('%d sensor%s' % (len(devs), '' if len(devs) == 1 else 's'))
+
+        if act == 'create':
+            if len(rows) >= self.NOTIFIER_MOST:
+                raise ValueError('at most %d keys - take one away first' % self.NOTIFIER_MOST)
+            name = clean_name(body.get('name'))
+            devs = clean_devices(body.get('devices'))
+            key = 'zmn_' + secrets.token_urlsafe(30)
+            kid = secrets.token_hex(6)
+            rows.append({'id': kid, 'name': name, 'devices': devs, 'created': time.time(), 'by': by or '',
+                         'last_at': None, 'last_from': None, 'hint': key[-2:],
+                         'hash': hashlib.sha256(key.encode('utf-8')).hexdigest()})
+            self._ntf_put(rows)
+            self.store.add_event('control', "%s made the desktop notifier key '%s' (%s)"
+                                 % (by or 'somebody', name, said(devs)), 'info')
+            return {'key': key, 'id': kid, 'message': "the key '%s' is made" % name}
+        kid = str(body.get('id') or '')
+        mine = next((r for r in rows if r['id'] == kid), None)
+        if mine is None:
+            raise ValueError('there is no such key')
+        if act == 'delete':
+            rows = [r for r in rows if r['id'] != kid]
+            self._ntf_put(rows)
+            self._ntf_seen.pop(kid, None)
+            with self._ntf_cond:
+                self._ntf_cond.notify_all()        # a poll waiting on it ends now, refused
+            self.store.add_event('control', "%s took away the desktop notifier key '%s'"
+                                 % (by or 'somebody', mine['name']), 'info')
+            return {'message': "the key '%s' is taken away" % mine['name']}
+        if act == 'update':
+            if 'name' in body:
+                mine['name'] = clean_name(body.get('name'))
+            if 'devices' in body:
+                mine['devices'] = clean_devices(body.get('devices'))
+            self._ntf_put(rows)
+            with self._ntf_cond:
+                self._ntf_cond.notify_all()
+            self.store.add_event('control', "%s changed the desktop notifier key '%s' (%s)"
+                                 % (by or 'somebody', mine['name'], said(mine['devices'])), 'info')
+            return {'message': "the key '%s' is saved" % mine['name']}
+        raise ValueError('what with the key? (create, update, delete)')
+
+    # -- what a key sees --
+    def _ntf_rooms(self):
+        out = {}
+        for r in self.rooms():
+            for mid in self.room_member_ids(r['id']):
+                out.setdefault(mid, r['name'])
+        return out
+
+    def notifier_sensors(self, full=False):
+        """Every device that can trigger - what it reports holds one of the edge keys, or it is
+        a button - sorted by name; with full, how each one is now as well."""
+        self._ntf_setup()
+        rooms = self._ntf_rooms()
+        out = []
+        for dev in self.store.devices():
+            if dev.get('source') in ('plug', 'wifi', 'weather', 'sms', 'group', 'gateway', 'proxy'):
+                continue
+            snap = self.live.get(dev['id'])
+            values = (snap or {}).get('payload') or {}
+            if not values:
+                cached = self.store._snap_cache.get(dev['id'])
+                values = (cached[0] if cached else {}) or {}
+            exposes = dev.get('exposes') or {}
+            if 'action' in values or 'action' in exposes or dev.get('has_action'):
+                kind, key = 'button', 'action'
+            else:
+                kind, key = next(((kd, k) for k, kd in self.NOTIFIER_EDGE_KEYS if k in values), (None, None))
+            if kind is None:
+                continue
+            row = {'id': dev['id'], 'name': dev.get('alias') or dev['name'],
+                   'room': rooms.get(dev['id']) or rooms.get(dev['name']), 'kind': kind}
+            if full:
+                seen = self.describe(dev, snap)
+                last = self._ntf_state.get((dev['id'], kind))
+                if kind == 'button':
+                    active = None
+                    at = last[0] if last else ((seen.get('last_action') or {}).get('ts') or None)
+                else:
+                    v = values.get(key)
+                    active = None if v is None or v == '' else (
+                        (not self._truthy(v)) if kind == 'contact' else self._truthy(v))
+                    at = last[0] if last else None
+                battery = seen.get('battery')
+                row.update({'active': active, 'at': at,
+                            'battery': int(round(battery)) if isinstance(battery, (int, float)) else None,
+                            'online': bool(seen.get('online'))})
+            out.append(row)
+        out.sort(key=lambda r: (str(r['name']).lower(), r['id']))
+        return out
+
+    @staticmethod
+    def notifier_may_see(key, device_id):
+        devs = key.get('devices') or []
+        return not devs or device_id in devs
+
+    def notifier_hello(self, key):
+        self._ntf_setup()
+        seen = [s for s in self.notifier_sensors() if self.notifier_may_see(key, s['id'])]
+        return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
+                'house': socket.gethostname().split('.')[0] or 'zigmon',
+                'key': {'name': key.get('name') or '', 'devices': len(seen), 'hint': key.get('hint') or ''},
+                'boot': self.notifier_boot, 'seq': self._ntf_seq}
+
+    def notifier_sensors_for(self, key):
+        self._ntf_setup()
+        return {'ok': True, 'boot': self.notifier_boot, 'seq': self._ntf_seq,
+                'sensors': [s for s in self.notifier_sensors(full=True) if self.notifier_may_see(key, s['id'])]}
+
+    def notifier_wait(self, key, after, boot, timeout=None):
+        """The edges after `after` this key may see: at once when there are some, or when
+        one comes within the wait; reset when the number is not this start's. None when the
+        key was taken away meanwhile."""
+        self._ntf_setup()
+        timeout = self.NOTIFIER_WAIT_S if timeout is None else max(0.0, min(self.NOTIFIER_WAIT_S, timeout))
+        deadline = time.monotonic() + timeout
+        kid = key['id']
+        with self._ntf_cond:
+            while True:
+                seq = self._ntf_seq
+                first = self._ntf_ring[0][0] if self._ntf_ring else seq + 1
+                if boot != self.notifier_boot or after > seq or after < first - 1:
+                    return {'ok': True, 'boot': self.notifier_boot, 'seq': seq, 'reset': True, 'events': []}
+                key = self.notifier_key_by_id(kid)
+                if key is None:
+                    return None
+                got = [e for e in self._ntf_ring if e[0] > after and self.notifier_may_see(key, e[2])]
+                if got:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop.is_set():
+                    return {'ok': True, 'boot': self.notifier_boot, 'seq': seq, 'reset': False, 'events': []}
+                self._ntf_cond.wait(min(1.0, remaining))
+        more = len(got) > self.NOTIFIER_BATCH
+        got = got[:self.NOTIFIER_BATCH]
+        names = {}
+        rooms = self._ntf_rooms()
+        events = []
+        for s, at, dev, kind, k, active, what in got:
+            if dev not in names:
+                row = self.store.device(dev) or {}
+                names[dev] = row.get('alias') or row.get('name') or dev
+            events.append({'seq': s, 'at': round(at, 3), 'device': dev, 'name': names[dev],
+                           'room': rooms.get(dev) or rooms.get(names[dev]), 'kind': kind, 'key': k,
+                           'active': active, 'what': what})
+        # more than one answer holds: the number goes only as far as this answer, so the
+        # next one carries on from there
+        return {'ok': True, 'boot': self.notifier_boot, 'seq': got[-1][0] if more else seq,
+                'reset': False, 'events': events}
+
     def watch_states(self, device_id, name, before, said):
         """Tell the edges of what a device reports - a leak starting and
         ending, a battery going under a line, a room leaving its range - once
@@ -11738,6 +12052,11 @@ class Daemon(object):
         # on the broker's thread between a report and the next one
         def label_of():
             return self.device_label(device_id) or name
+        # (5.57) the edges the desktop notifier hears, into its ring in memory
+        try:
+            self.notifier_edges(device_id, before, said)
+        except Exception as e:
+            log('%s: the notifier ring: %s' % (name, e), 'debug')
         for key, (about, level, bad, good) in self.DANGER_KEYS.items():
             if key not in said:
                 continue
@@ -46147,7 +46466,7 @@ def full_sent(value):
 
 # Headers whose value is the thing itself: a link's secret, a six-digit code,
 # the API token, a session, and whatever a plug or Duo is answered with.
-SECRET_HEADER_NAMES = ('x-zigmon-tap', 'x-zigmon-code', 'x-zigmon-token', 'x-zigmon-session', 'x-zigmon-cli',
+SECRET_HEADER_NAMES = ('x-zigmon-tap', 'x-zigmon-notifier', 'x-zigmon-code', 'x-zigmon-token', 'x-zigmon-session', 'x-zigmon-cli',
                        'authorization', 'cookie', 'proxy-authorization', 'www-authenticate',
                        'x-duo-signature', 'set-cookie')
 
@@ -46882,7 +47201,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      '/api/selinux',
                      # the configuration backups of the Shelly boxes (5.50): their
                      # archives hold the boxes' Wi-Fi passwords and cloud tokens
-                     '/api/shellybackup')
+                     '/api/shellybackup',
+                     # the keys of the desktop notifier (5.57): who may watch which sensors
+                     '/api/notifier/keys')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -47326,6 +47647,49 @@ class ApiHandler(BaseHTTPRequestHandler):
         d.tap_went_wrong(who.split(' (')[0])
         return self._send(404, {'ok': False, 'error': answer})
 
+    def _notifier(self, d, which, q):
+        """The desktop notifier's three roads (5.57): hello, sensors, wait. The key in
+        X-Zigmon-Notifier is the whole of their authority - no API token, no sign-in, whatever
+        the view is set to - and it can only look. A wrong one is counted as a wrong one-tap
+        secret is, against the address the request really came from."""
+        who = self._caller()
+        if which not in ('hello', 'sensors', 'wait'):
+            return self._error(400, 'hello, sensors or wait')
+        if not d.tap_may_try(who):
+            d.note_anomaly(who, 'too-many', 'past the limit')
+            return self._error(429, 'too many tries')
+        given = str(self.headers.get('X-Zigmon-Notifier') or '').strip()
+        key = d.notifier_find(given)
+        if key is None:
+            d.tap_went_wrong(who)
+            d.note_anomaly(who, 'bad-secret', hashlib.sha256(given.encode('utf-8')).hexdigest()[:10])
+            return self._error(401, 'this notifier key is not known here - it may have been taken away')
+        d.notifier_seen(key, who)
+        if which == 'hello':
+            return self._send(200, d.notifier_hello(key))
+        if which == 'sensors':
+            return self._send(200, d.notifier_sensors_for(key))
+        after = str(q.get('after') or '0').strip()
+        boot = re.sub(r'[^0-9a-f]', '', str(q.get('boot') or '').lower())[:32]
+        if not re.match(r'^\d{1,18}$', after):
+            return self._error(400, 'after is the number of the last event heard')
+        with d._ntf_cond:
+            if d._ntf_waiting >= d.NOTIFIER_WAITERS_MOST:
+                busy = True
+            else:
+                busy = False
+                d._ntf_waiting += 1
+        if busy:
+            return self._error(503, 'too many waiting already - ask again in a while')
+        try:
+            out = d.notifier_wait(key, int(after), boot)
+        finally:
+            with d._ntf_cond:
+                d._ntf_waiting = max(0, d._ntf_waiting - 1)
+        if out is None:
+            return self._error(401, 'this notifier key has been taken away')
+        return self._send(200, out)
+
     def _authorised(self):
         given = self.headers.get('X-Zigmon-Token') or ''
         return bool(given) and secrets.compare_digest(given, self.daemon.token)
@@ -47397,6 +47761,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 raw = urlparse(self.path).query
                 return self._tap(d, path[len('/api/tap/'):], 'link',
                                  ask=bool(re.match(r'(^|.*&)ask(=|&|$)', raw)))
+            if path.startswith('/api/notifier/') and path != '/api/notifier/keys':
+                # (5.57) the desktop notifier: its own key in its own header is the whole
+                # of its authority, as a one-tap link's secret is - before the sign-in and
+                # the view, which it does not need; it can only look
+                return self._notifier(d, path[len('/api/notifier/'):], q)
             if path == '/api/status':
                 # with the view switched off, the whole state of the house -
                 # people, their phones and devices, the numbers a text is
@@ -48140,6 +48509,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
                     return self._error(403, 'view locked \u2014 this one is for an administrator')
                 return self._send(200, selinux_view(d))
+            if path == '/api/notifier/keys':
+                # the desktop notifier's keys (5.57): an administrator's (ALWAYS_LOCKED),
+                # asked again here so a road moved out of that list never opens. Never a
+                # key nor its hash: the name, the sensors, who made it, when it was used
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                # the address the app is to use, where one is set for outside
+                where = re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip())
+                return self._send(200, {'ok': True, 'keys': d.notifier_keys_view(),
+                                        'sensors': d.notifier_sensors(), 'most': d.NOTIFIER_MOST,
+                                        'address': where})
             if path == '/api/shellybackup':
                 # the configuration backups of the Shelly boxes (5.50): an
                 # administrator's (ALWAYS_LOCKED), asked again here so a road
@@ -49913,6 +50293,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                     out = sbk_post(d, body, by)
                 except (ValueError, sqlite3.Error) as e:
                     return self._error(400, str(e)[:600])
+                return self._send(200, out)
+            if path == '/api/notifier/keys':
+                # the desktop notifier's keys (5.57): an administrator's, every action -
+                # the sign-in and the role both asked. The key goes out once, here, when
+                # it is made; only its hash is kept
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator makes and takes away the notifier keys')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.notifier_post(body, by)
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                out.update(ok=True, keys=d.notifier_keys_view())
                 return self._send(200, out)
             if path == '/api/osup':
                 # the updates of the system (5.34): an administrator's, every action

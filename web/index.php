@@ -674,6 +674,12 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/osup');
         exit;
     }
+    if ($what === 'notifier-keys' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.57) the desktop notifier's keys: their names, sensors and last use - never a
+        // key - an administrator's, behind the sign-in in the daemon
+        zigmon_relay('/api/notifier/keys');
+        exit;
+    }
     if ($what === 'shellybackup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.50) the configuration backups of the Shelly boxes: how each
         // stands - never an archive - an administrator's, in the daemon
@@ -1014,6 +1020,37 @@ if (isset($_GET['api'])) {
     zigmon_relay('/api/tap/' . rawurlencode($token) . (isset($_GET['ask']) ? '?ask' : ''), 'GET', null, 100.0);
         exit;
     }
+    // (5.57) The desktop notifier, the Windows tray app: hello, the sensors and the long
+    // wait for what they do. Its key rides in X-Zigmon-Notifier and nowhere else - never in
+    // the address, which a log keeps - and the daemon checks it; no sign-in and no API
+    // token, as a one-tap link. Each value is cut down to what it may hold before it goes
+    // into a header line or the daemon's address (the lines are joined with CRLF).
+    if ($what === 'notifier') {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'error' => 'the notifier asks by GET']);
+            exit;
+        }
+        $do = (string) ($_GET['do'] ?? '');
+        if (!in_array($do, ['hello', 'sensors', 'wait'], true)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'do is hello, sensors or wait']);
+            exit;
+        }
+        $key = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($_SERVER['HTTP_X_ZIGMON_NOTIFIER'] ?? '')), 0, 80);
+        $ask = '';
+        if ($do === 'wait') {
+            $after = preg_replace('/\D/', '', substr((string) ($_GET['after'] ?? '0'), 0, 18));
+            $boot = preg_replace('/[^0-9a-f]/', '', strtolower(substr((string) ($_GET['boot'] ?? ''), 0, 32)));
+            $ask = '?after=' . ($after === '' ? '0' : $after) . '&boot=' . $boot;
+        }
+        // the wait is held up to 25 s in the daemon: the relay is given longer
+        zigmon_relay('/api/notifier/' . $do . $ask, 'GET', null, $do === 'wait' ? 45.0 : 15.0,
+                     ['X-Zigmon-Notifier: ' . $key]);
+        exit;
+    }
     if ($what === 'tap-preview') {
         zigmon_relay('/api/tap-preview?target=' . rawurlencode((string) ($_GET['target'] ?? ''))
             . '&do=' . rawurlencode((string) ($_GET['do'] ?? 'toggle')));
@@ -1045,7 +1082,7 @@ if (isset($_GET['api'])) {
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
                        'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do', 'shellybackup-do', 'shelly-tls',
-                       'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'notifier-keys', 'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -1103,6 +1140,7 @@ if (isset($_GET['api'])) {
                   'osroots-do' => '/api/osroots',   /* the system's trusted roots: check, add, remove, refresh */
                   'selinux-do' => '/api/selinux',   /* a look, a step, the report: root does it */
                   'shellybackup-do' => '/api/shellybackup',   /* (5.50) the Shelly boxes' configuration: back up, restore, download */
+                  'notifier-keys' => '/api/notifier/keys',    /* (5.57) the desktop notifier's keys: make, change, take away */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -5629,6 +5667,78 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .sbk-dev .sbk-last{grid-area:last} .sbk-dev .sbk-acts{grid-area:acts;justify-content:flex-start}
     .sbk-card .sbk-top{margin-left:0}
   }
+  /* ---- Settings - Messages - Desktop app (5.57): the keys of ZIGMon Notifier, drawn as the
+     Device backups card is - the title with its button, the words, the tiles, the rows ---- */
+  .ntf-card h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ntf-card .ntf-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .ntf-card .ntf-lede{max-width:900px}
+  .ntf-card .facts .fact.ok .v{color:var(--ok)} .ntf-card .facts .fact.dim .v{color:var(--tx-dim)}
+  .ntf-card .facts .fact.wide{grid-column:span 2}
+  .ntf-card .facts .fact .v.ntf-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px}
+  .ntf-card .copyable{cursor:pointer;user-select:none;-webkit-user-select:none;transition:border-color .12s,box-shadow .12s}
+  .ntf-card .copyable:hover{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
+  .ntf-card .copyable.copied{border-color:var(--ok)!important;box-shadow:0 0 0 1px var(--ok) inset!important}
+  .ntf-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+  .ntf-key{display:grid;grid-template-columns:36px minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr) auto;gap:6px 14px;
+    align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+  .ntf-key:last-child{border-bottom:0}
+  .ntf-key:hover{background:var(--panel2)}
+  .ntf-ic{font-size:22px;line-height:1;text-align:center}
+  .ntf-name{min-width:0} .ntf-name b{display:block;overflow-wrap:anywhere}
+  .ntf-sub{display:block;color:var(--tx-dim);font-size:12.5px;overflow-wrap:anywhere}
+  .ntf-hint{font-size:12px;color:var(--tx-mut)}
+  .ntf-states{display:flex;flex-wrap:wrap;gap:5px;min-width:0}
+  .ntf-state{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx-dim);max-width:100%}
+  .ntf-state .dot{width:8px;height:8px;border-radius:50%;background:var(--tx-mut);flex:0 0 auto}
+  .ntf-state.ok{background:var(--ok-bg);color:var(--ok);border-color:rgba(63,185,80,.3)} .ntf-state.ok .dot{background:var(--ok)}
+  .ntf-state.info{background:var(--info-bg);color:var(--info);border-color:rgba(88,166,255,.3)} .ntf-state.info .dot{background:var(--info)}
+  .ntf-last{font-size:13px;color:var(--tx-dim);min-width:0;overflow-wrap:anywhere} .ntf-last b{color:var(--tx);font-weight:600}
+  .ntf-seen{display:block;font-size:12.5px;color:var(--tx-mut)}
+  .ntf-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .ntf-none{display:flex;flex-direction:column;gap:2px;padding:16px;color:var(--tx-dim);font-size:13.5px}
+  .ntf-none b{color:var(--tx)}
+  .ntf-foot{margin-top:12px}
+  .ntf-dlg .ntf-field{margin-top:14px}
+  .ntf-dlg .ntf-flabel{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--tx-mut);line-height:1.35;margin:0 0 6px}
+  .ntf-dlg .ntf-modes{display:flex;flex-direction:column;gap:8px}
+  .ntf-dlg .ntf-mode b{font-weight:600}
+  .ntf-dlg input[type=checkbox],.ntf-dlg input[type=radio]{width:auto;flex:0 0 auto;margin:0;accent-color:var(--info)}
+  .ntf-dlg .ntf-find{font:inherit;font-size:13.5px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);
+    border-radius:9px;padding:0 11px}
+  .ntf-dlg .ntf-find:focus{outline:none;border-color:var(--info)}
+  .ntf-dlg .ntf-mode{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border:1px solid var(--line);border-radius:10px;
+    background:var(--panel2);cursor:pointer}
+  .ntf-dlg .ntf-mode:has(input:checked){border-color:var(--info);background:var(--info-bg)}
+  .ntf-dlg .ntf-mode input{margin-top:3px}
+  .ntf-dlg .ntf-mode > span{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .ntf-dlg .ntf-pick{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+  .ntf-dlg .ntf-pickbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .ntf-dlg .ntf-pickbar .ntf-find{flex:1 1 220px;min-width:0;height:34px;box-sizing:border-box}
+  .ntf-dlg .ntf-count{font-size:12.5px;color:var(--tx-dim);margin-left:auto}
+  .ntf-dlg .ntf-opts{max-height:min(46vh,360px);overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+  .ntf-dlg .ntf-opt{display:flex;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--line);cursor:pointer;
+    font-size:13.5px}
+  .ntf-dlg .ntf-opt:last-child{border-bottom:0}
+  .ntf-dlg .ntf-opt:hover{background:var(--panel2)}
+  .ntf-dlg .ntf-oic{font-size:18px;line-height:1;width:22px;text-align:center;flex:0 0 auto}
+  .ntf-dlg .ntf-ot{display:flex;flex-direction:column;min-width:0}
+  .ntf-dlg .ntf-ot b{font-weight:600;overflow-wrap:anywhere}
+  .ntf-dlg .ntf-ot span{font-size:12px;color:var(--tx-dim)}
+  .ntf-dlg .ntf-once{margin:0 0 14px}
+  .ntf-dlg .ntf-once span{font-size:13px}
+  .ntf-dlg .ntf-copy{grid-column:1/-1}
+  .ntf-dlg .ntf-copy .v.mono{font-size:13.5px}
+  .ntf-dlg .push-code.ntf-secret{font-size:17px;letter-spacing:.02em;overflow-wrap:anywhere;word-break:break-all;padding:16px 12px}
+  @media (max-width:760px){
+    .ntf-key{grid-template-columns:32px minmax(0,1fr);grid-template-areas:'ic name' 'ic state' 'ic last' 'acts acts'}
+    .ntf-key .ntf-ic{grid-area:ic;align-self:start} .ntf-key .ntf-name{grid-area:name}
+    .ntf-key .ntf-states{grid-area:state} .ntf-key .ntf-last{grid-area:last}
+    .ntf-key .ntf-acts{grid-area:acts;justify-content:flex-start}
+    .ntf-card .facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .ntf-card .ntf-top{margin-left:0}
+    .ntf-dlg .push-code.ntf-secret{font-size:14px}
+  }
   /* ---- Settings - Security - SELinux (otp 1.0.233's card, one machine) ---- */
   .se-card .se-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
   .se-card .se-lede{max-width:900px}
@@ -6170,6 +6280,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="msg-alerts" data-icon="bell">Alerts</button>
     <button type="button" data-sec="msg-sms" data-icon="sms">SMS gateway</button>
     <button type="button" data-sec="msg-taps" data-icon="link">One-tap links</button>
+    <button type="button" data-sec="msg-desktop" data-icon="terminal" title="ZIGMon Notifier for Windows: an alert at the front of the screen when a sensor is triggered - its read-only keys.">Desktop app</button>
     <div class="ctl-group">Security</div>
     <button type="button" data-sec="sec-block" data-icon="shield">Blocking</button>
     <button type="button" data-sec="sec-front" data-icon="router">Front server &amp; router</button>
@@ -6721,6 +6832,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
          needs of it, what it refused, and the steps to enforcing - each one
          asked of root's helper, nothing done by itself. Drawn by drawSelinux. -->
     <!-- Settings - Devices - Device backups (5.50): the Shelly boxes' own archives, kept in the database -->
+    <!-- Settings - Messages - Desktop app (5.57): the read-only keys of ZIGMon Notifier -->
+    <div class="card full ot ntf-card" data-sec="msg-desktop" id="ntf-card">
+      <div id="ntf-host"></div>
+    </div>
     <div class="card full ot sbk-card" data-sec="dev-backups" id="sbk-card">
       <div id="sbk-host"></div>
     </div>
@@ -37314,6 +37429,284 @@ function sbkDownloadAsk(x, b) {
     }).catch(zoops);
   }, false);
 }
+/* ---- Settings - Messages - Desktop app (5.57) --------------------------------------------
+   ZIGMon Notifier, the Windows tray app, signs in with a key made here - one per computer.
+   A key is read-only: it lists the sensors it is given and hears their edges (motion, a door
+   opened, water, smoke, a press...), nothing else. Shown once when it is made; the daemon
+   keeps only its hash and its last two characters. An administrator's: who may watch the
+   house from a desk. */
+var NTF = {d: null};
+var NTF_KINDS = {motion: [ICON.motion, 'motion'], contact: [ICON.contact, 'door or window'],
+                 leak: ['💧', 'water leak'], smoke: ['🔥', 'smoke'], gas: ['💨', 'gas'],
+                 co: ['☁️', 'carbon monoxide'], tamper: ['⚠️', 'tamper'],
+                 vibration: ['📳', 'vibration'], button: [ICON.button, 'button']};
+function loadNtf(quiet) {
+  var host = $('ntf-host');
+  if (!host) return;
+  rootTimer('msg-desktop', function () { loadNtf(true); }, 30000);
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see: a key lets a computer watch the house’s sensors.', loadNtf);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('notifier-keys').then(function (d) { NTF.d = d; drawNtf(); })
+    .catch(function (e) { if (!quiet) zoops(e); });
+}
+/* The address the app is to use: the one set for outside (Settings - public_url), or the
+   one this page was opened on - without index.php, as the app writes it. */
+function ntfAddress() {
+  var a = String((NTF.d && NTF.d.address) || '');
+  if (!a) a = location.origin + location.pathname.replace(/\/index\.php$/, '');
+  return a.replace(/\/+$/, '');
+}
+function ntfAsk(body, b) {
+  if (b) zbusy(b, true);
+  return post('notifier-keys', body).then(function (x) {
+    if (b) zbusy(b, false);
+    NTF.d = Object.assign({}, NTF.d || {}, {keys: x.keys || []});
+    drawNtf();
+    return x;
+  }, function (e) { if (b) zbusy(b, false); throw e; });
+}
+function ntfSensorsWord(n) { return n ? n + ' sensor' + (n === 1 ? '' : 's') : 'every sensor'; }
+function ntfState(k) {
+  var fresh = k.last_at && Date.now() / 1000 - k.last_at < 600;
+  var p = el('span', 'ntf-state ' + (fresh ? 'ok' : k.last_at ? '' : 'info'));
+  p.appendChild(el('span', 'dot'));
+  p.appendChild(el('span', '', fresh ? 'connected' : k.last_at ? 'seen ' + ago(k.last_at) : 'not used yet'));
+  if (k.last_at) p.title = 'Last asked ' + stamp(k.last_at) + (k.last_from ? ' from ' + k.last_from : '');
+  return p;
+}
+function drawNtf() {
+  var host = $('ntf-host');
+  if (!host || !NTF.d || host.dataset.locked === '1') return;
+  if (typingIn(host)) return;
+  var d = NTF.d, keys = d.keys || [], sensors = d.sensors || [], most = d.most || 20;
+  host.innerHTML = '';
+  var h = el('h2', '', 'Desktop app');
+  var top = el('span', 'ntf-top');
+  var add = cmdButton('New key', 'add', 'small primary');
+  add.id = 'ntf-new';
+  add.disabled = keys.length >= most;
+  if (add.disabled) add.title = 'At most ' + most + ' keys - take one away first';
+  add.onclick = function () { ntfEdit(null); };
+  top.appendChild(add);
+  h.appendChild(top);
+  host.appendChild(h);
+  host.appendChild(el('p', 'note ntf-lede', 'ZIGMon Notifier is a small app for Windows. It sits by the clock and brings an alert '
+    + 'to the front of the screen the moment a sensor is triggered - motion, a door opened, water on the floor, smoke, a '
+    + 'button pressed. It signs in with a key made here, one for each computer. A key is read-only: it lists the sensors '
+    + 'it was given and hears what they do, and it cannot switch, change or read anything else. The key is shown once, '
+    + 'when it is made - only its fingerprint is kept here. Taken away, the computer holding it is refused at once.'));
+  var tiles = el('div', 'facts');
+  var live = keys.filter(function (k) { return k.last_at && Date.now() / 1000 - k.last_at < 600; }).length;
+  [['Keys', keys.length + ' of ' + most, keys.length ? '' : 'dim'], ['Connected now', String(live), live ? 'ok' : 'dim'],
+   ['Sensors that can trigger', String(sensors.length), sensors.length ? '' : 'dim'],
+   ['The address for the app', ntfAddress(), 'mono']].forEach(function (f, i) {
+    var t = el('div', 'fact ' + (i === 3 ? 'wide' : f[2]));
+    t.appendChild(el('span', 'k', f[0]));
+    t.appendChild(el('span', 'v' + (i === 3 ? ' ntf-mono' : ''), f[1]));
+    if (i === 3) { t.id = 'ntf-address'; pushCopy(t, ntfAddress()); }
+    tiles.appendChild(t);
+  });
+  host.appendChild(tiles);
+  var list = el('div', 'ntf-list');
+  list.id = 'ntf-list';
+  if (!keys.length) {
+    var none = el('div', 'ntf-none');
+    none.appendChild(el('b', '', 'No key yet'));
+    none.appendChild(el('span', '', 'New key makes one for a computer; the app asks for it once, under Connection…'));
+    list.appendChild(none);
+  }
+  keys.forEach(function (k) { list.appendChild(ntfRow(k)); });
+  host.appendChild(list);
+  host.appendChild(el('p', 'note small ntf-foot', 'In the app: right-click its icon by the clock → Connection…, the address above and '
+    + 'the key, then Test. The app asks this dashboard over HTTPS as the browser does, and waits there for what happens.'));
+}
+function ntfRow(k) {
+  var r = el('div', 'ntf-key');
+  r.dataset.id = k.id;
+  r.appendChild(el('div', 'ntf-ic', '🖥️'));
+  var n = el('div', 'ntf-name');
+  n.appendChild(el('b', '', k.name || 'a key'));
+  var sub = el('span', 'ntf-sub');
+  sub.appendChild(document.createTextNode(ntfSensorsWord((k.devices || []).length) + ' · '));
+  sub.appendChild(el('span', 'mono ntf-hint', '…' + (k.hint || '')));
+  n.appendChild(sub);
+  if ((k.devices || []).length) {
+    var names = (NTF.d.sensors || []).filter(function (s) { return k.devices.indexOf(s.id) >= 0; })
+      .map(function (s) { return s.name; });
+    sub.title = names.join(', ');
+  }
+  r.appendChild(n);
+  var st = el('div', 'ntf-states');
+  st.appendChild(ntfState(k));
+  r.appendChild(st);
+  var l = el('div', 'ntf-last');
+  l.appendChild(document.createTextNode('Made by '));
+  l.appendChild(el('b', '', k.by || '?'));
+  l.appendChild(document.createTextNode(' ' + (k.created ? ago(k.created) : '')));
+  if (k.created) l.title = stamp(k.created);
+  var seen = el('span', 'ntf-seen', k.last_at ? 'Last seen ' + ago(k.last_at) + (k.last_from ? ' from ' + k.last_from : '')
+    : 'Never used');
+  l.appendChild(seen);
+  r.appendChild(l);
+  var a = el('div', 'ntf-acts');
+  var ed = cmdButton('Edit', 'edit', 'small');
+  ed.classList.add('ntf-edit');
+  ed.onclick = function () { ntfEdit(k); };
+  a.appendChild(ed);
+  var gone = cmdButton('Take away', 'trash', 'small danger');
+  gone.classList.add('ntf-drop');
+  gone.onclick = function () {
+    zconfirm('Take away the key ' + (k.name || '') + '?', 'The computer holding it is refused from its next question on, '
+      + 'and its alerts stop. It cannot be given back: a new key would be made and typed into the app again.', 'Take it away',
+      function () { ntfAsk({action: 'delete', id: k.id}, gone).then(function (x) { if (x.message) toast(x.message, true); }, zoops); });
+  };
+  a.appendChild(gone);
+  r.appendChild(a);
+  return r;
+}
+/* New key / Edit: a name, and every sensor or the ones chosen in a list to search. */
+function ntfEdit(k) {
+  var sensors = (NTF.d && NTF.d.sensors) || [];
+  var chosen = {};
+  ((k && k.devices) || []).forEach(function (id) { chosen[id] = true; });
+  var name = zText(k ? k.name : '', 'Office PC');
+  name.id = 'ntf-name';
+  name.maxLength = 60;
+  var mode = (k && (k.devices || []).length) ? 'some' : 'all';
+  var pick = el('div', 'ntf-pick');
+  var count = el('span', 'ntf-count');
+  var find = el('input', 'ntf-find');
+  find.type = 'search'; find.placeholder = 'Find a sensor, a room or a kind…'; find.autocomplete = 'off';
+  find.id = 'ntf-find';
+  var rows = el('div', 'ntf-opts');
+  rows.id = 'ntf-opts';
+  var tell = function () {
+    var n = Object.keys(chosen).length;
+    count.textContent = n ? n + ' chosen' : 'none chosen yet';
+  };
+  sensors.forEach(function (s) {
+    var lab = el('label', 'ntf-opt');
+    lab.dataset.id = s.id;
+    lab.dataset.find = [s.name, s.room || '', (NTF_KINDS[s.kind] || ['', s.kind])[1], s.id].join(' ').toLowerCase();
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = !!chosen[s.id];
+    cb.onchange = function () { if (cb.checked) chosen[s.id] = true; else delete chosen[s.id]; tell(); };
+    lab.appendChild(cb);
+    lab.appendChild(el('span', 'ntf-oic', (NTF_KINDS[s.kind] || [ICON.sensor])[0]));
+    var t = el('span', 'ntf-ot');
+    t.appendChild(el('b', '', s.name));
+    t.appendChild(el('span', '', [(NTF_KINDS[s.kind] || ['', s.kind])[1], s.room].filter(Boolean).join(' · ')));
+    lab.appendChild(t);
+    rows.appendChild(lab);
+  });
+  if (!sensors.length) rows.appendChild(el('p', 'note small', 'No sensor that can trigger is on the dashboard yet.'));
+  find.oninput = function () {
+    var q = find.value.trim().toLowerCase();
+    Array.prototype.forEach.call(rows.querySelectorAll('.ntf-opt'), function (o) {
+      o.hidden = !!q && o.dataset.find.indexOf(q) < 0;
+    });
+  };
+  var bar = el('div', 'ntf-pickbar');
+  bar.appendChild(find);
+  var allShown = cmdButton('All shown', 'check', 'small');
+  allShown.onclick = function () {
+    Array.prototype.forEach.call(rows.querySelectorAll('.ntf-opt:not([hidden]) input'), function (cb) {
+      cb.checked = true; chosen[cb.parentNode.dataset.id] = true;
+    });
+    tell();
+  };
+  var noneShown = cmdButton('None', 'close', 'small');
+  noneShown.onclick = function () {
+    Array.prototype.forEach.call(rows.querySelectorAll('.ntf-opt:not([hidden]) input'), function (cb) {
+      cb.checked = false; delete chosen[cb.parentNode.dataset.id];
+    });
+    tell();
+  };
+  bar.appendChild(allShown);
+  bar.appendChild(noneShown);
+  bar.appendChild(count);
+  pick.appendChild(bar);
+  pick.appendChild(rows);
+  tell();
+  var radios = el('div', 'ntf-modes');
+  [['all', 'Every sensor that can trigger', sensors.length + ' now, and every one added later'],
+   ['some', 'Only the ones chosen', 'the app sees no other']].forEach(function (m) {
+    var lab = el('label', 'ntf-mode');
+    var rb = el('input');
+    rb.type = 'radio'; rb.name = 'ntf-mode'; rb.value = m[0]; rb.checked = mode === m[0];
+    rb.onchange = function () { mode = m[0]; pick.hidden = mode !== 'some'; if (mode === 'some') find.focus(); };
+    lab.appendChild(rb);
+    var t = el('span', '');
+    t.appendChild(el('b', '', m[1]));
+    t.appendChild(el('span', 'muted small', m[2]));
+    lab.appendChild(t);
+    radios.appendChild(lab);
+  });
+  pick.hidden = mode !== 'some';
+  var gen;
+  zmodal(k ? 'Edit the key ' + (k.name || '') : 'New key for the desktop app', function (body) {
+    body.classList.add('ntf-dlg');
+    body.appendChild(el('p', 'note', k ? 'The key itself stays as it is - the computer holding it carries on; what it may see '
+      + 'changes from its next question.' : 'One key for each computer, named after it. The key is shown once, in the next step.'));
+    body.appendChild(zField('Name', name, 'At most 60 characters - the computer it is for, say.'));
+    /* not a .set-item: its rules are for one field, and would dress every tick box here as a heading */
+    var w = el('div', 'ntf-field');
+    w.appendChild(el('div', 'ntf-flabel', 'Sensors it may see'));
+    w.appendChild(radios);
+    w.appendChild(pick);
+    body.appendChild(w);
+  }, [{words: 'Cancel', close: true},
+      {words: k ? 'Save' : 'Make the key', cls: 'primary', icon: k ? 'save' : 'key', go: function (b) {
+        var devs = mode === 'some' ? Object.keys(chosen) : [];
+        if (mode === 'some' && !devs.length) { zmodalSaid(new Error('choose at least one sensor, or Every sensor'), gen); return; }
+        var body = k ? {action: 'update', id: k.id, name: name.value.trim(), devices: devs}
+                     : {action: 'create', name: name.value.trim(), devices: devs};
+        ntfAsk(body, b).then(function (x) {
+          if (k) { closeZModal(); if (x.message) toast(x.message, true); return; }
+          ntfShowKey(x, body.name);
+        }, function (e) { zmodalSaid(e, gen); });
+      }}], 'medium ntf-dlg-box');
+  gen = ZM.gen;
+}
+/* The key, this once: with the address, each copied by a click, and said plainly that it
+   is never shown again. */
+function ntfShowKey(x, name) {
+  zmodal('The key for ' + (name || 'the app'), function (body) {
+    body.classList.add('ntf-dlg', 'push-dlg');
+    var warn = el('div', 'notice bad ntf-once');
+    warn.appendChild(el('b', '', 'Copy it now - it is not shown again.'));
+    warn.appendChild(el('span', '', 'Only its fingerprint is kept here. Lost, it cannot be read back: take it away and make a new one.'));
+    body.appendChild(warn);
+    body.appendChild(el('p', 'note', 'In ZIGMon Notifier: right-click its icon by the clock → Connection…, paste the address '
+      + 'and the key, then Test.'));
+    var addr = el('div', 'fact ntf-copy');
+    addr.appendChild(el('span', 'k', 'The dashboard’s address'));
+    addr.appendChild(el('span', 'v mono', ntfAddress()));
+    addr.id = 'ntf-show-address';
+    var box = el('div', 'facts');
+    box.appendChild(pushCopy(addr, ntfAddress()));
+    body.appendChild(box);
+    var key = el('div', 'push-code mono ntf-secret', x.key || '');
+    key.id = 'ntf-secret';
+    body.appendChild(pushCopy(key, x.key));
+    var row = el('div', 'btnrow');
+    var ca = cmdButton('Copy the address', 'copy', '');
+    ca.onclick = function () { copyText(ntfAddress()); };
+    var ck = cmdButton('Copy the key', 'copy', 'primary');
+    ck.id = 'ntf-copy-key';
+    ck.onclick = function () { copyText(x.key || ''); };
+    row.appendChild(ca);
+    row.appendChild(ck);
+    body.appendChild(row);
+    body.appendChild(el('p', 'btnhelp', 'A click on the address or the key copies it too.'));
+  }, [{words: 'I have copied it', cls: 'primary', icon: 'check', close: true}], 'narrow push-dlg-box ntf-dlg-box');
+  /* closed, the key is gone from the page: nothing keeps it */
+  ZM.onClose = function () { x.key = ''; var s = $('ntf-secret'); if (s) s.textContent = ''; };
+}
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -37328,6 +37721,7 @@ function rootPaneShown(sec) {
   if (sec === 'sys-osup') loadOsup(); else ouPoll(false);
   if (sec === 'sec-selinux') loadSelinux(); else sePoll(false);
   if (sec === 'dev-backups') loadSbk(); else sbkPoll(false);
+  if (sec === 'msg-desktop') loadNtf();
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-proxy') drawProxy();
@@ -37352,6 +37746,7 @@ var CONTROL_SECTIONS = {
   'msg-alerts': ['Alerts', 'The messages the house sends, and the channels they go down.'],
   'msg-sms': ['SMS gateway', 'The modem, the texts it sends, and what a text message may make happen.'],
   'msg-taps': ['One-tap links', 'Links that do one thing when opened, and the second factor they ask for.'],
+  'msg-desktop': ['Desktop app', 'ZIGMon Notifier for Windows: an alert brought to the front of the screen the moment a sensor is triggered - motion, a door opened, a leak, smoke, a button pressed. Each computer signs in with a read-only key of its own, made here and shown once.'],
   'sec-block': ['Blocking', 'Which addresses are kept out, for how long, and which lists are trusted.'],
   'sec-front': ['Front server & router', 'The server in front of the house, and the router that carries the list of addresses kept out.'],
   'sec-access': ['Access', 'The accounts, who is signed in, how signing in behaves, and what the broker must allow.'],
