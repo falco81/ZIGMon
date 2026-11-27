@@ -181,12 +181,11 @@ export function sparkline(values: number[], x: number, y: number, w: number, h: 
 
 export function renderReading(m: ReadingModel): string {
   let body = icon(m.icon, 14, 14, 20, m.accent, 2);
-  body += text(40, 29, fit(m.label, 13.5, 92, 600), { size: 13.5, weight: 600, fill: P.dim });
+  body += text(40, 29, fit(m.label, 13.5, m.trend && m.online ? 66 : 92, 600), { size: 13.5, weight: 600, fill: P.dim });
   const v = m.online ? m.value || "—" : "Offline";
   const vf = fitSize(v, [44, 38, 32, 26, 20], m.unit ? 92 : 118, 750);
-  body += text(14, 82, vf.text, { size: vf.size, weight: 750, fill: m.online ? m.colour : P.crit, spacing: -0.5 });
-  const vw = Math.min(118, vf.text.length * vf.size * 0.58);
-  if (m.unit && m.online) body += text(18 + vw, 82, fit(m.unit, 16, 128 - vw - 4, 600), { size: 16, weight: 600, fill: P.dim });
+  const unit = m.unit && m.online ? `<tspan dx="4" font-size="16" font-weight="600" fill="${P.dim}" letter-spacing="0">${esc(fit(m.unit, 16, 40, 600))}</tspan>` : "";
+  body += text(14, 82, vf.text, { size: vf.size, weight: 750, fill: m.online ? m.colour : P.crit, spacing: -0.5 }).replace(/<\/text>$/, unit + "</text>");
   if (m.trend && m.online) {
     const t = m.trend === "up" ? "trendUp" : m.trend === "down" ? "trendDown" : "trendFlat";
     body += icon(t, 110, 13, 20, m.trend === "flat" ? P.muted : m.colour, 2.2);
@@ -415,7 +414,7 @@ export function renderPair(code: string): string {
 export function renderHold(base: string, progress: number, accent: string): string {
   const p = Math.max(0, Math.min(1, progress));
   const inner = base.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
-  let o = `<g>${inner}</g><rect width="144" height="144" fill="${P.bg}" fill-opacity="0.78"/>`;
+  let o = `<g>${inner}</g><rect width="144" height="144" fill="${P.bg}" fill-opacity="0.96"/>`;
   o += `<circle cx="72" cy="66" r="40" fill="none" stroke="${P.line}" stroke-width="9"/>`;
   if (p > 0) o += p >= 1
     ? `<circle cx="72" cy="66" r="40" fill="none" stroke="${accent}" stroke-width="9"/>`
@@ -429,7 +428,7 @@ export function renderHold(base: string, progress: number, accent: string): stri
 export function renderToast(base: string, title: string, line: string, tone: "warn" | "crit" | "ok"): string {
   const c = tone === "warn" ? P.warn : tone === "crit" ? P.crit : P.ok;
   const inner = base.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
-  let o = `<g>${inner}</g><rect width="144" height="144" fill="${P.bg}" fill-opacity="0.86"/>`;
+  let o = `<g>${inner}</g><rect width="144" height="144" fill="${P.bg}" fill-opacity="0.95"/>`;
   o += `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${c}" stroke-width="2.5"/>`;
   o += icon(tone === "ok" ? "check" : tone === "warn" ? "hand" : "alert", 56, 22, 32, c, 2.2);
   const lines = wrap2(title, 16, 124, 700);

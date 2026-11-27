@@ -11,7 +11,7 @@ import { arcPath, dataUri, icon, n, rect, svgDoc, text } from "./svg.js";
 
 export type Feedback = Record<string, string | number | { value?: string | number; color?: string; enabled?: boolean; opacity?: number }>;
 
-function iconPix(name: string, colour: string, size: number, tint?: string): string {
+export function iconPix(name: string, colour: string, size: number, tint?: string): string {
   const pad = Math.round(size * 0.18);
   const body = (tint ? rect(0, 0, size, size, size * 0.3, tint, `fill-opacity="0.18" stroke="${tint}" stroke-opacity="0.5" stroke-width="1.2"`) : "")
     + icon(name, pad, pad, size - 2 * pad, colour, 1.9);
@@ -48,15 +48,15 @@ export function holdArt(w: number, h: number, p: number, colour: string): string
   return dataUri(svgDoc(w, h, s));
 }
 
-export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string): Feedback {
+export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string, hint = ""): Feedback {
   const look = lookFor(m.kind, m.icon, m.on);
   const active = m.on === true && m.online;
   const word = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—";
   return {
     icon: iconPix(look.icon, active ? look.accent : P.dim, 40, active ? look.accent : undefined),
     name: { value: m.name + (m.room && m.showRoom ? " · " + m.room : "") },
-    value: { value: mainText || word, color: !m.online || !m.allowed ? P.crit : active ? P.text : P.dim },
-    art: mainFraction !== null ? sliderArt(176, 30, mainFraction, look.accent, active || m.on === null, "") : pillArt(176, 30, word, look.accent, active),
+    value: { value: mainText || (m.valueText && m.on !== null && m.online && m.allowed ? word + " \u00b7 " + m.valueText : word), color: !m.online || !m.allowed ? P.crit : active ? P.text : P.dim },
+    art: mainFraction !== null ? sliderArt(176, 30, mainFraction, look.accent, active || m.on === null, "") : pillArt(176, 30, hint || word, look.accent, active),
   };
 }
 
@@ -117,7 +117,7 @@ export function blindsFeedback(m: BlindsModel): Feedback {
     art: dataUri(svgDoc(52, 84, body)),
     name: { value: m.name },
     value: { value: big, color: !m.online || !m.allowed ? P.crit : P.text },
-    sub: { value: m.moving === "up" ? "Opening…" : m.moving === "down" ? "Closing…" : m.position !== null && m.online ? "Turn to move · push: stop" : "" },
+    sub: { value: m.moving === "up" ? "Opening…" : m.moving === "down" ? "Closing…" : m.position !== null && m.online ? "turn \u00b7 push: stop" : "" },
   };
 }
 

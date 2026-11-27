@@ -309,8 +309,7 @@ function decksList(st: Status): HTMLElement {
     const here = d.id === deviceId;
     list.append(h("div", "deck", [
       deckPic(d.type, d.cols, d.rows),
-      h("div", "grow", [h("div", "n", [d.name || DECK_TYPES[d.type] || "Stream Deck"]), h("div", "ty", [(DECK_TYPES[d.type] ?? "Stream Deck") + (d.cols && d.type !== 7 ? " · " + d.cols + "×" + d.rows : "") + (here ? " · this key" : "")])]),
-      tag,
+      h("div", "grow", [h("div", "n", [d.name || DECK_TYPES[d.type] || "Stream Deck"]), h("div", "ty", [(DECK_TYPES[d.type] ?? "Stream Deck") + (d.cols && d.type !== 7 ? " · " + d.cols + "×" + d.rows : "") + (here ? " · this key" : "")]), tag]),
     ]));
   }
   if (st.decks.length === 0) list.append(h("div", "muted small", ["No Stream Deck is plugged in."]));
@@ -364,7 +363,8 @@ function connectionCard(): HTMLElement {
         card.append(h("p", "", [mismatch
           ? "The server shows a different certificate than the one you trusted. If ZIGMon's certificate was renewed, compare the new fingerprint with ZIGMon's Settings → Security; otherwise someone may be in the way."
           : "Windows does not trust this server's certificate (self-signed?). Compare its fingerprint with the one in ZIGMon before trusting it."]));
-        card.append(h("div", "fp", [st.cert.fingerprint]));
+        const fpParts = st.cert.fingerprint.split(":");
+        card.append(h("div", "fp", [fpParts.slice(0, 16).join(":"), h("br"), fpParts.slice(16).join(":")]));
         const kv = h("dl", "kv", [
           h("dt", "", ["Issued to"]), h("dd", "", [st.cert.subject || "—"]),
           h("dt", "", ["Issued by"]), h("dd", "", [st.cert.issuer || "—"]),

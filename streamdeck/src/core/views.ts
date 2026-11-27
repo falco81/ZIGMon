@@ -18,7 +18,7 @@ import {
 } from "./render.js";
 import { normalizeAction, type ActionSettings } from "./settings.js";
 import {
-  blindsFeedback, controlFeedback, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
+  blindsFeedback, controlFeedback, iconPix, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
 } from "./strip.js";
 import { dataUri } from "./svg.js";
 
@@ -348,7 +348,7 @@ export class ActionView implements HubView {
       if (st.valueText && st.valueText.length > 8) {
         detail = st.valueText;
         value = level === "ok" ? "OK" : level === "crit" ? "Down" : "—";
-      } else detail = level === "ok" ? "running" : level === "crit" ? "needs a look" : "";
+      } else detail = level === "ok" ? "all good" : level === "crit" ? "needs a look" : "";
     }
     return { label: it.id in STATUS_LOOK ? look.label : it.name, value, detail, level, icon: look.icon };
   }
@@ -383,7 +383,9 @@ export class ActionView implements HubView {
         const raw = this.dial.shown ?? (a && st ? numOf(st.attrs[a.key]) : null);
         const f = a && raw !== null ? fraction(raw, a.min, a.max) : null;
         const txt = a && raw !== null ? formatNumber(raw, decimalsOf(a.step ?? 1)) + (a.unit ? " " + a.unit : "") : "";
-        return controlFeedback(m, f, txt);
+        const pa = this.pressAction();
+        const hint = !m.allowed ? "Not allowed" : !m.online ? "Offline" : pa === "toggle" ? (m.on ? "Push to turn off" : "Push to turn on") : pa ? "Push: " + pressWord(pa).toLowerCase() : "";
+        return controlFeedback(m, f, txt, hint);
       }
       case "reading":
         return readingFeedback(this.readingModel());
@@ -406,10 +408,13 @@ export class ActionView implements HubView {
       case "status": {
         const m = this.statusModel();
         const c = m.level === "ok" ? P.ok : m.level === "warn" ? P.warn : m.level === "crit" ? P.crit : P.dim;
-        const fb = controlFeedback({ ...this.controlModel(), kind: "status", icon: m.icon, on: m.level === "ok" || m.level === "crit" || m.level === "warn", valueText: m.detail }, null, m.value);
-        fb.value = { value: m.value + (m.detail ? "  " + m.detail : ""), color: c };
-        fb.name = { value: m.label };
-        return fb;
+        const words = { ok: "All good", warn: "Have a look", crit: "Needs attention", unknown: "Not known" };
+        return {
+          icon: iconPix(m.icon, c, 40, m.level === "unknown" ? undefined : c),
+          name: { value: m.label },
+          value: { value: m.detail && m.detail.includes(m.value) ? m.detail : m.value + (m.detail ? " \u00b7 " + m.detail : ""), color: c },
+          art: pillArt(176, 30, words[m.level], c, m.level !== "unknown"),
+        };
       }
     }
   }
