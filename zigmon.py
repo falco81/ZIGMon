@@ -12776,6 +12776,1354 @@ class Daemon(object):
         return {'ok': True, 'boot': self.notifier_boot, 'seq': got[-1][0] if more else seq,
                 'reset': False, 'events': events}
 
+    # ---- Stream Deck (5.59): ZIGMon for Stream Deck, the Elgato plugin for Windows ----------
+    # Off until an administrator switches it on (Settings - Messages - Stream Deck). A copy of
+    # the plugin on one Windows account (an installation) asks to be paired: it is given a
+    # code to show and a pairing secret to wait with, the administrator compares the code,
+    # chooses what it may do, and approves - the plugin is then handed its token once; only
+    # the token's sha256 and its last two characters are kept. Each physical deck is approved
+    # by itself. What it may do is granted capability by capability (every thing of a kind,
+    # or only the ones chosen, a long press to confirm where asked), and whatever it does goes
+    # through the same executor a one-tap link does, with "Stream Deck '<name>'" as its origin.
+    DECK_INSTALLS_MOST = 10
+    DECK_DECKS_MOST = 8
+    DECK_PAIRS_MOST = 5
+    DECK_PAIR_S = 15 * 60
+    DECK_PAIR_HOUR_MOST = 10
+    DECK_WAIT_S = 25.0
+    DECK_WAITERS_MOST = 40
+    DECK_BATCH = 200
+    DECK_HOLD_MS = 1500
+    DECK_RATE_S, DECK_RATE_MIN = 10, 300
+    DECK_REVOKED_KEPT = 50
+    DECK_CAPS = ('view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system',
+                 'status')
+    DECK_CAP_WORDS = {'view': 'see states and readings', 'switch': 'switch sockets, lights and relays',
+                      'dim': 'dim lights and set their colour', 'climate': 'set the heating and thermostats',
+                      'cover': 'move the blinds', 'scenes': 'run scenes, sequences and groups',
+                      'automations': 'switch rules, schedules and groups on and off',
+                      'messages': 'send the reports and messages', 'system': 'run the system actions',
+                      'status': 'see ZIGMon’s own health'}
+    DECK_TYPES = {0: ('Stream Deck', 'Stream Deck'), 1: ('Stream Deck Mini', 'Mini'), 2: ('Stream Deck XL', 'XL'),
+                  3: ('Stream Deck Mobile', 'Mobile'), 4: ('Corsair G-Keys', 'G-Keys'), 5: ('Stream Deck Pedal', 'Pedal'),
+                  6: ('Corsair Voyager', 'Voyager'), 7: ('Stream Deck +', '+'), 8: ('SCUF controller', 'SCUF'),
+                  9: ('Stream Deck Neo', 'Neo'), 10: ('Stream Deck Studio', 'Studio'),
+                  11: ('Virtual Stream Deck', 'Virtual')}
+    DECK_CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    DECK_ID = re.compile(r'^[A-Za-z0-9_.:-]{1,64}$')
+    DECK_ITEM_ID = re.compile(r'^[^\x00-\x1f\x7f]{1,200}$')
+    DECK_PLUGIN_FILE = 'com.zigmon.streamdeck.streamDeckPlugin'
+    DECK_PLUGIN_PRODUCT = 'ZIGMon for Stream Deck'
+    DECK_PLUGIN_MOST = 100 * 1024 * 1024
+    # the settable keys of a thermostat - every one a "climate" thing
+    DECK_CLIMATE_KEYS = ('current_heating_setpoint', 'occupied_heating_setpoint', 'unoccupied_heating_setpoint',
+                         'comfort_temperature', 'eco_temperature', 'holiday_temperature', 'boost_time',
+                         'local_temperature_calibration', 'system_mode', 'preset', 'preset_mode', 'away_mode',
+                         'window_detection', 'child_lock', 'valve_detection', 'frost_protection', 'heating_stop',
+                         'boost_heating')
+
+    def _deck_setup(self):
+        """The memory of the integration - made once, at the first question."""
+        if self.__dict__.get('_deck_cond') is None:
+            self._deck_lock = threading.RLock()
+            self._deck_boot = secrets.token_hex(6)
+            self._deck_seq = 0
+            self._deck_states = {}       # item id -> [seq, state, compared]
+            self._deck_pairs = {}        # pair id -> the request, in memory only
+            self._deck_pair_calls = {}   # address -> [times] of pair requests in the last hour
+            self._deck_rates = {}        # install id -> [times] of commands in the last minute
+            self._deck_seen = {}         # install id -> (at, from)
+            self._deck_waiting = 0
+            self._deck_active = 0.0
+            self._deck_items_kept = None
+            self._deck_refreshed = 0.0
+            self._deck_cond = threading.Condition(self._deck_lock)
+            self._deck_thread = None
+
+    # -- what is kept --
+    def deck_enabled(self):
+        return str(self.store.get_meta('deck_enabled') or '') == '1'
+
+    def deck_installs(self):
+        try:
+            rows = json.loads(self.store.get_meta('deck_installs') or '[]')
+        except ValueError:
+            rows = []
+        if not isinstance(rows, list):
+            return []
+        return [dict(r) for r in rows if isinstance(r, dict) and r.get('id') and r.get('hash')]
+
+    def _deck_put(self, rows):
+        self.store.set_meta('deck_installs', json.dumps(rows))
+
+    def _deck_revoked(self):
+        try:
+            rows = json.loads(self.store.get_meta('deck_revoked') or '[]')
+        except ValueError:
+            rows = []
+        return [r for r in rows if isinstance(r, dict) and r.get('hash')] if isinstance(rows, list) else []
+
+    def deck_find(self, given):
+        """(install, revoked): the installation a token belongs to - its hash compared with every
+        kept one - or (None, True) for a token taken away, (None, False) for one never made."""
+        given = str(given or '')
+        if not given.startswith('zsd_') or len(given) > 80:
+            return None, False
+        digest = hashlib.sha256(given.encode('utf-8')).hexdigest()
+        hit = None
+        for r in self.deck_installs():
+            if hmac.compare_digest(str(r.get('hash') or ''), digest) and hit is None:
+                hit = r
+        if hit is not None:
+            return hit, False
+        gone = False
+        for r in self._deck_revoked():
+            if hmac.compare_digest(str(r.get('hash') or ''), digest):
+                gone = True
+        return None, gone
+
+    @classmethod
+    def deck_type_name(cls, t, short=False):
+        got = cls.DECK_TYPES.get(t) if isinstance(t, int) and not isinstance(t, bool) else None
+        if got is None:
+            return 'Stream Deck' if not short else 'Stream Deck'
+        return got[1] if short else got[0]
+
+    @classmethod
+    def _deck_clean_deck(cls, one):
+        """One deck as the plugin describes it - {id, type, name, cols, rows} - or None."""
+        if not isinstance(one, dict):
+            return None
+        did = str(one.get('id') or '').strip()
+        if not cls.DECK_ID.match(did):
+            return None
+        t = one.get('type')
+        t = t if isinstance(t, int) and not isinstance(t, bool) and 0 <= t <= 99 else None
+
+        def size(v, most):
+            return v if isinstance(v, int) and not isinstance(v, bool) and 0 < v <= most else None
+        name = re.sub(r'[\x00-\x1f\x7f]', '', str(one.get('name') or '')).strip()[:60]
+        return {'id': did, 'type': t, 'name': name or cls.deck_type_name(t), 'cols': size(one.get('cols'), 32),
+                'rows': size(one.get('rows'), 32)}
+
+    def _deck_clean_name(self, v, what='a name'):
+        name = re.sub(r'[\x00-\x1f\x7f]', '', str(v or '')).strip()
+        if not name:
+            raise ValueError('%s is needed' % what)
+        if len(name) > 60:
+            raise ValueError('%s is at most 60 characters' % what)
+        return name
+
+    @classmethod
+    def deck_default_caps(cls):
+        out = {}
+        for c in cls.DECK_CAPS:
+            if c == 'status':
+                out[c] = {'on': True}
+            elif c == 'view':
+                out[c] = {'on': True, 'all': True, 'targets': []}
+            else:
+                out[c] = {'on': False, 'all': False, 'targets': [], 'hold': c == 'system'}
+        return out
+
+    def _deck_clean_caps(self, given, was=None):
+        """The permissions as the page sends them, checked one by one - or ValueError, in words."""
+        if not isinstance(given, dict):
+            raise ValueError('caps is an object: one entry for each of %s' % ', '.join(self.DECK_CAPS))
+        unknown = [k for k in given if k not in self.DECK_CAPS]
+        if unknown:
+            raise ValueError('%s is not a capability (%s)' % (str(unknown[0])[:30], ', '.join(self.DECK_CAPS)))
+        was = was if isinstance(was, dict) else self.deck_default_caps()
+        base = self.deck_default_caps()
+        items = {i['id']: i['cap'] for i in self.deck_items()}
+        out = {}
+        for c in self.DECK_CAPS:
+            one = given.get(c, was.get(c, base[c]))
+            if not isinstance(one, dict):
+                raise ValueError('%s is an object' % c)
+            on = one.get('on', False)
+            if not isinstance(on, bool):
+                raise ValueError('%s.on is true or false' % c)
+            if c == 'status':
+                out[c] = {'on': on}
+                continue
+            every = one.get('all', False)
+            hold = one.get('hold', base[c].get('hold', False))
+            if not isinstance(every, bool) or (c != 'view' and not isinstance(hold, bool)):
+                raise ValueError('%s.all and %s.hold are true or false' % (c, c))
+            targets = one.get('targets') or []
+            if not isinstance(targets, list):
+                raise ValueError('%s.targets is a list of item ids' % c)
+            before = set(((was.get(c) or {}).get('targets') or []))
+            kept = []
+            for t in targets[:500]:
+                t = str(t or '').strip()
+                if not t or t in kept:
+                    continue
+                if not self.DECK_ITEM_ID.match(t):
+                    raise ValueError('%s: %r is not an item id' % (c, t[:40]))
+                if t not in before:
+                    if t not in items:
+                        raise ValueError('%s is not a thing in this house' % t[:60])
+                    if c != 'view' and items[t] != c:
+                        raise ValueError('%s is not a thing of %s (it is %s)' % (t[:60], c, items[t]))
+                kept.append(t)
+            row = {'on': on, 'all': every, 'targets': kept}
+            if c != 'view':
+                row['hold'] = hold
+            out[c] = row
+        return out
+
+    @classmethod
+    def deck_caps_words(cls, caps):
+        """'view, switch (3), system (hold)' - what the events and the cards say."""
+        out = []
+        for c in cls.DECK_CAPS:
+            one = (caps or {}).get(c) or {}
+            if not one.get('on'):
+                continue
+            if c == 'status':
+                out.append(c)
+                continue
+            bits = []
+            if not one.get('all'):
+                bits.append('%d' % len(one.get('targets') or []))
+            if one.get('hold'):
+                bits.append('hold')
+            out.append(c + (' (%s)' % ', '.join(bits) if bits else ''))
+        return ', '.join(out) or 'nothing'
+
+    # -- the things a deck can see and do --
+    def _deck_zb_items(self, rooms):
+        out = []
+        by_dev = collections.OrderedDict()
+        for t in self.zigbee_targets():
+            by_dev.setdefault(t['id'], []).append(t)
+        for did, ts in by_dev.items():
+            dev = self.store.device(did) or {}
+            exposes = dev.get('exposes') or {}
+            keys = {t['key']: t for t in ts}
+            values = self._ntf_values(did)
+            seen = self.describe(dev, self.live.get(did)) if dev else {}
+            online = bool(seen.get('online')) if seen else bool(ts[0].get('online'))
+            battery = seen.get('battery') if seen else None
+            battery = int(round(battery)) if isinstance(battery, (int, float)) and not isinstance(battery, bool) else None
+            at = (self.live.get(did) or {}).get('ts')
+            room = rooms.get(did) or rooms.get(dev.get('name'))
+            thermostat = any(k in keys or k in exposes for k in ('current_heating_setpoint', 'occupied_heating_setpoint'))
+            state_vals = [str(v).upper() for v in ((exposes.get('state') or {}).get('values') or [])]
+            cover = not thermostat and ('position' in keys or 'OPEN' in state_vals or 'CLOSE' in state_vals)
+            light = not cover and ('brightness' in keys or 'color_temp' in keys)
+
+            def common(item_id, label, kind, icon, cap, actions, attrs, value, on, extra=None):
+                st = {'on': on, 'value': value, 'value_text': None, 'attrs': extra or {}, 'online': online,
+                      'battery': battery, 'at': at}
+                unit = attrs[0].get('unit') if attrs else ''
+                st['value_text'] = self._ntf_vtext(value, unit or '') if value is not None else (
+                    None if on is None else ('on' if on else 'off'))
+                out.append({'id': item_id, 'name': label, 'room': room, 'kind': kind, 'icon': icon, 'cap': cap,
+                            'actions': actions, 'attrs': attrs, 'state': st, '_target': item_id})
+
+            def num_attr(k, info, default_unit='', lo=None, hi=None, step=1):
+                mn, mx = info.get('min'), info.get('max')
+                return {'key': k, 'label': self._ntf_attr_meta(dev, k)[0], 'type': 'number',
+                        'unit': info.get('unit') or key_unit(k) or default_unit or None,
+                        'min': mn if isinstance(mn, (int, float)) and not isinstance(mn, bool) else lo,
+                        'max': mx if isinstance(mx, (int, float)) and not isinstance(mx, bool) else hi,
+                        'step': step}
+
+            def enum_attr(k, info):
+                vals = [v for v in (info.get('values') or []) if isinstance(v, (str, int, float))][:50]
+                return {'key': k, 'label': self._ntf_attr_meta(dev, k)[0], 'type': 'enum', 'values': vals or ['ON', 'OFF']}
+            light_extra = {}
+            for k in ('brightness', 'color_temp'):
+                if k in keys and isinstance(values.get(k), (int, float)) and not isinstance(values.get(k), bool):
+                    light_extra[k] = values.get(k)
+            for k, t in keys.items():
+                if self.ZB_STATE_RE.match(k):
+                    raw = values.get(k)
+                    up = str(raw).upper() if raw is not None else ''
+                    if cover and k == 'state':
+                        pos = values.get('position')
+                        attrs = []
+                        if 'position' in keys:
+                            a = num_attr('position', exposes.get('position') or {}, '%', 0, 100)
+                            a['via'] = 'zb:%s:position' % did
+                            attrs.append(a)
+                        common(t['value'], t['name'], 'cover', 'blind', 'cover',
+                               ['open', 'close', 'stop'] + (['set', 'step'] if attrs else []), attrs,
+                               pos if isinstance(pos, (int, float)) and not isinstance(pos, bool) else None,
+                               None if not up else up in ('OPEN', 'ON'),
+                               {'position': pos} if isinstance(pos, (int, float)) and not isinstance(pos, bool) else {})
+                        continue
+                    attrs = []
+                    if light and k == 'state':
+                        for lk in ('brightness', 'color_temp'):
+                            if lk in keys:
+                                a = num_attr(lk, exposes.get(lk) or {}, '', 0, 254 if lk == 'brightness' else None)
+                                a['via'] = 'zb:%s:%s' % (did, lk)
+                                attrs.append(a)
+                    common(t['value'], t['name'], 'light' if light and k == 'state' else 'switch',
+                           'light' if light and k == 'state' else 'zb', 'switch', ['toggle', 'on', 'off'], attrs,
+                           None, None if up not in ('ON', 'OFF') else up == 'ON',
+                           light_extra if light and k == 'state' else {})
+                    continue
+                info = exposes.get(k) or {}
+                if k in ('brightness', 'color_temp'):
+                    a = num_attr(k, info, '', 0, 254 if k == 'brightness' else None)
+                    v = values.get(k)
+                    common(t['value'], t['name'], 'dimmer', 'light', 'dim', ['set', 'step'], [a],
+                           v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None)
+                    continue
+                if k == 'position':
+                    if thermostat or 'state' in keys and cover:
+                        continue                  # a valve's opening, or the blind's own card has it
+                    a = num_attr(k, info, '%', 0, 100)
+                    v = values.get(k)
+                    common(t['value'], t['name'], 'cover', 'blind', 'cover', ['open', 'close', 'set', 'step'], [a],
+                           v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None)
+                    continue
+                if k in self.DECK_CLIMATE_KEYS:
+                    v = values.get(k)
+                    extra = {}
+                    for rk in ('local_temperature', 'temperature', 'pi_heating_demand', 'running_state'):
+                        if values.get(rk) is not None and not isinstance(values.get(rk), (list, dict)):
+                            extra[rk] = values.get(rk)
+                    if t['kind'] == 'number':
+                        step = 0.5 if 'temperature' in k or 'setpoint' in k else 1
+                        a = num_attr(k, info, '°C' if step == 0.5 else '', 5 if step == 0.5 else None,
+                                     30 if step == 0.5 else None, step)
+                        common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set', 'step'], [a],
+                               v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None, extra)
+                    else:
+                        a = enum_attr(k, dict(info, values=t.get('values') or info.get('values')))
+                        common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set'], [a],
+                               v if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None, None, extra)
+        return out
+
+    def _deck_house_items(self, rooms):
+        """Everything but the Zigbee targets and the readings: sockets, heating, scenes and the rest."""
+        out = []
+
+        def add(item_id, name, kind, icon, cap, actions, room=None, attrs=None, on=None, value=None, vtext=None,
+                online=True, extra=None, at=None, battery=None):
+            out.append({'id': item_id, 'name': name, 'room': room, 'kind': kind, 'icon': icon, 'cap': cap,
+                        'actions': actions, 'attrs': attrs or [],
+                        'state': {'on': on, 'value': value,
+                                  'value_text': vtext if vtext is not None else (
+                                      None if on is None else ('on' if on else 'off')),
+                                  'attrs': extra or {}, 'online': online, 'battery': battery, 'at': at},
+                        '_target': item_id})
+        for p in list(self.plugs.values()):
+            flat = p.flat or (self.live.get(p.device_id) or {}).get('payload') or {}
+            light = str(p.cfg.get('role') or 'plug') == 'light'
+            dev = self.store.device(p.device_id) or {}
+            power = numeric(flat.get('switch.apower')) if 'switch.apower' in flat else None
+            energy = numeric(flat.get('switch.aenergy.total')) if 'switch.aenergy.total' in flat else None
+            extra = {k: v for k, v in (('power', power), ('energy', energy)) if v is not None}
+            monitor = bool(p.cfg.get('monitor_only'))
+            add(p.name, dev.get('alias') or p.name, 'light' if light else 'socket', 'light' if light else 'plug',
+                'view' if monitor else 'switch', [] if monitor else ['toggle', 'on', 'off'],
+                room=rooms.get(p.device_id) or rooms.get(p.name),
+                on=(bool(flat.get('switch.output')) if 'switch.output' in flat else None),
+                value=power, vtext=self._ntf_vtext(power, 'W') if power is not None else None,
+                online=bool(flat) and p.error is None, extra=extra, at=p.generated or None)
+        try:
+            heat = self.heating_state() if self.rooms() else {'rooms': []}
+        except Exception as e:                               # noqa: BLE001
+            log('the Stream Deck catalogue: the heating: %s' % e, 'debug')
+            heat = {'rooms': []}
+        heated = [r for r in heat.get('rooms') or [] if r.get('heated', True)]
+        if heated:
+            add('heat:control', 'Heating control', 'switch', 'heat', 'climate', ['toggle', 'on', 'off'],
+                on=bool(heat.get('enabled')))
+            add('heat:away', 'Heating away mode', 'switch', 'heat', 'climate', ['toggle', 'on', 'off'],
+                on=bool(heat.get('away_switch')))
+        for r in heated:
+            temp = r.get('temperature')
+            extra = {'mode': r.get('mode'), 'level': r.get('level'), 'calling': bool(r.get('calling'))}
+            if isinstance(temp, (int, float)) and not isinstance(temp, bool):
+                extra['temperature'] = temp
+            wanted = r.get('wanted_c') if isinstance(r.get('wanted_c'), (int, float)) else None
+            add('heat:temp:%s' % r['id'], 'Temperature in %s' % r['name'], 'thermostat', 'thermo', 'climate',
+                ['set', 'step'], room=r['name'],
+                attrs=[{'key': 'temperature', 'label': 'Wanted temperature', 'type': 'number', 'unit': '°C',
+                        'min': 5, 'max': 30, 'step': 0.5}],
+                value=wanted, vtext=self._ntf_vtext(wanted, '°C') if wanted is not None else None, extra=extra)
+            add('heat:room:%s' % r['id'], 'Heating in %s' % r['name'], 'thermostat', 'heat', 'climate',
+                ['set', 'toggle', 'on', 'off'], room=r['name'],
+                attrs=[{'key': 'mode', 'label': 'Mode', 'type': 'enum',
+                        'values': ['plan', 'comfort', 'eco', 'night', 'max', 'off']}],
+                on=r.get('mode') != 'off', value=r.get('mode'), vtext=r.get('mode'), extra=extra)
+        for sc in self.scenes() or []:
+            if sc.get('id'):
+                add('scene:%s' % sc['id'], str(sc.get('name') or sc['id']), 'scene', 'scene', 'scenes', ['run'])
+        for sq in self.sequences() or []:
+            if sq.get('id'):
+                add('seq:%s' % sq['id'], str(sq.get('name') or sq['id']), 'sequence', 'seq', 'scenes', ['run'])
+        for g in self.action_groups() or []:
+            if g.get('id'):
+                add('act:%s' % g['id'], str(g.get('name') or g['id']), 'group', 'agroup', 'scenes',
+                    ['toggle', 'on', 'off'])
+                add('agroup:%s' % g['id'], 'Action group %s' % (g.get('name') or g['id']), 'group', 'agroup',
+                    'automations', ['toggle', 'on', 'off'], on=bool(g.get('enabled', True)),
+                    vtext='enabled' if g.get('enabled', True) else 'disabled')
+        for r in self.rules() or []:
+            if isinstance(r, dict) and r.get('id'):
+                on = bool(r.get('enabled', True))
+                add('rule:%s' % r['id'], str(r.get('name') or self.target_label('rule:%s' % r['id'])), 'rule', 'bolt',
+                    'automations', ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
+        for x in self.schedules() or []:
+            if isinstance(x, dict) and x.get('id'):
+                on = bool(x.get('enabled', True))
+                add('sched:%s' % x['id'], self.target_label('sched:%s' % x['id']), 'schedule', 'clock', 'automations',
+                    ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
+        for g in self.sensor_groups() or []:
+            if g.get('id'):
+                on = bool(g.get('enabled', True))
+                add('sgroup:%s' % g['id'], 'Sensor group %s' % (g.get('name') or g['id']), 'group', 'sgroup',
+                    'automations', ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
+        groups = []
+        for b in self.bindings() or []:
+            name = str((b or {}).get('group') or '') if isinstance(b, dict) else ''
+            if name and name not in groups:
+                groups.append(name)
+        for name in groups:
+            on = any(isinstance(b, dict) and b.get('group') == name and b.get('enabled', True)
+                     for b in self.bindings() or [])
+            add('bindgroup:%s' % name, 'The buttons in "%s"' % name, 'group', 'button', 'automations',
+                ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
+        for k, label, _ in self.TELL_PRESETS:
+            add('tell:%s' % k, label, 'message', 'bell', 'messages', ['run'])
+        for m in self.alert_messages():
+            if m.get('id'):
+                add('notify:%s' % m['id'], 'The message "%s"' % (m.get('name') or m['id']), 'message', 'bell',
+                    'messages', ['run'])
+        for k, words in SYSTEM_ACTIONS.items():
+            add('sys:%s' % k, words[:1].upper() + words[1:], 'system', 'gear', 'system', ['run'])
+        return out
+
+    def _deck_reading_items(self, rooms):
+        """read:<device>:<attr> - every number, on/off and choice every device reports."""
+        out = []
+        for dev in self.store.devices():
+            if dev.get('source') in ('group',) or str(dev.get('id') or '').startswith('name:'):
+                continue
+            values = self._ntf_values(dev['id'])
+            if not values:
+                continue
+            exposes = dev.get('exposes') or {}
+            seen = self.describe(dev, self.live.get(dev['id']))
+            online = bool(seen.get('online'))
+            battery = seen.get('battery')
+            battery = int(round(battery)) if isinstance(battery, (int, float)) and not isinstance(battery, bool) else None
+            at = (self.live.get(dev['id']) or {}).get('ts') or seen.get('last_seen')
+            name = dev.get('alias') or dev.get('name') or dev['id']
+            room = rooms.get(dev['id']) or rooms.get(dev.get('name'))
+            n = 0
+            for k, x in values.items():
+                if n >= 40 or not isinstance(k, str) or not self.NOTIFIER_RULE_ATTR.match(k):
+                    continue
+                if k in IGNORE_KEYS or k.startswith('update') or k == 'action' or isinstance(x, (list, dict)) or x is None:
+                    continue
+                info = exposes.get(k) if isinstance(exposes.get(k), dict) else {}
+                t = str(info.get('type') or '')
+                label, unit = self._ntf_attr_meta(dev, k)
+                if isinstance(x, bool) or t == 'binary' or (isinstance(x, str) and x.strip().upper() in (
+                        'ON', 'OFF', 'TRUE', 'FALSE', 'OPEN', 'CLOSED')):
+                    typ = 'bool'
+                    on = x if isinstance(x, bool) else str(x).strip().upper() in ('ON', 'TRUE', 'OPEN')
+                    attr = {'key': k, 'label': label, 'type': 'bool'}
+                    value = x
+                elif isinstance(x, (int, float)):
+                    typ, on, value = 'number', None, x
+                    attr = {'key': k, 'label': label, 'type': 'number', 'unit': unit or None,
+                            'min': info.get('min') if isinstance(info.get('min'), (int, float)) else None,
+                            'max': info.get('max') if isinstance(info.get('max'), (int, float)) else None}
+                elif t == 'enum' or (isinstance(x, str) and info.get('values')):
+                    typ, on, value = 'enum', None, x
+                    attr = {'key': k, 'label': label, 'type': 'enum',
+                            'values': [v for v in (info.get('values') or []) if isinstance(v, (str, int, float))][:50]}
+                elif isinstance(x, str) and numeric(x) is not None:
+                    typ, on, value = 'number', None, numeric(x)
+                    attr = {'key': k, 'label': label, 'type': 'number', 'unit': unit or None, 'min': None, 'max': None}
+                else:
+                    continue
+                del typ
+                n += 1
+                out.append({'id': 'read:%s:%s' % (dev['id'], k), 'name': '%s · %s' % (name, label), 'room': room,
+                            'kind': 'reading', 'icon': self._deck_reading_icon(k), 'cap': 'view', 'actions': [],
+                            'attrs': [attr],
+                            'state': {'on': on, 'value': value, 'value_text': self._ntf_vtext(value, unit),
+                                      'attrs': {}, 'online': online, 'battery': battery, 'at': at},
+                            '_target': None, '_device': name})
+        return out
+
+    @staticmethod
+    def _deck_reading_icon(k):
+        k = k.lower()
+        for word, icon in (('temperature', 'thermo'), ('humidity', 'humidity'), ('power', 'bolt'),
+                           ('energy', 'bolt'), ('battery', 'battery'), ('occupancy', 'motion'),
+                           ('presence', 'motion'), ('contact', 'contact'), ('illuminance', 'sun'),
+                           ('co2', 'air'), ('pressure', 'gauge'), ('water', 'water')):
+            if word in k:
+                return icon
+        return 'sensor'
+
+    def _deck_status_items(self):
+        """ZIGMon's own health. Each says on = all is well (true), wants a look (false) or not
+        known (null), and its level - ok, warn, crit or unknown - among its attrs."""
+        out = []
+
+        def add(k, name, icon, value, vtext, on, level, extra=None):
+            out.append({'id': 'status:' + k, 'name': name, 'room': None, 'kind': 'status', 'icon': icon,
+                        'cap': 'status', 'actions': [], 'attrs': [],
+                        'state': {'on': on, 'value': value, 'value_text': vtext, 'attrs': dict(extra or {}, level=level),
+                                  'online': True, 'battery': None, 'at': None},
+                        '_target': None})
+        alerts = self.active_alerts()
+        add('alerts', 'Alerts', 'bell', len(alerts), ('%d standing' % len(alerts)) if alerts else 'none',
+            not alerts, 'crit' if alerts else 'ok',
+            {'latest': str(alerts[-1].get('text') or '')[:120]} if alerts else {})
+        try:
+            n_blocked = self.store.blocked_summary()[0] if self.blacklist_on() else 0
+        except Exception:                                   # noqa: BLE001
+            n_blocked = 0
+        add('blocked', 'Blocked addresses', 'shield', n_blocked, '%d kept out' % n_blocked, True, 'ok',
+            {'guarding': bool(self.blacklist_on())})
+        try:
+            px = proxy_tile_state(self) if proxy_tile_on(self) else {'on': False}
+        except Exception:                                   # noqa: BLE001
+            px = {'on': False}
+        if px.get('on'):
+            sur = px.get('suricata') or {}
+            st = px.get('state')
+            add('proxy', 'Server in front', 'router', st, st, st == 'online',
+                'ok' if st == 'online' else 'crit' if st == 'offline' else 'warn',
+                {'alerts': sur.get('alerts')} if sur.get('alerts') is not None else {})
+        else:
+            add('proxy', 'Server in front', 'router', None, 'not watched', None, 'unknown')
+        worst, bad = 'ok', 0
+        order = {'ok': 0, 'warn': 1, 'crit': 2}
+        for dev in self.store.devices():
+            seen = self.describe(dev, self.live.get(dev['id']))
+            lv = seen.get('level') or 'ok'
+            if lv in ('warn', 'crit'):
+                bad += 1
+                if order.get(lv, 0) > order.get(worst, 0):
+                    worst = lv
+        add('health', 'Device health', 'pulse', bad, ('%d unwell' % bad) if bad else 'all well', not bad, worst)
+        bridge = self.bridge.get('state')
+        ok = bool(self.connected) and bridge != 'offline'
+        add('gateway', 'Zigbee gateway', 'mesh', bridge or ('online' if self.connected else 'offline'),
+            ('online' if ok else 'offline' if not self.connected else 'Zigbee2MQTT %s' % (bridge or 'unknown')), ok,
+            'ok' if ok else 'crit', {'broker': bool(self.connected), 'bridge': bridge})
+        return out
+
+    def deck_items(self, fresh=False):
+        """Every item, unfiltered, with its state - worked out at most twice a second."""
+        self._deck_setup()
+        key = int(time.time() * 2)
+        kept = self._deck_items_kept
+        if not fresh and kept is not None and kept[0] == key:
+            return kept[1]
+        rooms = self._ntf_rooms()
+        out = []
+        for part in (self._deck_house_items, self._deck_zb_items, self._deck_reading_items):
+            try:
+                out.extend(part(rooms))
+            except Exception as e:                           # noqa: BLE001
+                log('the Stream Deck catalogue (%s): %s' % (part.__name__, e), 'warn')
+        try:
+            out.extend(self._deck_status_items())
+        except Exception as e:                               # noqa: BLE001
+            log('the Stream Deck catalogue (status): %s' % e, 'warn')
+        seen, items = set(), []
+        for it in out:
+            if it['id'] in seen:
+                continue
+            seen.add(it['id'])
+            items.append(it)
+        self._deck_items_kept = (key, items)
+        return items
+
+    @staticmethod
+    def deck_allowed(caps, item):
+        one = (caps or {}).get(item['cap']) or {}
+        if item['cap'] == 'status':
+            return bool(one.get('on'))
+        return bool(one.get('on')) and (bool(one.get('all')) or item['id'] in (one.get('targets') or []))
+
+    @classmethod
+    def deck_visible(cls, caps, item):
+        if cls.deck_allowed(caps, item):
+            return True
+        if item['cap'] == 'status':
+            return False
+        view = (caps or {}).get('view') or {}
+        return bool(view.get('on')) and (bool(view.get('all')) or item['id'] in (view.get('targets') or []))
+
+    def deck_item_out(self, caps, item):
+        allowed = self.deck_allowed(caps, item) and item['cap'] not in ('view', 'status') and bool(item['actions'])
+        if item['cap'] in ('view', 'status'):
+            allowed = self.deck_allowed(caps, item)
+        return {'id': item['id'], 'name': item['name'], 'room': item['room'], 'kind': item['kind'],
+                'icon': item['icon'], 'cap': item['cap'], 'actions': list(item['actions']),
+                'attrs': [dict(a) for a in item['attrs']], 'allowed': allowed,
+                'hold': bool(((caps or {}).get(item['cap']) or {}).get('hold')) if item['cap'] not in ('view', 'status')
+                else False,
+                'state': dict(item['state'])}
+
+    # -- the states, coalesced per item, for the long poll --
+    def _deck_refresh(self, force=False):
+        """The states now, compared with the ones kept: each that changed gets a new number.
+        Never on the broker's thread - the deck's own thread and the polls ask for it."""
+        self._deck_setup()
+        now = time.monotonic()
+        if not force and now - self._deck_refreshed < 0.2:
+            return
+        self._deck_refreshed = now
+        items = self.deck_items(fresh=True)
+        changed = False
+        with self._deck_cond:
+            for it in items:
+                st = it['state']
+                cmp = json.dumps({k: v for k, v in st.items() if k != 'at'}, sort_keys=True, default=str)
+                old = self._deck_states.get(it['id'])
+                if old is not None and old[2] == cmp:
+                    continue
+                self._deck_seq += 1
+                self._deck_states[it['id']] = [self._deck_seq, dict(st), cmp]
+                changed = True
+            if changed:
+                self._deck_cond.notify_all()
+
+    def _deck_watch(self):
+        """The deck's own thread: while a deck has asked lately, every change of the house
+        (the number the pages wait on) is looked at for what changed for the decks."""
+        seen = self.seq
+        while not self._stop.is_set():
+            if not self.deck_enabled() or time.time() - self._deck_active > 120:
+                if self._stop.wait(2.0):
+                    return
+                continue
+            got = self.wait_for_change(seen, 5.0)
+            if got != seen:
+                seen = got
+                try:
+                    self._deck_refresh()
+                except Exception as e:                       # noqa: BLE001
+                    log('the Stream Deck states: %s' % e, 'debug')
+
+    def _deck_wake(self):
+        """A deck asked: the thread that follows the house is running."""
+        self._deck_setup()
+        self._deck_active = time.time()
+        with self._deck_lock:
+            if self._deck_thread is None or not self._deck_thread.is_alive():
+                self._deck_thread = threading.Thread(target=self._deck_watch, name='deck', daemon=True)
+                self._deck_thread.start()
+
+    # -- the questions of a paired installation --
+    def deck_seen(self, inst, who, decks=None):
+        """An installation asked: in memory every time, written down at most once a minute, with
+        the decks it named (new ones waiting for approval)."""
+        self._deck_setup()
+        now = time.time()
+        who = str(who or '')[:60]
+        self._deck_seen[inst['id']] = (now, who)
+        decks = [x for x in (decks or []) if x]
+        known = {x['id']: x for x in inst.get('decks') or []}
+        news = [x for x in decks if x['id'] not in known]
+        moved = [x for x in decks if x['id'] in known and any(
+            x.get(k) is not None and x.get(k) != known[x['id']].get(k) for k in ('type', 'name', 'cols', 'rows'))]
+        if not news and not moved and now - float(inst.get('last_at') or 0) < 60:
+            return inst
+        with self._deck_lock:
+            rows = self.deck_installs()
+            mine = next((r for r in rows if r['id'] == inst['id']), None)
+            if mine is None:
+                return inst
+            have = mine.setdefault('decks', [])
+            for x in decks:
+                old = next((y for y in have if y['id'] == x['id']), None)
+                if old is None:
+                    if len(have) >= self.DECK_DECKS_MOST:
+                        continue
+                    have.append(dict(x, approved=False, first_seen=now))
+                    self.store.add_event('control', "a new Stream Deck (%s '%s') is waiting for approval under "
+                                         "the Stream Deck installation '%s'"
+                                         % (self.deck_type_name(x.get('type')), x.get('name') or x['id'],
+                                            mine.get('name') or ''), 'info')
+                else:
+                    for k in ('type', 'name', 'cols', 'rows'):
+                        if x.get(k) is not None:
+                            old[k] = x[k]
+            mine['last_at'], mine['last_from'] = now, who
+            self.store.set_meta('deck_installs', json.dumps(rows), deferred=not news)
+            return mine
+
+    def _deck_parse_decks(self, q, body=None):
+        """The decks a question names: decks=id,id (or a JSON list) and deck_info=<base64url JSON>."""
+        out = []
+        info = str((q or {}).get('deck_info') or (body or {}).get('deck_info') or '')
+        if info:
+            if len(info) > 2800:
+                raise ValueError('deck_info is at most 2 KB')
+            try:
+                raw = base64.urlsafe_b64decode(info + '=' * (-len(info) % 4))
+                if len(raw) > 2048:
+                    raise ValueError('deck_info is at most 2 KB')
+                got = json.loads(raw.decode('utf-8'))
+            except (ValueError, UnicodeDecodeError, TypeError):
+                raise ValueError('deck_info is base64url of a JSON list of {id, type, name, cols, rows}')
+            if not isinstance(got, list):
+                raise ValueError('deck_info is a list')
+            for one in got[:self.DECK_DECKS_MOST]:
+                c = self._deck_clean_deck(one)
+                if c:
+                    out.append(c)
+        given = (q or {}).get('decks') if (q or {}).get('decks') is not None else (body or {}).get('decks')
+        ids = []
+        if isinstance(given, list):
+            ids = [str(x.get('id') if isinstance(x, dict) else x) for x in given]
+        elif given:
+            text = str(given).strip()
+            if text.startswith('['):
+                try:
+                    ids = [str(x.get('id') if isinstance(x, dict) else x) for x in json.loads(text)]
+                except (ValueError, AttributeError):
+                    ids = []
+            else:
+                ids = [x for x in text.split(',')]
+        for i in ids[:self.DECK_DECKS_MOST]:
+            i = i.strip()
+            if self.DECK_ID.match(i) and not any(x['id'] == i for x in out):
+                out.append({'id': i, 'type': None, 'name': '', 'cols': None, 'rows': None})
+        # an id alone describes nothing: only what is new is added from it
+        return out
+
+    def _deck_install_out(self, inst):
+        return {'id': inst['id'], 'name': inst.get('name') or '', 'caps': inst.get('caps') or self.deck_default_caps(),
+                'hint': inst.get('hint') or ''}
+
+    def deck_hello(self, inst):
+        self._deck_setup()
+        plugin = self.deck_plugin()
+        return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
+                'house': socket.gethostname().split('.')[0] or 'zigmon', 'boot': self._deck_boot, 'seq': self._deck_seq,
+                'install': self._deck_install_out(inst),
+                'decks': [{'id': x['id'], 'type': x.get('type'), 'name': x.get('name') or '',
+                           'approved': bool(x.get('approved')), 'type_name': self.deck_type_name(x.get('type')),
+                           'cols': x.get('cols'), 'rows': x.get('rows')} for x in inst.get('decks') or []],
+                'plugin': None if plugin is None else {'version': plugin['version']}}
+
+    def deck_catalog(self, inst):
+        self._deck_setup()
+        self._deck_refresh()
+        caps = inst.get('caps') or self.deck_default_caps()
+        items = [self.deck_item_out(caps, it) for it in self.deck_items() if self.deck_visible(caps, it)]
+        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq,
+                'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()], 'items': items}
+
+    @staticmethod
+    def _deck_ids(text):
+        ids = []
+        for x in str(text or '').split(','):
+            x = x.strip()
+            if x and len(x) <= 200 and x not in ids:
+                ids.append(x)
+        return ids[:500]
+
+    def deck_state(self, inst, ids):
+        self._deck_setup()
+        self._deck_refresh()
+        caps = inst.get('caps') or self.deck_default_caps()
+        want = set(ids or [])
+        out = {}
+        for it in self.deck_items():
+            if (not want or it['id'] in want) and self.deck_visible(caps, it):
+                out[it['id']] = dict(it['state'])
+        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq, 'items': out}
+
+    def deck_wait(self, inst, after, boot, ids, timeout=None):
+        """The states that changed after `after`, latest only, for the ids asked (or every
+        visible one): at once when some have, or as soon as one does within the wait."""
+        self._deck_setup()
+        timeout = self.DECK_WAIT_S if timeout is None else max(0.0, min(self.DECK_WAIT_S, timeout))
+        deadline = time.monotonic() + timeout
+        iid = inst['id']
+        want = set(ids or [])
+        self._deck_refresh()
+        visible = None
+        with self._deck_cond:
+            while True:
+                seq = self._deck_seq
+                if boot != self._deck_boot or after > seq:
+                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': True, 'changes': []}
+                inst = next((r for r in self.deck_installs() if r['id'] == iid), None)
+                if inst is None:
+                    return None
+                if visible is None or visible[0] != json.dumps(inst.get('caps'), sort_keys=True):
+                    caps = inst.get('caps') or self.deck_default_caps()
+                    visible = (json.dumps(inst.get('caps'), sort_keys=True),
+                               {it['id'] for it in self.deck_items() if self.deck_visible(caps, it)})
+                got = sorted(((v[0], k, v[1]) for k, v in self._deck_states.items()
+                              if v[0] > after and k in visible[1] and (not want or k in want)),
+                             key=lambda x: x[0])
+                if got:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop.is_set():
+                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': False, 'changes': []}
+                self._deck_cond.wait(min(1.0, remaining))
+        more = len(got) > self.DECK_BATCH
+        got = got[:self.DECK_BATCH]
+        return {'ok': True, 'boot': self._deck_boot, 'seq': got[-1][0] if more else seq, 'reset': False,
+                'changes': [{'seq': s, 'id': k, 'state': dict(st)} for s, k, st in got]}
+
+    # -- a command --
+    DECK_SAID = {'toggle': 'toggled', 'on': 'turned on', 'off': 'turned off', 'run': 'ran', 'open': 'opened',
+                 'close': 'closed', 'stop': 'stopped'}
+
+    def _deck_rate_ok(self, iid):
+        now = time.time()
+        with self._deck_lock:
+            times = [t for t in self._deck_rates.get(iid, []) if now - t < 60]
+            if len(times) >= self.DECK_RATE_MIN or len([t for t in times if now - t < 1]) >= self.DECK_RATE_S:
+                self._deck_rates[iid] = times
+                return False
+            times.append(now)
+            self._deck_rates[iid] = times
+            if len(self._deck_rates) > 50:
+                for k in [k for k, v in self._deck_rates.items() if not [t for t in v if now - t < 60]]:
+                    self._deck_rates.pop(k, None)
+        return True
+
+    @staticmethod
+    def _deck_round(value, attr):
+        step = attr.get('step')
+        lo, hi = attr.get('min'), attr.get('max')
+        if isinstance(step, (int, float)) and step > 0:
+            base = lo if isinstance(lo, (int, float)) else 0
+            value = base + round((value - base) / step) * step
+            value = round(value, 6)
+        if isinstance(lo, (int, float)):
+            value = max(lo, value)
+        if isinstance(hi, (int, float)):
+            value = min(hi, value)
+        if isinstance(step, (int, float)) and float(step).is_integer() and float(value).is_integer():
+            value = int(value)
+        return value
+
+    def deck_do(self, inst, body):
+        """One command: (status, answer). Checked in the contract's order past the token:
+        the deck approved, the item allowed for its capability, the hold, the value."""
+        self._deck_setup()
+        deck = str(body.get('deck') or '').strip()
+        if not self.DECK_ID.match(deck):
+            return 400, {'ok': False, 'error': 'deck is the Stream Deck’s device id'}
+        mine = next((x for x in inst.get('decks') or [] if x['id'] == deck), None)
+        if mine is None or not mine.get('approved'):
+            if mine is None:
+                self.deck_seen(inst, (self._deck_seen.get(inst['id']) or (0, ''))[1],
+                               [{'id': deck, 'type': None, 'name': '', 'cols': None, 'rows': None}])
+            return 403, {'ok': False, 'error': 'This Stream Deck is not approved in ZIGMon yet', 'deck_pending': True}
+        if not self._deck_rate_ok(inst['id']):
+            return 429, {'ok': False, 'error': 'too many commands - at most %d a second and %d a minute'
+                         % (self.DECK_RATE_S, self.DECK_RATE_MIN)}
+        iid = str(body.get('id') or '').strip()
+        action = str(body.get('action') or '').strip().lower()
+        items = {it['id']: it for it in self.deck_items()}
+        item = items.get(iid)
+        caps = inst.get('caps') or self.deck_default_caps()
+        if item is None or not self.deck_visible(caps, item):
+            return 404, {'ok': False, 'error': 'there is no such thing to control'}
+        attr_key = str(body.get('attr') or '').strip()
+        # a light's brightness or a blind's position is the item that sets it, under its own capability
+        if attr_key:
+            via = next((a.get('via') for a in item['attrs'] if a.get('key') == attr_key and a.get('via')), None)
+            if via and action in ('set', 'step') and via in items:
+                item = items[via]
+            elif not any(a.get('key') == attr_key for a in item['attrs']):
+                return 400, {'ok': False, 'error': '%s has no %s' % (item['name'], attr_key[:40])}
+        if item['cap'] in ('view', 'status') or not item['actions']:
+            return 403, {'ok': False, 'error': '%s can only be looked at' % item['name'], 'allowed': False}
+        if not self.deck_allowed(caps, item):
+            return 403, {'ok': False, 'error': 'ZIGMon does not allow this Stream Deck to %s - %s'
+                         % (self.DECK_CAP_WORDS.get(item['cap'], item['cap']), item['name']), 'allowed': False,
+                         'cap': item['cap']}
+        if action not in item['actions']:
+            if not (action in ('open', 'close') and 'set' in item['actions'] and item['kind'] == 'cover'):
+                return 400, {'ok': False, 'error': '%s takes %s' % (item['name'], ', '.join(item['actions']))}
+        if (caps.get(item['cap']) or {}).get('hold'):
+            held = body.get('held_ms')
+            if not (isinstance(held, (int, float)) and not isinstance(held, bool) and held >= self.DECK_HOLD_MS):
+                return 409, {'ok': False, 'error': 'Hold the key to confirm', 'hold': True}
+        do, words, target = self._deck_command(item, action, body)
+        if do is None:
+            return 400, {'ok': False, 'error': words}
+        origin = "Stream Deck '%s'" % (inst.get('name') or 'Stream Deck')
+        fired = self._binding_targets(target)
+        if not fired:
+            return 404, {'ok': False, 'error': '%s is switched off or gone' % item['name']}
+        asked = time.time()
+        for one in fired:
+            self._fire_target(one, do, origin)
+        said = words
+        self.store.add_event('control', "Stream Deck '%s' (%s) %s" % (
+            inst.get('name') or '', self.deck_type_name(mine.get('type'), short=True), said), 'info')
+        socks = [x[1] for x in fired if x[0] == 'plug']
+        if socks:
+            deadline = time.time() + 0.35
+            while time.time() < deadline:
+                if all(float(getattr(s, 'output_at', 0) or 0) >= asked and not getattr(s, 'inflight', 0) for s in socks):
+                    break
+                time.sleep(0.01)
+        self._deck_items_kept = None
+        try:
+            self._deck_refresh(force=True)
+        except Exception as e:                               # noqa: BLE001
+            log('the Stream Deck states: %s' % e, 'debug')
+        now = next((it for it in self.deck_items() if it['id'] == iid), item)
+        return 200, {'ok': True, 'said': said, 'state': dict(now['state'])}
+
+    def _deck_command(self, item, action, body):
+        """(do, words, target) for the executor - or (None, why, None)."""
+        name = item['name']
+        target = item['_target']
+        if action in ('toggle', 'on', 'off'):
+            return action, '%s %s' % (self.DECK_SAID[action], name), target
+        if action == 'run':
+            return 'on', 'ran %s' % name, target
+        if item['kind'] == 'cover' and action in ('open', 'close', 'stop'):
+            if target.endswith(':state'):
+                return 'set:%s' % action.upper(), '%s %s' % (self.DECK_SAID[action], name), target
+            return ('set:100' if action == 'open' else 'set:0'), '%s %s' % (self.DECK_SAID[action], name), target
+        attr = item['attrs'][0] if item['attrs'] else None
+        now = item['state'].get('value')
+        if item['kind'] == 'cover' and target.endswith(':state'):
+            # the blind's position, asked of the key that shows the blind
+            attr = next((a for a in item['attrs'] if a.get('key') == 'position'), None)
+            if attr is not None:
+                target = attr.get('via') or target
+                now = (item['state'].get('attrs') or {}).get('position', now)
+        if attr is None:
+            return None, '%s has nothing to set' % name, None
+        value, delta = body.get('value'), body.get('delta')
+        if action == 'step' and delta is None:
+            return None, 'step takes delta: how far to move from where it is', None
+        label = attr.get('label') or attr['key']
+        if attr['type'] == 'enum':
+            vals = attr.get('values') or []
+            if delta is not None:
+                if not isinstance(delta, int) or isinstance(delta, bool) or not vals:
+                    return None, 'delta on a choice is a whole number of steps', None
+                at = next((i for i, v in enumerate(vals) if str(v).lower() == str(now).lower()), -1)
+                value = vals[(at + delta) % len(vals)]
+            hit = None
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                hit = next((v for v in vals if str(v).lower() == str(value).strip().lower()), None)
+            if hit is None:
+                return None, '%s is one of %s' % (label, ', '.join(map(str, vals))), None
+            return 'set:%s' % hit, 'set %s to %s' % (name, hit), target
+        if attr['type'] != 'number':
+            return None, '%s cannot be set' % name, None
+        if delta is not None:
+            if isinstance(delta, bool) or not isinstance(delta, (int, float)) or not math.isfinite(delta) \
+                    or abs(delta) > 1e6:
+                return None, 'delta must be a number', None
+            if target.startswith('zb:'):
+                # a knob turned fast: from what was last sent, while that is fresher than the report
+                dev_key = tuple(target[3:].rsplit(':', 1))
+                pend = (getattr(self, '_pending_set', None) or {}).get(dev_key)
+                reported_at = float((self.live.get(dev_key[0]) or {}).get('ts') or 0)
+                if pend and time.time() - pend.get('at', 0) < 300 and pend.get('at', 0) > reported_at \
+                        and isinstance(pend.get('value'), (int, float)):
+                    now = pend['value']
+            if isinstance(now, bool) or not isinstance(now, (int, float)):
+                return None, '%s has no value yet to change from' % name, None
+            value = self._deck_round(float(now) + float(delta), attr)
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return None, '%s must be a number' % label, None
+            lo, hi = attr.get('min'), attr.get('max')
+            if (isinstance(lo, (int, float)) and value < lo) or (isinstance(hi, (int, float)) and value > hi):
+                return None, '%s goes from %s to %s' % (label, self._ntf_num(lo) if lo is not None else '\u2026',
+                                                        self._ntf_num(hi) if hi is not None else '\u2026'), None
+            value = self._deck_round(value, attr)
+        text = self._ntf_num(float(value)) if isinstance(value, float) else str(value)
+        unit = attr.get('unit') or ''
+        do = ('set:=%s' % text) if target.startswith('zb:') and value < 0 else 'set:%s' % text
+        return do, 'set %s to %s' % (name, (text + (' ' + unit if unit else '')).strip()), target
+
+    # -- pairing --
+    def _deck_pairs_sweep(self):
+        now = time.time()
+        for pid, p in list(self._deck_pairs.items()):
+            # kept a minute past its end, so the plugin can still be told how it ended
+            if now > p['expires'] + 60:
+                self._deck_pairs.pop(pid, None)
+
+    def deck_pair_start(self, body, who):
+        """A pairing request: (status, answer). The code to compare and the secret to wait
+        with go out once; the secret is kept only as its sha256."""
+        self._deck_setup()
+        now = time.time()
+        with self._deck_lock:
+            calls = [t for t in self._deck_pair_calls.get(who, []) if now - t < 3600]
+            if len(calls) >= self.DECK_PAIR_HOUR_MOST:
+                self._deck_pair_calls[who] = calls
+                return 429, {'ok': False, 'error': 'too many pairing requests from this address - at most %d an hour'
+                             % self.DECK_PAIR_HOUR_MOST}
+            calls.append(now)
+            self._deck_pair_calls[who] = calls
+            if len(self._deck_pair_calls) > 200:
+                for k in [k for k, v in self._deck_pair_calls.items() if not [t for t in v if now - t < 3600]]:
+                    self._deck_pair_calls.pop(k, None)
+        install = str(body.get('install') or '').strip().lower()
+        if not re.match(r'^[0-9a-f]{32}$', install):
+            return 400, {'ok': False, 'error': 'install is the installation’s id: 32 hex characters'}
+        computer = re.sub(r'[\x00-\x1f\x7f]', '', str(body.get('computer') or '')).strip()[:60] or 'a computer'
+        plugin = str(body.get('plugin') or '').strip()
+        plugin = plugin if re.match(r'^\d{1,5}(\.\d{1,5}){1,3}$', plugin) else ''
+        decks = body.get('decks') or []
+        if not isinstance(decks, list):
+            return 400, {'ok': False, 'error': 'decks is a list of {id, type, name, cols, rows}'}
+        clean = []
+        for one in decks[:self.DECK_DECKS_MOST]:
+            c = self._deck_clean_deck(one)
+            if c and not any(x['id'] == c['id'] for x in clean):
+                clean.append(c)
+        installs = self.deck_installs()
+        if len(installs) >= self.DECK_INSTALLS_MOST and not any(r['id'] == install for r in installs):
+            return 403, {'ok': False, 'error': 'ZIGMon has %d Stream Deck installations already - an administrator '
+                         'revokes one first' % self.DECK_INSTALLS_MOST}
+        code = ''.join(secrets.choice(self.DECK_CODE_LETTERS) for _ in range(6))
+        code = code[:3] + '-' + code[3:]
+        secret = 'zsp_' + secrets.token_urlsafe(30)
+        pid = secrets.token_hex(12)
+        with self._deck_cond:
+            self._deck_pairs_sweep()
+            pending = sorted((p for p in self._deck_pairs.values() if p['state'] == 'pending'), key=lambda p: p['at'])
+            # the same installation asking again: its earlier request goes
+            for p in pending:
+                if p['install'] == install:
+                    self._deck_pairs.pop(p['pair'], None)
+            pending = [p for p in pending if p['install'] != install]
+            while len(pending) >= self.DECK_PAIRS_MOST:
+                gone = pending.pop(0)
+                self._deck_pairs.pop(gone['pair'], None)
+            self._deck_pairs[pid] = {'pair': pid, 'hash': hashlib.sha256(secret.encode('utf-8')).hexdigest(),
+                                     'code': code, 'install': install, 'computer': computer, 'plugin': plugin,
+                                     'decks': clean, 'from': who, 'at': now, 'expires': now + self.DECK_PAIR_S,
+                                     'state': 'pending', 'token': None, 'by': None, 'taken': False}
+            self._deck_cond.notify_all()
+        self.store.add_event('control', "the Stream Deck plugin on '%s' asks to be paired (code %s, from %s)"
+                             % (computer, code, who or 'somewhere'), 'info')
+        return 200, {'ok': True, 'pair': pid, 'secret': secret, 'code': code, 'expires': int(now + self.DECK_PAIR_S)}
+
+    def deck_pair_find(self, secret):
+        secret = str(secret or '')
+        if not secret.startswith('zsp_') or len(secret) > 80:
+            return None
+        digest = hashlib.sha256(secret.encode('utf-8')).hexdigest()
+        hit = None
+        with self._deck_lock:
+            for p in self._deck_pairs.values():
+                if hmac.compare_digest(p['hash'], digest) and hit is None:
+                    hit = p
+        return hit
+
+    def deck_pair_wait(self, pair, timeout=None):
+        """How the request stands: at once when it is answered, else when it is within the wait."""
+        self._deck_setup()
+        timeout = self.DECK_WAIT_S if timeout is None else max(0.0, min(self.DECK_WAIT_S, timeout))
+        deadline = time.monotonic() + timeout
+        with self._deck_cond:
+            while True:
+                if time.time() > pair['expires'] and pair['state'] == 'pending':
+                    pair['state'] = 'expired'
+                if pair['state'] != 'pending':
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop.is_set():
+                    break
+                self._deck_cond.wait(min(1.0, remaining, max(0.05, pair['expires'] - time.time())))
+            out = {'ok': True, 'state': pair['state']}
+            if pair['state'] == 'approved':
+                if pair.get('token'):
+                    inst = next((r for r in self.deck_installs() if r['id'] == pair['install']), None)
+                    out['token'] = pair['token']
+                    out['install'] = self._deck_install_out(inst) if inst else None
+                    pair['token'] = None          # once: from here on only its hash is anywhere
+                    pair['taken'] = True
+                else:
+                    out['taken'] = True
+            elif pair['state'] == 'pending':
+                out['expires'] = int(pair['expires'])
+        return out
+
+    def deck_pairs_view(self):
+        self._deck_setup()
+        with self._deck_lock:
+            self._deck_pairs_sweep()
+            rows = sorted((p for p in self._deck_pairs.values() if p['state'] == 'pending'
+                           and p['expires'] > time.time()), key=lambda p: -p['at'])
+            installs = {r['id']: r for r in self.deck_installs()}
+            return [{'pair': p['pair'], 'code': p['code'], 'computer': p['computer'], 'plugin': p['plugin'] or None,
+                     'install': p['install'], 'known': p['install'] in installs,
+                     'decks': [dict(x, type_name=self.deck_type_name(x.get('type'))) for x in p['decks']],
+                     'from': p['from'], 'at': p['at'], 'expires': p['expires']} for p in rows]
+
+    def deck_installs_view(self):
+        self._deck_setup()
+        out = []
+        for r in self.deck_installs():
+            seen = self._deck_seen.get(r['id'])
+            last_at, last_from = r.get('last_at'), r.get('last_from')
+            if seen and (not last_at or seen[0] > float(last_at)):
+                last_at, last_from = seen
+            out.append({'id': r['id'], 'name': r.get('name') or '', 'computer': r.get('computer') or '',
+                        'plugin': r.get('plugin') or None, 'hint': r.get('hint') or '',
+                        'caps': r.get('caps') or self.deck_default_caps(),
+                        'caps_words': self.deck_caps_words(r.get('caps')),
+                        'decks': [dict(x, type_name=self.deck_type_name(x.get('type')), approved=bool(x.get('approved')))
+                                  for x in r.get('decks') or []],
+                        'approved_by': r.get('approved_by') or '', 'approved_at': r.get('approved_at'),
+                        'created': r.get('created'), 'last_at': last_at, 'last_from': last_from or None})
+        return out
+
+    def deck_admin_view(self, admin_items=True):
+        """What Settings - Stream Deck shows: never a token, a hash or a pairing secret."""
+        self._deck_setup()
+        out = {'ok': True, 'enabled': self.deck_enabled(), 'installs': self.deck_installs_view(),
+               'pairs': self.deck_pairs_view(),
+               'most': {'installs': self.DECK_INSTALLS_MOST, 'decks': self.DECK_DECKS_MOST,
+                        'pairs': self.DECK_PAIRS_MOST},
+               'plugin': self.deck_plugin_short(), 'caps': list(self.DECK_CAPS), 'cap_words': dict(self.DECK_CAP_WORDS),
+               'default_caps': self.deck_default_caps(),
+               'address': re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip()),
+               'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()]}
+        if admin_items:
+            out['items'] = [{'id': it['id'], 'name': it['name'], 'room': it['room'], 'kind': it['kind'],
+                             'icon': it['icon'], 'cap': it['cap']} for it in self.deck_items()]
+        return out
+
+    def deck_admin_post(self, body, by):
+        """enable, disable, approve, deny, caps, rename, deck_approve, deck_remove, revoke - an
+        administrator's, asked for the PIN before this."""
+        self._deck_setup()
+        act = str(body.get('action') or '')
+        who = by or 'somebody'
+        if act in ('enable', 'disable'):
+            on = act == 'enable'
+            self.store.set_meta('deck_enabled', '1' if on else '0')
+            self.store.add_event('control', '%s %s Stream Deck control' % (who, 'switched on' if on else 'switched off'),
+                                 'info')
+            with self._deck_cond:
+                self._deck_cond.notify_all()
+            return {'message': 'Stream Deck control is %s' % ('on' if on else 'off')}
+        if act in ('approve', 'deny'):
+            pid = str(body.get('pair') or '')
+            with self._deck_cond:
+                self._deck_pairs_sweep()
+                pair = self._deck_pairs.get(pid)
+                if pair is None or pair['state'] != 'pending' or pair['expires'] < time.time():
+                    raise ValueError('there is no such pairing request waiting - it may have run out')
+                if act == 'deny':
+                    pair['state'] = 'denied'
+                    pair['by'] = who
+                    self._deck_cond.notify_all()
+                    self.store.add_event('control', "%s refused the Stream Deck plugin on '%s' (code %s)"
+                                         % (who, pair['computer'], pair['code']), 'info')
+                    return {'message': "the request of '%s' is refused" % pair['computer']}
+            rows = self.deck_installs()
+            old = next((r for r in rows if r['id'] == pair['install']), None)
+            if old is None and len(rows) >= self.DECK_INSTALLS_MOST:
+                raise ValueError('at most %d Stream Deck installations - revoke one first' % self.DECK_INSTALLS_MOST)
+            name = self._deck_clean_name(body.get('name') if body.get('name') not in (None, '') else pair['computer'],
+                                         'a name')
+            caps = self._deck_clean_caps(body['caps']) if body.get('caps') is not None else self.deck_default_caps()
+            ticked = body.get('decks')
+            if ticked is not None and not isinstance(ticked, list):
+                raise ValueError('decks is a list of the deck ids approved with it')
+            ticked = None if ticked is None else {str(x) for x in ticked}
+            decks = []
+            for x in pair['decks']:
+                was = next((y for y in (old or {}).get('decks') or [] if y['id'] == x['id']), None)
+                decks.append(dict(x, approved=(x['id'] in ticked) if ticked is not None else True,
+                                  first_seen=(was or {}).get('first_seen') or time.time()))
+            for y in (old or {}).get('decks') or []:
+                if not any(x['id'] == y['id'] for x in decks) and len(decks) < self.DECK_DECKS_MOST:
+                    decks.append(y)
+            token = 'zsd_' + secrets.token_urlsafe(30)
+            now = time.time()
+            row = {'id': pair['install'], 'name': name, 'computer': pair['computer'], 'plugin': pair['plugin'],
+                   'hash': hashlib.sha256(token.encode('utf-8')).hexdigest(), 'hint': token[-2:], 'caps': caps,
+                   'decks': decks, 'approved_by': who, 'approved_at': now, 'created': (old or {}).get('created') or now,
+                   'last_at': None, 'last_from': None}
+            if old is not None:
+                self._deck_revoke_hash(old['hash'], old['id'])
+            rows = [r for r in rows if r['id'] != pair['install']] + [row]
+            self._deck_put(rows)
+            with self._deck_cond:
+                pair['state'] = 'approved'
+                pair['token'] = token
+                pair['by'] = who
+                self._deck_cond.notify_all()
+            n = len([x for x in decks if x.get('approved')])
+            self.store.add_event('control', "%s approved the Stream Deck installation '%s' (%d deck%s; %s)"
+                                 % (who, name, n, '' if n == 1 else 's', self.deck_caps_words(caps)), 'info')
+            return {'message': "'%s' is approved - the plugin connects by itself" % name, 'install': pair['install']}
+        iid = str(body.get('install') or '')
+        rows = self.deck_installs()
+        mine = next((r for r in rows if r['id'] == iid), None)
+        if mine is None:
+            raise ValueError('there is no such Stream Deck installation')
+        if act == 'caps':
+            mine['caps'] = self._deck_clean_caps(body.get('caps'), mine.get('caps'))
+            self._deck_put(rows)
+            with self._deck_cond:
+                self._deck_cond.notify_all()
+            self.store.add_event('control', "%s changed what the Stream Deck installation '%s' may do (%s)"
+                                 % (who, mine.get('name') or '', self.deck_caps_words(mine['caps'])), 'info')
+            return {'message': "the permissions of '%s' are saved" % (mine.get('name') or '')}
+        if act == 'rename':
+            was = mine.get('name') or ''
+            mine['name'] = self._deck_clean_name(body.get('name'), 'a name')
+            self._deck_put(rows)
+            self.store.add_event('control', "%s renamed the Stream Deck installation '%s' to '%s'"
+                                 % (who, was, mine['name']), 'info')
+            return {'message': "renamed to '%s'" % mine['name']}
+        if act in ('deck_approve', 'deck_remove'):
+            did = str(body.get('deck') or '')
+            deck = next((x for x in mine.get('decks') or [] if x['id'] == did), None)
+            if deck is None:
+                raise ValueError('there is no such Stream Deck under this installation')
+            label = "%s '%s'" % (self.deck_type_name(deck.get('type')), deck.get('name') or did)
+            if act == 'deck_approve':
+                deck['approved'] = True
+                said = "%s approved the %s of the Stream Deck installation '%s'"
+            else:
+                mine['decks'] = [x for x in mine['decks'] if x['id'] != did]
+                said = "%s removed the %s from the Stream Deck installation '%s'"
+            self._deck_put(rows)
+            self.store.add_event('control', said % (who, label, mine.get('name') or ''), 'info')
+            return {'message': '%s is %s' % (label, 'approved' if act == 'deck_approve' else 'removed')}
+        if act == 'revoke':
+            rows = [r for r in rows if r['id'] != iid]
+            self._deck_revoke_hash(mine['hash'], iid)
+            self._deck_put(rows)
+            self._deck_seen.pop(iid, None)
+            with self._deck_cond:
+                self._deck_cond.notify_all()        # a poll waiting on it ends now, refused
+            self.store.add_event('control', "%s revoked the Stream Deck installation '%s'"
+                                 % (who, mine.get('name') or ''), 'info')
+            return {'message': "'%s' is revoked - its next question is refused" % (mine.get('name') or '')}
+        raise ValueError('what with the Stream Deck? (enable, disable, approve, deny, caps, rename, deck_approve, '
+                         'deck_remove, revoke)')
+
+    def _deck_revoke_hash(self, digest, iid):
+        gone = [r for r in self._deck_revoked() if r.get('hash') != digest]
+        gone.append({'hash': digest, 'install': iid, 'at': time.time()})
+        self.store.set_meta('deck_revoked', json.dumps(gone[-self.DECK_REVOKED_KEPT:]))
+
+    # -- the plugin itself: shipped with ZIGMon, fetched from here (like ZIGMon Notifier) --
+    def deck_plugin_dir(self):
+        """CONFIG['deck_dir'] when set (tests), else beside zigmon.py - streamdeck/ as
+        installed, streamdeck/dist/ in the source tree."""
+        given = str(CONFIG.get('deck_dir') or '').strip()
+        if given:
+            return Path(given)
+        here = Path(os.path.realpath(__file__)).parent
+        for one in (here / 'streamdeck', here / 'streamdeck' / 'dist'):
+            if (one / 'plugin.json').is_file():
+                return one
+        return here / 'streamdeck'
+
+    def deck_plugin(self):
+        """The plugin in this package, checked, or None: {'version', 'size', 'sha256', 'manifest',
+        'sig', 'path', 'stat'} - read once for each change of its files."""
+        where = self.deck_plugin_dir()
+        names = (self.DECK_PLUGIN_FILE, 'plugin.json', 'plugin.json.sig')
+        stamp = [str(where)]
+        try:
+            for n in names:
+                st = os.stat(where / n)
+                stamp.append((n, st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            stamp = None
+        lock = self.__dict__.setdefault('_deck_plugin_lock', threading.Lock())
+        with lock:
+            got = self.__dict__.get('_deck_plugin_kept')
+            if got is not None and got[0] == stamp:
+                return got[1]
+            out, why = None, ''
+            if stamp is not None:
+                try:
+                    out, why = self._deck_plugin_check(where, stamp[1][1:])
+                except (OSError, ValueError) as e:
+                    out, why = None, str(e)[:200]
+            if why:
+                log('the Stream Deck plugin in %s is not offered: %s' % (where, why), 'warn')
+            self._deck_plugin_kept = (stamp, out)
+            return out
+
+    def _deck_plugin_check(self, where, file_stamp):
+        man = (where / 'plugin.json').read_bytes()
+        sig = (where / 'plugin.json.sig').read_bytes()
+        if len(man) > 4096:
+            return None, 'plugin.json is far too big'
+        if len(sig) != 64:
+            return None, 'plugin.json.sig is not a signature (%d bytes, not 64)' % len(sig)
+        try:
+            info = json.loads(man.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError):
+            return None, 'plugin.json does not read'
+        if not isinstance(info, dict):
+            return None, 'plugin.json does not read'
+        version, size, sha = info.get('version'), info.get('size'), info.get('sha256')
+        if info.get('product') != self.DECK_PLUGIN_PRODUCT or info.get('file') != self.DECK_PLUGIN_FILE:
+            return None, 'plugin.json is not of ZIGMon for Stream Deck'
+        if not (isinstance(version, str) and re.match(r'^\d{1,5}(\.\d{1,5}){1,3}$', version)):
+            return None, 'plugin.json has no version'
+        if not (isinstance(size, int) and not isinstance(size, bool) and 0 < size <= self.DECK_PLUGIN_MOST):
+            return None, 'plugin.json has no size up to 100 MB'
+        if not (isinstance(sha, str) and re.match(r'^[0-9a-f]{64}$', sha)):
+            return None, 'plugin.json has no SHA-256'
+        path = where / self.DECK_PLUGIN_FILE
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            st = os.fstat(fh.fileno())
+            if (st.st_mtime_ns, st.st_size, st.st_ino) != tuple(file_stamp):
+                return None, 'the plugin changed while it was read - asked again next time'
+            if st.st_size != size:
+                return None, 'the plugin is %d bytes, plugin.json says %d' % (st.st_size, size)
+            while True:
+                lump = fh.read(1 << 20)
+                if not lump:
+                    break
+                h.update(lump)
+        if not hmac.compare_digest(h.hexdigest(), sha):
+            return None, 'the plugin is not the one plugin.json describes (its SHA-256 differs)'
+        requires = info.get('requires') if isinstance(info.get('requires'), str) else ''
+        return {'version': version, 'size': size, 'sha256': sha, 'manifest': man, 'sig': sig, 'path': path,
+                'requires': requires[:120], 'stat': (st.st_mtime_ns, st.st_size, st.st_ino)}, ''
+
+    def deck_plugin_short(self):
+        p = self.deck_plugin()
+        return None if p is None else {'version': p['version'], 'size': p['size'], 'sha256': p['sha256'],
+                                       'requires': p.get('requires') or '', 'file': self.DECK_PLUGIN_FILE}
+
+    def deck_update(self):
+        p = self.deck_plugin()
+        if p is None:
+            return {'ok': True, 'available': False}
+        return {'ok': True, 'available': True, 'version': p['version'], 'size': p['size'], 'sha256': p['sha256'],
+                'manifest': base64.b64encode(p['manifest']).decode('ascii'),
+                'sig': base64.b64encode(p['sig']).decode('ascii')}
+
     def watch_states(self, device_id, name, before, said):
         """Tell the edges of what a device reports - a leak starting and
         ending, a battery going under a line, a room leaving its range - once
@@ -47333,7 +48681,7 @@ def full_sent(value):
 
 # Headers whose value is the thing itself: a link's secret, a six-digit code,
 # the API token, a session, and whatever a plug or Duo is answered with.
-SECRET_HEADER_NAMES = ('x-zigmon-tap', 'x-zigmon-notifier', 'x-zigmon-code', 'x-zigmon-token', 'x-zigmon-session', 'x-zigmon-cli',
+SECRET_HEADER_NAMES = ('x-zigmon-tap', 'x-zigmon-notifier', 'x-zigmon-deck', 'x-zigmon-deck-pair', 'x-zigmon-code', 'x-zigmon-token', 'x-zigmon-session', 'x-zigmon-cli',
                        'authorization', 'cookie', 'proxy-authorization', 'www-authenticate',
                        'x-duo-signature', 'set-cookie')
 
@@ -48074,7 +49422,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the app itself, for an administrator to hand to a computer (5.57)
                      '/api/notifier/app',
                      # what a condition of a key may watch on a device (5.58)
-                     '/api/notifier/attrs')
+                     '/api/notifier/attrs',
+                     # (5.59) the Stream Deck installations, their requests and permissions,
+                     # and the plugin itself for an administrator to take to a computer
+                     '/api/deck/admin', '/api/deck/plugin')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -48534,6 +49885,120 @@ class ApiHandler(BaseHTTPRequestHandler):
         d.tap_went_wrong(who.split(' (')[0])
         return self._send(404, {'ok': False, 'error': answer})
 
+    # (5.59) the roads of ZIGMon for Stream Deck - its token in X-Zigmon-Deck is the whole
+    # of its authority, the pairing secret in X-Zigmon-Deck-Pair the whole of a request's
+    DECK_ROADS = ('pair', 'pair_wait', 'hello', 'catalog', 'state', 'wait', 'do', 'update', 'download')
+
+    def _send_deck_plugin(self, d):
+        """The .streamDeckPlugin - the file as it was checked against its manifest."""
+        p = d.deck_plugin()
+        if p is None:
+            return self._error(404, 'the Stream Deck plugin is not in this package')
+        try:
+            fh = open(p['path'], 'rb')
+        except OSError:
+            return self._error(404, 'the Stream Deck plugin is not in this package')
+        with fh:
+            st = os.fstat(fh.fileno())
+            if (st.st_mtime_ns, st.st_size, st.st_ino) != p['stat']:
+                return self._error(503, 'the Stream Deck plugin is being replaced - ask again in a while')
+            return self._send_file(p['path'], 'ZIGMon.streamDeckPlugin', fh=fh)
+
+    def _deck(self, d, which, q, body, method):
+        """ZIGMon for Stream Deck (5.59). Switched off, every road says so (pairing too). A
+        wrong token or pairing secret is counted as a wrong one-tap secret is, against the
+        address the request really came from."""
+        who = self._caller()
+        if which not in self.DECK_ROADS:
+            return self._error(400, 'do is %s' % ', '.join(self.DECK_ROADS))
+        d._deck_setup()
+        if not d.deck_enabled():
+            return self._send(403, {'ok': False, 'error': 'Stream Deck control is switched off in ZIGMon', 'off': True})
+        if which in ('pair', 'do') and method != 'POST':
+            return self._error(405, '%s is asked by POST' % which)
+        if int(self.headers.get('Content-Length') or 0) > 16384:
+            return self._error(413, 'a Stream Deck question is at most 16 KB')
+        body = body if isinstance(body, dict) else {}
+        if not d.tap_may_try(who):
+            d.note_anomaly(who, 'too-many', 'past the limit')
+            return self._error(429, 'too many tries')
+        if which == 'pair':
+            status, out = d.deck_pair_start(body, who)
+            return self._send(status, out)
+        if which == 'pair_wait':
+            given = str(self.headers.get('X-Zigmon-Deck-Pair') or '').strip()
+            pair = d.deck_pair_find(given)
+            if pair is None:
+                d.tap_went_wrong(who)
+                d.note_anomaly(who, 'bad-secret', hashlib.sha256(given.encode('utf-8')).hexdigest()[:10])
+                return self._error(401, 'this pairing request is not known here - it may have run out: pair again')
+            return self._deck_held(d, lambda: d.deck_pair_wait(pair))
+        given = str(self.headers.get('X-Zigmon-Deck') or '').strip()
+        inst, revoked = d.deck_find(given)
+        if inst is None:
+            if revoked:
+                # a token ZIGMon made and took away: the plugin is told so, and nothing is counted
+                return self._send(401, {'ok': False, 'error': 'this Stream Deck installation was revoked in ZIGMon '
+                                                              '- pair it again', 'revoked': True})
+            d.tap_went_wrong(who)
+            d.note_anomaly(who, 'bad-secret', hashlib.sha256(given.encode('utf-8')).hexdigest()[:10])
+            return self._error(401, 'this Stream Deck token is not known here - pair the plugin again')
+        named = str(self.headers.get('X-Zigmon-Deck-Install') or '').strip().lower()
+        if not hmac.compare_digest(named.encode('utf-8', 'replace'), str(inst['id']).encode('utf-8')):
+            d.tap_went_wrong(who)
+            d.note_anomaly(who, 'bad-secret', 'deck install %s' % re.sub(r'[^0-9a-f]', '', named)[:10])
+            return self._error(401, 'this Stream Deck token belongs to another installation')
+        d._deck_wake()
+        try:
+            decks = d._deck_parse_decks(q, body)
+        except ValueError as e:
+            return self._error(400, str(e))
+        inst = d.deck_seen(inst, who, decks)
+        if which == 'hello':
+            return self._send(200, d.deck_hello(inst))
+        if which == 'catalog':
+            return self._send(200, d.deck_catalog(inst))
+        if which == 'state':
+            return self._send(200, d.deck_state(inst, d._deck_ids(q.get('ids') or body.get('ids'))))
+        if which == 'update':
+            return self._send(200, d.deck_update())
+        if which == 'download':
+            return self._send_deck_plugin(d)
+        if which == 'do':
+            status, out = d.deck_do(inst, body)
+            return self._send(status, out)
+        after = str(q.get('after') if q.get('after') is not None else body.get('after', '0')).strip()
+        boot = re.sub(r'[^0-9a-f]', '', str(q.get('boot') or body.get('boot') or '').lower())[:32]
+        if not re.match(r'^\d{1,18}$', after):
+            return self._error(400, 'after is the number of the last change heard')
+        ids = d._deck_ids(q.get('ids') or body.get('ids'))
+        out = self._deck_held(d, lambda: d.deck_wait(inst, int(after), boot, ids), raw=True)
+        if out is None:
+            return self._send(401, {'ok': False, 'error': 'this Stream Deck installation was revoked in ZIGMon '
+                                                          '- pair it again', 'revoked': True})
+        if isinstance(out, dict) and out.get('_busy'):
+            return self._error(503, 'too many waiting already - ask again in a while')
+        return self._send(200, out)
+
+    def _deck_held(self, d, fn, raw=False):
+        """A long poll, at most DECK_WAITERS_MOST of them at once."""
+        with d._deck_cond:
+            busy = d._deck_waiting >= d.DECK_WAITERS_MOST
+            if not busy:
+                d._deck_waiting += 1
+        if busy:
+            if raw:
+                return {'_busy': True}
+            return self._error(503, 'too many waiting already - ask again in a while')
+        try:
+            out = fn()
+        finally:
+            with d._deck_cond:
+                d._deck_waiting = max(0, d._deck_waiting - 1)
+        if raw:
+            return out
+        return self._send(200, out)
+
     def _notifier(self, d, which, q):
         """The desktop notifier's roads (5.57): hello, sensors, wait - and update and
         download, the app's own new version from this server. The key in
@@ -48653,6 +50118,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 raw = urlparse(self.path).query
                 return self._tap(d, path[len('/api/tap/'):], 'link',
                                  ask=bool(re.match(r'(^|.*&)ask(=|&|$)', raw)))
+            if path.startswith('/api/deck/') and path not in ('/api/deck/admin', '/api/deck/plugin'):
+                # (5.59) ZIGMon for Stream Deck: its token in its own header is the whole of its
+                # authority, as a one-tap link's secret is - before the sign-in and the view
+                return self._deck(d, path[len('/api/deck/'):], q, None, 'GET')
             if path.startswith('/api/notifier/') and path not in ('/api/notifier/keys', '/api/notifier/app',
                                                                   '/api/notifier/attrs'):
                 # (5.57) the desktop notifier: its own key in its own header is the whole
@@ -49416,6 +50885,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                                         # (5.58) every device a condition may be about
                                         'rule_devices': d.notifier_rule_devices(),
                                         'rules_most': d.NOTIFIER_RULES_MOST})
+            if path == '/api/deck/admin':
+                # (5.59) the Stream Deck integration: an administrator's (ALWAYS_LOCKED), asked
+                # again here so a road moved out of that list never opens. Never a token, a
+                # hash or a pairing secret
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send(200, d.deck_admin_view())
+            if path == '/api/deck/plugin':
+                # (5.59) the plugin itself, as a download for the page: an administrator's
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send_deck_plugin(d)
             if path == '/api/notifier/attrs':
                 # (5.58) what a condition may watch on one device: its attributes, their
                 # types, units and values - an administrator's (ALWAYS_LOCKED), asked again
@@ -49645,6 +51126,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             if path == '/api/sms/incoming':
                 return self._sms_incoming(d, body, q)
+            if path.startswith('/api/deck/') and path != '/api/deck/admin':
+                # (5.59) ZIGMon for Stream Deck: its own header, no API token, no sign-in
+                return self._deck(d, path[len('/api/deck/'):], q, body, 'POST')
             if path == '/api/tap':
                 # The same authority as the address form and none of its leaks:
                 # the secret rides in a header, where a web server log, a link
@@ -51204,6 +52688,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                     out = sbk_post(d, body, by)
                 except (ValueError, sqlite3.Error) as e:
                     return self._error(400, str(e)[:600])
+                return self._send(200, out)
+            if path == '/api/deck/admin':
+                # (5.59) the Stream Deck integration: an administrator's, every action - the
+                # sign-in and the role both asked. A token goes only to the plugin, once
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator approves and changes the Stream Decks')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.deck_admin_post(body, by)
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                out.update(ok=True, **{k: v for k, v in d.deck_admin_view().items() if k != 'ok'})
                 return self._send(200, out)
             if path == '/api/notifier/keys':
                 # the desktop notifier's keys (5.57): an administrator's, every action -

@@ -630,6 +630,7 @@ install_program() {
     run ln -sfn "$LIB_DIR/zigmon.py" "$BIN_LINK"
     good "$LIB_DIR/zigmon.py, command \"zigmon\""
     install_notifier_app
+    install_streamdeck_plugin
     if [[ -z "$DRY_RUN" ]]; then
         python3 -c 'import paho.mqtt.client' 2>/dev/null || fail "python3-paho-mqtt is not importable; dnf install -y python3-paho-mqtt"
     fi
@@ -657,6 +658,31 @@ install_notifier_app() {
             [[ -e "$dest/$f" ]] && run rm -f "$dest/$f"
         done
         note "this package carries no desktop app: none is offered from $dest"
+    fi
+    return 0
+}
+
+# (5.59) ZIGMon for Stream Deck, the Elgato plugin for Windows: the .streamDeckPlugin, its
+# manifest and the manifest's signature by a release key, from streamdeck/dist into
+# $LIB_DIR/streamdeck, where the daemon hands them to the dashboard's administrator and to
+# the plugin updating itself. A package without them takes the old ones away.
+STREAMDECK_FILES=(com.zigmon.streamdeck.streamDeckPlugin plugin.json plugin.json.sig)
+install_streamdeck_plugin() {
+    local dest="$LIB_DIR/streamdeck" f all="yes"
+    for f in "${STREAMDECK_FILES[@]}"; do
+        [[ -f "$SOURCE_DIR/streamdeck/dist/$f" ]] || all=""
+    done
+    if [[ -n "$all" ]]; then
+        run install -d -m 755 "$dest"
+        for f in "${STREAMDECK_FILES[@]}"; do
+            run install -m 644 "$SOURCE_DIR/streamdeck/dist/$f" "$dest/$f"
+        done
+        good "$dest: ZIGMon for Stream Deck $(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' "$SOURCE_DIR/streamdeck/dist/plugin.json" | head -n1)"
+    elif [[ -d "$dest" ]]; then
+        for f in "${STREAMDECK_FILES[@]}"; do
+            [[ -e "$dest/$f" ]] && run rm -f "$dest/$f"
+        done
+        note "this package carries no Stream Deck plugin: none is offered from $dest"
     fi
     return 0
 }
