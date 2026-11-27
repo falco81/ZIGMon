@@ -23113,9 +23113,11 @@ var SETTINGS_LAYOUT = [
      + 'address, prefix, HTTP code, ntfy code. Rotate it, or it grows for ever.'],
     ['|', 'how often all of it is read'],
     ['proxy_every', 'How often to read it',
-     'How long to wait between readings, in minutes. Every minute is what it comes as; a log that '
+     'How long to wait between readings, in minutes. Two minutes is what it comes as; a log that '
      + 'nobody is writing to costs one very small SSH login a minute, and a busy one is read from '
-     + 'where the last reading stopped, so more often is cheaper rather than dearer.'],
+     + 'where the last reading stopped, so more often is cheaper rather than dearer. Every half a '
+     + 'minute keeps out an address that has shown itself soonest: a block exists only once its '
+     + 'lines are read.'],
     ['proxy_watch', 'Read it by itself',
      'Read it and weigh what is in it. A path that is not there counts 2, something refused 3, more asking than it allows 3 \u2014 the same counting everything else goes through, so what it finds ends on the same list'],
   ]],

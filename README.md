@@ -2083,7 +2083,33 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.58.0**
+Current version: **5.58.1**
+
+5.58.1 — the front server's logs of 17-27 November replayed: more of what attacks the house through it is recognised, and sooner.
+
+* Newly recognised: the GPON routers' diagnostic form and a Citrix gateway's
+  login (break-ins); Redfish, report servers, Citrix and Cisco VPN portals,
+  Axis services, command-and-control team servers, DNS over HTTPS, AI tool
+  servers (MCP) and Swagger/OpenAPI descriptions (working out what the
+  machine is); phpinfo by its other names and Dockerfiles (secrets).
+* Plain HTTP sent to the TLS port of the one-tap road is weighed as bytes
+  that are not a request: a three-step curl probe that came back from eleven
+  addresses was never kept out. Never for the notification server (the
+  house's publisher speaks plain HTTP to it) or a phone that pressed a link.
+* What was asked for by name is remembered along a /24 or /64 for a week, so
+  a pool sending one request per address per day is one round.
+* Tor's Suricata rules count as a reputation list, not as an attack;
+  WordPress.com and Jetpack pinging xmlrpc.php are no longer a break-in.
+* Suricata's alerts below the severity floor are skipped before they are
+  read: an hour of 58 000 engine alerts held a reading 2.5 s, now 0.3 s.
+* The proxy's logs can be read every half a minute (Settings, the server in
+  front, How often to read it). A block exists only once the lines are read:
+  over these logs, of 1 153 requests a hostile address sent after it had
+  shown itself, 1 042 got in read every two minutes (the default, unchanged),
+  883 every minute, 556 every half minute.
+* Over the replay: 169 addresses kept out instead of 158, attackers with two
+  or more hostile requests never kept out 9 instead of 15, the house's own
+  addresses 0 before and after.
 
 5.58.0 — desktop alerts on conditions of any device; ZIGMon Notifier 1.2.0 with sounds, volume and a monitor of its own.
 

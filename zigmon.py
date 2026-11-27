@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.58.0'
+__version__ = '5.58.1'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -13715,7 +13715,7 @@ class Daemon(object):
                               ('hmac-sha1', 'hmac-sha1'), ('hmac-md5', 'hmac-md5')],
         'proxy_auth': [('key', 'with a key this daemon holds'),
                        ('password', 'with a password')],
-        'proxy_every': [('1', 'read it every minute'), ('2', 'every two minutes'),
+        'proxy_every': [('0.5', 'every half a minute'), ('1', 'read it every minute'), ('2', 'every two minutes'),
                         ('5', 'every five minutes'), ('15', 'every quarter of an hour')],
         'mikrotik_auth': [('key', 'with a key this daemon holds'),
                           ('password', 'with a password')],
@@ -24013,8 +24013,7 @@ class Daemon(object):
             if proxy_tile_on(self) and proxy_tile_wanted(self):
                 proxy_tile_look(self)
             if self.proxy_ready() and int(CONFIG.get('proxy_watch') or 0):
-                span = max(60, int(float(CONFIG.get('proxy_every') or 2) * 60))
-                if time.time() - getattr(self, '_proxy_at_clock', 0) > span:
+                if self.proxy_due(time.time()):
                     self._proxy_at_clock = time.time()
                     threading.Thread(target=self._proxy_quietly, name='proxy-log',
                                      daemon=True).start()
@@ -33900,6 +33899,22 @@ class Daemon(object):
                                                       'addresses': len(weighed)}))
         return {'lines': len(lines), 'addresses': len(weighed),
                 'message': '%d line(s) read, %d address(es) worth weighing' % (len(lines), len(weighed))}
+
+    def proxy_due(self, now):
+        """Is a reading of the proxy's logs due? (5.58.1) Half a minute is the
+        shortest: replayed over the front server's logs of 17-27 November 2026,
+        the requests a hostile address got in after it had shown itself, before
+        a block existed, were 1 042 of 1 153 read every two minutes, 883 every
+        minute and 556 every half minute. This is asked from the half-minute
+        beat, which comes a little early or late, so two seconds either side
+        count as on time - a reading asked for every 30 s otherwise came every
+        minute, every other beat falling a hair short."""
+        try:
+            span = float(CONFIG.get('proxy_every') or 2) * 60
+        except (TypeError, ValueError):
+            span = 120.0
+        span = max(30.0, span)
+        return now - getattr(self, '_proxy_at_clock', 0) >= span - 2
 
     def _proxy_quietly(self):
         # One at a time. The SSH has its own timeout, but a proxy that answers
