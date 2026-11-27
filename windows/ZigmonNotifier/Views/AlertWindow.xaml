@@ -1,0 +1,93 @@
+<Window x:Class="ZigmonNotifier.Views.AlertWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ZIGMon alert"
+        Width="392" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" Topmost="True" ShowInTaskbar="True" ShowActivated="False"
+        WindowStartupLocation="Manual"
+        FontFamily="{StaticResource UiFont}" Foreground="{StaticResource TextBrush}"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Grid x:Name="Root" Margin="12" Opacity="0">
+        <!-- the shadow on its own layer, so the text above stays sharp -->
+        <Border CornerRadius="14" Background="{StaticResource PanelBrush}" Effect="{StaticResource CardShadow}" />
+        <Border CornerRadius="14" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="4" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- the stripe in the colour of the kind of sensor -->
+                <Border x:Name="Stripe" Grid.Column="0" CornerRadius="13,0,0,13" Background="{StaticResource InfoBrush}" />
+
+                <Grid Grid.Column="1" Margin="14,14,10,14">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- the sensor's glyph on a tile, with a ring that pulses on arrival -->
+                    <Grid Grid.Row="0" Grid.Column="0" Width="46" Height="46" VerticalAlignment="Top">
+                        <Border x:Name="Pulse" CornerRadius="13" BorderThickness="2" BorderBrush="{StaticResource InfoBrush}"
+                                Opacity="0" RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <ScaleTransform x:Name="PulseScale" ScaleX="1" ScaleY="1" />
+                            </Border.RenderTransform>
+                        </Border>
+                        <Border x:Name="Tile" CornerRadius="13" BorderThickness="1"
+                                Background="{StaticResource InfoSoftBrush}" BorderBrush="{StaticResource InfoEdgeBrush}">
+                            <Viewbox Width="24" Height="24">
+                                <Path x:Name="KindIcon" Style="{StaticResource StrokeIcon}" Stroke="{StaticResource InfoBrush}" />
+                            </Viewbox>
+                        </Border>
+                    </Grid>
+
+                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="13,0,6,0" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="Headline" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource InfoBrush}"
+                                       TextTrimming="CharacterEllipsis" MaxWidth="180" />
+                            <TextBlock x:Name="KindLabel" FontSize="12.5" Foreground="{StaticResource TextMutedBrush}"
+                                       Margin="6,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="120" />
+                            <Border x:Name="CountBadge" Margin="8,0,0,0" CornerRadius="8" Padding="6,0" Visibility="Collapsed"
+                                    Background="{StaticResource Panel2Brush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+                                <TextBlock x:Name="CountText" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource TextDimBrush}" />
+                            </Border>
+                        </StackPanel>
+                        <TextBlock x:Name="SensorName" FontSize="16" FontWeight="SemiBold" Margin="0,1,0,0"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="Meta" FontSize="12.5" Foreground="{StaticResource TextDimBrush}" Margin="0,2,0,0"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <Button x:Name="CloseButton" Grid.Row="0" Grid.Column="2" Style="{StaticResource IconButton}"
+                            VerticalAlignment="Top" Content="&#xE711;" ToolTip="Dismiss (Esc)" Click="OnDismiss" />
+
+                    <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal"
+                                HorizontalAlignment="Right" Margin="0,14,4,0">
+                        <Button x:Name="OpenButton" Style="{StaticResource PrimaryButton}" Padding="12,6" Click="OnOpen">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xE8A7;" />
+                                <TextBlock Text="Open ZIGMon" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="MuteButton" Style="{StaticResource GhostButton}" Padding="12,6" Margin="8,0,0,0"
+                                Click="OnMute" ToolTip="No alerts from this sensor for an hour">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xE74F;" />
+                                <TextBlock Text="Mute 1 h" Margin="7,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="DismissButton" Style="{StaticResource GhostButton}" Padding="12,6" Margin="8,0,0,0"
+                                Content="Dismiss" Click="OnDismiss" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

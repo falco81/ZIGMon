@@ -1,0 +1,154 @@
+<Window x:Class="ZigmonNotifier.Views.ConnectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Connection &#x2013; ZIGMon Notifier"
+        Width="560" SizeToContent="Height" ResizeMode="CanMinimize"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BgBrush}"
+        FontFamily="{StaticResource UiFont}" Foreground="{StaticResource TextBrush}" FontSize="13.5"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <StackPanel Margin="30,26,30,24">
+
+        <!-- heading -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Border Width="52" Height="52" CornerRadius="26" BorderThickness="1" VerticalAlignment="Top"
+                    BorderBrush="{StaticResource InfoEdgeBrush}">
+                <Border.Background>
+                    <RadialGradientBrush GradientOrigin="0.5,0.35" Center="0.5,0.35" RadiusX="0.7" RadiusY="0.7">
+                        <GradientStop Color="#4758A6FF" Offset="0" />
+                        <GradientStop Color="#1258A6FF" Offset="1" />
+                    </RadialGradientBrush>
+                </Border.Background>
+                <Viewbox Width="26" Height="26">
+                    <Path x:Name="Mark" Style="{StaticResource StrokeIcon}" Stroke="{StaticResource InfoBrush}" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" Margin="16,2,0,0">
+                <TextBlock Style="{StaticResource Title}" Text="Connect to ZIGMon" />
+                <TextBlock Style="{StaticResource Lede}" Margin="0,4,0,0"
+                           Text="Your dashboard's address and a desktop-app key. An administrator makes keys in ZIGMon: Settings &#x2192; Messages &#x2192; Desktop app. A key can only see sensors &#x2013; it cannot change anything." />
+            </StackPanel>
+        </Grid>
+
+        <!-- address -->
+        <TextBlock Style="{StaticResource Label}" Margin="0,24,0,6" Text="Dashboard address" />
+        <TextBox x:Name="AddressBox" Style="{StaticResource Field}" Tag="https://zigmon.example.net"
+                 MaxLength="300" TextChanged="OnInputChanged" />
+        <TextBlock x:Name="AddressNote" FontSize="12" Margin="2,6,0,0" TextWrapping="Wrap"
+                   Foreground="{StaticResource TextMutedBrush}"
+                   Text="https:// is required. Plain http:// is only allowed for this computer (localhost)." />
+
+        <!-- key -->
+        <TextBlock Style="{StaticResource Label}" Margin="0,18,0,6" Text="Desktop-app key" />
+        <Grid>
+            <PasswordBox x:Name="KeyBox" Style="{StaticResource SecretField}" MaxLength="80" PasswordChanged="OnInputChanged" />
+            <TextBlock x:Name="KeyHint" Margin="13,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
+                       Foreground="{StaticResource TextMutedBrush}" FontSize="14" TextTrimming="CharacterEllipsis" />
+        </Grid>
+        <TextBlock FontSize="12" Margin="2,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextMutedBrush}"
+                   Text="Stored encrypted for your Windows account only (DPAPI). It is never shown again in full." />
+
+        <!-- test -->
+        <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+            <Button x:Name="TestButton" Style="{StaticResource PrimaryButton}" Click="OnTest" IsDefault="True">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="TestGlyph" Style="{StaticResource Glyph}" FontSize="13" Text="&#xE895;" RenderTransformOrigin="0.5,0.5">
+                        <TextBlock.RenderTransform>
+                            <RotateTransform x:Name="TestSpin" Angle="0" />
+                        </TextBlock.RenderTransform>
+                    </TextBlock>
+                    <TextBlock x:Name="TestWords" Text="Test connection" Margin="8,0,0,0" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
+
+        <!-- what the test found -->
+        <Border x:Name="Card" Margin="0,16,0,0" CornerRadius="12" Padding="16,14" BorderThickness="1"
+                Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border x:Name="CardBadge" Width="32" Height="32" CornerRadius="16" VerticalAlignment="Top" BorderThickness="1">
+                    <TextBlock x:Name="CardGlyph" Style="{StaticResource Glyph}" FontSize="14" HorizontalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="1" Margin="14,0,0,0">
+                    <TextBlock x:Name="CardTitle" FontSize="14.5" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock x:Name="CardBody" FontSize="12.5" Margin="0,4,0,0" Foreground="{StaticResource TextDimBrush}"
+                               TextWrapping="Wrap" />
+
+                    <Grid x:Name="Facts" Margin="0,10,0,0" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="House" Foreground="{StaticResource TextMutedBrush}" FontSize="12.5" Margin="0,0,16,4" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="FactHouse" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Row="1" Text="ZIGMon" Foreground="{StaticResource TextMutedBrush}" FontSize="12.5" Margin="0,0,16,4" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="FactVersion" FontSize="12.5" />
+                        <TextBlock Grid.Row="2" Text="Key" Foreground="{StaticResource TextMutedBrush}" FontSize="12.5" Margin="0,0,16,4" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" x:Name="FactKey" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Row="3" Text="Security" Foreground="{StaticResource TextMutedBrush}" FontSize="12.5" Margin="0,0,16,0" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" x:Name="FactTls" FontSize="12.5" TextWrapping="Wrap" />
+                    </Grid>
+
+                    <StackPanel x:Name="CertPanel" Margin="0,12,0,0" Visibility="Collapsed">
+                        <TextBlock Text="Certificate" Foreground="{StaticResource TextMutedBrush}" FontSize="12" />
+                        <TextBlock x:Name="CertSubject" FontSize="12.5" TextWrapping="Wrap" Margin="0,2,0,0" />
+                        <TextBlock x:Name="CertValidity" FontSize="12" Foreground="{StaticResource TextDimBrush}" Margin="0,2,0,0" />
+                        <TextBlock Text="SHA-256 fingerprint" Foreground="{StaticResource TextMutedBrush}" FontSize="12" Margin="0,8,0,2" />
+                        <TextBox x:Name="CertFingerprint" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                                 Foreground="{StaticResource TextBrush}" FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                 TextWrapping="Wrap" Padding="0" CaretBrush="{StaticResource InfoBrush}"
+                                 SelectionBrush="{StaticResource InfoBrush}" />
+                        <TextBlock x:Name="CertAdvice" FontSize="12" Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        <Button x:Name="TrustButton" Style="{StaticResource WarnButton}" HorizontalAlignment="Left" Margin="0,12,0,0"
+                                Click="OnTrust">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Glyph}" FontSize="13" Text="&#xEA18;" />
+                                <TextBlock x:Name="TrustWords" Text="Trust this certificate" Margin="8,0,0,0" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- the end of the form -->
+        <Grid Margin="0,24,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="RemoveButton" Style="{StaticResource DangerButton}" Click="OnRemove" Padding="10,7">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xE74D;" />
+                    <TextBlock x:Name="RemoveWords" Text="Remove connection" Margin="7,0,0,0" />
+                </StackPanel>
+            </Button>
+            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button Style="{StaticResource GhostButton}" Content="Cancel" IsCancel="True" Click="OnCancel" />
+                <Button x:Name="SaveButton" Style="{StaticResource PrimaryButton}" Margin="10,0,0,0" Click="OnSave" IsEnabled="False">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Glyph}" FontSize="13" Text="&#xE73E;" />
+                        <TextBlock Text="Save and connect" Margin="8,0,0,0" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+        <TextBlock x:Name="SaveNote" FontSize="12" Margin="0,8,0,0" HorizontalAlignment="Right"
+                   Foreground="{StaticResource TextMutedBrush}" Text="Test the connection first; then it can be saved." />
+    </StackPanel>
+</Window>
