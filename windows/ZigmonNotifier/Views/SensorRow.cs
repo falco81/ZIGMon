@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -6,6 +8,12 @@ using System.Windows.Media;
 using ZigmonNotifier.Core;
 
 namespace ZigmonNotifier.Views;
+
+/// <summary>A sound in a drop-down: an id (null = the default sound) and its name.</summary>
+public sealed record SoundOption(string? Id, string Name)
+{
+    public override string ToString() => Name;
+}
 
 /// <summary>One line of the Watched sensors list. All text is cleaned plain text from the core.</summary>
 public sealed class SensorRow : INotifyPropertyChanged
@@ -36,6 +44,62 @@ public sealed class SensorRow : INotifyPropertyChanged
         ? Visibility.Visible : Visibility.Collapsed;
     public string ClearsText { get; private set; } = "";
 
+    /// <summary>The sound choices: the default, every built-in one, and the user's own file.</summary>
+    public List<SoundOption> SoundOptions { get; private set; } = new();
+    private SoundOption? _sound;
+    public Visibility WatchedVisibility => _watched && _sensor is not null ? Visibility.Visible : Visibility.Collapsed;
+
+    public SoundOption? SelectedSound
+    {
+        get => _sound;
+        set
+        {
+            if (value is null || ReferenceEquals(value, _sound)) return;
+            if (value.Id == AlarmSounds.FileId)
+            {
+                string? file = _app.PickSoundFile();
+                if (file is null)
+                {
+                    Raise(); // cancelled: the drop-down goes back to what it was
+                    return;
+                }
+                _app.SetSound(Id, AlarmSounds.FileId, file);
+            }
+            else _app.SetSound(Id, value.Id, null);
+            BuildSounds();
+            Raise(nameof(SoundOptions));
+            Raise();
+        }
+    }
+
+    /// <summary>Plays this sensor's sound once, at the set volume.</summary>
+    public void PlaySound()
+    {
+        var (id, file) = _app.Settings.SoundFor(Id);
+        Sounds.Play(id, file, _app.Settings.Volume, AlertChoices.Once);
+    }
+
+    private void BuildSounds()
+    {
+        var w = _app.Settings.FindWatched(Id);
+        var list = new List<SoundOption>
+        {
+            new(null, "Default sound (" + DefaultName() + ")"),
+        };
+        list.AddRange(AlarmSounds.All.Select(a => new SoundOption(a.Id, a.Name)));
+        string fileName = w?.SoundId == AlarmSounds.FileId && w.SoundFile is { } f ? System.IO.Path.GetFileName(f) : "";
+        list.Add(new SoundOption(AlarmSounds.FileId, fileName.Length > 0 ? "Own file: " + fileName : "Own WAV file…"));
+        SoundOptions = list;
+        _sound = list.FirstOrDefault(o => o.Id == w?.SoundId) ?? list[0];
+    }
+
+    private string DefaultName()
+    {
+        var st = _app.Settings;
+        if (st.SoundId == AlarmSounds.FileId && st.SoundFile is { } f) return System.IO.Path.GetFileName(f);
+        return AlarmSounds.Find(st.SoundId).Name;
+    }
+
     internal SensorRow(AppController app, string id)
     {
         _app = app;
@@ -51,8 +115,8 @@ public sealed class SensorRow : INotifyPropertyChanged
             _watched = value;
             if (_sensor is not null) _app.SetWatched(_sensor, value);
             else if (!value) _app.ForgetWatched(Id);
-            Raise();
-            Raise(nameof(ClearsVisibility));
+            BuildSounds();
+            Raise(string.Empty);
         }
     }
 
@@ -89,7 +153,10 @@ public sealed class SensorRow : INotifyPropertyChanged
         }
         else
         {
-            string sub = style.Label;
+            string sub = s.Kind == SensorKinds.Rule && s.RuleText is { } rt
+                ? rt + (s.ValueText is { } vt ? " · now " + vt : "")
+                : style.Label;
+            if (s.Kind == SensorKinds.Rule && s.DeviceName is { } dn && dn != s.Name) sub = dn + " · " + sub;
             if (!string.IsNullOrEmpty(s.Room)) sub = s.Room + " · " + sub;
             if (s.Battery is { } b) sub += " · battery " + b.ToString(System.Globalization.CultureInfo.CurrentCulture) + " %";
             Subtitle = sub;
@@ -101,13 +168,16 @@ public sealed class SensorRow : INotifyPropertyChanged
                 : Palette.TextMuted;
             SetState(word, colour);
             StateTip = s.At is { } at ? "Changed " + TimeText.Ago(at, DateTimeOffset.UtcNow) : "No change seen yet";
-            ClearsText = "Also when it clears (" + style.QuietWord.ToLowerInvariant() + " again)";
+            ClearsText = s.Kind == SensorKinds.Rule
+                ? "Also when it is no longer met"
+                : "Also when it clears (" + style.QuietWord.ToLowerInvariant() + " again)";
         }
         Search = (Name + " " + Subtitle + " " + style.Kind).ToLowerInvariant();
 
         var w = _app.Settings.FindWatched(Id);
         _watched = w is not null;
         _alsoWhenClears = w?.AlsoWhenClears ?? false;
+        BuildSounds();
         Raise(string.Empty); // everything
     }
 

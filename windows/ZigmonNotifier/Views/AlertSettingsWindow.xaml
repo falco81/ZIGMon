@@ -1,0 +1,167 @@
+<Window x:Class="ZigmonNotifier.Views.AlertSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Alert settings &#x2013; ZIGMon Notifier"
+        Width="580" Height="760" MinWidth="520" MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BgBrush}"
+        FontFamily="{StaticResource UiFont}" Foreground="{StaticResource TextBrush}" FontSize="13.5"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Window.Resources>
+        <Style x:Key="Section" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Padding" Value="18,16" />
+            <Setter Property="Margin" Value="0,0,0,14" />
+        </Style>
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="26,22,26,8">
+                <TextBlock Style="{StaticResource Title}" Text="Alert settings" />
+                <TextBlock Style="{StaticResource Lede}" Margin="0,4,0,18"
+                           Text="How alerts sound and where they appear. Each sensor can have its own sound in Watched sensors. Everything here is remembered." />
+
+                <!-- sound -->
+                <Border Style="{StaticResource Section}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource Glyph}" FontSize="16" Foreground="{StaticResource InfoBrush}" Text="&#xE767;" />
+                            <TextBlock Grid.Column="1" Style="{StaticResource SectionTitle}" Margin="10,0,0,0" Text="Sound" />
+                            <CheckBox x:Name="SoundOn" Grid.Column="2" Style="{StaticResource Switch}" Click="OnSoundOn"
+                                      Content="Play a sound" />
+                        </Grid>
+
+                        <StackPanel x:Name="SoundPanel" Margin="0,14,0,0">
+                            <TextBlock Style="{StaticResource Label}" Text="Default sound" />
+                            <StackPanel x:Name="SoundList" />
+                            <RadioButton x:Name="FileChoice" GroupName="sound" Style="{StaticResource ChoiceRow}" Click="OnFileChoice">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Own sound file" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="FileName" Style="{StaticResource Hint}" TextTrimming="CharacterEllipsis"
+                                                   TextWrapping="NoWrap" Text="A .wav file on this computer (up to 20 MB)" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Style="{StaticResource GhostButton}" Padding="10,4" Margin="8,0,6,0"
+                                            Content="Choose…" Click="OnChooseFile" />
+                                    <Button x:Name="FilePlay" Grid.Column="2" Style="{StaticResource IconButton}" Click="OnPlayFile"
+                                            ToolTip="Play it">
+                                        <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xE768;" />
+                                    </Button>
+                                </Grid>
+                            </RadioButton>
+                            <TextBlock x:Name="FileProblem" Style="{StaticResource Hint}" Foreground="{StaticResource WarnBrush}"
+                                       Margin="2,0,0,6" Visibility="Collapsed" />
+
+                            <TextBlock Style="{StaticResource Label}" Margin="0,12,0,6" Text="How long it plays" />
+                            <WrapPanel x:Name="LengthChoices" />
+                            <TextBlock Style="{StaticResource Hint}" Margin="2,2,0,0"
+                                       Text="Dismissing the alert (or Mute, or Open ZIGMon) stops the sound at once. “Until dismissed” stops by itself after 30 minutes." />
+
+                            <TextBlock Style="{StaticResource Label}" Margin="0,16,0,4" Text="Volume" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource Glyph}" FontSize="13" Foreground="{StaticResource TextDimBrush}" Text="&#xE992;" />
+                                <Slider x:Name="VolumeSlider" Grid.Column="1" Style="{StaticResource Volume}" Margin="10,0"
+                                        ValueChanged="OnVolume" PreviewMouseUp="OnVolumeDone" KeyUp="OnVolumeDone" />
+                                <TextBlock Grid.Column="2" Style="{StaticResource Glyph}" FontSize="13" Foreground="{StaticResource TextDimBrush}" Text="&#xE995;" />
+                                <TextBlock x:Name="VolumeText" Grid.Column="3" Width="44" TextAlignment="Right" VerticalAlignment="Center"
+                                           FontWeight="SemiBold" Margin="8,0,10,0" />
+                                <Button Grid.Column="4" Style="{StaticResource GhostButton}" Padding="12,5" Click="OnTestSound">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource Glyph}" FontSize="11" Text="&#xE768;" />
+                                        <TextBlock x:Name="TestSoundText" Text="Test" Margin="7,0,0,0" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                            <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0" Text="Of the Windows volume: Windows' own volume and mute still apply." />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- the alert window -->
+                <Border Style="{StaticResource Section}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Glyph}" FontSize="16" Foreground="{StaticResource InfoBrush}" Text="&#xE7F4;" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Margin="10,0,0,0" Text="Alert window" />
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource Label}" Margin="0,14,0,6" Text="Close by itself after" />
+                        <WrapPanel x:Name="CloseChoices" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="2,2,0,0"
+                                   Text="The time starts again when the sensor triggers again or the mouse is over the alert." />
+
+                        <TextBlock Style="{StaticResource Label}" Margin="0,16,0,6" Text="Show alerts on" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="MonitorBox" Style="{StaticResource Drop}" SelectionChanged="OnMonitor" />
+                            <Button Grid.Column="1" Style="{StaticResource GhostButton}" Padding="12,5" Margin="8,0,0,0"
+                                    Content="Show me" Click="OnShowMe" ToolTip="Show a test alert there" />
+                        </Grid>
+                        <TextBlock x:Name="MonitorNote" Style="{StaticResource Hint}" Margin="2,6,0,0" />
+
+                        <CheckBox x:Name="FrontOn" Style="{StaticResource Switch}" Margin="0,16,0,0" Click="OnFront"
+                                  Content="Bring to front and take the keyboard focus" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="44,2,0,0"
+                                   Text="Alerts are always on top. With this on they also take the keyboard, so Esc dismisses them." />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="26,14,26,18">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Click="OnTestAlert">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xEA8F;" />
+                        <TextBlock Text="Test alert" Margin="8,0,0,0" />
+                    </StackPanel>
+                </Button>
+                <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="Done" Click="OnDone" IsCancel="True" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

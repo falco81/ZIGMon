@@ -63,29 +63,99 @@ internal static class Autostart
     }
 }
 
-/// <summary>The chime, made once in memory and played without waiting.</summary>
+/// <summary>
+/// Plays the alarm the user chose, at their volume, once or repeated for a while or until
+/// the alert is dismissed. The sound is made in memory (or read from their .wav file).
+/// </summary>
 internal static class Sounds
 {
     private static SoundPlayer? _player;
+    private static string _playerKey = "";
     private static DateTime _last = DateTime.MinValue;
+    private static System.Windows.Threading.DispatcherTimer? _stopTimer;
 
-    public static void Chime()
+    /// <summary>Why the user's own file could not be played last time (shown in the settings), or "".</summary>
+    public static string FileProblem { get; private set; } = "";
+
+    /// <summary>Plays for an alert, as the settings say.</summary>
+    public static void Alarm(NotifierSettings s, string? sensorId, bool force = false)
     {
+        if (!force && (DateTime.UtcNow - _last).TotalMilliseconds < 1200) return; // several at once: one sound
+        _last = DateTime.UtcNow;
+        var (id, file) = s.SoundFor(sensorId);
+        Play(id, file, s.Volume, s.SoundSeconds);
+    }
+
+    /// <summary>Plays these choices (the settings window's Test).</summary>
+    public static void Play(string soundId, string? file, int volume, int seconds)
+    {
+        Stop();
         try
         {
-            if ((DateTime.UtcNow - _last).TotalMilliseconds < 1200) return; // several at once: one chime
-            _last = DateTime.UtcNow;
-            if (_player is null)
+            var p = PlayerFor(soundId, file, volume);
+            if (p is null) return;
+            if (seconds == AlertChoices.Once)
             {
-                _player = new SoundPlayer(new MemoryStream(Core.Chime.CreateWav()));
-                _player.Load();
+                p.Play();
+                return;
             }
-            _player.Play();
+            p.PlayLooping();
+            var length = seconds == AlertChoices.UntilDismissed ? AlertChoices.LongestSound : TimeSpan.FromSeconds(seconds);
+            _stopTimer = new System.Windows.Threading.DispatcherTimer { Interval = length };
+            _stopTimer.Tick += (_, _) => Stop();
+            _stopTimer.Start();
         }
         catch (Exception)
         {
             // no sound device: alerts still show
         }
+    }
+
+    public static void Stop()
+    {
+        _stopTimer?.Stop();
+        _stopTimer = null;
+        try
+        {
+            _player?.Stop();
+        }
+        catch (Exception)
+        {
+            // nothing playing
+        }
+    }
+
+    private static SoundPlayer? PlayerFor(string soundId, string? file, int volume)
+    {
+        string key = soundId + "|" + file + "|" + volume;
+        if (_player is not null && _playerKey == key) return _player;
+        byte[]? wav = null;
+        if (soundId == AlarmSounds.FileId && file is not null)
+        {
+            FileProblem = "";
+            try
+            {
+                var info = new FileInfo(file);
+                if (!info.Exists) FileProblem = "The sound file is gone.";
+                else if (info.Length > WavAudio.MaxFileBytes) FileProblem = "The file is larger than 20 MB.";
+                else
+                {
+                    wav = WavAudio.FromFile(File.ReadAllBytes(file), volume, out string why);
+                    FileProblem = why;
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                FileProblem = "The sound file cannot be read.";
+            }
+            // the user's file unusable: the alarm still sounds, with the default
+        }
+        wav ??= WavAudio.Builtin(soundId == AlarmSounds.FileId ? AlarmSounds.DefaultId : soundId, volume);
+        _player?.Dispose();
+        _player = new SoundPlayer(new MemoryStream(wav));
+        _player.Load();
+        _playerKey = key;
+        return _player;
     }
 }
 

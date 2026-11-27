@@ -433,7 +433,8 @@ public class LooksTests
     public static IEnumerable<object[]> AllIcons() =>
         KindStyle.All.Select(k => new object[] { k.Kind, k.IconPath })
             .Append(new object[] { "radar", Icons.Radar })
-            .Append(new object[] { "bell", Icons.Bell });
+            .Append(new object[] { "bell", Icons.Bell })
+            .Append(new object[] { "gauge", Icons.Gauge });
 
     [Theory]
     [MemberData(nameof(AllIcons))]

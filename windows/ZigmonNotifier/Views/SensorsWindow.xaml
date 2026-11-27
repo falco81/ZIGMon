@@ -31,7 +31,8 @@
                     </Border>
 
                     <StackPanel Grid.Row="0" Grid.Column="1" Margin="13,0,10,0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                   Foreground="{StaticResource TextBrush}" />
                         <TextBlock Text="{Binding Subtitle}" FontSize="12.5" Foreground="{StaticResource TextDimBrush}"
                                    TextTrimming="CharacterEllipsis" Margin="0,1,0,0" />
                     </StackPanel>
@@ -44,11 +45,18 @@
                     <CheckBox Grid.Row="0" Grid.Column="3" Style="{StaticResource Switch}" Margin="16,0,0,0" VerticalAlignment="Center"
                               IsChecked="{Binding IsWatched, Mode=TwoWay}" ToolTip="Alert me when this sensor triggers" />
 
-                    <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Tick}" Margin="13,9,0,0"
-                              HorizontalAlignment="Left" Visibility="{Binding ClearsVisibility}"
-                              IsChecked="{Binding AlsoWhenClears, Mode=TwoWay}">
-                        <TextBlock Text="{Binding ClearsText}" FontSize="12.5" Foreground="{StaticResource TextDimBrush}" />
-                    </CheckBox>
+                    <WrapPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3" Margin="13,9,0,0" Visibility="{Binding WatchedVisibility}">
+                        <ComboBox Style="{StaticResource Drop}" Width="220" FontSize="12.5" MaxDropDownHeight="360"
+                                  ItemsSource="{Binding SoundOptions}" SelectedItem="{Binding SelectedSound, Mode=TwoWay}"
+                                  ToolTip="The sound this sensor's alerts make" Margin="0,0,6,0" />
+                        <Button Style="{StaticResource IconButton}" Click="OnPlaySound" ToolTip="Play this sound" Margin="0,0,14,0">
+                            <TextBlock Style="{StaticResource Glyph}" FontSize="12" Text="&#xE768;" />
+                        </Button>
+                        <CheckBox Style="{StaticResource Tick}" VerticalAlignment="Center" Visibility="{Binding ClearsVisibility}"
+                                  IsChecked="{Binding AlsoWhenClears, Mode=TwoWay}">
+                            <TextBlock Text="{Binding ClearsText}" FontSize="12.5" Foreground="{StaticResource TextDimBrush}" />
+                        </CheckBox>
+                    </WrapPanel>
                 </Grid>
             </Border>
         </DataTemplate>
@@ -89,7 +97,7 @@
                 BorderBrush="{StaticResource LineBrush}" Padding="0,2">
             <Grid>
                 <ListBox x:Name="List" ItemTemplate="{StaticResource RowTemplate}"
-                         Background="Transparent" BorderThickness="0" Padding="0"
+                         Foreground="{StaticResource TextBrush}" Background="Transparent" BorderThickness="0" Padding="0"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.CanContentScroll="True"
                          VirtualizingPanel.IsVirtualizing="True"

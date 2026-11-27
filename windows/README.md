@@ -1,9 +1,11 @@
-# ZIGMon Notifier 1.1.0 (Windows)
+# ZIGMon Notifier 1.2.0 (Windows)
 
 A small tray app for Windows 10 and 11. It sits next to the clock, watches the
 ZIGMon sensors you choose, and when one of them triggers (motion, a door opened,
-water, smoke, gas, CO, tamper, vibration, a button press) it puts an alert card
-on top of everything in the bottom-right corner, with a soft chime.
+water, smoke, gas, CO, tamper, vibration, a button press - or a **condition**
+an administrator set in ZIGMon on any device, such as "temperature ≥ 25 °C" or
+"preset changed to eco") it puts an alert card on top of everything in the
+bottom-right corner of the monitor you choose, with the sound you choose.
 
 ## Install
 
@@ -38,7 +40,7 @@ the old exe is put back.
 
 The menu has an updates section: **Update automatically** (on by default; off:
 a new version is shown and installed when you click it), **Check for updates
-now**, and a status line ("Up to date – 1.1.0", "Updating to 1.2.0…", "Update
+now**, and a status line ("Up to date – 1.2.0", "Updating to 1.3.0…", "Update
 failed: <reason>"). A ZIGMon from before updates (no `app` in hello) is asked
 only from "Check for updates now", and its "not known" answers count as "no
 updates".
@@ -57,15 +59,40 @@ it was on, delete the exe and `%APPDATA%\ZIGMon Notifier\`.
    the ZIGMon version and the key's name. **Save and connect**.
 3. Right-click -> **Watched sensors...** (or double-click the icon): switch on the
    sensors that should alert. "Also when it clears" also alerts when the sensor
-   goes quiet again (door closed, dry, no motion).
+   goes quiet again (door closed, dry, no motion) or a condition is no longer
+   met. Each watched sensor can have **its own sound** (the drop-down under it,
+   with a play button); "Default sound" uses the one from Alert settings.
+4. Conditions (ZIGMon 5.58 and later) are made in ZIGMon, per key: Settings ->
+   Messages -> Desktop app -> the key -> **Conditions** -> Add condition (any
+   device, any attribute, > ≥ < ≤ = ≠, between, outside, contains, is on/off,
+   changes, with hysteresis). They appear in Watched sensors with a gauge icon,
+   the condition in words and the value now.
+
+## Alert settings
+
+Right-click -> **Alert settings...** (everything is saved at once and remembered):
+
+* **Sound** - on/off; the default sound: Chime, Doorbell, Bell, Beeps, Pulse,
+  Alarm, Siren, Klaxon, or **your own .wav file** (uncompressed PCM or float,
+  up to 20 MB; when it cannot be read the default chime plays instead).
+* **How long it plays** - once, 5 s, 15 s, 30 s, 1 min, 5 min, or until the
+  alert is dismissed (it stops by itself after 30 minutes). Dismiss, Mute,
+  Open ZIGMon or Esc stop it at once, and so does the last card closing.
+* **Volume** - 0-100 % of the Windows volume, with a Test button.
+* **Close by itself after** - never, 10 s, 30 s, 1 min, 5 min, 15 min (the time
+  starts again when the sensor fires again or the mouse is over the card).
+* **Show alerts on** - the primary monitor, the monitor with the mouse pointer,
+  or a particular monitor (by its Windows display number; when it is unplugged,
+  the primary one is used until it is back). "Show me" puts a test alert there.
+* **Bring to front and take the keyboard focus.**
 
 ## Use
 
 * **Tray icon** - the dot says how it goes: green connected, grey connecting,
   red a problem (hover for the reason), amber alerts paused.
 * **Right-click** - status, Watched sensors, Connection, Pause alerts (15 min /
-  1 hour / until resumed), Sound, Bring to front and take focus, Close alerts
-  after a minute, Start with Windows, Test alert, Open ZIGMon, Exit.
+  1 hour / until resumed), Sound, Bring to front and take focus, Alert
+  settings..., Start with Windows, Test alert, Open ZIGMon, Exit.
 * **Alerts** - up to four stacked cards; a sensor that fires again updates its
   card (x2, x3 ...). Buttons: **Open ZIGMon**, **Mute 1 h** (this sensor only),
   **Dismiss** (or Esc). They show on top without taking your keyboard, and the
@@ -110,7 +137,7 @@ it was on, delete the exe and `%APPDATA%\ZIGMon Notifier\`.
 ## Protocol (v1)
 
 `GET {base}/index.php?api=notifier&do=hello|sensors|wait|update|download&after=N&boot=B` with
-`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.1.0 (Windows)`.
+`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.2.0 (Windows)`.
 The app long-polls `wait` (the server holds it up to 25 s; the client gives up at
 60 s), continues from each answer's `seq`, re-reads `sensors` on `reset` or a new
 `boot`, backs off 1, 2, 4 ... 60 s on errors, waits at least a minute on 429, and
@@ -132,7 +159,7 @@ draws the icon (`tools/IconGen`), publishes the framework-dependent single-file
 exe (deterministic: two builds give the same bytes), copies it to
 `dist/ZigmonNotifier.exe` and writes `dist/notifier.json` (one line, the exact
 bytes `tools/make-release.sh` signs into `dist/notifier.json.sig`), and zips
-`out/ZigmonNotifier-1.1.0-win-x64.zip`. `dist/` is committed with each release.
+`out/ZigmonNotifier-1.2.0-win-x64.zip`. `dist/` is committed with each release.
 
 Layout:
 

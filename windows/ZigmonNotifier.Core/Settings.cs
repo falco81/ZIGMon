@@ -22,6 +22,10 @@ public sealed class WatchedSensor
     /// <summary>The name last seen, so a sensor the key no longer offers can still be named.</summary>
     public string Name { get; set; } = "";
     public bool AlsoWhenClears { get; set; }
+    /// <summary>This sensor's own sound (an <see cref="AlarmSounds"/> id or "file"); null = the default one.</summary>
+    public string? SoundId { get; set; }
+    /// <summary>This sensor's own .wav file, when SoundId is "file".</summary>
+    public string? SoundFile { get; set; }
 }
 
 public sealed class PinSetting
@@ -51,8 +55,20 @@ public sealed class NotifierSettings
     public bool Sound { get; set; } = true;
     /// <summary>Alerts take the keyboard focus (off: they show on top without taking it).</summary>
     public bool BringToFront { get; set; }
-    /// <summary>Alerts close by themselves after a minute.</summary>
-    public bool AutoClose { get; set; }
+    /// <summary>Old (1.1.0) "close alerts after a minute"; read once and turned into <see cref="AutoCloseSeconds"/>.</summary>
+    public bool? AutoClose { get; set; }
+    /// <summary>Alerts close by themselves after this many seconds; 0 = they stay until dismissed.</summary>
+    public int AutoCloseSeconds { get; set; }
+    /// <summary>Which built-in sound (<see cref="AlarmSounds"/>), or "file" for <see cref="SoundFile"/>.</summary>
+    public string SoundId { get; set; } = AlarmSounds.DefaultId;
+    /// <summary>The user's own .wav file (full path), used when SoundId is "file".</summary>
+    public string? SoundFile { get; set; }
+    /// <summary>How long the sound plays: seconds, 0 once, -1 until the alert is dismissed.</summary>
+    public int SoundSeconds { get; set; } = AlertChoices.Once;
+    /// <summary>Alarm volume 0..100 (of the Windows volume).</summary>
+    public int Volume { get; set; } = 80;
+    /// <summary>Where alerts appear: "primary", "cursor", or a monitor's device name (\\.\DISPLAY2).</summary>
+    public string? Monitor { get; set; }
     /// <summary>Install signed updates from the connected ZIGMon by themselves (off: show them, install on a click).</summary>
     public bool AutoUpdate { get; set; } = true;
 
@@ -89,7 +105,7 @@ public sealed class NotifierSettings
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         Watched = (Watched ?? new()).Where(w => w is not null)
-            .Select(w => new WatchedSensor { Id = SafeText.Identifier(w.Id), Name = SafeText.Clean(w.Name, ProtocolParser.NameMax), AlsoWhenClears = w.AlsoWhenClears })
+            .Select(w => CleanWatched(w))
             .Where(w => w.Id.Length > 0 && seen.Add(w.Id))
             .Take(ProtocolParser.MaxSensors)
             .ToList();
@@ -102,6 +118,59 @@ public sealed class NotifierSettings
         }
         Mutes = mutes;
         if (PausedUntil is { } p && p <= now) PausedUntil = null;
+
+        if (AutoClose == true && AutoCloseSeconds == 0) AutoCloseSeconds = 60; // 1.1.0's "after a minute"
+        AutoClose = null;
+        AutoCloseSeconds = AlertChoices.Snap(AutoCloseSeconds, AlertChoices.CloseAfter, 0);
+        SoundSeconds = AlertChoices.Snap(SoundSeconds, AlertChoices.SoundLengths, AlertChoices.Once);
+        Volume = Math.Clamp(Volume, 0, 100);
+        SoundFile = CleanSoundFile(SoundFile);
+        if (SoundId == AlarmSounds.FileId) { if (SoundFile is null) SoundId = AlarmSounds.DefaultId; }
+        else if (!AlarmSounds.IsKnown(SoundId)) SoundId = AlarmSounds.DefaultId;
+        Monitor = Monitor is AlertChoices.MonitorPrimary or AlertChoices.MonitorCursor ? Monitor : CleanMonitor(Monitor);
+    }
+
+    private static WatchedSensor CleanWatched(WatchedSensor w)
+    {
+        string? file = CleanSoundFile(w.SoundFile);
+        string? sound = w.SoundId == AlarmSounds.FileId ? (file is null ? null : AlarmSounds.FileId)
+            : AlarmSounds.IsKnown(w.SoundId) ? w.SoundId : null;
+        return new WatchedSensor
+        {
+            Id = SafeText.Identifier(w.Id), Name = SafeText.Clean(w.Name, ProtocolParser.NameMax),
+            AlsoWhenClears = w.AlsoWhenClears, SoundId = sound, SoundFile = sound == AlarmSounds.FileId ? file : null,
+        };
+    }
+
+    /// <summary>The sound for an alert of this sensor: its own when it has one, else the default (id, file).</summary>
+    public (string Id, string? File) SoundFor(string? sensorId)
+    {
+        var w = sensorId is null ? null : FindWatched(sensorId);
+        if (w?.SoundId is { } own) return (own, own == AlarmSounds.FileId ? w.SoundFile : null);
+        return (SoundId, SoundId == AlarmSounds.FileId ? SoundFile : null);
+    }
+
+    /// <summary>A full local path to a .wav file, or null.</summary>
+    public static string? CleanSoundFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Length > 1024) return null;
+        if (path.Any(char.IsControl)) return null;
+        try
+        {
+            if (!System.IO.Path.IsPathFullyQualified(path)) return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        return path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) ? path : null;
+    }
+
+    /// <summary>A monitor's device name as Windows gives it (\\.\DISPLAY1), or null (= the primary one).</summary>
+    public static string? CleanMonitor(string? name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length > 64) return null;
+        return name.All(c => c is >= ' ' and <= '~') ? name : null;
     }
 }
 

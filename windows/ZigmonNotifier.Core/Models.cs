@@ -27,6 +27,13 @@ public sealed record SensorInfo(
     int? Battery, bool Online)
 {
     public SensorInfo WithState(bool? active, DateTimeOffset? at) => this with { Active = active, At = at };
+
+    /// <summary>For a condition (kind "rule"): the condition in words, "temperature ≥ 25 °C".</summary>
+    public string? RuleText { get; init; }
+    /// <summary>For a condition: the value now, with its unit, "23.4 °C".</summary>
+    public string? ValueText { get; init; }
+    /// <summary>For a condition: the name of the device it watches.</summary>
+    public string? DeviceName { get; init; }
 }
 
 public sealed record SensorsSnapshot(string Boot, long Seq, IReadOnlyList<SensorInfo> Sensors);
@@ -50,10 +57,12 @@ public static class SensorKinds
     public const string Tamper = "tamper";
     public const string Vibration = "vibration";
     public const string Button = "button";
+    /// <summary>A condition an administrator set in ZIGMon on any attribute of any device (5.58).</summary>
+    public const string Rule = "rule";
     public const string Other = "other";
 
     public static readonly IReadOnlyList<string> All =
-        new[] { Motion, Contact, Leak, Smoke, Gas, Co, Tamper, Vibration, Button };
+        new[] { Motion, Contact, Leak, Smoke, Gas, Co, Tamper, Vibration, Button, Rule };
 
     public static string Normalize(string? kind)
     {

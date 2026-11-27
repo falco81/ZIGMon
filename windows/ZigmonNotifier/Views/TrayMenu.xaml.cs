@@ -105,7 +105,6 @@ public partial class TrayMenu : Window
 
         SoundToggle.IsChecked = _app.Settings.Sound;
         FrontToggle.IsChecked = _app.Settings.BringToFront;
-        AutoCloseToggle.IsChecked = _app.Settings.AutoClose;
         StartToggle.IsChecked = Autostart.IsEnabled;
         OpenRow.IsEnabled = _app.Address is not null;
         RefreshUpdates();
@@ -184,7 +183,12 @@ public partial class TrayMenu : Window
     {
         _app.Settings.Sound = SoundToggle.IsChecked == true;
         _app.Save();
-        if (_app.Settings.Sound) Sounds.Chime();
+        if (_app.Settings.Sound)
+        {
+            var (id, file) = _app.Settings.SoundFor(null);
+            Sounds.Play(id, file, _app.Settings.Volume, AlertChoices.Once);
+        }
+        else Sounds.Stop();
     }
 
     private void OnFront(object sender, RoutedEventArgs e)
@@ -193,11 +197,7 @@ public partial class TrayMenu : Window
         _app.Save();
     }
 
-    private void OnAutoClose(object sender, RoutedEventArgs e)
-    {
-        _app.Settings.AutoClose = AutoCloseToggle.IsChecked == true;
-        _app.Save();
-    }
+    private void OnAlertSettings(object sender, RoutedEventArgs e) => Then(_app.ShowAlertSettings);
 
     private void OnAutoUpdate(object sender, RoutedEventArgs e) => _app.SetAutoUpdate(AutoUpdateToggle.IsChecked == true);
 

@@ -158,6 +158,11 @@ public partial class SensorsWindow : Window
         Rebuild(); // forgotten sensors leave the list
     }
 
+    private void OnPlaySound(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: SensorRow r }) r.PlaySound();
+    }
+
     private void OnSetUp(object sender, RoutedEventArgs e) => _app.ShowConnection();
 
     private void OnDone(object sender, RoutedEventArgs e) => Close();

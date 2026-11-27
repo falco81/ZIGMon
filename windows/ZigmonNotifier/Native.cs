@@ -23,6 +23,29 @@ internal static class Native
         public uint dwFlags;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MONITORINFOEX
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
+    }
+
+    private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfoEx(IntPtr monitor, ref MONITORINFOEX info);
+
+    private const uint MONITORINFOF_PRIMARY = 1;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct FLASHWINFO
     {
@@ -100,6 +123,41 @@ internal static class Native
             // shcore missing (very old Windows): stay at 100 %
         }
         return (work, scale);
+    }
+
+    /// <summary>Every monitor now connected: device name, bounds and work area in pixels, scale.</summary>
+    public static System.Collections.Generic.List<Core.MonitorInfo> Monitors()
+    {
+        var list = new System.Collections.Generic.List<Core.MonitorInfo>();
+        try
+        {
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (mon, _, _, _) =>
+            {
+                var info = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>(), szDevice = "" };
+                if (GetMonitorInfoEx(mon, ref info))
+                {
+                    double scale = 1;
+                    try
+                    {
+                        if (GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, out uint dx, out _) == 0 && dx > 0) scale = dx / 96.0;
+                    }
+                    catch (Exception)
+                    {
+                        // 100 %
+                    }
+                    list.Add(new Core.MonitorInfo(info.szDevice ?? "",
+                        new Core.PixelRect(info.rcMonitor.Left, info.rcMonitor.Top, info.rcMonitor.Right, info.rcMonitor.Bottom),
+                        new Core.PixelRect(info.rcWork.Left, info.rcWork.Top, info.rcWork.Right, info.rcWork.Bottom),
+                        (info.dwFlags & MONITORINFOF_PRIMARY) != 0, scale));
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch (Exception)
+        {
+            // no list: the caller falls back to the primary work area
+        }
+        return list;
     }
 
     public static void MoveWindow(Window w, int x, int y)

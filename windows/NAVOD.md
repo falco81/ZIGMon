@@ -2,8 +2,10 @@
 
 Malá aplikace pro Windows 10/11. Sedí vedle hodin na hlavním panelu, hlídá
 čidla ZIGMonu, která si vyberete, a když se některé spustí (pohyb, otevřené
-dveře, voda, kouř, plyn, CO, sabotáž, vibrace, stisk tlačítka), ukáže vpravo
-dole nad vším ostatním upozornění a tiše cinkne.
+dveře, voda, kouř, plyn, CO, sabotáž, vibrace, stisk tlačítka – nebo
+**podmínka**, kterou správce v ZIGMonu nastavil na libovolném zařízení, třeba
+„teplota ≥ 25 °C“ nebo „hlavice přepnuta na eco“), ukáže vpravo dole na
+zvoleném monitoru nad vším ostatním upozornění se zvoleným zvukem.
 
 ## Instalace
 
@@ -33,8 +35,8 @@ cokoli nepovede, vrátí starou verzi zpět.
 
 V menu (pravé tlačítko) je oddíl s aktualizacemi: **Update automatically**
 (zapnuto; vypnuté = nová verze se jen ukáže a nainstaluje se kliknutím),
-**Check for updates now** a řádek se stavem („Up to date – 1.1.0“,
-„Updating to 1.2.0…“, „Update failed: …“).
+**Check for updates now** a řádek se stavem („Up to date – 1.2.0“,
+„Updating to 1.3.0…“, „Update failed: …“).
 
 ## Nastavení
 
@@ -47,16 +49,40 @@ V menu (pravé tlačítko) je oddíl s aktualizacemi: **Update automatically**
    Pak **Save and connect**.
 3. Pravé tlačítko → **Watched sensors…** (nebo dvojklik na ikonu): zapněte
    čidla, která mají upozorňovat. „Also when it clears“ upozorní i na návrat do
-   klidu (dveře zavřeny, sucho, bez pohybu).
+   klidu (dveře zavřeny, sucho, bez pohybu) nebo na to, že podmínka už neplatí.
+   Každé sledované čidlo může mít **vlastní zvuk** (rozbalovací seznam pod ním,
+   vedle tlačítko pro přehrání); „Default sound“ = zvuk z Alert settings.
+4. **Podmínky** (ZIGMon 5.58 a novější) se zakládají v ZIGMonu u klíče:
+   Settings → Messages → Desktop app → klíč → **Conditions** → Add condition
+   (libovolné zařízení a atribut; > ≥ < ≤ = ≠, mezi, mimo, obsahuje, zapnuto/
+   vypnuto, změna; s hysterezí). V aplikaci se pak objeví mezi čidly s ikonou
+   budíku, podmínkou slovy a aktuální hodnotou – stačí je zapnout.
+
+## Nastavení upozornění
+
+Pravé tlačítko → **Alert settings…** (vše se ukládá hned a aplikace si to pamatuje):
+
+* **Zvuk** – zapnout/vypnout; výchozí zvuk: Chime, Doorbell, Bell, Beeps, Pulse,
+  Alarm, Siren, Klaxon nebo **vlastní soubor .wav** (nekomprimovaný, do 20 MB;
+  když ho nejde přečíst, zahraje výchozí zvonek).
+* **Jak dlouho hraje** – jednou, 5 s, 15 s, 30 s, 1 min, 5 min, nebo dokud
+  upozornění nezavřete (nejdéle 30 minut). Dismiss, Mute, Open ZIGMon i Esc
+  zvuk hned zastaví, stejně jako zavření posledního upozornění.
+* **Hlasitost** – 0–100 % hlasitosti Windows, tlačítko Test.
+* **Samo se zavře po** – nikdy, 10 s, 30 s, 1 min, 5 min, 15 min (čas běží
+  znovu, když se čidlo spustí znovu nebo je nad upozorněním myš).
+* **Zobrazovat na** – hlavní monitor, monitor s kurzorem myši, nebo konkrétní
+  monitor (podle čísla displeje ve Windows; když je odpojený, použije se hlavní,
+  dokud se nevrátí). „Show me“ tam ukáže zkušební upozornění.
+* **Vytáhnout dopředu a převzít klávesnici.**
 
 ## Používání
 
 * Tečka na ikoně: **zelená** připojeno, **šedá** připojuje se, **červená**
   problém (najeďte myší pro důvod), **oranžová** upozornění pozastavena.
 * Pravé tlačítko: stav, výběr čidel, připojení, pozastavení (15 min / 1 h / do
-  odvolání), zvuk, „vytáhnout dopředu a převzít klávesnici“, automatické
-  zavření po minutě, spouštění s Windows, zkušební upozornění, otevřít ZIGMon,
-  ukončit.
+  odvolání), zvuk, „vytáhnout dopředu a převzít klávesnici“, Alert settings…,
+  spouštění s Windows, zkušební upozornění, otevřít ZIGMon, ukončit.
 * Upozornění: **Open ZIGMon**, **Mute 1 h** (jen toto čidlo na hodinu),
   **Dismiss** (nebo Esc). Najednou nejvýš čtyři; opakované spuštění téhož čidla
   jen zvýší počítadlo (×2, ×3 …).

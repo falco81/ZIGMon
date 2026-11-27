@@ -32,6 +32,7 @@ internal sealed class AppController : IDisposable
     private DateTimeOffset _lastAutoCheck = DateTimeOffset.MinValue;
     private ConnectionWindow? _connectionWindow;
     private SensorsWindow? _sensorsWindow;
+    private AlertSettingsWindow? _alertSettingsWindow;
     private TrayMenu? _menu;
     private bool _disposed;
 
@@ -195,6 +196,52 @@ internal sealed class AppController : IDisposable
         if (w is null || w.AlsoWhenClears == on) return;
         w.AlsoWhenClears = on;
         Save();
+    }
+
+    /// <summary>A sensor's own sound (null = the default one).</summary>
+    public void SetSound(string id, string? soundId, string? file)
+    {
+        var w = Settings.FindWatched(id);
+        if (w is null) return;
+        w.SoundId = soundId;
+        w.SoundFile = soundId == AlarmSounds.FileId ? NotifierSettings.CleanSoundFile(file) : null;
+        if (w.SoundId == AlarmSounds.FileId && w.SoundFile is null) w.SoundId = null;
+        Save();
+    }
+
+    /// <summary>Asks for a .wav file; null when cancelled or not usable (the user is told why).</summary>
+    public string? PickSoundFile()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a sound (WAV)",
+            Filter = "WAV sound (*.wav)|*.wav",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+        if (dlg.ShowDialog() != true) return null;
+        string path = dlg.FileName;
+        string? clean = NotifierSettings.CleanSoundFile(path);
+        string why = clean is null ? "Choose a .wav file." : "";
+        if (clean is not null)
+        {
+            try
+            {
+                var info = new FileInfo(clean);
+                if (info.Length > WavAudio.MaxFileBytes) why = "The file is larger than 20 MB.";
+                else if (WavAudio.FromFile(File.ReadAllBytes(clean), 50, out string reason) is null) why = reason;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                why = "The file cannot be read.";
+            }
+        }
+        if (why.Length > 0)
+        {
+            System.Windows.MessageBox.Show(why, "ZIGMon Notifier", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return null;
+        }
+        return clean;
     }
 
     public void ForgetWatched(string id)
@@ -431,6 +478,17 @@ internal sealed class AppController : IDisposable
         Bring(_sensorsWindow);
     }
 
+    public void ShowAlertSettings()
+    {
+        if (_alertSettingsWindow is null)
+        {
+            _alertSettingsWindow = new AlertSettingsWindow(this);
+            _alertSettingsWindow.Closed += (_, _) => _alertSettingsWindow = null;
+            _alertSettingsWindow.Show();
+        }
+        Bring(_alertSettingsWindow);
+    }
+
     public void ShowConnection()
     {
         if (_connectionWindow is null)
@@ -476,6 +534,7 @@ internal sealed class AppController : IDisposable
         _menu?.Close();
         _connectionWindow?.Close();
         _sensorsWindow?.Close();
+        _alertSettingsWindow?.Close();
         _tray.Dispose();
     }
 }

@@ -142,12 +142,13 @@
                         <TextBlock Text="Bring to front and take focus" VerticalAlignment="Center" />
                     </StackPanel>
                 </ToggleButton>
-                <ToggleButton x:Name="AutoCloseToggle" Style="{StaticResource MenuToggle}" Click="OnAutoClose">
+                <Button Style="{StaticResource MenuRow}" Click="OnAlertSettings"
+                        ToolTip="Sounds, volume, how long alerts stay, which monitor">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE916;" />
-                        <TextBlock Text="Close alerts after a minute" VerticalAlignment="Center" />
+                        <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE713;" />
+                        <TextBlock Text="Alert settings…" VerticalAlignment="Center" />
                     </StackPanel>
-                </ToggleButton>
+                </Button>
                 <ToggleButton x:Name="StartToggle" Style="{StaticResource MenuToggle}" Click="OnStart">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE7F4;" />

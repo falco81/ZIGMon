@@ -22,6 +22,7 @@ public static class Palette
     public const string Load = "#F0883E";
     public const string Sleep = "#6E7681";
     public const string Water = "#39C5CF";
+    public const string Rule = "#DB61A2";
 }
 
 /// <summary>How each kind of sensor looks and speaks.</summary>
@@ -38,6 +39,7 @@ public sealed record KindStyle(string Kind, string Label, string Accent, string 
         [SensorKinds.Tamper] = new(SensorKinds.Tamper, "Tamper", Palette.Warn, Icons.Shield, "Tampered", "OK"),
         [SensorKinds.Vibration] = new(SensorKinds.Vibration, "Vibration", Palette.Load, Icons.Vibration, "Vibrating", "Still"),
         [SensorKinds.Button] = new(SensorKinds.Button, "Button", Palette.Ok, Icons.Hand, "Pressed", "Ready"),
+        [SensorKinds.Rule] = new(SensorKinds.Rule, "Condition", Palette.Rule, Icons.Gauge, "Met", "Not met"),
         [SensorKinds.Other] = new(SensorKinds.Other, "Sensor", Palette.TextDim, Icons.Pulse, "Active", "Quiet"),
     };
 
@@ -99,6 +101,10 @@ public static class Icons
     public static readonly string Hand =
         "M 9 11 V 5.5 A 1.5 1.5 0 0 1 12 5.5 V 11 M 12 11 V 4.5 A 1.5 1.5 0 0 1 15 4.5 V 11"
         + " M 15 11 V 6.5 A 1.5 1.5 0 0 1 18 6.5 V 13 C 18 17 15.5 20 12 20 C 8.5 20 6 17.5 6 14 V 11 A 1.5 1.5 0 0 1 9 11";
+
+    /// <summary>A gauge with its needle: a condition on a value.</summary>
+    public static readonly string Gauge = "M 4.5 17 A 8 8 0 1 1 19.5 17 M 12 14 L 15.5 9 " + Circle(12, 14.5, 1.2)
+        + " M 6.8 10.2 L 7.9 10.9 M 12 6.5 V 7.8 M 17.2 10.2 L 16.1 10.9";
 
     public static readonly string Pulse = "M 3 12 H 7 L 10 5 L 14 19 L 17 12 H 21";
 

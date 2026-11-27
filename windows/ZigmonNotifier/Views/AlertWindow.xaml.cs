@@ -11,8 +11,6 @@ namespace ZigmonNotifier.Views;
 /// <summary>One alert card. Shown on top without taking the keyboard (unless the user asked for that).</summary>
 public partial class AlertWindow : Window
 {
-    private static readonly TimeSpan AutoCloseAfter = TimeSpan.FromMinutes(1);
-
     private readonly AppController _app;
     private readonly bool _test;
     private readonly DispatcherTimer _clock;
@@ -25,6 +23,9 @@ public partial class AlertWindow : Window
 
     public string Device => _event.Device;
     public bool IsClosing { get; private set; }
+
+    /// <summary>The scale of the monitor the card goes to (its pixels per unit).</summary>
+    internal double TargetScale { get; init; } = 1;
 
     /// <summary>The height to stack by: the real one once laid out.</summary>
     public double ExpectedHeight => ActualHeight > 0 ? ActualHeight : 156;
@@ -39,14 +40,16 @@ public partial class AlertWindow : Window
         _shownAt = DateTimeOffset.UtcNow;
         Fill();
 
-        _clock = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
+        _clock = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
         _clock.Tick += (_, _) => Tick();
         SizeChanged += (_, args) => { if (args.HeightChanged) HeightSettled?.Invoke(); };
         KeyDown += (_, args) =>
         {
-            if (args.Key == Key.Escape) { Dismiss(); args.Handled = true; }
+            if (args.Key == Key.Escape) { Sounds.Stop(); Dismiss(); args.Handled = true; }
         };
         Closed += (_, _) => _clock.Stop();
+        // put the window on its monitor in pixels before it shows, so it takes that monitor's scale
+        SourceInitialized += (_, _) => Native.MoveWindow(this, (int)Math.Round(Left * TargetScale), (int)Math.Round(Top * TargetScale));
         MouseEnter += (_, _) => _shownAt = DateTimeOffset.UtcNow; // reading it: the auto-close waits
     }
 
@@ -92,7 +95,8 @@ public partial class AlertWindow : Window
         if (_test) Meta.Text = "This is how alerts will look · " + when;
         else Meta.Text = string.IsNullOrEmpty(_event.Room) ? when : _event.Room + " · " + when;
 
-        if (_app.Settings.AutoClose && !IsMouseOver && now - _shownAt > AutoCloseAfter) Dismiss();
+        int after = _app.Settings.AutoCloseSeconds;
+        if (after > 0 && !IsMouseOver && now - _shownAt > TimeSpan.FromSeconds(after)) Dismiss();
     }
 
     // ---- showing, moving, leaving --------------------------------------------------------
@@ -103,6 +107,8 @@ public partial class AlertWindow : Window
         Top = top;
         ShowActivated = takeFocus;
         Show();
+        Left = left + 56; // again, in the units of the monitor it is now on
+        Top = top;
         _shown = true;
         _clock.Start();
 
@@ -154,16 +160,22 @@ public partial class AlertWindow : Window
         Root.BeginAnimation(OpacityProperty, fade);
     }
 
-    private void OnDismiss(object sender, RoutedEventArgs e) => Dismiss();
+    private void OnDismiss(object sender, RoutedEventArgs e)
+    {
+        Sounds.Stop();
+        Dismiss();
+    }
 
     private void OnMute(object sender, RoutedEventArgs e)
     {
+        Sounds.Stop();
         if (!_test) _app.Mute(_event.Device, TimeSpan.FromHours(1));
         Dismiss();
     }
 
     private void OnOpen(object sender, RoutedEventArgs e)
     {
+        Sounds.Stop();
         _app.OpenDashboard();
         Dismiss();
     }

@@ -127,11 +127,20 @@ public static class ProtocolParser
                     Bool(s, "active"),
                     Time(s, "at"),
                     batt is >= 0 and <= 100 ? batt : null,
-                    Bool(s, "online") ?? true));
+                    Bool(s, "online") ?? true)
+                {
+                    RuleText = NullIfEmpty(RuleText(s)),
+                    ValueText = NullIfEmpty(Str(s, "value_text", WhatMax)),
+                    DeviceName = NullIfEmpty(Str(s, "device_name", NameMax)),
+                });
             }
         }
         return new SensorsSnapshot(Boot(root), Seq(root), list);
     }
+
+    /// <summary>A condition's words: sensors[].rule.text (5.58), plain text only.</summary>
+    private static string RuleText(JsonElement s) =>
+        s.TryGetProperty("rule", out var r) && r.ValueKind == JsonValueKind.Object ? Str(r, "text", WhatMax) : string.Empty;
 
     public static WaitResult Wait(JsonElement root)
     {
