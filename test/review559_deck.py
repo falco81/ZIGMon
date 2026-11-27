@@ -407,8 +407,8 @@ try:
     check(out.get('install') == {'id': INSTALL, 'name': 'OFFICE-PC', 'caps': zigmon.Daemon.deck_default_caps(),
                                  'hint': TOKEN[-2:]}, 'the install with the token: %r' % out.get('install'))
     code, out = call('/api/deck/pair_wait', pair=P1['secret'], client='192.168.40.20')
-    check(code == 200 and out.get('state') == 'approved' and 'token' not in out and out.get('taken') is True,
-          'the token a second time: %s %r' % (code, out))
+    check(code == 200 and out == {'ok': True, 'state': 'expired', 'taken': True},
+          'the token a second time (the request is over - the plugin pairs again): %s %r' % (code, out))
     raw = d.store.get_meta('deck_installs') or ''
     check(TOKEN not in raw and hashlib.sha256(TOKEN.encode()).hexdigest() in raw, 'what is kept: %r' % raw[:300])
     code, out = call('/api/deck/admin', session=S)
@@ -487,9 +487,12 @@ try:
                                   'max': 254, 'step': 1} and dim['state']['value'] == 120, 'the dimmer: %r' % dim)
     sp = items.get('zb:%s:current_heating_setpoint' % THERMO) or {}
     check(sp.get('kind') == 'thermostat' and sp.get('cap') == 'climate' and sp['attrs'][0]['step'] == 0.5
-          and sp['attrs'][0]['min'] == 5 and sp['attrs'][0]['max'] == 30 and sp['state']['value'] == 21
-          and sp['state']['battery'] == 77 and sp['state']['attrs'].get('local_temperature') == 20.5,
-          'the set point: %r' % sp)
+          and sp['attrs'][0]['min'] == 5 and sp['attrs'][0]['max'] == 30 and sp['state']['value'] == 20.5
+          and sp['state']['value_text'] == '20.5 °C' and sp['state']['battery'] == 77
+          and sp['state']['attrs'] == {'local_temperature': 20.5, 'current_heating_setpoint': 21, 'system_mode': 'heat'}
+          and sp['attrs'][1] == {'key': 'system_mode', 'label': 'Mode', 'type': 'enum', 'values': ['off', 'heat', 'auto'],
+                                 'via': 'zb:%s:system_mode' % THERMO},
+          'the set point - the thermostat on one key: %r' % sp)
     mode = items.get('zb:%s:system_mode' % THERMO) or {}
     check(mode.get('actions') == ['set'] and mode['attrs'][0]['type'] == 'enum'
           and mode['attrs'][0]['values'] == ['off', 'heat', 'auto'], 'the mode: %r' % mode)
@@ -711,6 +714,18 @@ try:
           'the blind\'s position: %s %s %r' % (code, code2, RAN))
     code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r1', 'action': 'set', 'value': 22.4})
     check(code == 200 and out.get('said') == 'set Temperature in Obývák to 22.5 °C', 'a room\'s temperature: %s %r' % (code, out))
+    # the head's mode through its set point's key, and a dial on the room
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': SP, 'action': 'set', 'attr': 'system_mode', 'value': 'auto'})
+    time.sleep(0.15)
+    check(code == 200 and [r[2:4] for r in RAN] == [('system_mode', 'set:auto')], 'the mode through the set point: %s %r %r'
+          % (code, out, RAN))
+    time.sleep(0.6)
+    code, out = deck('state?ids=heat:temp:r1')
+    t1 = (out.get('items') or {}).get('heat:temp:r1') or {}
+    check(t1.get('attrs', {}).get('target') == 22.5 and t1['attrs'].get('mode') == 'plan', 'the room after: %r' % t1)
+    code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r1', 'action': 'set', 'attr': 'target', 'delta': -1})
+    check(code == 200 and out.get('said') == 'set Temperature in Obývák to 21.5 °C', 'a dial on the room: %s %r' % (code, out))
 
     # ---- the rate -----------------------------------------------------------------------------
     print('the rate')

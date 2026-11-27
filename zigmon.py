@@ -13067,13 +13067,18 @@ class Daemon(object):
                            'light' if light and k == 'state' else 'zb', 'switch', ['toggle', 'on', 'off'], attrs,
                            None, None if up not in ('ON', 'OFF') else up == 'ON',
                            light_extra if light and k == 'state' else {})
+                    if light and k == 'state' and up == 'ON' and 'brightness' in light_extra and attrs:
+                        # the brightness as a share, as a key can say it: "on · 47 %"
+                        out[-1]['state']['value_text'] = 'on \u00b7 %s' % self._deck_pct(light_extra['brightness'], attrs[0])
                     continue
                 info = exposes.get(k) or {}
                 if k in ('brightness', 'color_temp'):
                     a = num_attr(k, info, '', 0, 254 if k == 'brightness' else None)
                     v = values.get(k)
-                    common(t['value'], t['name'], 'dimmer', 'light', 'dim', ['set', 'step'], [a],
-                           v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None)
+                    v = v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+                    common(t['value'], t['name'], 'dimmer', 'light', 'dim', ['set', 'step'], [a], v, None)
+                    if k == 'brightness' and v is not None:
+                        out[-1]['state']['value_text'] = self._deck_pct(v, a)
                     continue
                 if k == 'position':
                     if thermostat or 'state' in keys and cover:
@@ -13091,14 +13096,45 @@ class Daemon(object):
                             extra[rk] = values.get(rk)
                     if t['kind'] == 'number':
                         step = 0.5 if 'temperature' in k or 'setpoint' in k else 1
-                        a = num_attr(k, info, '°C' if step == 0.5 else '', 5 if step == 0.5 else None,
+                        a = num_attr(k, info, '\u00b0C' if step == 0.5 else '', 5 if step == 0.5 else None,
                                      30 if step == 0.5 else None, step)
                         common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set', 'step'], [a],
                                v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None, extra)
                     else:
                         a = enum_attr(k, dict(info, values=t.get('values') or info.get('values')))
+                        if sorted(str(x).upper() for x in a['values']) == ['OFF', 'ON']:
+                            # an on/off setting (boost, child lock, window detection): true or false
+                            words = sorted(a['values'], key=lambda x: str(x).upper() != 'ON')
+                            a = {'key': k, 'label': a['label'], 'type': 'bool', 'values': words}
+                            v = None if v is None else str(v).upper() == 'ON'
                         common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set'], [a],
-                               v if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None, None, extra)
+                               v if isinstance(v, (str, int, float, bool)) else None,
+                               v if isinstance(v, bool) else None, extra)
+            # (5.59) a thermostat is one thing on a key: its set point's item carries the other
+            # settings of the head as attributes (each set through its own item, under "climate"),
+            # and says the temperature it measures as its value
+            mine = {it['id']: it for it in out if it['id'].startswith('zb:%s:' % did)}
+            primary = next((mine.get('zb:%s:%s' % (did, k)) for k in ('current_heating_setpoint', 'occupied_heating_setpoint')
+                            if 'zb:%s:%s' % (did, k) in mine), None)
+            if primary is not None:
+                sp_key = primary['attrs'][0]['key']
+                st = primary['state']
+                st['attrs'][sp_key] = st['value']
+                for other in mine.values():
+                    if other is primary or other['cap'] != 'climate' or not other['attrs']:
+                        continue
+                    a = dict(other['attrs'][0], via=other['id'])
+                    primary['attrs'].append(a)
+                    st['attrs'][a['key']] = other['state']['value']
+                cur = values.get('local_temperature', values.get('temperature'))
+                if isinstance(cur, (int, float)) and not isinstance(cur, bool):
+                    st['value'] = cur
+                    st['value_text'] = self._ntf_vtext(cur, '\u00b0C')
+                    st['attrs']['local_temperature'] = cur
+                else:
+                    st['value'] = None
+                    st['value_text'] = ('\u2192 %s' % self._ntf_vtext(st['attrs'][sp_key], '\u00b0C')
+                                        if st['attrs'][sp_key] is not None else None)
         return out
 
     def _deck_house_items(self, rooms):
@@ -13145,11 +13181,19 @@ class Daemon(object):
             if isinstance(temp, (int, float)) and not isinstance(temp, bool):
                 extra['temperature'] = temp
             wanted = r.get('wanted_c') if isinstance(r.get('wanted_c'), (int, float)) else None
+            extra['target'] = wanted
+            measured = extra.get('temperature')
+            # (5.59) a room as a thermostat: the temperature it measures as its value, the one it
+            # wants under "target" (the dial's), its mode beside it (set through heat:room:<id>)
             add('heat:temp:%s' % r['id'], 'Temperature in %s' % r['name'], 'thermostat', 'thermo', 'climate',
                 ['set', 'step'], room=r['name'],
-                attrs=[{'key': 'temperature', 'label': 'Wanted temperature', 'type': 'number', 'unit': '°C',
-                        'min': 5, 'max': 30, 'step': 0.5}],
-                value=wanted, vtext=self._ntf_vtext(wanted, '°C') if wanted is not None else None, extra=extra)
+                attrs=[{'key': 'target', 'label': 'Wanted temperature', 'type': 'number', 'unit': '\u00b0C',
+                        'min': 5, 'max': 30, 'step': 0.5},
+                       {'key': 'mode', 'label': 'Mode', 'type': 'enum',
+                        'values': ['plan', 'comfort', 'eco', 'night', 'max', 'off'], 'via': 'heat:room:%s' % r['id']}],
+                value=measured, vtext=(self._ntf_vtext(measured, '\u00b0C') if measured is not None else
+                                       ('\u2192 %s' % self._ntf_vtext(wanted, '\u00b0C')) if wanted is not None else None),
+                extra=extra)
             add('heat:room:%s' % r['id'], 'Heating in %s' % r['name'], 'thermostat', 'heat', 'climate',
                 ['set', 'toggle', 'on', 'off'], room=r['name'],
                 attrs=[{'key': 'mode', 'label': 'Mode', 'type': 'enum',
@@ -13344,6 +13388,20 @@ class Daemon(object):
                 continue
             seen.add(it['id'])
             items.append(it)
+        # (5.59) every attribute an item names has its value now among its state's attrs - its own
+        # from the item's value, one set through another item from that item's
+        by_id = {it['id']: it for it in items}
+        for it in items:
+            st_attrs = it['state'].setdefault('attrs', {})
+            for a in it['attrs']:
+                if a['key'] not in st_attrs and not a.get('via'):
+                    st_attrs[a['key']] = it['state'].get('value')
+        for it in items:
+            st_attrs = it['state']['attrs']
+            for a in it['attrs']:
+                other = by_id.get(a.get('via') or '')
+                if other is not None and a['key'] not in st_attrs:
+                    st_attrs[a['key']] = other['state']['attrs'].get(a['key'], other['state'].get('value'))
         self._deck_items_kept = (key, items)
         return items
 
@@ -13601,6 +13659,15 @@ class Daemon(object):
         return True
 
     @staticmethod
+    def _deck_pct(value, attr):
+        """A value as the share of its attribute's range: 127 of 0..254 -> '50 %'."""
+        lo = attr.get('min') if isinstance(attr.get('min'), (int, float)) else 0
+        hi = attr.get('max') if isinstance(attr.get('max'), (int, float)) else 100
+        if hi <= lo:
+            return '%s' % value
+        return '%d %%' % round(max(0.0, min(1.0, (float(value) - lo) / (hi - lo))) * 100)
+
+    @staticmethod
     def _deck_round(value, attr):
         step = attr.get('step')
         lo, hi = attr.get('min'), attr.get('max')
@@ -13701,7 +13768,9 @@ class Daemon(object):
                 return 'set:%s' % action.upper(), '%s %s' % (self.DECK_SAID[action], name), target
             return ('set:100' if action == 'open' else 'set:0'), '%s %s' % (self.DECK_SAID[action], name), target
         attr = item['attrs'][0] if item['attrs'] else None
-        now = item['state'].get('value')
+        if attr is not None and body.get('attr'):
+            attr = next((a for a in item['attrs'] if a.get('key') == body.get('attr')), attr)
+        now = (item['state'].get('attrs') or {}).get(attr['key'], item['state'].get('value')) if attr else None
         if item['kind'] == 'cover' and target.endswith(':state'):
             # the blind's position, asked of the key that shows the blind
             attr = next((a for a in item['attrs'] if a.get('key') == 'position'), None)
@@ -13714,6 +13783,14 @@ class Daemon(object):
         if action == 'step' and delta is None:
             return None, 'step takes delta: how far to move from where it is', None
         label = attr.get('label') or attr['key']
+        if attr['type'] == 'bool':
+            words = attr.get('values') or ['ON', 'OFF']
+            if isinstance(value, str) and value.strip().upper() in ('ON', 'OFF', 'TRUE', 'FALSE'):
+                value = value.strip().upper() in ('ON', 'TRUE')
+            if not isinstance(value, bool):
+                return None, '%s is true or false' % label, None
+            word = words[0] if value else words[-1]
+            return 'set:%s' % word, 'set %s to %s' % (name, 'on' if value else 'off'), target
         if attr['type'] == 'enum':
             vals = attr.get('values') or []
             if delta is not None:
@@ -13859,6 +13936,9 @@ class Daemon(object):
                     pair['token'] = None          # once: from here on only its hash is anywhere
                     pair['taken'] = True
                 else:
+                    # the token went out once already: this request is over - the plugin pairs
+                    # again (asked twice, a lost answer would otherwise leave it waiting for good)
+                    out['state'] = 'expired'
                     out['taken'] = True
             elif pair['state'] == 'pending':
                 out['expires'] = int(pair['expires'])
