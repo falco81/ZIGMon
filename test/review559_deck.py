@@ -744,7 +744,27 @@ try:
     print('the long wait')
     caps(switch={'on': True, 'all': True})
     code, out = deck('hello')
-    SEQ = out['seq']
+    SEQ, BOOT = out['seq'], out['boot']
+    # the permissions changed under a waiting poll: it is told to start over (another boot for it)
+    box = {}
+
+    def waiter0():
+        box['r'] = deck('wait?after=%d&boot=%s&ids=Lampa' % (d._deck_seq, BOOT))
+        box['at'] = time.time()
+
+    th = threading.Thread(target=waiter0)
+    th.start()
+    time.sleep(0.8)
+    t0 = time.time()
+    caps(switch={'on': True, 'all': True}, scenes={'on': True, 'all': True})
+    th.join(30)
+    code, out = box.get('r') or (0, {})
+    check(code == 200 and out.get('reset') is True and out.get('boot') != BOOT and box.get('at', 99) - t0 < 3,
+          'a poll after the permissions changed: %s %r' % (code, out))
+    code, out = deck('hello')
+    check(out.get('boot') == box['r'][1].get('boot') and out['install']['caps']['scenes']['on'] is True,
+          'hello after: %r' % out.get('boot'))
+    BOOT = out['boot']
     code, out = deck('wait?after=0&boot=%s' % BOOT)
     check(code == 200 and set(out) == {'ok', 'boot', 'seq', 'reset', 'changes'} and out['reset'] is False
           and out['changes'] and all(set(c) == {'seq', 'id', 'state'} for c in out['changes'])
@@ -967,6 +987,7 @@ try:
 
     d._deck_rates.clear()
     code, out = relay('api=deck&do=hello', token=TOKEN)
+    BOOT = out.get('boot')
     check(code == 200 and out.get('install', {}).get('name') == 'OFFICE-PC', 'hello through the relay: %s %r' % (code, out))
     code, out = relay('api=deck&do=hello', token=TOKEN + '!*"<>', install=INSTALL + '\';')
     check(code == 200, 'the headers are not cut down to their letters: %s %r' % (code, out))

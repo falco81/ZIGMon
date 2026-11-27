@@ -13565,11 +13565,21 @@ class Daemon(object):
         return {'id': inst['id'], 'name': inst.get('name') or '', 'caps': inst.get('caps') or self.deck_default_caps(),
                 'hint': inst.get('hint') or ''}
 
+    def deck_boot_for(self, inst):
+        """The number of this start as one installation is told it: it changes as well when its
+        permissions or its approved decks change, so a plugin waiting is told to start over
+        (hello and the catalogue again) and learns what it may do now."""
+        self._deck_setup()
+        mark = json.dumps([inst.get('caps'), sorted(x['id'] for x in inst.get('decks') or [] if x.get('approved'))],
+                          sort_keys=True)
+        return hashlib.sha256((self._deck_boot + mark).encode('utf-8')).hexdigest()[:12]
+
     def deck_hello(self, inst):
         self._deck_setup()
         plugin = self.deck_plugin()
         return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
-                'house': socket.gethostname().split('.')[0] or 'zigmon', 'boot': self._deck_boot, 'seq': self._deck_seq,
+                'house': socket.gethostname().split('.')[0] or 'zigmon', 'boot': self.deck_boot_for(inst),
+                'seq': self._deck_seq,
                 'install': self._deck_install_out(inst),
                 'decks': [{'id': x['id'], 'type': x.get('type'), 'name': x.get('name') or '',
                            'approved': bool(x.get('approved')), 'type_name': self.deck_type_name(x.get('type')),
@@ -13581,7 +13591,7 @@ class Daemon(object):
         self._deck_refresh()
         caps = inst.get('caps') or self.deck_default_caps()
         items = [self.deck_item_out(caps, it) for it in self.deck_items() if self.deck_visible(caps, it)]
-        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq,
+        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq,
                 'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()], 'items': items}
 
     @staticmethod
@@ -13602,7 +13612,7 @@ class Daemon(object):
         for it in self.deck_items():
             if (not want or it['id'] in want) and self.deck_visible(caps, it):
                 out[it['id']] = dict(it['state'])
-        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq, 'items': out}
+        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq, 'items': out}
 
     def deck_wait(self, inst, after, boot, ids, timeout=None):
         """The states that changed after `after`, latest only, for the ids asked (or every
@@ -13617,11 +13627,14 @@ class Daemon(object):
         with self._deck_cond:
             while True:
                 seq = self._deck_seq
-                if boot != self._deck_boot or after > seq:
-                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': True, 'changes': []}
                 inst = next((r for r in self.deck_installs() if r['id'] == iid), None)
                 if inst is None:
                     return None
+                mine = self.deck_boot_for(inst)
+                if boot != mine or after > seq:
+                    # another start of ZIGMon, or this installation's permissions or decks changed:
+                    # the plugin fetches hello and the catalogue again
+                    return {'ok': True, 'boot': mine, 'seq': seq, 'reset': True, 'changes': []}
                 if visible is None or visible[0] != json.dumps(inst.get('caps'), sort_keys=True):
                     caps = inst.get('caps') or self.deck_default_caps()
                     visible = (json.dumps(inst.get('caps'), sort_keys=True),
@@ -13633,11 +13646,11 @@ class Daemon(object):
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or self._stop.is_set():
-                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': False, 'changes': []}
+                    return {'ok': True, 'boot': mine, 'seq': seq, 'reset': False, 'changes': []}
                 self._deck_cond.wait(min(1.0, remaining))
         more = len(got) > self.DECK_BATCH
         got = got[:self.DECK_BATCH]
-        return {'ok': True, 'boot': self._deck_boot, 'seq': got[-1][0] if more else seq, 'reset': False,
+        return {'ok': True, 'boot': mine, 'seq': got[-1][0] if more else seq, 'reset': False,
                 'changes': [{'seq': s, 'id': k, 'state': dict(st)} for s, k, st in got]}
 
     # -- a command --
@@ -14089,6 +14102,8 @@ class Daemon(object):
                 mine['decks'] = [x for x in mine['decks'] if x['id'] != did]
                 said = "%s removed the %s from the Stream Deck installation '%s'"
             self._deck_put(rows)
+            with self._deck_cond:
+                self._deck_cond.notify_all()        # a plugin waiting is told to start over
             self.store.add_event('control', said % (who, label, mine.get('name') or ''), 'info')
             return {'message': '%s is %s' % (label, 'approved' if act == 'deck_approve' else 'removed')}
         if act == 'revoke':
