@@ -1000,6 +1000,159 @@ try:
     check(code == 403, 'the admin view through the relay, signed out: %s %r' % (code, out))
     code, out = relay('api=deck-admin', {'action': 'disable'}, install=None)
     check(code == 403 and d.deck_enabled(), 'switched off through the relay, signed out: %s %r' % (code, out))
+    # ---- the page -----------------------------------------------------------------------------
+    print('the page')
+    deck('hello?deck_info=' + b64u([NEO]))                  # a new deck waiting, to be drawn
+    for p in d.deck_pairs_view():                            # the page shows the one from the relay
+        if p['computer'] != 'RELAY-PC':
+            call('/api/deck/admin', {'action': 'deny', 'pair': p['pair']}, session=S)
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    js = r'''
+const { chromium } = require('playwright');
+const job = %(job)s;
+(async () => {
+  const b = await chromium.launch();
+  const r = {errors: []};
+  for (const shot of [{n: 'desktop', w: 1400, h: 1100}, {n: 'phone', w: 390, h: 1500}]) {
+    const ctx = await b.newContext({viewport: {width: shot.w, height: shot.h}, colorScheme: 'dark'});
+    await ctx.addCookies([{name: 'zigmon_session', value: job.s, url: 'http://127.0.0.1:' + job.port + '/'}]);
+    const p = await ctx.newPage();
+    p.on('pageerror', e => r.errors.push(String(e)));
+    await p.goto('http://127.0.0.1:' + job.port + '/#control/msg-deck');
+    await p.waitForTimeout(2000);
+    try { await p.evaluate(() => showControlSection('msg-deck')); } catch (e) {}
+    await p.waitForSelector('#dk-host .dk-hero', {timeout: 15000});
+    await p.waitForSelector('#dk-host .dk-inst', {timeout: 15000});
+    await p.waitForTimeout(400);
+    const x = r[shot.n] = await p.evaluate(() => ({
+      head: (document.querySelector('#ctl-head') || {}).textContent || '',
+      nav: (document.querySelector('#control-nav button[data-sec="msg-deck"]') || {}).textContent || '',
+      navIcon: !!document.querySelector('#control-nav button[data-sec="msg-deck"] svg rect'),
+      hero: document.querySelector('#dk-hero').textContent,
+      on: document.querySelector('#dk-switch-input').checked,
+      art: document.querySelectorAll('#dk-hero .dk-hero-art svg rect').length,
+      pairs: Array.from(document.querySelectorAll('#dk-pairs .dk-pair')).map(c => c.textContent),
+      codes: Array.from(document.querySelectorAll('#dk-pairs .dk-pair .dk-code')).map(c => c.textContent),
+      insts: Array.from(document.querySelectorAll('#dk-installs .dk-inst')).map(c => c.textContent),
+      chips: Array.from(document.querySelectorAll('#dk-installs .dk-chip')).map(c => c.textContent),
+      decks: Array.from(document.querySelectorAll('#dk-installs .dk-dev')).map(c => [c.className, c.querySelectorAll('.dk-key').length,
+                                                                                    c.querySelectorAll('.dk-dial').length]),
+      waiting: document.querySelectorAll('#dk-installs .dk-dev.wait .dk-deck-ok').length,
+      button: (document.querySelector('#dk-download') || {}).textContent || '',
+      sha: (document.querySelector('#dk-sha .v') || {}).textContent || '',
+      get: (document.querySelector('#dk-get') || {}).textContent || '',
+      wide: document.documentElement.scrollWidth, view: window.innerWidth}));
+    await p.evaluate(() => { const h = document.querySelector('#ctl-head'); if (h) h.scrollIntoView(); });
+    await p.screenshot({path: job.dir + '/pane-' + shot.n + '.png', fullPage: shot.n === 'phone'});
+    await (await p.$('#dk-card')).screenshot({path: job.dir + '/card-' + shot.n + '.png'});
+    // the permission editor of the installation
+    await p.click('#dk-installs .dk-inst .dk-perms');
+    await p.waitForSelector('#zmodal:not([hidden]) .dk-caps', {timeout: 5000});
+    x.dlg = await p.evaluate(() => ({
+      title: document.querySelector('#zmodal-title').textContent,
+      caps: Array.from(document.querySelectorAll('#zmodal .dk-cap')).map(c => c.dataset.cap),
+      on: Array.from(document.querySelectorAll('#zmodal .dk-cap.on')).map(c => c.dataset.cap),
+      summary: document.querySelector('#dk-summary').textContent,
+      presets: Array.from(document.querySelectorAll('#zmodal .dk-preset')).map(c => c.textContent),
+      wide: document.documentElement.scrollWidth}));
+    await p.screenshot({path: job.dir + '/perms-' + shot.n + '.png'});
+    await p.click('#zmodal .dk-preset[data-p="everyday"]');
+    x.dlg.everyday = await p.evaluate(() => ({
+      on: Array.from(document.querySelectorAll('#zmodal .dk-cap.on')).map(c => c.dataset.cap),
+      summary: document.querySelector('#dk-summary').textContent,
+      chosen: (document.querySelector('#zmodal .dk-preset.on') || {}).dataset.p}));
+    await p.click('#zmodal .dk-cap[data-cap="switch"] input[value="some"]');
+    await p.fill('#zmodal .dk-cap[data-cap="switch"] .dk-find', 'zarov');
+    x.dlg.shown = await p.evaluate(() => Array.from(document.querySelectorAll('#zmodal .dk-cap[data-cap="switch"] .dk-opt'))
+      .filter(o => !o.hidden).map(o => o.dataset.id));
+    x.dlg.groups = await p.evaluate(() => Array.from(document.querySelectorAll('#zmodal .dk-cap[data-cap="switch"] .dk-grp-h'))
+      .map(o => o.textContent));
+    await (await p.$('#zmodal .dk-cap[data-cap="switch"]')).scrollIntoViewIfNeeded();
+    await p.screenshot({path: job.dir + '/perms-only-these-' + shot.n + '.png'});
+    await p.click('#zmodal-foot button:has-text("Cancel")');
+    await p.waitForTimeout(300);
+    if (shot.n === 'desktop') {
+      // the request approved in the browser: the code compared, "Lights & sockets"
+      await p.click('#dk-pairs .dk-pair .dk-approve');
+      await p.waitForSelector('#zmodal:not([hidden]) .dk-cmp', {timeout: 5000});
+      x.approve = await p.evaluate(() => ({title: document.querySelector('#zmodal-title').textContent,
+        code: document.querySelector('#zmodal .dk-cmp .dk-code').textContent,
+        name: document.querySelector('#dk-pair-name').value}));
+      await p.click('#zmodal .dk-preset[data-p="lights"]');
+      await p.screenshot({path: job.dir + '/approve-desktop.png'});
+      await p.click('#zmodal-foot button:has-text("Approve")');
+      await p.waitForSelector('#zmodal[hidden]', {state: 'attached', timeout: 8000});
+      await p.waitForTimeout(500);
+      x.after = await p.evaluate(() => ({pairs: document.querySelectorAll('#dk-pairs .dk-pair').length,
+        insts: Array.from(document.querySelectorAll('#dk-installs .dk-inst b')).map(c => c.textContent)}));
+      await p.screenshot({path: job.dir + '/after-approve-desktop.png'});
+    }
+    await ctx.close();
+  }
+  console.log(JSON.stringify(r));
+  await b.close();
+})().catch(e => { console.log(JSON.stringify({error: String(e)})); });
+'''
+    npm_root = sh(['npm', 'root', '-g']).stdout.strip()
+    (W / 'page.js').write_text(js % {'job': json.dumps({'s': S, 'port': PHP_PORT, 'dir': str(SHOTS)})})
+    got = sh(['node', str(W / 'page.js')], timeout=300, env=dict(os.environ, NODE_PATH=npm_root))
+    try:
+        r = json.loads(got.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        r = {'error': (got.stdout + got.stderr)[-400:]}
+    if r.get('error') and ('Executable doesn' in r['error'] or 'Cannot find module' in r['error']):
+        print('  SKIPPED (no browser here): %s' % r['error'][:200])
+    else:
+        check(not r.get('error'), 'the page: %r' % r.get('error'))
+        for n in ('desktop', 'phone'):
+            x = r.get(n) or {}
+            check('Stream Deck' in x.get('head', '') and x.get('nav') == 'Stream Deck' and x.get('navIcon'),
+                  '%s: the head and the menu: %r' % (n, [x.get('head'), x.get('nav')]))
+            check(x.get('on') is True and 'Allow Stream Deck control' in x.get('hero', '') and x.get('art', 0) >= 10
+                  and 'connected now' in x.get('hero', ''), '%s: the hero: %r' % (n, x.get('hero')))
+            if n == 'desktop':
+                check(len(x.get('pairs') or []) == 1 and 'RELAY-PC' in x['pairs'][0]
+                      and re.match(r'^[A-Z2-9]{3}-[A-Z2-9]{3}$', (x.get('codes') or [''])[0])
+                      and 'Make sure the deck shows ' + x['codes'][0] in x['pairs'][0], '%s: the request: %r' % (n, x.get('pairs')))
+            else:
+                check(not x.get('pairs'), 'the phone, after the desktop approved it: %r' % x.get('pairs'))
+            check(len(x.get('insts') or []) == (1 if n == 'desktop' else 2) and 'OFFICE-PC' in x['insts'][0]
+                  and 'approved by owner' in x['insts'][0] and 'New Stream Deck waiting' in x['insts'][0]
+                  and x.get('waiting') == 1, '%s: the installation: %r' % (n, x.get('insts')))
+            dk = x.get('decks') or []
+            check([c[1:] for c in dk] == [[32, 0], [8, 4], [8, 0]] + ([] if n == 'desktop' else [[32, 0], [8, 4]])
+                  and 'ok' in dk[0][0] and 'wait' in dk[2][0], '%s: the decks drawn to scale: %r' % (n, dk))
+            check(any('See the house' in c for c in x.get('chips') or []) and any('Switch' in c for c in x.get('chips') or []),
+                  '%s: the chips: %r' % (n, x.get('chips')))
+            if OPENSSL:
+                check(x.get('button', '').strip() == 'Download ZIGMon for Stream Deck 1.0.0'
+                      and x.get('sha') == hashlib.sha256(PLUGIN).hexdigest() and 'Get the plugin' in x.get('get', ''),
+                      '%s: get the plugin: %r' % (n, [x.get('button'), x.get('get')]))
+            dl = x.get('dlg') or {}
+            check(dl.get('title') == 'What OFFICE-PC may do' and dl.get('caps', [])[:1] == ['view'] and 'status' in dl.get('caps', [])
+                  and set(dl.get('on') or []) == {'view', 'switch', 'status'} and 'switch everything' in dl.get('summary', '')
+                  and len(dl.get('presets') or []) == 4, '%s: the permission editor: %r' % (n, dl))
+            ev = dl.get('everyday') or {}
+            check(ev.get('chosen') == 'everyday' and 'system' not in (ev.get('on') or [])
+                  and 'automations' not in (ev.get('on') or []) and {'switch', 'dim', 'climate', 'cover', 'scenes'} <= set(ev.get('on') or []),
+                  '%s: the preset: %r' % (n, ev))
+            check(dl.get('shown') == ['zb:%s:state' % BULB] and 'Obývák' in (dl.get('groups') or []),
+                  '%s: the picker: %r %r' % (n, dl.get('shown'), dl.get('groups')))
+            check(x.get('wide', 9999) <= x.get('view', 0) + 1 and dl.get('wide', 9999) <= x.get('view', 0) + 1,
+                  '%s: scrolls sideways: %r/%r/%r' % (n, x.get('wide'), dl.get('wide'), x.get('view')))
+        ap = (r.get('desktop') or {}).get('approve') or {}
+        af = (r.get('desktop') or {}).get('after') or {}
+        check(ap.get('title') == 'Approve RELAY-PC' and ap.get('name') == 'RELAY-PC'
+              and ap.get('code') == ((r.get('desktop') or {}).get('codes') or [''])[0], 'the approval: %r' % ap)
+        check(af.get('pairs') == 0 and 'RELAY-PC' in (af.get('insts') or []) and 'OFFICE-PC' in (af.get('insts') or []),
+              'after the approval: %r' % af)
+        check(not r.get('errors'), 'the page threw: %r' % r.get('errors'))
+        code, out = call('/api/deck/admin', session=S)
+        relay_pc = next((x for x in out.get('installs') or [] if x['name'] == 'RELAY-PC'), {})
+        check(relay_pc.get('caps', {}).get('switch', {}).get('on') is True and relay_pc['caps']['dim']['all'] is True
+              and relay_pc['caps']['climate']['on'] is False and relay_pc.get('approved_by') == 'owner',
+              'what the browser approved: %r' % relay_pc)
+        print('  screenshots: %s' % SHOTS)
 finally:
     for p in PROCS:
         p.terminate()
@@ -1012,7 +1165,6 @@ finally:
         api.stop()
     except Exception:                                       # noqa: BLE001
         pass
-zigmon.log = _real_log
 
 # ---- install.sh ---------------------------------------------------------------------------------
 print('install.sh')
@@ -1151,6 +1303,7 @@ else:
     check(got.returncode != 0 and 'does not describe' in (got.stdout + got.stderr)
           and not (t / 'release' / ('zigmon-%s.tar.gz' % V)).exists(), 'a wrong plugin was released: %s' % got.stdout[-300:])
 
+zigmon.log = _real_log
 shutil.rmtree(W, ignore_errors=True)
 if bad:
     print('%d FAILED' % len(bad))
