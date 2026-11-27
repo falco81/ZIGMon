@@ -2083,7 +2083,23 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.56.2**
+Current version: **5.57.0**
+
+5.57.0 — ZIGMon Notifier: a Windows app that brings a triggered sensor to the front.
+
+* ZIGMon Notifier (windows/, release/zigmon-notifier-1.0.0-win-x64.zip): sits
+  by the clock, watches the sensors chosen in it, and when one is triggered -
+  motion, a door opened, water, smoke, gas, CO, tamper, vibration, a button
+  pressed - slides an alert in at the bottom right, on top of everything.
+  Right-click: connection, watched sensors, pause, sound, start with Windows.
+  The key is kept encrypted for the Windows user (DPAPI); HTTPS only, a
+  certificate the system does not trust only after its fingerprint is pinned.
+* Settings - Messages - Desktop app: a read-only key per computer, shown once
+  (only its sha256 is kept), for every sensor or chosen ones; who made it,
+  when and from where it was last used; edited or taken away at once.
+* The app asks index.php?api=notifier (hello, sensors, a long poll for the
+  edges) with the key in the X-Zigmon-Notifier header only. A wrong key is
+  counted as a wrong one-tap secret, and too many are refused (429).
 
 5.56.2 — the integrity check of a large database no longer ends in a 504.
 
