@@ -68,7 +68,7 @@ export const LAYOUTS: Record<string, Layout> = {
     items: [
       px("icon", [12, 12, 36, 36], 1),
       t("name", [56, 10, 136, 18], 13, 600, P.dim),
-      t("value", [56, 26, 136, 28], 22, 700, P.text),
+      t("value", [56, 28, 136, 28], 22, 700, P.text),
       px("art", [12, 60, 176, 32], 1),
     ],
   },

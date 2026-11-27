@@ -591,9 +591,9 @@ export class Hub {
     this.setPhase(this.address ? "unpaired" : "setup", "");
   }
 
+  /** Try again now (a key pressed, the PC woke up): only when there is a key - pairing is only ever started by the user. */
   retryNow(): void {
-    if (this.token) this.runLoop();
-    else if (this.address) void this.startPairing();
+    if (this.token && this.phase !== "online") this.runLoop();
   }
 
   // ------------------------------------------------------------------ commands

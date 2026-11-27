@@ -9,5 +9,5 @@
     "sourceMap": false,
     "noEmit": false
   },
-  "include": ["src/core/**/*.ts", "test/**/*.ts"]
+  "include": ["src/core/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }

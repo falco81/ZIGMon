@@ -25,6 +25,7 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@elgato/streamdeck": "3.0.6"
+    "@elgato/streamdeck": "3.0.6",
+    "@elgato/utils": "0.7.0"
   }
 }

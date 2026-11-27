@@ -221,6 +221,12 @@ export class ActionView implements HubView {
     }
   }
 
+  /** The key as it looks now, for the property inspector's preview (keys and dials alike). */
+  previewImage(): string {
+    const n = this.notice();
+    return dataUri(n && "pair" in n ? renderPair(n.pair) : n ? renderNotice(n) : this.keyImage());
+  }
+
   private accent(): string {
     const it = this.item;
     if (this.kind === "dimmer") return P.warn;

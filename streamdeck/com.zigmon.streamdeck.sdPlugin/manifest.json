@@ -1,0 +1,203 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "ZIGMon for Stream Deck",
+  "Version": "1.0.0.0",
+  "Author": "ZIGMon",
+  "Description": "Control and watch your ZIGMon home from a Stream Deck XL or Stream Deck +: switches, lights, heating, blinds, scenes, readings and ZIGMon's own status - only what ZIGMon's administrator allowed for this very deck.",
+  "UUID": "com.zigmon.streamdeck",
+  "Icon": "imgs/plugin/marketplace",
+  "Category": "ZIGMon for Stream Deck",
+  "CategoryIcon": "imgs/plugin/category",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 3,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "24",
+    "Debug": "disabled"
+  },
+  "Actions": [
+    {
+      "Name": "Control",
+      "UUID": "com.zigmon.streamdeck.control",
+      "Icon": "imgs/actions/control/icon",
+      "Tooltip": "Switch any item ZIGMon allows - a socket, light, relay, valve. On a dial: push to switch, turn to adjust.",
+      "PropertyInspectorPath": "ui/control.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/control/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/control.json",
+        "Icon": "imgs/actions/control/encoder",
+        "TriggerDescription": {
+          "Push": "Switch",
+          "Rotate": "Adjust",
+          "Touch": "Switch"
+        }
+      }
+    },
+    {
+      "Name": "Reading",
+      "UUID": "com.zigmon.streamdeck.reading",
+      "Icon": "imgs/actions/reading/icon",
+      "Tooltip": "Show a reading big, with its trend, a sparkline and your colour thresholds.",
+      "PropertyInspectorPath": "ui/reading.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/reading/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/reading.json",
+        "Icon": "imgs/actions/reading/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Thermostat",
+      "UUID": "com.zigmon.streamdeck.thermostat",
+      "Icon": "imgs/actions/thermostat/icon",
+      "Tooltip": "Turn the setpoint, push for the next mode or preset, touch for boost.",
+      "PropertyInspectorPath": "ui/thermostat.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/thermostat/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/thermostat.json",
+        "Icon": "imgs/actions/thermostat/encoder",
+        "TriggerDescription": {
+          "Push": "Mode / preset",
+          "Rotate": "Setpoint",
+          "Touch": "Boost"
+        }
+      }
+    },
+    {
+      "Name": "Light",
+      "UUID": "com.zigmon.streamdeck.dimmer",
+      "Icon": "imgs/actions/dimmer/icon",
+      "Tooltip": "Turn the brightness, push to switch the light on or off.",
+      "PropertyInspectorPath": "ui/dimmer.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/dimmer/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/dimmer.json",
+        "Icon": "imgs/actions/dimmer/encoder",
+        "TriggerDescription": {
+          "Push": "On / off",
+          "Rotate": "Brightness",
+          "Touch": "On / off"
+        }
+      }
+    },
+    {
+      "Name": "Blinds",
+      "UUID": "com.zigmon.streamdeck.blinds",
+      "Icon": "imgs/actions/blinds/icon",
+      "Tooltip": "Turn to move the blinds, push to stop, open or close them.",
+      "PropertyInspectorPath": "ui/blinds.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/blinds/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/blinds.json",
+        "Icon": "imgs/actions/blinds/encoder",
+        "TriggerDescription": {
+          "Push": "Stop / open / close",
+          "Rotate": "Position",
+          "Touch": "Stop"
+        }
+      }
+    },
+    {
+      "Name": "Scene",
+      "UUID": "com.zigmon.streamdeck.scene",
+      "Icon": "imgs/actions/scene/icon",
+      "Tooltip": "Run a scene, sequence or group of actions with one press.",
+      "PropertyInspectorPath": "ui/scene.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/scene/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true
+    },
+    {
+      "Name": "ZIGMon status",
+      "UUID": "com.zigmon.streamdeck.status",
+      "Icon": "imgs/actions/status/icon",
+      "Tooltip": "Watch ZIGMon itself: alerts, blocked addresses, the proxy, the gateway, its health.",
+      "PropertyInspectorPath": "ui/status.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/status/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false
+    }
+  ]
+}
