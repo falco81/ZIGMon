@@ -407,8 +407,8 @@ try:
     check(out.get('install') == {'id': INSTALL, 'name': 'OFFICE-PC', 'caps': zigmon.Daemon.deck_default_caps(),
                                  'hint': TOKEN[-2:]}, 'the install with the token: %r' % out.get('install'))
     code, out = call('/api/deck/pair_wait', pair=P1['secret'], client='192.168.40.20')
-    check(code == 200 and out.get('state') == 'approved' and 'token' not in out and out.get('taken') is True,
-          'the token a second time: %s %r' % (code, out))
+    check(code == 200 and out == {'ok': True, 'state': 'expired', 'taken': True},
+          'the token a second time (the request is over - the plugin pairs again): %s %r' % (code, out))
     raw = d.store.get_meta('deck_installs') or ''
     check(TOKEN not in raw and hashlib.sha256(TOKEN.encode()).hexdigest() in raw, 'what is kept: %r' % raw[:300])
     code, out = call('/api/deck/admin', session=S)
@@ -487,9 +487,12 @@ try:
                                   'max': 254, 'step': 1} and dim['state']['value'] == 120, 'the dimmer: %r' % dim)
     sp = items.get('zb:%s:current_heating_setpoint' % THERMO) or {}
     check(sp.get('kind') == 'thermostat' and sp.get('cap') == 'climate' and sp['attrs'][0]['step'] == 0.5
-          and sp['attrs'][0]['min'] == 5 and sp['attrs'][0]['max'] == 30 and sp['state']['value'] == 21
-          and sp['state']['battery'] == 77 and sp['state']['attrs'].get('local_temperature') == 20.5,
-          'the set point: %r' % sp)
+          and sp['attrs'][0]['min'] == 5 and sp['attrs'][0]['max'] == 30 and sp['state']['value'] == 20.5
+          and sp['state']['value_text'] == '20.5 °C' and sp['state']['battery'] == 77
+          and sp['state']['attrs'] == {'local_temperature': 20.5, 'current_heating_setpoint': 21, 'system_mode': 'heat'}
+          and sp['attrs'][1] == {'key': 'system_mode', 'label': 'Mode', 'type': 'enum', 'values': ['off', 'heat', 'auto'],
+                                 'via': 'zb:%s:system_mode' % THERMO},
+          'the set point - the thermostat on one key: %r' % sp)
     mode = items.get('zb:%s:system_mode' % THERMO) or {}
     check(mode.get('actions') == ['set'] and mode['attrs'][0]['type'] == 'enum'
           and mode['attrs'][0]['values'] == ['off', 'heat', 'auto'], 'the mode: %r' % mode)
@@ -711,6 +714,18 @@ try:
           'the blind\'s position: %s %s %r' % (code, code2, RAN))
     code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r1', 'action': 'set', 'value': 22.4})
     check(code == 200 and out.get('said') == 'set Temperature in Obývák to 22.5 °C', 'a room\'s temperature: %s %r' % (code, out))
+    # the head's mode through its set point's key, and a dial on the room
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': SP, 'action': 'set', 'attr': 'system_mode', 'value': 'auto'})
+    time.sleep(0.15)
+    check(code == 200 and [r[2:4] for r in RAN] == [('system_mode', 'set:auto')], 'the mode through the set point: %s %r %r'
+          % (code, out, RAN))
+    time.sleep(0.6)
+    code, out = deck('state?ids=heat:temp:r1')
+    t1 = (out.get('items') or {}).get('heat:temp:r1') or {}
+    check(t1.get('attrs', {}).get('target') == 22.5 and t1['attrs'].get('mode') == 'plan', 'the room after: %r' % t1)
+    code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r1', 'action': 'set', 'attr': 'target', 'delta': -1})
+    check(code == 200 and out.get('said') == 'set Temperature in Obývák to 21.5 °C', 'a dial on the room: %s %r' % (code, out))
 
     # ---- the rate -----------------------------------------------------------------------------
     print('the rate')
@@ -729,7 +744,27 @@ try:
     print('the long wait')
     caps(switch={'on': True, 'all': True})
     code, out = deck('hello')
-    SEQ = out['seq']
+    SEQ, BOOT = out['seq'], out['boot']
+    # the permissions changed under a waiting poll: it is told to start over (another boot for it)
+    box = {}
+
+    def waiter0():
+        box['r'] = deck('wait?after=%d&boot=%s&ids=Lampa' % (d._deck_seq, BOOT))
+        box['at'] = time.time()
+
+    th = threading.Thread(target=waiter0)
+    th.start()
+    time.sleep(0.8)
+    t0 = time.time()
+    caps(switch={'on': True, 'all': True}, scenes={'on': True, 'all': True})
+    th.join(30)
+    code, out = box.get('r') or (0, {})
+    check(code == 200 and out.get('reset') is True and out.get('boot') != BOOT and box.get('at', 99) - t0 < 3,
+          'a poll after the permissions changed: %s %r' % (code, out))
+    code, out = deck('hello')
+    check(out.get('boot') == box['r'][1].get('boot') and out['install']['caps']['scenes']['on'] is True,
+          'hello after: %r' % out.get('boot'))
+    BOOT = out['boot']
     code, out = deck('wait?after=0&boot=%s' % BOOT)
     check(code == 200 and set(out) == {'ok', 'boot', 'seq', 'reset', 'changes'} and out['reset'] is False
           and out['changes'] and all(set(c) == {'seq', 'id', 'state'} for c in out['changes'])
@@ -952,6 +987,7 @@ try:
 
     d._deck_rates.clear()
     code, out = relay('api=deck&do=hello', token=TOKEN)
+    BOOT = out.get('boot')
     check(code == 200 and out.get('install', {}).get('name') == 'OFFICE-PC', 'hello through the relay: %s %r' % (code, out))
     code, out = relay('api=deck&do=hello', token=TOKEN + '!*"<>', install=INSTALL + '\';')
     check(code == 200, 'the headers are not cut down to their letters: %s %r' % (code, out))

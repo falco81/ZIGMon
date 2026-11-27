@@ -13019,8 +13019,8 @@ class Daemon(object):
                 st = {'on': on, 'value': value, 'value_text': None, 'attrs': extra or {}, 'online': online,
                       'battery': battery, 'at': at}
                 unit = attrs[0].get('unit') if attrs else ''
-                st['value_text'] = self._ntf_vtext(value, unit or '') if value is not None else (
-                    None if on is None else ('on' if on else 'off'))
+                # on or off is said by "on" itself: no words for it here (a key would say it twice)
+                st['value_text'] = self._ntf_vtext(value, unit or '') if value is not None else None
                 out.append({'id': item_id, 'name': label, 'room': room, 'kind': kind, 'icon': icon, 'cap': cap,
                             'actions': actions, 'attrs': attrs, 'state': st, '_target': item_id})
 
@@ -13050,7 +13050,7 @@ class Daemon(object):
                             a = num_attr('position', exposes.get('position') or {}, '%', 0, 100)
                             a['via'] = 'zb:%s:position' % did
                             attrs.append(a)
-                        common(t['value'], t['name'], 'cover', 'blind', 'cover',
+                        common(t['value'], t['name'], 'cover', 'blinds', 'cover',
                                ['open', 'close', 'stop'] + (['set', 'step'] if attrs else []), attrs,
                                pos if isinstance(pos, (int, float)) and not isinstance(pos, bool) else None,
                                None if not up else up in ('OPEN', 'ON'),
@@ -13064,23 +13064,29 @@ class Daemon(object):
                                 a['via'] = 'zb:%s:%s' % (did, lk)
                                 attrs.append(a)
                     common(t['value'], t['name'], 'light' if light and k == 'state' else 'switch',
-                           'light' if light and k == 'state' else 'zb', 'switch', ['toggle', 'on', 'off'], attrs,
+                           'light' if light and k == 'state' else 'switch', 'switch',
+                           ['toggle', 'on', 'off'] + (['set', 'step'] if attrs else []), attrs,
                            None, None if up not in ('ON', 'OFF') else up == 'ON',
                            light_extra if light and k == 'state' else {})
+                    if light and k == 'state' and up == 'ON' and 'brightness' in light_extra and attrs:
+                        # the brightness as a share, as a key can say it: "47 %"
+                        out[-1]['state']['value_text'] = self._deck_pct(light_extra['brightness'], attrs[0])
                     continue
                 info = exposes.get(k) or {}
                 if k in ('brightness', 'color_temp'):
                     a = num_attr(k, info, '', 0, 254 if k == 'brightness' else None)
                     v = values.get(k)
-                    common(t['value'], t['name'], 'dimmer', 'light', 'dim', ['set', 'step'], [a],
-                           v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None)
+                    v = v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+                    common(t['value'], t['name'], 'dimmer', 'light', 'dim', ['set', 'step'], [a], v, None)
+                    if k == 'brightness' and v is not None:
+                        out[-1]['state']['value_text'] = self._deck_pct(v, a)
                     continue
                 if k == 'position':
                     if thermostat or 'state' in keys and cover:
                         continue                  # a valve's opening, or the blind's own card has it
                     a = num_attr(k, info, '%', 0, 100)
                     v = values.get(k)
-                    common(t['value'], t['name'], 'cover', 'blind', 'cover', ['open', 'close', 'set', 'step'], [a],
+                    common(t['value'], t['name'], 'cover', 'blinds', 'cover', ['open', 'close', 'set', 'step'], [a],
                            v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None)
                     continue
                 if k in self.DECK_CLIMATE_KEYS:
@@ -13091,14 +13097,46 @@ class Daemon(object):
                             extra[rk] = values.get(rk)
                     if t['kind'] == 'number':
                         step = 0.5 if 'temperature' in k or 'setpoint' in k else 1
-                        a = num_attr(k, info, '°C' if step == 0.5 else '', 5 if step == 0.5 else None,
+                        a = num_attr(k, info, '\u00b0C' if step == 0.5 else '', 5 if step == 0.5 else None,
                                      30 if step == 0.5 else None, step)
-                        common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set', 'step'], [a],
+                        common(t['value'], t['name'], 'thermostat', 'thermostat', 'climate', ['set', 'step'], [a],
                                v if isinstance(v, (int, float)) and not isinstance(v, bool) else None, None, extra)
                     else:
                         a = enum_attr(k, dict(info, values=t.get('values') or info.get('values')))
-                        common(t['value'], t['name'], 'thermostat', 'valve', 'climate', ['set'], [a],
-                               v if isinstance(v, (str, int, float)) and not isinstance(v, bool) else None, None, extra)
+                        if sorted(str(x).upper() for x in a['values']) == ['OFF', 'ON']:
+                            # an on/off setting (boost, child lock, window detection): true or false
+                            words = sorted(a['values'], key=lambda x: str(x).upper() != 'ON')
+                            a = {'key': k, 'label': a['label'], 'type': 'bool', 'values': words}
+                            v = None if v is None else str(v).upper() == 'ON'
+                        common(t['value'], t['name'], 'thermostat', 'thermostat', 'climate', ['set'], [a],
+                               v if isinstance(v, (str, int, float, bool)) else None,
+                               v if isinstance(v, bool) else None, extra)
+            # (5.59) a thermostat is one thing on a key: its set point's item carries the other
+            # settings of the head as attributes (each set through its own item, under "climate"),
+            # and says the temperature it measures as its value
+            mine = {it['id']: it for it in out if it['id'].startswith('zb:%s:' % did)}
+            primary = next((mine.get('zb:%s:%s' % (did, k)) for k in ('current_heating_setpoint', 'occupied_heating_setpoint')
+                            if 'zb:%s:%s' % (did, k) in mine), None)
+            if primary is not None:
+                sp_key = primary['attrs'][0]['key']
+                primary['name'] = dev.get('alias') or dev.get('name') or did     # the head itself
+                st = primary['state']
+                st['attrs'][sp_key] = st['value']
+                for other in mine.values():
+                    if other is primary or other['cap'] != 'climate' or not other['attrs']:
+                        continue
+                    a = dict(other['attrs'][0], via=other['id'])
+                    primary['attrs'].append(a)
+                    st['attrs'][a['key']] = other['state']['value']
+                cur = values.get('local_temperature', values.get('temperature'))
+                if isinstance(cur, (int, float)) and not isinstance(cur, bool):
+                    st['value'] = cur
+                    st['value_text'] = self._ntf_vtext(cur, '\u00b0C')
+                    st['attrs']['local_temperature'] = cur
+                else:
+                    st['value'] = None
+                    st['value_text'] = ('\u2192 %s' % self._ntf_vtext(st['attrs'][sp_key], '\u00b0C')
+                                        if st['attrs'][sp_key] is not None else None)
         return out
 
     def _deck_house_items(self, rooms):
@@ -13110,8 +13148,7 @@ class Daemon(object):
             out.append({'id': item_id, 'name': name, 'room': room, 'kind': kind, 'icon': icon, 'cap': cap,
                         'actions': actions, 'attrs': attrs or [],
                         'state': {'on': on, 'value': value,
-                                  'value_text': vtext if vtext is not None else (
-                                      None if on is None else ('on' if on else 'off')),
+                                  'value_text': vtext,
                                   'attrs': extra or {}, 'online': online, 'battery': battery, 'at': at},
                         '_target': item_id})
         for p in list(self.plugs.values()):
@@ -13145,11 +13182,19 @@ class Daemon(object):
             if isinstance(temp, (int, float)) and not isinstance(temp, bool):
                 extra['temperature'] = temp
             wanted = r.get('wanted_c') if isinstance(r.get('wanted_c'), (int, float)) else None
-            add('heat:temp:%s' % r['id'], 'Temperature in %s' % r['name'], 'thermostat', 'thermo', 'climate',
+            extra['target'] = wanted
+            measured = extra.get('temperature')
+            # (5.59) a room as a thermostat: the temperature it measures as its value, the one it
+            # wants under "target" (the dial's), its mode beside it (set through heat:room:<id>)
+            add('heat:temp:%s' % r['id'], 'Temperature in %s' % r['name'], 'thermostat', 'thermostat', 'climate',
                 ['set', 'step'], room=r['name'],
-                attrs=[{'key': 'temperature', 'label': 'Wanted temperature', 'type': 'number', 'unit': '°C',
-                        'min': 5, 'max': 30, 'step': 0.5}],
-                value=wanted, vtext=self._ntf_vtext(wanted, '°C') if wanted is not None else None, extra=extra)
+                attrs=[{'key': 'target', 'label': 'Wanted temperature', 'type': 'number', 'unit': '\u00b0C',
+                        'min': 5, 'max': 30, 'step': 0.5},
+                       {'key': 'mode', 'label': 'Mode', 'type': 'enum',
+                        'values': ['plan', 'comfort', 'eco', 'night', 'max', 'off'], 'via': 'heat:room:%s' % r['id']}],
+                value=measured, vtext=(self._ntf_vtext(measured, '\u00b0C') if measured is not None else
+                                       ('\u2192 %s' % self._ntf_vtext(wanted, '\u00b0C')) if wanted is not None else None),
+                extra=extra)
             add('heat:room:%s' % r['id'], 'Heating in %s' % r['name'], 'thermostat', 'heat', 'climate',
                 ['set', 'toggle', 'on', 'off'], room=r['name'],
                 attrs=[{'key': 'mode', 'label': 'Mode', 'type': 'enum',
@@ -13163,15 +13208,15 @@ class Daemon(object):
                 add('seq:%s' % sq['id'], str(sq.get('name') or sq['id']), 'sequence', 'seq', 'scenes', ['run'])
         for g in self.action_groups() or []:
             if g.get('id'):
-                add('act:%s' % g['id'], str(g.get('name') or g['id']), 'group', 'agroup', 'scenes',
+                add('act:%s' % g['id'], str(g.get('name') or g['id']), 'group', 'layers', 'scenes',
                     ['toggle', 'on', 'off'])
-                add('agroup:%s' % g['id'], 'Action group %s' % (g.get('name') or g['id']), 'group', 'agroup',
+                add('agroup:%s' % g['id'], 'Action group %s' % (g.get('name') or g['id']), 'group', 'layers',
                     'automations', ['toggle', 'on', 'off'], on=bool(g.get('enabled', True)),
                     vtext='enabled' if g.get('enabled', True) else 'disabled')
         for r in self.rules() or []:
             if isinstance(r, dict) and r.get('id'):
                 on = bool(r.get('enabled', True))
-                add('rule:%s' % r['id'], str(r.get('name') or self.target_label('rule:%s' % r['id'])), 'rule', 'bolt',
+                add('rule:%s' % r['id'], str(r.get('name') or self.target_label('rule:%s' % r['id'])), 'rule', 'rule',
                     'automations', ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
         for x in self.schedules() or []:
             if isinstance(x, dict) and x.get('id'):
@@ -13181,7 +13226,7 @@ class Daemon(object):
         for g in self.sensor_groups() or []:
             if g.get('id'):
                 on = bool(g.get('enabled', True))
-                add('sgroup:%s' % g['id'], 'Sensor group %s' % (g.get('name') or g['id']), 'group', 'sgroup',
+                add('sgroup:%s' % g['id'], 'Sensor group %s' % (g.get('name') or g['id']), 'group', 'layers',
                     'automations', ['toggle', 'on', 'off'], on=on, vtext='enabled' if on else 'disabled')
         groups = []
         for b in self.bindings() or []:
@@ -13262,10 +13307,10 @@ class Daemon(object):
     @staticmethod
     def _deck_reading_icon(k):
         k = k.lower()
-        for word, icon in (('temperature', 'thermo'), ('humidity', 'humidity'), ('power', 'bolt'),
+        for word, icon in (('temperature', 'thermo'), ('humidity', 'drop'), ('power', 'bolt'),
                            ('energy', 'bolt'), ('battery', 'battery'), ('occupancy', 'motion'),
                            ('presence', 'motion'), ('contact', 'contact'), ('illuminance', 'sun'),
-                           ('co2', 'air'), ('pressure', 'gauge'), ('water', 'water')):
+                           ('co2', 'wind'), ('pressure', 'gauge'), ('water', 'drop')):
             if word in k:
                 return icon
         return 'sensor'
@@ -13315,7 +13360,7 @@ class Daemon(object):
         add('health', 'Device health', 'pulse', bad, ('%d unwell' % bad) if bad else 'all well', not bad, worst)
         bridge = self.bridge.get('state')
         ok = bool(self.connected) and bridge != 'offline'
-        add('gateway', 'Zigbee gateway', 'mesh', bridge or ('online' if self.connected else 'offline'),
+        add('gateway', 'Zigbee gateway', 'router', bridge or ('online' if self.connected else 'offline'),
             ('online' if ok else 'offline' if not self.connected else 'Zigbee2MQTT %s' % (bridge or 'unknown')), ok,
             'ok' if ok else 'crit', {'broker': bool(self.connected), 'bridge': bridge})
         return out
@@ -13344,6 +13389,20 @@ class Daemon(object):
                 continue
             seen.add(it['id'])
             items.append(it)
+        # (5.59) every attribute an item names has its value now among its state's attrs - its own
+        # from the item's value, one set through another item from that item's
+        by_id = {it['id']: it for it in items}
+        for it in items:
+            st_attrs = it['state'].setdefault('attrs', {})
+            for a in it['attrs']:
+                if a['key'] not in st_attrs and not a.get('via'):
+                    st_attrs[a['key']] = it['state'].get('value')
+        for it in items:
+            st_attrs = it['state']['attrs']
+            for a in it['attrs']:
+                other = by_id.get(a.get('via') or '')
+                if other is not None and a['key'] not in st_attrs:
+                    st_attrs[a['key']] = other['state']['attrs'].get(a['key'], other['state'].get('value'))
         self._deck_items_kept = (key, items)
         return items
 
@@ -13397,6 +13456,12 @@ class Daemon(object):
                 changed = True
             if changed:
                 self._deck_cond.notify_all()
+
+    def _deck_refresh_safe(self):
+        try:
+            self._deck_refresh(force=True)
+        except Exception as e:                               # noqa: BLE001
+            log('the Stream Deck states: %s' % e, 'debug')
 
     def _deck_watch(self):
         """The deck's own thread: while a deck has asked lately, every change of the house
@@ -13507,11 +13572,21 @@ class Daemon(object):
         return {'id': inst['id'], 'name': inst.get('name') or '', 'caps': inst.get('caps') or self.deck_default_caps(),
                 'hint': inst.get('hint') or ''}
 
+    def deck_boot_for(self, inst):
+        """The number of this start as one installation is told it: it changes as well when its
+        permissions or its approved decks change, so a plugin waiting is told to start over
+        (hello and the catalogue again) and learns what it may do now."""
+        self._deck_setup()
+        mark = json.dumps([inst.get('caps'), sorted(x['id'] for x in inst.get('decks') or [] if x.get('approved'))],
+                          sort_keys=True)
+        return hashlib.sha256((self._deck_boot + mark).encode('utf-8')).hexdigest()[:12]
+
     def deck_hello(self, inst):
         self._deck_setup()
         plugin = self.deck_plugin()
         return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
-                'house': socket.gethostname().split('.')[0] or 'zigmon', 'boot': self._deck_boot, 'seq': self._deck_seq,
+                'house': socket.gethostname().split('.')[0] or 'zigmon', 'boot': self.deck_boot_for(inst),
+                'seq': self._deck_seq,
                 'install': self._deck_install_out(inst),
                 'decks': [{'id': x['id'], 'type': x.get('type'), 'name': x.get('name') or '',
                            'approved': bool(x.get('approved')), 'type_name': self.deck_type_name(x.get('type')),
@@ -13523,7 +13598,7 @@ class Daemon(object):
         self._deck_refresh()
         caps = inst.get('caps') or self.deck_default_caps()
         items = [self.deck_item_out(caps, it) for it in self.deck_items() if self.deck_visible(caps, it)]
-        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq,
+        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq,
                 'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()], 'items': items}
 
     @staticmethod
@@ -13544,7 +13619,7 @@ class Daemon(object):
         for it in self.deck_items():
             if (not want or it['id'] in want) and self.deck_visible(caps, it):
                 out[it['id']] = dict(it['state'])
-        return {'ok': True, 'boot': self._deck_boot, 'seq': self._deck_seq, 'items': out}
+        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq, 'items': out}
 
     def deck_wait(self, inst, after, boot, ids, timeout=None):
         """The states that changed after `after`, latest only, for the ids asked (or every
@@ -13559,11 +13634,14 @@ class Daemon(object):
         with self._deck_cond:
             while True:
                 seq = self._deck_seq
-                if boot != self._deck_boot or after > seq:
-                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': True, 'changes': []}
                 inst = next((r for r in self.deck_installs() if r['id'] == iid), None)
                 if inst is None:
                     return None
+                mine = self.deck_boot_for(inst)
+                if boot != mine or after > seq:
+                    # another start of ZIGMon, or this installation's permissions or decks changed:
+                    # the plugin fetches hello and the catalogue again
+                    return {'ok': True, 'boot': mine, 'seq': seq, 'reset': True, 'changes': []}
                 if visible is None or visible[0] != json.dumps(inst.get('caps'), sort_keys=True):
                     caps = inst.get('caps') or self.deck_default_caps()
                     visible = (json.dumps(inst.get('caps'), sort_keys=True),
@@ -13575,11 +13653,11 @@ class Daemon(object):
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or self._stop.is_set():
-                    return {'ok': True, 'boot': self._deck_boot, 'seq': seq, 'reset': False, 'changes': []}
+                    return {'ok': True, 'boot': mine, 'seq': seq, 'reset': False, 'changes': []}
                 self._deck_cond.wait(min(1.0, remaining))
         more = len(got) > self.DECK_BATCH
         got = got[:self.DECK_BATCH]
-        return {'ok': True, 'boot': self._deck_boot, 'seq': got[-1][0] if more else seq, 'reset': False,
+        return {'ok': True, 'boot': mine, 'seq': got[-1][0] if more else seq, 'reset': False,
                 'changes': [{'seq': s, 'id': k, 'state': dict(st)} for s, k, st in got]}
 
     # -- a command --
@@ -13599,6 +13677,15 @@ class Daemon(object):
                 for k in [k for k, v in self._deck_rates.items() if not [t for t in v if now - t < 60]]:
                     self._deck_rates.pop(k, None)
         return True
+
+    @staticmethod
+    def _deck_pct(value, attr):
+        """A value as the share of its attribute's range: 127 of 0..254 -> '50 %'."""
+        lo = attr.get('min') if isinstance(attr.get('min'), (int, float)) else 0
+        hi = attr.get('max') if isinstance(attr.get('max'), (int, float)) else 100
+        if hi <= lo:
+            return '%s' % value
+        return '%d %%' % round(max(0.0, min(1.0, (float(value) - lo) / (hi - lo))) * 100)
 
     @staticmethod
     def _deck_round(value, attr):
@@ -13640,6 +13727,8 @@ class Daemon(object):
         if item is None or not self.deck_visible(caps, item):
             return 404, {'ok': False, 'error': 'there is no such thing to control'}
         attr_key = str(body.get('attr') or '').strip()
+        if not attr_key and action in ('set', 'step') and item['attrs'] and item['attrs'][0].get('via'):
+            attr_key = item['attrs'][0]['key']        # a light's dial: its brightness
         # a light's brightness or a blind's position is the item that sets it, under its own capability
         if attr_key:
             via = next((a.get('via') for a in item['attrs'] if a.get('key') == attr_key and a.get('via')), None)
@@ -13685,6 +13774,12 @@ class Daemon(object):
             self._deck_refresh(force=True)
         except Exception as e:                               # noqa: BLE001
             log('the Stream Deck states: %s' % e, 'debug')
+        # what runs on a thread of its own (the heating, a scene) is looked at again a moment later,
+        # so the deck hears where it ended up even when nothing else wakes the house
+        for later in (0.7, 2.0):
+            t = threading.Timer(later, self._deck_refresh_safe)
+            t.daemon = True
+            t.start()
         now = next((it for it in self.deck_items() if it['id'] == iid), item)
         return 200, {'ok': True, 'said': said, 'state': dict(now['state'])}
 
@@ -13701,7 +13796,9 @@ class Daemon(object):
                 return 'set:%s' % action.upper(), '%s %s' % (self.DECK_SAID[action], name), target
             return ('set:100' if action == 'open' else 'set:0'), '%s %s' % (self.DECK_SAID[action], name), target
         attr = item['attrs'][0] if item['attrs'] else None
-        now = item['state'].get('value')
+        if attr is not None and body.get('attr'):
+            attr = next((a for a in item['attrs'] if a.get('key') == body.get('attr')), attr)
+        now = (item['state'].get('attrs') or {}).get(attr['key'], item['state'].get('value')) if attr else None
         if item['kind'] == 'cover' and target.endswith(':state'):
             # the blind's position, asked of the key that shows the blind
             attr = next((a for a in item['attrs'] if a.get('key') == 'position'), None)
@@ -13714,6 +13811,14 @@ class Daemon(object):
         if action == 'step' and delta is None:
             return None, 'step takes delta: how far to move from where it is', None
         label = attr.get('label') or attr['key']
+        if attr['type'] == 'bool':
+            words = attr.get('values') or ['ON', 'OFF']
+            if isinstance(value, str) and value.strip().upper() in ('ON', 'OFF', 'TRUE', 'FALSE'):
+                value = value.strip().upper() in ('ON', 'TRUE')
+            if not isinstance(value, bool):
+                return None, '%s is true or false' % label, None
+            word = words[0] if value else words[-1]
+            return 'set:%s' % word, 'set %s to %s' % (name, 'on' if value else 'off'), target
         if attr['type'] == 'enum':
             vals = attr.get('values') or []
             if delta is not None:
@@ -13859,6 +13964,9 @@ class Daemon(object):
                     pair['token'] = None          # once: from here on only its hash is anywhere
                     pair['taken'] = True
                 else:
+                    # the token went out once already: this request is over - the plugin pairs
+                    # again (asked twice, a lost answer would otherwise leave it waiting for good)
+                    out['state'] = 'expired'
                     out['taken'] = True
             elif pair['state'] == 'pending':
                 out['expires'] = int(pair['expires'])
@@ -14009,6 +14117,8 @@ class Daemon(object):
                 mine['decks'] = [x for x in mine['decks'] if x['id'] != did]
                 said = "%s removed the %s from the Stream Deck installation '%s'"
             self._deck_put(rows)
+            with self._deck_cond:
+                self._deck_cond.notify_all()        # a plugin waiting is told to start over
             self.store.add_event('control', said % (who, label, mine.get('name') or ''), 'info')
             return {'message': '%s is %s' % (label, 'approved' if act == 'deck_approve' else 'removed')}
         if act == 'revoke':
