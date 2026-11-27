@@ -23,7 +23,7 @@ public interface INotifierApi
 /// header and nowhere else; errors come out as <see cref="ZigmonException"/>
 /// with the key scrubbed from anything the server said.
 /// </summary>
-public sealed class ZigmonClient : INotifierApi, IDisposable
+public sealed class ZigmonClient : INotifierApi, IUpdateSource, IDisposable
 {
     /// <summary>No honest answer is bigger (2000 sensors are ~400 KB).</summary>
     public const int MaxResponseBytes = 2 * 1024 * 1024;
@@ -32,6 +32,8 @@ public sealed class ZigmonClient : INotifierApi, IDisposable
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
     /// <summary>The server holds a wait for 25 s and the relay gives up at 45 s.</summary>
     public static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(60);
+    /// <summary>The app's exe through the relay (which itself gives up at 30 s).</summary>
+    public static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(120);
 
     private readonly HttpClient _http;
     private readonly NotifierKey _key;
@@ -84,14 +86,53 @@ public sealed class ZigmonClient : INotifierApi, IDisposable
         return ProtocolParser.Wait(doc.RootElement);
     }
 
+    /// <summary>/update: what the server offers (not verified here - see <see cref="UpdateVerifier"/>).</summary>
+    public async Task<UpdateOffer> UpdateAsync(CancellationToken cancellationToken)
+    {
+        using var doc = await GetAsync(Address.Endpoint("update"), RequestTimeout, cancellationToken).ConfigureAwait(false);
+        return ProtocolParser.Update(doc.RootElement);
+    }
+
+    /// <summary>
+    /// /download: the exe, with the same header, certificate rules and no redirects
+    /// as everything else; refused when it is bigger than <paramref name="expectedSize"/>
+    /// (the signed size) or ends short of it.
+    /// </summary>
+    public async Task<byte[]> DownloadAsync(long expectedSize, CancellationToken cancellationToken)
+    {
+        if (expectedSize <= 0 || expectedSize > UpdateVerifier.MaxExeBytes)
+            throw new ZigmonException(ZigmonErrorKind.TooLarge, "The update's size is not believable; not downloaded.");
+        byte[] body = await FetchAsync(Address.Endpoint("download"), DownloadTimeout, "application/octet-stream",
+            (int)expectedSize, cancellationToken).ConfigureAwait(false);
+        if (body.LongLength != expectedSize)
+            throw new ZigmonException(ZigmonErrorKind.Protocol, "The download ended short of the signed size.");
+        return body;
+    }
+
     private async Task<JsonDocument> GetAsync(Uri uri, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        byte[] body = await FetchAsync(uri, timeout, "application/json", MaxResponseBytes, cancellationToken).ConfigureAwait(false);
+        if (body.Length == 0)
+            throw new ZigmonException(ZigmonErrorKind.Protocol, "ZIGMon answered with nothing.");
+        var doc = ProtocolParser.ParseDocument(body);
+        if (!ProtocolParser.IsOk(doc.RootElement))
+        {
+            string? words = ProtocolParser.ErrorText(doc.RootElement);
+            doc.Dispose();
+            throw new ZigmonException(ZigmonErrorKind.Protocol, words is null ? "ZIGMon said no, without saying why." : _key.Scrub(words), 200);
+        }
+        return doc;
+    }
+
+    /// <summary>One GET: the 2xx body (at most <paramref name="limit"/> bytes), or the error it was, in words.</summary>
+    private async Task<byte[]> FetchAsync(Uri uri, TimeSpan timeout, string accept, int limit, CancellationToken cancellationToken)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation(AppInfo.KeyHeader, _key.Reveal());
         request.Headers.TryAddWithoutValidation("User-Agent", AppInfo.UserAgent);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
 
         _observer.Record(null, CertificateVerdict.Missing);
@@ -116,10 +157,11 @@ public sealed class ZigmonClient : INotifierApi, IDisposable
         using (response)
         {
             int code = (int)response.StatusCode;
+            bool success = code is >= 200 and < 300;
             byte[] body;
             try
             {
-                body = await ReadBodyAsync(response, code is >= 200 and < 300 ? MaxResponseBytes : MaxErrorBytes, timeoutCts.Token).ConfigureAwait(false);
+                body = await ReadBodyAsync(response, success ? limit : MaxErrorBytes, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -148,35 +190,22 @@ public sealed class ZigmonClient : INotifierApi, IDisposable
                     code);
             }
 
+            if (success) return body;
+
             string? serverWords = null;
-            JsonDocument? doc = null;
             if (body.Length > 0)
             {
                 try
                 {
-                    doc = ProtocolParser.ParseDocument(body);
+                    using var doc = ProtocolParser.ParseDocument(body);
                     serverWords = ProtocolParser.ErrorText(doc.RootElement);
                     if (serverWords is not null) serverWords = _key.Scrub(serverWords);
                 }
-                catch (ZigmonException) when (code is < 200 or >= 300)
+                catch (ZigmonException)
                 {
-                    doc = null; // an error page that is not JSON: the status says enough
+                    // an error page that is not JSON: the status says enough
                 }
             }
-
-            if (code is >= 200 and < 300)
-            {
-                if (doc is null)
-                    throw new ZigmonException(ZigmonErrorKind.Protocol, "ZIGMon answered with nothing.");
-                if (!ProtocolParser.IsOk(doc.RootElement))
-                {
-                    doc.Dispose();
-                    throw new ZigmonException(ZigmonErrorKind.Protocol, serverWords ?? "ZIGMon said no, without saying why.", code);
-                }
-                return doc;
-            }
-
-            doc?.Dispose();
             throw StatusError(code, serverWords, response);
         }
     }

@@ -23,8 +23,13 @@ internal sealed class AppController : IDisposable
     private readonly ISecretProtector _protector = new DpapiProtector();
     private readonly TrayIcon _tray;
     private readonly DispatcherTimer _tick;
+    private readonly DispatcherTimer _updateTimer;
+    private readonly UpdateManager _updates;
     private CancellationTokenSource? _cts;
     private NotifierService? _service;
+    private ZigmonClient? _client;
+    private HelloInfo? _lastHello;
+    private DateTimeOffset _lastAutoCheck = DateTimeOffset.MinValue;
     private ConnectionWindow? _connectionWindow;
     private SensorsWindow? _sensorsWindow;
     private TrayMenu? _menu;
@@ -34,6 +39,7 @@ internal sealed class AppController : IDisposable
     public AlertManager Alerts { get; }
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.NotConfigured;
     public IReadOnlyList<SensorInfo> Sensors { get; private set; } = Array.Empty<SensorInfo>();
+    public UpdateStatus Update => _updates.Status;
 
     public event Action? StatusChanged;
     public event Action? SensorsChanged;
@@ -51,6 +57,13 @@ internal sealed class AppController : IDisposable
         _tick = new DispatcherTimer(DispatcherPriority.Background, ui) { Interval = TimeSpan.FromSeconds(20) };
         _tick.Tick += (_, _) => Housekeeping();
         _tick.Start();
+
+        _updates = new UpdateManager(AppVersions.Running, ReleaseKeys.Embedded, new UpdateInstaller(RealFileSystem.Instance),
+            SelfUpdate.ExePath, UpdateInstaller.DefaultStagingDir(), SelfUpdate.Start, Log);
+        _updates.StatusChanged += _ => _ui.BeginInvoke(() => StatusChanged?.Invoke());
+        _updateTimer = new DispatcherTimer(DispatcherPriority.Background, ui) { Interval = UpdateManager.Period };
+        _updateTimer.Tick += (_, _) => PeriodicUpdateLook();
+        _updateTimer.Start();
         UpdateTray();
     }
 
@@ -93,6 +106,8 @@ internal sealed class AppController : IDisposable
         var cts = new CancellationTokenSource();
         _cts = cts;
         _service = service;
+        _client = client;
+        _lastHello = null;
         SetStatus(new ConnectionStatus(ConnectionState.Connecting, "Connecting…"));
         Task.Run(() => service.RunAsync(cts.Token)).ContinueWith(_ =>
         {
@@ -106,12 +121,18 @@ internal sealed class AppController : IDisposable
         var cts = _cts;
         _cts = null;
         _service = null;
+        _client = null;
         try { cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     private void SetStatus(ConnectionStatus s)
     {
         Status = s;
+        if (s.State == ConnectionState.Connected && s.Hello is { } hello && !ReferenceEquals(hello, _lastHello))
+        {
+            _lastHello = hello;
+            OnHello(hello);
+        }
         if (s.Hello is { } h && h.House.Length > 0 && h.House != Settings.House)
         {
             Settings.House = h.House;
@@ -259,6 +280,75 @@ internal sealed class AppController : IDisposable
         }
     }
 
+    // ---- updates -------------------------------------------------------------------------
+
+    public bool AutoUpdate => Settings.AutoUpdate;
+
+    /// <summary>Whether "Check for updates now" can do anything (it needs the connection's client).</summary>
+    public bool CanCheckForUpdates => _client is not null && !_updates.Status.IsBusy;
+
+    public void SetAutoUpdate(bool on)
+    {
+        if (Settings.AutoUpdate == on) return;
+        Settings.AutoUpdate = on;
+        Save();
+        // switched on with an update already waiting: take it now
+        if (on && _updates.Status.State == UpdateState.Available) _ = RunUpdateAsync(install: true);
+        StatusChanged?.Invoke();
+    }
+
+    /// <summary>From the menu: asks the server even when its hello said nothing about the app (an older ZIGMon answers "no updates").</summary>
+    public void CheckForUpdatesNow() => _ = RunUpdateAsync(install: Settings.AutoUpdate);
+
+    /// <summary>From the menu, with automatic updates off: install the update it showed.</summary>
+    public void InstallUpdateNow() => _ = RunUpdateAsync(install: true);
+
+    /// <summary>After a hello: only when the server says it has a newer app (older servers say nothing and are not asked).</summary>
+    private void OnHello(HelloInfo hello)
+    {
+        if (!_updates.HelloOffersNewer(hello)) return;
+        if (DateTimeOffset.UtcNow - _lastAutoCheck < TimeSpan.FromMinutes(30)) return; // a flapping connection is not a reason to ask again
+        _ = RunUpdateAsync(install: Settings.AutoUpdate);
+    }
+
+    /// <summary>Every 6 hours: a fresh hello says whether there is something newer; then as after any hello.</summary>
+    private async void PeriodicUpdateLook()
+    {
+        var client = _client;
+        if (client is null || Status.State != ConnectionState.Connected || _updates.Status.IsBusy) return;
+        try
+        {
+            var hello = await client.HelloAsync(CancellationToken.None);
+            if (!ReferenceEquals(client, _client)) return;
+            _lastAutoCheck = DateTimeOffset.MinValue;
+            OnHello(hello);
+        }
+        catch (Exception ex)
+        {
+            Log("update look: " + ex.GetType().Name); // the long poll reports connection trouble on its own
+        }
+    }
+
+    private async System.Threading.Tasks.Task RunUpdateAsync(bool install)
+    {
+        var client = _client;
+        if (client is null || _updates.Status.IsBusy) return;
+        _lastAutoCheck = DateTimeOffset.UtcNow;
+        UpdateStatus result;
+        try
+        {
+            result = await _updates.CheckAsync(client, install, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Log("update: " + ex.GetType().Name);
+            return;
+        }
+        StatusChanged?.Invoke();
+        // the new version is running and waits for this one to let go of the single-instance lock
+        if (result.State == UpdateState.Restarting) RequestExit();
+    }
+
     // ---- the tray ------------------------------------------------------------------------
 
     public StatusDot Dot
@@ -381,6 +471,7 @@ internal sealed class AppController : IDisposable
         _disposed = true;
         Stop();
         _tick.Stop();
+        _updateTimer.Stop();
         Alerts.CloseAll();
         _menu?.Close();
         _connectionWindow?.Close();

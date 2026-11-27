@@ -1,4 +1,4 @@
-# ZIGMon Notifier 1.0.0 (Windows)
+# ZIGMon Notifier 1.1.0 (Windows)
 
 A small tray app for Windows 10 and 11. It sits next to the clock, watches the
 ZIGMon sensors you choose, and when one of them triggers (motion, a door opened,
@@ -7,12 +7,41 @@ on top of everything in the bottom-right corner, with a soft chime.
 
 ## Install
 
-1. Unzip `ZigmonNotifier-1.0.0-win-x64.zip` anywhere you like, for example
-   `%LOCALAPPDATA%\Programs\ZIGMon Notifier\`.
-2. Run `ZigmonNotifier.exe`. It is a single self-contained file: no installer,
-   no .NET to install, no administrator rights.
-3. Windows SmartScreen may warn about an unsigned program the first time
+1. **Download it from your ZIGMon:** Settings -> Messages -> Desktop app ->
+   **Download ZIGMon Notifier** (the file's SHA-256 is shown next to the button).
+   Put `ZigmonNotifier.exe` in a folder you can write to, for example
+   `%LOCALAPPDATA%\Programs\ZIGMon Notifier\` (not Program Files: the app
+   replaces its own file when it updates).
+2. It needs the **.NET 10 Desktop Runtime** (Microsoft, free, once per
+   computer). If it is missing, Windows says so on the first start and offers
+   the download; by hand: https://dotnet.microsoft.com/download/dotnet/10.0 ->
+   ".NET Desktop Runtime 10", Windows x64.
+3. Run `ZigmonNotifier.exe`. It is a single file: no installer, no
+   administrator rights.
+4. Windows SmartScreen may warn about an unsigned program the first time
    ("More info" -> "Run anyway").
+
+## Updates
+
+New versions come with ZIGMon's own updates, and the app **updates itself from
+the ZIGMon server it is connected to** - after connecting (when the server says
+it has a newer version) and then every 6 hours. Every update is checked first:
+the manifest (`notifier.json`) must carry a valid Ed25519 signature by
+**ZIGMon's release key** (the public keys from `deploy/release-keys` are built
+into the app), its product, file name and version must be right and newer than
+the running one, and the download must have exactly the signed size and
+SHA-256. It never goes back to an older version and never runs anything that
+failed a check. The running exe is renamed to `ZigmonNotifier.exe.old`, the new
+one is moved into its place and started with `--updated <old version>`; it
+takes over, deletes the `.old` and shows "Updated to 1.x.y". If any step fails,
+the old exe is put back.
+
+The menu has an updates section: **Update automatically** (on by default; off:
+a new version is shown and installed when you click it), **Check for updates
+now**, and a status line ("Up to date – 1.1.0", "Updating to 1.2.0…", "Update
+failed: <reason>"). A ZIGMon from before updates (no `app` in hello) is asked
+only from "Check for updates now", and its "not known" answers count as "no
+updates".
 
 To remove it: Exit from the tray menu, switch off "Start with Windows" first if
 it was on, delete the exe and `%APPDATA%\ZIGMon Notifier\`.
@@ -70,16 +99,18 @@ it was on, delete the exe and `%APPDATA%\ZIGMon Notifier\`.
   name from the server is cleaned (control and bidi characters removed) and
   shown as plain text only.
 * "Open ZIGMon" opens only the validated dashboard address.
-* No telemetry, no update checks, no other network traffic: the only server the
-  app talks to is your ZIGMon. No log files are written.
+* No telemetry, no other network traffic: the only server the app talks to is
+  your ZIGMon - updates too (`do=update`, `do=download`, with the same key
+  header, certificate rules, no redirects, and the download capped at the
+  signed size). No log files are written.
 * Start with Windows uses one value in
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; nothing is installed
   system-wide.
 
 ## Protocol (v1)
 
-`GET {base}/index.php?api=notifier&do=hello|sensors|wait&after=N&boot=B` with
-`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.0.0 (Windows)`.
+`GET {base}/index.php?api=notifier&do=hello|sensors|wait|update|download&after=N&boot=B` with
+`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.1.0 (Windows)`.
 The app long-polls `wait` (the server holds it up to 25 s; the client gives up at
 60 s), continues from each answer's `seq`, re-reads `sensors` on `reset` or a new
 `boot`, backs off 1, 2, 4 ... 60 s on errors, waits at least a minute on 429, and
@@ -93,18 +124,29 @@ Needs the .NET 10 SDK (Linux, macOS or Windows):
 ./build.sh
 ```
 
+writes `ZigmonNotifier.Core/ReleaseKeys.cs` from `../deploy/release-keys/*.pub`,
 runs the tests (`ZigmonNotifier.Tests`, against an in-memory fake ZIGMon, a real
-loopback HTTP listener and a real TLS server with a self-made certificate),
-draws the icon (`tools/IconGen`) and publishes
-`out/publish/ZigmonNotifier.exe` (self-contained, single file, compressed) and
-`out/ZigmonNotifier-1.0.0-win-x64.zip`.
+loopback HTTP listener and a real TLS server with a self-made certificate; RFC 8032
+vectors and openssl-made signatures for Ed25519; the updater against a temp folder),
+draws the icon (`tools/IconGen`), publishes the framework-dependent single-file
+exe (deterministic: two builds give the same bytes), copies it to
+`dist/ZigmonNotifier.exe` and writes `dist/notifier.json` (one line, the exact
+bytes `tools/make-release.sh` signs into `dist/notifier.json.sig`), and zips
+`out/ZigmonNotifier-1.1.0-win-x64.zip`. `dist/` is committed with each release.
 
 Layout:
 
 * `ZigmonNotifier.Core` - everything that does not need Windows: protocol
   client and long-poll loop, models and JSON validation, address and key rules,
-  certificate pinning, alert filtering, settings, the icon painter and the chime.
+  certificate pinning, alert filtering, settings, the icon painter and the chime,
+  Ed25519 verification and the updater (verify, download, stage, swap, roll back).
 * `ZigmonNotifier` - the WPF app (tray icon, menu, windows, alerts, DPAPI,
   autostart).
 * `ZigmonNotifier.Tests` - xunit tests of the core.
 * `tools/IconGen` - writes `ZigmonNotifier/Assets/app.ico`.
+* `tools/Probe` - the core's client from the command line, for the end-to-end
+  tests: `Probe <sensor>` follows the event stream; `Probe --update-check` asks
+  `/update`, verifies it (embedded keys, or the `*.pub` in the folder named by
+  `ZIGMON_PROBE_KEYS`) and prints `UPDATE <version> VERIFIED` and, after the
+  download checked out, `DOWNLOADED <sha256>`. Both read the address and the key
+  from standard input.

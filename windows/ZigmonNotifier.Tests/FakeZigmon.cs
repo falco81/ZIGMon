@@ -32,6 +32,16 @@ public sealed class FakeZigmon : HttpMessageHandler
     /// <summary>The next "wait" calls answer reset:true.</summary>
     public int ResetsToGive { get; set; }
 
+    /// <summary>hello's "app": absent (an older ZIGMon) unless set; <see cref="HelloAppNull"/> sends "app": null.</summary>
+    public string? HelloAppVersion { get; set; }
+    public bool HelloAppNull { get; set; }
+    /// <summary>The /update answer (JSON); null answers 400 like a ZIGMon from before updates.</summary>
+    public string? UpdateJson { get; set; }
+    /// <summary>The /download body; null answers 404.</summary>
+    public byte[]? DownloadBytes { get; set; }
+    /// <summary>Sent as Content-Length when set (to lie with).</summary>
+    public long? DownloadLength { get; set; }
+
     public ConcurrentQueue<SeenRequest> Requests { get; } = new();
     public int Count(string what) => Requests.Count(r => r.Uri.Query.Contains("do=" + what, StringComparison.Ordinal));
 
@@ -82,11 +92,24 @@ public sealed class FakeZigmon : HttpMessageHandler
         switch (q["do"])
         {
             case "hello":
-                return Json(200, JsonSerializer.Serialize(new
+                var hello = new Dictionary<string, object?>
                 {
-                    ok = true, api = 1, server = "zigmon", version = "5.57.0", house = House,
-                    key = new { name = "Office PC", devices = Sensors.Count, hint = "xQ" }, boot = Boot, seq = Seq,
-                }));
+                    ["ok"] = true, ["api"] = 1, ["server"] = "zigmon", ["version"] = "5.57.0", ["house"] = House,
+                    ["key"] = new { name = "Office PC", devices = Sensors.Count, hint = "xQ" }, ["boot"] = Boot, ["seq"] = Seq,
+                };
+                if (HelloAppNull) hello["app"] = null;
+                else if (HelloAppVersion is not null) hello["app"] = new { version = HelloAppVersion };
+                return Json(200, JsonSerializer.Serialize(hello));
+            case "update":
+                return UpdateJson is null
+                    ? Json(400, "{\"ok\":false,\"error\":\"do must be hello, sensors or wait\"}")
+                    : Json(200, UpdateJson);
+            case "download":
+                if (DownloadBytes is null) return Json(404, "{\"ok\":false,\"error\":\"no app here\"}");
+                var bin = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(DownloadBytes) };
+                bin.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+                if (DownloadLength is { } len) bin.Content.Headers.ContentLength = len;
+                return bin;
             case "sensors":
                 return Json(200, JsonSerializer.Serialize(new { ok = true, boot = Boot, seq = Seq, sensors = Sensors }));
             case "wait":

@@ -8,7 +8,18 @@ public sealed record KeyInfo(string Name, int Devices, string Hint);
 
 /// <summary>hello: who answers and where the event stream stands.</summary>
 public sealed record HelloInfo(
-    int Api, string Server, string Version, string House, KeyInfo Key, string Boot, long Seq);
+    int Api, string Server, string Version, string House, KeyInfo Key, string Boot, long Seq)
+{
+    /// <summary>
+    /// Whether hello carried an "app" field at all. ZIGMon from 5.58 always does (an
+    /// object, or null when its package holds no app); older ones do not, and are
+    /// then asked about updates only when the user asks.
+    /// </summary>
+    public bool AdvertisesApp { get; init; }
+
+    /// <summary>The app version this ZIGMon offers (hello.app.version), when it offers one.</summary>
+    public string? AppVersion { get; init; }
+}
 
 /// <summary>One sensor the key may see.</summary>
 public sealed record SensorInfo(

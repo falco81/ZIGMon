@@ -109,6 +109,33 @@ internal static class Browser
     }
 }
 
+/// <summary>The Windows-only end of the self-update: starting the new exe.</summary>
+internal static class SelfUpdate
+{
+    /// <summary>The running exe's full path (the single-file app's own file), or null.</summary>
+    public static string? ExePath
+    {
+        get
+        {
+            string? p = Environment.ProcessPath;
+            return !string.IsNullOrEmpty(p) && Path.IsPathFullyQualified(p) && p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? p : null;
+        }
+    }
+
+    /// <summary>Starts exactly that file (no shell, no search path) with these arguments.</summary>
+    public static bool Start(string exe, IReadOnlyList<string> args)
+    {
+        var psi = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi);
+        return p is not null;
+    }
+}
+
 /// <summary>Brushes and geometries made from the Core's strings, frozen and cached.</summary>
 internal static class Ui
 {

@@ -106,6 +106,9 @@ public static class Icons
     public static readonly string Radar = Circle(7, 17, 1.4)
         + " M 7 11 A 6 6 0 0 1 13 17 M 7 6 A 11 11 0 0 1 18 17";
 
+    /// <summary>An arrow coming round to a tick: "updated".</summary>
+    public static readonly string Updated = "M 19.5 12 A 7.5 7.5 0 1 1 16.8 6.2 M 17.5 2.8 L 17 6.6 L 13.2 6.3 M 8.5 12.2 L 11 14.7 L 15.5 10";
+
     public static readonly string Bell = "M 6 16 V 11 A 6 6 0 0 1 18 11 V 16 L 20 18 H 4 Z M 10 20 A 2 2 0 0 0 14 20";
 
     public static string Circle(double cx, double cy, double r) =>

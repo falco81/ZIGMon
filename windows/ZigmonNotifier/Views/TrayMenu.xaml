@@ -157,6 +157,37 @@
 
                 <Border Style="{StaticResource Rule}" />
 
+                <!-- updates: from the ZIGMon this app is connected to, signed with ZIGMon's release key -->
+                <ToggleButton x:Name="AutoUpdateToggle" Style="{StaticResource MenuToggle}" Click="OnAutoUpdate"
+                              ToolTip="Install new versions from your ZIGMon by themselves. Every update is checked against ZIGMon's release key first.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE895;" />
+                        <TextBlock Text="Update automatically" VerticalAlignment="Center" />
+                    </StackPanel>
+                </ToggleButton>
+                <Button x:Name="UpdateRow" Style="{StaticResource MenuRow}" Click="OnUpdateRow">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="UpdateGlyph" Style="{StaticResource RowGlyph}" Text="&#xE777;" />
+                        <TextBlock x:Name="UpdateRowText" Grid.Column="1" Text="Check for updates now" VerticalAlignment="Center" />
+                    </Grid>
+                </Button>
+                <Grid Margin="42,0,10,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Ellipse x:Name="UpdateDot" Width="6" Height="6" VerticalAlignment="Top" Margin="0,5,0,0"
+                             Fill="{StaticResource TextMutedBrush}" />
+                    <TextBlock x:Name="UpdateStatusText" Grid.Column="1" FontSize="12" Margin="7,0,0,0"
+                               Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap" MaxWidth="220" />
+                </Grid>
+
+                <Border Style="{StaticResource Rule}" />
+
                 <Button Style="{StaticResource MenuRow}" Click="OnTest">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource RowGlyph}" Text="&#xEA8F;" />

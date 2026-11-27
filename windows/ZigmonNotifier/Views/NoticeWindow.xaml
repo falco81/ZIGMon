@@ -1,0 +1,49 @@
+<Window x:Class="ZigmonNotifier.Views.NoticeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ZIGMon Notifier"
+        Width="360" SizeToContent="Height"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        WindowStartupLocation="Manual"
+        FontFamily="{StaticResource UiFont}" Foreground="{StaticResource TextBrush}"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <!-- a small card in the alerts' style, for news about the app itself ("Updated to 1.1.0") -->
+    <Grid x:Name="Root" Margin="12" Opacity="0">
+        <Border CornerRadius="14" Background="{StaticResource PanelBrush}" Effect="{StaticResource CardShadow}" />
+        <Border CornerRadius="14" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="4" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border x:Name="Stripe" Grid.Column="0" CornerRadius="13,0,0,13" Background="{StaticResource OkBrush}" />
+
+                <Grid Grid.Column="1" Margin="14,14,10,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="Tile" Width="42" Height="42" CornerRadius="12" BorderThickness="1" VerticalAlignment="Center"
+                            Background="{StaticResource OkSoftBrush}" BorderBrush="{StaticResource OkEdgeBrush}">
+                        <Viewbox Width="22" Height="22">
+                            <Path x:Name="Glyph" Style="{StaticResource StrokeIcon}" Stroke="{StaticResource OkBrush}" />
+                        </Viewbox>
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="13,0,6,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="Headline" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource OkBrush}" />
+                        <TextBlock x:Name="MainText" FontSize="15" FontWeight="SemiBold" Margin="0,1,0,0" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="Meta" FontSize="12.5" Foreground="{StaticResource TextDimBrush}" Margin="0,2,0,0"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <Button Grid.Column="2" Style="{StaticResource IconButton}" VerticalAlignment="Top"
+                            Content="&#xE711;" ToolTip="Close" Click="OnClose" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

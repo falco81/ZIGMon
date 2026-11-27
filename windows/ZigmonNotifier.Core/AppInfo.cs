@@ -4,7 +4,7 @@ namespace ZigmonNotifier.Core;
 public static class AppInfo
 {
     public const string Name = "ZIGMon Notifier";
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
     public const string UserAgent = "ZigmonNotifier/" + Version + " (Windows)";
 
     /// <summary>The header that carries the notifier key - and the only place the key ever travels.</summary>

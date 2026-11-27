@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
+using ZigmonNotifier.Core;
+using ZigmonNotifier.Views;
 
 namespace ZigmonNotifier;
 
@@ -21,8 +23,22 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // started by the old version after it put this one in place: it is exiting now
+        string? updatedFrom = ArgAfter(e.Args, "--updated");
+
         // one copy per Windows session: a second start just asks the first to show itself
         _mutex = new Mutex(true, MutexName, out bool first);
+        if (!first && updatedFrom is not null)
+        {
+            try
+            {
+                first = _mutex.WaitOne(TimeSpan.FromSeconds(15));
+            }
+            catch (AbandonedMutexException)
+            {
+                first = true; // the old one went without letting go: ours now all the same
+            }
+        }
         if (!first)
         {
             try
@@ -55,6 +71,42 @@ public partial class App : Application
 
         if (!_controller.Settings.HasConnection && !autostart)
             _controller.ShowConnection();
+
+        CleanUpAfterUpdate(updatedFrom);
+    }
+
+    private static string? ArgAfter(string[] args, string name)
+    {
+        int i = Array.FindIndex(args, a => string.Equals(a, name, StringComparison.OrdinalIgnoreCase));
+        return i >= 0 && i + 1 < args.Length ? args[i + 1] : i >= 0 ? "" : null;
+    }
+
+    /// <summary>
+    /// The old exe (ZigmonNotifier.exe.old) goes - a few tries, as the old process
+    /// may take a moment to end after letting go of the lock - and, after an
+    /// update, a card says so.
+    /// </summary>
+    private void CleanUpAfterUpdate(string? updatedFrom)
+    {
+        string? exe = SelfUpdate.ExePath;
+        if (exe is not null)
+        {
+            var installer = new UpdateInstaller(RealFileSystem.Instance);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                for (int i = 0; i < 40; i++)
+                {
+                    if (installer.CleanUp(exe)) return;
+                    Thread.Sleep(500);
+                }
+                Debug.WriteLine("[ZIGMon Notifier] the old exe could not be removed");
+            });
+        }
+
+        if (updatedFrom is null) return;
+        string? from = AppVersions.TryParse(updatedFrom, out var v) ? AppVersions.Format(v) : null;
+        if (from is not null && v >= AppVersions.Running) return; // not an update to this version
+        Dispatcher.InvokeAsync(() => NoticeWindow.ShowUpdated(AppInfo.Version, from), DispatcherPriority.ApplicationIdle);
     }
 
     private void OnUnhandled(object sender, DispatcherUnhandledExceptionEventArgs e)

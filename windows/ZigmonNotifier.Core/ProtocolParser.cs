@@ -62,8 +62,47 @@ public static class ProtocolParser
         KeyInfo key = new("", 0, "");
         if (root.TryGetProperty("key", out var k) && k.ValueKind == JsonValueKind.Object)
             key = new KeyInfo(Str(k, "name", 60), Math.Clamp(Int(k, "devices") ?? 0, 0, 100000), SafeText.Identifier(Str(k, "hint", 4), 4));
+        bool advertises = root.TryGetProperty("app", out var app);
+        string? appVersion = null;
+        if (advertises && app.ValueKind == JsonValueKind.Object
+            && AppVersions.TryParse(Str(app, "version", 24, clean: false), out var v))
+            appVersion = AppVersions.Format(v);
         return new HelloInfo(api, "zigmon", Str(root, "version", 24), Str(root, "house", NameMax), key,
-            Boot(root), Seq(root));
+            Boot(root), Seq(root)) { AdvertisesApp = advertises, AppVersion = appVersion };
+    }
+
+    /// <summary>
+    /// /update: either {"available":false}, or the advertised version, size and
+    /// sha256 with the signed manifest and its signature (both base64). Nothing
+    /// here is trusted yet - <see cref="UpdateVerifier"/> decides.
+    /// </summary>
+    public static UpdateOffer Update(JsonElement root)
+    {
+        if (!root.TryGetProperty("available", out var av) || av.ValueKind != JsonValueKind.True)
+            return UpdateOffer.None;
+        string version = Str(root, "version", 24, clean: false);
+        long size = Long(root, "size") ?? -1;
+        string sha = Str(root, "sha256", 64, clean: false);
+        byte[]? manifest = Base64(root, "manifest", UpdateVerifier.MaxManifestBytes);
+        byte[]? sig = Base64(root, "sig", 128);
+        if (version.Length == 0 || size < 0 || sha.Length == 0 || manifest is null || sig is null)
+            throw new ZigmonException(ZigmonErrorKind.Protocol, "ZIGMon's answer about the app update is incomplete.");
+        return new UpdateOffer(true, version, size, sha, manifest, sig);
+    }
+
+    private static byte[]? Base64(JsonElement o, string name, int maxBytes)
+    {
+        if (!o.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.String) return null;
+        string s = v.GetString() ?? "";
+        if (s.Length == 0 || s.Length > (maxBytes + 2) / 3 * 4) return null;
+        try
+        {
+            return Convert.FromBase64String(s);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     public static SensorsSnapshot Sensors(JsonElement root)

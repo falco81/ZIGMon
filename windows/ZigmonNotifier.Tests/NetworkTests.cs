@@ -64,7 +64,7 @@ public class ClientTests
         foreach (var r in fake.Requests)
         {
             Assert.Equal(FakeZigmon.GoodKey, r.Headers[AppInfo.KeyHeader]);
-            Assert.Equal("ZigmonNotifier/1.0.0 (Windows)", r.Headers["User-Agent"]);
+            Assert.Equal("ZigmonNotifier/1.1.0 (Windows)", r.Headers["User-Agent"]);
             Assert.DoesNotContain(FakeZigmon.GoodKey[4..], r.Uri.ToString());
             foreach (var (name, value) in r.Headers)
                 if (!name.Equals(AppInfo.KeyHeader, StringComparison.OrdinalIgnoreCase))
@@ -328,6 +328,10 @@ public class TlsTests
             Assert.Equal(sha, e.Certificate!.Sha256);
             Assert.Contains("CN=localhost", e.Certificate.Subject);
             Assert.False(e.Certificate.TrustedByWindows);
+            // the update's download goes through the very same rules
+            var d = await Assert.ThrowsAsync<ZigmonException>(() => c.DownloadAsync(1000, default));
+            Assert.Equal(ZigmonErrorKind.Certificate, d.Kind);
+            Assert.Equal(ZigmonErrorKind.Certificate, (await Assert.ThrowsAsync<ZigmonException>(() => c.UpdateAsync(default))).Kind);
         }
 
         // 2. pinned: accepted
@@ -346,6 +350,7 @@ public class TlsTests
             var e = await Assert.ThrowsAsync<ZigmonException>(() => c.HelloAsync(default));
             Assert.Equal(ZigmonErrorKind.Certificate, e.Kind);
             Assert.Contains("not the one you trusted", e.Message);
+            Assert.Equal(ZigmonErrorKind.Certificate, (await Assert.ThrowsAsync<ZigmonException>(() => c.DownloadAsync(1000, default))).Kind);
         }
 
         // 4. a pin for another port does not apply

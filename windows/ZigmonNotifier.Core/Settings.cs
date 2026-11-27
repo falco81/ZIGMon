@@ -53,6 +53,8 @@ public sealed class NotifierSettings
     public bool BringToFront { get; set; }
     /// <summary>Alerts close by themselves after a minute.</summary>
     public bool AutoClose { get; set; }
+    /// <summary>Install signed updates from the connected ZIGMon by themselves (off: show them, install on a click).</summary>
+    public bool AutoUpdate { get; set; } = true;
 
     [JsonIgnore] public bool HasConnection => !string.IsNullOrEmpty(ServerUrl) && !string.IsNullOrEmpty(ProtectedKey);
 

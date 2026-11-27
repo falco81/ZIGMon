@@ -108,6 +108,29 @@ public partial class TrayMenu : Window
         AutoCloseToggle.IsChecked = _app.Settings.AutoClose;
         StartToggle.IsChecked = Autostart.IsEnabled;
         OpenRow.IsEnabled = _app.Address is not null;
+        RefreshUpdates();
+    }
+
+    private void RefreshUpdates()
+    {
+        var u = _app.Update;
+        AutoUpdateToggle.IsChecked = _app.AutoUpdate;
+        bool offer = u.State == UpdateState.Available && !_app.AutoUpdate;
+        UpdateRowText.Text = offer ? "Install version " + u.Version : "Check for updates now";
+        UpdateGlyph.Text = offer ? "\uE896" : "\uE777";
+        UpdateGlyph.Foreground = offer ? Ui.Brush(Palette.Info) : Ui.Brush(Palette.TextDim);
+        UpdateRow.IsEnabled = _app.CanCheckForUpdates;
+        UpdateRow.ToolTip = _app.Settings.HasConnection ? null : "Connect to ZIGMon first - updates come from it.";
+
+        UpdateStatusText.Text = u.State == UpdateState.Idle ? "Version " + AppInfo.Version : u.Text;
+        UpdateDot.Fill = u.State switch
+        {
+            UpdateState.UpToDate or UpdateState.NotOffered => Ui.Brush(Palette.Ok),
+            UpdateState.Available or UpdateState.Checking or UpdateState.Updating or UpdateState.Restarting => Ui.Brush(Palette.Info),
+            UpdateState.Failed => Ui.Brush(Palette.Crit),
+            _ => Ui.Brush(Palette.TextMuted),
+        };
+        UpdateStatusText.Foreground = u.State == UpdateState.Failed ? Ui.Brush(Palette.Text) : Ui.Brush(Palette.TextDim);
     }
 
     private void OnKey(object sender, KeyEventArgs e)
@@ -174,6 +197,16 @@ public partial class TrayMenu : Window
     {
         _app.Settings.AutoClose = AutoCloseToggle.IsChecked == true;
         _app.Save();
+    }
+
+    private void OnAutoUpdate(object sender, RoutedEventArgs e) => _app.SetAutoUpdate(AutoUpdateToggle.IsChecked == true);
+
+    /// <summary>Stays open: the status line below shows how the check goes.</summary>
+    private void OnUpdateRow(object sender, RoutedEventArgs e)
+    {
+        if (_app.Update.State == UpdateState.Available && !_app.AutoUpdate) _app.InstallUpdateNow();
+        else _app.CheckForUpdatesNow();
+        RefreshUpdates();
     }
 
     private void OnStart(object sender, RoutedEventArgs e)

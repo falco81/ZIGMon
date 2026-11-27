@@ -7,12 +7,34 @@ dole nad vším ostatním upozornění a tiše cinkne.
 
 ## Instalace
 
-1. Rozbalte `ZigmonNotifier-1.0.0-win-x64.zip` kamkoli (třeba do
-   `%LOCALAPPDATA%\Programs\ZIGMon Notifier\`).
-2. Spusťte `ZigmonNotifier.exe`. Je to jeden soubor, nic se neinstaluje a
+1. **Stáhněte aplikaci ze svého ZIGMonu:** Settings → Messages → Desktop app →
+   **Download ZIGMon Notifier** (vedle tlačítka je i otisk SHA-256 souboru).
+   Uložte `ZigmonNotifier.exe` do složky, kam smíte zapisovat, třeba
+   `%LOCALAPPDATA%\Programs\ZIGMon Notifier\` (kvůli aktualizacím ne do
+   Program Files).
+2. Aplikace potřebuje **.NET 10 Desktop Runtime** od Microsoftu (zdarma, jednou
+   na počítač). Když chybí, Windows to při prvním spuštění řekne a nabídne
+   stažení; ručně: https://dotnet.microsoft.com/download/dotnet/10.0 →
+   „.NET Desktop Runtime 10“ pro Windows x64.
+3. Spusťte `ZigmonNotifier.exe`. Je to jeden soubor, nic se neinstaluje a
    nepotřebuje práva správce.
-3. Windows může poprvé varovat před nepodepsaným programem: „Další informace“ →
+4. Windows může poprvé varovat před nepodepsaným programem: „Další informace“ →
    „Přesto spustit“.
+
+## Aktualizace
+
+Nové verze přicházejí s aktualizacemi ZIGMonu a aplikace si je **sama stáhne ze
+serveru, ke kterému je připojená** (po připojení a pak každých 6 hodin). Každou
+aktualizaci nejdřív ověří: manifest musí být podepsaný **klíčem vydání ZIGMonu**
+(Ed25519, klíč je zabudovaný v aplikaci) a stažený soubor musí mít přesně
+podepsanou velikost a SHA-256. Nikdy nepřejde na starší verzi. Starý soubor
+přejmenuje na `ZigmonNotifier.exe.old`, nový spustí a starý smaže; když se
+cokoli nepovede, vrátí starou verzi zpět.
+
+V menu (pravé tlačítko) je oddíl s aktualizacemi: **Update automatically**
+(zapnuto; vypnuté = nová verze se jen ukáže a nainstaluje se kliknutím),
+**Check for updates now** a řádek se stavem („Up to date – 1.1.0“,
+„Updating to 1.2.0…“, „Update failed: …“).
 
 ## Nastavení
 
@@ -51,4 +73,5 @@ dole nad vším ostatním upozornění a tiše cinkne.
 * Vlastní (self-signed) certifikát aplikace sama nepřijme: ukáže jeho otisk
   SHA-256 a důvěřovat mu můžete až po porovnání s certifikátem na serveru. Pak
   platí jen ten jeden certifikát; když se změní, aplikace se zastaví a zeptá se.
-* Žádná telemetrie, žádné automatické aktualizace, žádné logy.
+* Žádná telemetrie, žádné logy. Aktualizace jen z vašeho ZIGMonu a jen
+  podepsané klíčem vydání ZIGMonu.
