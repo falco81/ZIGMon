@@ -686,6 +686,13 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/notifier/keys');
         exit;
     }
+    if ($what === 'notifier-attrs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.58) what a desktop alert condition may watch on one device: its attributes,
+        // their types, units and values - an administrator's, behind the sign-in in the daemon
+        $dev = substr((string) ($_GET['device'] ?? ''), 0, 200);
+        zigmon_relay('/api/notifier/attrs?device=' . rawurlencode($dev));
+        exit;
+    }
     if ($what === 'shellybackup' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.50) the configuration backups of the Shelly boxes: how each
         // stands - never an archive - an administrator's, in the daemon
@@ -5772,6 +5779,109 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .ntf-get{padding:12px;gap:10px} .ntf-get-ic{width:32px;height:32px}
     .ntf-get-row .btn{width:100%;justify-content:center}
     .ntf-dlg .push-code.ntf-secret{font-size:14px}
+  }
+  /* (5.58) a key's conditions on any sensor, and their editor */
+  .ntf-key .ntf-conds{grid-column:1/-1;margin:4px 0 2px 50px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;
+    background:var(--bg);display:flex;flex-direction:column;gap:8px;min-width:0}
+  .ntf-conds-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ntf-conds-t{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--tx-dim);font-weight:650}
+  .ntf-conds-t svg{color:var(--batt)}
+  .ntf-conds-n{letter-spacing:0;text-transform:none;font-weight:500;color:var(--tx-mut);font-size:12px}
+  .ntf-conds-head .ntf-cond-add{margin-left:auto}
+  .ntf-conds-none{margin:0;font-size:12.5px;color:var(--tx-mut);max-width:780px}
+  .ntf-cond-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:440px;
+    background:var(--panel)}
+  .ntf-cond{display:grid;grid-template-columns:26px minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1fr) auto;gap:4px 12px;align-items:center;
+    padding:8px 10px;border-bottom:1px solid var(--line)}
+  .ntf-cond:last-child{border-bottom:0}
+  .ntf-cond:hover{background:var(--panel2)}
+  .ntf-cond.gone{opacity:.62}
+  .ntf-cond-ic{font-size:18px;line-height:1;text-align:center}
+  .ntf-cond-who{min-width:0} .ntf-cond-who b{display:block;font-weight:600;font-size:13.5px;overflow-wrap:anywhere}
+  .ntf-cpill{justify-self:start;display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 11px;border-radius:999px;
+    font-size:12.5px;font-weight:600;color:var(--batt);background:rgba(163,113,247,.12);border:1px solid rgba(163,113,247,.32);
+    overflow-wrap:anywhere}
+  .ntf-cpill .ntf-hy{font-weight:500;font-size:11px;color:var(--tx-dim)}
+  .ntf-cond.gone .ntf-cpill{color:var(--tx-dim);background:var(--panel2);border-color:var(--line);text-decoration:line-through}
+  .ntf-now{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--tx-dim);min-width:0;flex-wrap:wrap}
+  .ntf-now .dot{width:8px;height:8px;border-radius:50%;background:var(--tx-mut);flex:0 0 auto}
+  .ntf-now .ntf-now-v{color:var(--tx);font-weight:600;font-variant-numeric:tabular-nums}
+  .ntf-now .ntf-now-w{color:var(--tx-mut)}
+  .ntf-now.met .dot{background:var(--ok);box-shadow:0 0 0 3px var(--ok-bg)} .ntf-now.met .ntf-now-w{color:var(--ok)}
+  .ntf-now.watch .dot{background:var(--batt)} .ntf-now.not .dot{background:var(--tx-mut)}
+  .ntf-now.unk .ntf-now-v{color:var(--tx-mut);font-weight:500}
+  .ntf-cond-acts{display:flex;gap:4px;justify-content:flex-end}
+  .ntf-re-dlg .ntf-re{display:flex;flex-direction:column;gap:12px;margin-top:4px}
+  .ntf-step{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2);display:flex;flex-direction:column;
+    gap:10px;min-width:0}
+  .ntf-step.done{background:var(--panel)}
+  .ntf-step-h{display:flex;gap:10px;align-items:center}
+  .ntf-step-n{flex:0 0 auto;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:12.5px;font-weight:700;color:var(--batt);background:rgba(163,113,247,.14);border:1px solid rgba(163,113,247,.35)}
+  .ntf-step-t{display:flex;flex-direction:column;min-width:0} .ntf-step-t b{font-size:14px}
+  .ntf-step-t span{font-size:12.5px;color:var(--tx-dim)}
+  .ntf-re-dlg .ntf-find{width:100%;box-sizing:border-box;height:36px}
+  .ntf-re-dlg .ntf-devs{max-height:min(38vh,300px)}
+  .ntf-re-dlg button.ntf-opt{width:100%;background:none;border:0;border-bottom:1px solid var(--line);color:inherit;font:inherit;
+    text-align:left}
+  .ntf-re-dlg button.ntf-opt:focus-visible{outline:2px solid var(--info);outline-offset:-2px}
+  .ntf-chosen{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid rgba(88,166,255,.35);border-radius:10px;
+    background:var(--info-bg)}
+  .ntf-chosen .ntf-ot{flex:1 1 auto}
+  .ntf-attrs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,190px),1fr));gap:8px;max-height:min(40vh,330px);
+    overflow:auto;padding:2px}
+  .ntf-attr{display:flex;flex-direction:column;gap:3px;text-align:left;padding:9px 11px;border:1px solid var(--line);border-radius:10px;
+    background:var(--panel);color:var(--tx);font:inherit;cursor:pointer;min-width:0;transition:border-color .12s,background .12s}
+  .ntf-attr:hover{border-color:rgba(163,113,247,.5)}
+  .ntf-attr.on{border-color:var(--batt);background:rgba(163,113,247,.12);box-shadow:0 0 0 1px var(--batt) inset}
+  .ntf-attr-top{display:flex;align-items:center;gap:6px;justify-content:space-between;min-width:0}
+  .ntf-attr-top b{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+  .ntf-attr-ty{flex:0 0 auto;font-size:10.5px;letter-spacing:.04em;padding:1px 7px;border-radius:999px;background:var(--panel2);
+    color:var(--tx-dim);border:1px solid var(--line)}
+  .ntf-attr-ty.number{color:var(--info)} .ntf-attr-ty.bool{color:var(--ok)} .ntf-attr-ty.enum{color:var(--warn)}
+  .ntf-attr-v{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .ntf-attr-k{font-size:11px;color:var(--tx-mut);overflow-wrap:anywhere}
+  .ntf-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .ntf-chip{appearance:none;font:inherit;font-size:13.5px;font-weight:600;min-width:42px;padding:6px 13px;border-radius:999px;cursor:pointer;
+    background:var(--panel);color:var(--tx-dim);border:1px solid var(--line);transition:border-color .12s,color .12s,background .12s}
+  .ntf-chip:hover{color:var(--tx);border-color:rgba(163,113,247,.5)}
+  .ntf-chip.on{color:#fff;background:var(--batt);border-color:var(--batt)}
+  .ntf-vals{display:flex;flex-wrap:wrap;gap:10px 12px;align-items:flex-end}
+  .ntf-val{display:flex;flex-direction:column;gap:4px;min-width:0;flex:0 1 200px}
+  .ntf-val.wide{flex:1 1 300px}
+  .ntf-val .ntf-flabel{margin:0}
+  .ntf-ingroup{display:flex;align-items:stretch;min-width:0}
+  .ntf-re-dlg .ntf-in{font:inherit;font-size:14px;height:36px;box-sizing:border-box;width:100%;min-width:0;background:var(--panel);
+    color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:0 10px}
+  .ntf-re-dlg .ntf-in:focus{outline:none;border-color:var(--batt)}
+  .ntf-ingroup .ntf-in{border-radius:8px 0 0 8px}
+  .ntf-ingroup .ntf-in:last-child{border-radius:8px}
+  .ntf-unit{display:flex;align-items:center;padding:0 10px;border:1px solid var(--line);border-left:0;border-radius:0 8px 8px 0;
+    background:var(--panel2);color:var(--tx-dim);font-size:13px;white-space:nowrap}
+  .ntf-and{font-size:13px;color:var(--tx-dim);padding-bottom:9px}
+  .ntf-noval{margin:0;font-size:13px;color:var(--tx-dim)}
+  .ntf-hyst{margin-left:auto}
+  .ntf-preview{display:flex;gap:12px;align-items:flex-start;margin-top:14px;padding:12px 14px;border-radius:12px;
+    border:1px solid rgba(163,113,247,.35);background:rgba(163,113,247,.08)}
+  .ntf-preview.empty{border-color:var(--line);background:var(--panel2)}
+  .ntf-preview-ic{flex:0 0 auto;width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    color:var(--batt);background:rgba(163,113,247,.14)}
+  .ntf-preview.empty .ntf-preview-ic{color:var(--tx-mut);background:var(--panel)}
+  .ntf-preview-t{display:flex;flex-direction:column;gap:2px;min-width:0;font-size:14px}
+  .ntf-preview-t span{overflow-wrap:anywhere}
+  .ntf-preview-c{color:var(--batt)}
+  .ntf-preview-now,.ntf-preview-h{font-size:13px;color:var(--tx-dim)}
+  .ntf-met.yes{color:var(--ok)} .ntf-met.no{color:var(--tx)}
+  @media (max-width:760px){
+    .ntf-key .ntf-conds{margin-left:0}
+    .ntf-cond{grid-template-columns:24px minmax(0,1fr) auto;grid-template-areas:'ic who acts' 'ic pill pill' 'ic now now'}
+    .ntf-cond .ntf-cond-ic{grid-area:ic;align-self:start} .ntf-cond .ntf-cond-who{grid-area:who}
+    .ntf-cond .ntf-cpill{grid-area:pill} .ntf-cond .ntf-now{grid-area:now} .ntf-cond .ntf-cond-acts{grid-area:acts}
+    .ntf-hyst{margin-left:0}
+    .ntf-val{flex:1 1 140px}
+    .ntf-attrs{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .ntf-attr-v{font-size:15px}
   }
   /* ---- Settings - Security - SELinux (otp 1.0.233's card, one machine) ---- */
   .se-card .se-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
@@ -37646,6 +37756,7 @@ function ntfRow(k) {
   };
   a.appendChild(gone);
   r.appendChild(a);
+  r.appendChild(ntfConds(k));          /* (5.58) its conditions on any sensor */
   return r;
 }
 /* New key / Edit: a name, and every sensor or the ones chosen in a list to search. */
@@ -37787,6 +37898,458 @@ function ntfShowKey(x, name) {
   }, [{words: 'I have copied it', cls: 'primary', icon: 'check', close: true}], 'narrow push-dlg-box ntf-dlg-box');
   /* closed, the key is gone from the page: nothing keeps it */
   ZM.onClose = function () { x.key = ''; var s = $('ntf-secret'); if (s) s.textContent = ''; };
+}
+/* ---- Conditions on any sensor (5.58) -------------------------------------------------------
+   A key may carry conditions on any device's reading - a temperature over a line, a socket's
+   power, a thermostat's preset changed - and the app alerts when one becomes true (and, if
+   asked there, when it clears). Each key's card lists them; Add condition opens the editor:
+   the device, its reading, the operator for that reading's type, the value(s), a preview. */
+var NTF_RULE_ICON = {weather: '🌤️'};
+function ntfKindIcon(kind) { return NTF_RULE_ICON[kind] || ICON[kind] || ICON.sensor; }
+var NTF_OPS = {
+  number: [['gt', '>'], ['ge', '≥'], ['lt', '<'], ['le', '≤'], ['eq', '='], ['ne', '≠'],
+           ['between', 'between'], ['outside', 'outside'], ['changed', 'changes']],
+  bool: [['is_true', 'is on'], ['is_false', 'is off'], ['changed', 'changes']],
+  enum: [['eq', 'is'], ['ne', 'is not'], ['changed', 'changes']],
+  text: [['eq', 'is'], ['ne', 'is not'], ['contains', 'contains'], ['not_contains', 'does not contain'], ['changed', 'changes']]
+};
+var NTF_TYPE_WORD = {number: 'number', bool: 'on / off', enum: 'choice', text: 'text'};
+var NTF_SIGN = {gt: '>', ge: '≥', lt: '<', le: '≤', eq: '=', ne: '≠'};
+function ntfNum(v) {
+  if (typeof v === 'boolean') return v ? 'on' : 'off';
+  if (typeof v !== 'number') return String(v);
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+}
+function ntfWord(label) {
+  label = String(label || '');
+  return label.length > 1 && /[A-Z]/.test(label[0]) && /[a-z]/.test(label[1]) ? label[0].toLowerCase() + label.slice(1) : label;
+}
+/* the condition without its reading, as the daemon words it */
+function ntfCond(r, unit) {
+  var u = unit ? ' ' + unit : '', v = r.value, v2 = r.value2;
+  if (NTF_SIGN[r.op] && r.op !== 'eq' && r.op !== 'ne') return NTF_SIGN[r.op] + ' ' + ntfNum(v) + u;
+  if (r.op === 'eq' || r.op === 'ne') {
+    if (typeof v === 'boolean') return 'is ' + ((v === (r.op === 'eq')) ? 'on' : 'off');
+    return NTF_SIGN[r.op] + ' ' + ntfNum(v) + (typeof v === 'number' ? u : '');
+  }
+  if (r.op === 'between') return 'between ' + ntfNum(v) + ' and ' + ntfNum(v2) + u;
+  if (r.op === 'outside') return 'outside ' + ntfNum(v) + '–' + ntfNum(v2) + u;
+  if (r.op === 'contains') return 'contains ‘' + v + '’';
+  if (r.op === 'not_contains') return 'does not contain ‘' + v + '’';
+  if (r.op === 'is_true') return 'is on';
+  if (r.op === 'is_false') return 'is off';
+  return 'changes';
+}
+function ntfTruthy(x) { return x === true || x === 1 || /^(true|on|1|yes)$/i.test(String(x).trim()); }
+/* whether a value meets a condition now: true, false, or null (unknown) - for the preview */
+function ntfMet(r, x) {
+  if (x === null || x === undefined || x === '') return null;
+  if (r.op === 'changed') return true;
+  if (r.op === 'is_true') return ntfTruthy(x);
+  if (r.op === 'is_false') return !ntfTruthy(x);
+  var a = r.value, b = r.value2;
+  if ((r.op === 'eq' || r.op === 'ne') && typeof a === 'boolean') return (ntfTruthy(x) === a) === (r.op === 'eq');
+  if (r.op === 'contains' || r.op === 'not_contains' || ((r.op === 'eq' || r.op === 'ne') && typeof a === 'string')) {
+    var s = String(x).trim().toLowerCase(), t = String(a).trim().toLowerCase();
+    if (r.op === 'eq') return s === t;
+    if (r.op === 'ne') return s !== t;
+    return r.op === 'contains' ? s.indexOf(t) >= 0 : s.indexOf(t) < 0;
+  }
+  var v = typeof x === 'boolean' ? (x ? 1 : 0) : /^(on|open|true|yes)$/i.test(String(x)) ? 1
+    : /^(off|closed?|false|no)$/i.test(String(x)) ? 0 : parseFloat(x);
+  if (!isFinite(v) || typeof a !== 'number') return null;
+  if (r.op === 'gt') return v > a; if (r.op === 'ge') return v >= a;
+  if (r.op === 'lt') return v < a; if (r.op === 'le') return v <= a;
+  if (r.op === 'eq') return Math.abs(v - a) < 1e-9; if (r.op === 'ne') return Math.abs(v - a) >= 1e-9;
+  if (typeof b !== 'number') return null;
+  if (r.op === 'between') return a <= v && v <= b;
+  if (r.op === 'outside') return v < a || v > b;
+  return null;
+}
+function ntfNow(active, valueText, op) {
+  var n = el('span', 'ntf-now ' + (active === true ? (op === 'changed' ? 'watch' : 'met') : active === false ? 'not' : 'unk'));
+  n.appendChild(el('span', 'dot'));
+  n.appendChild(el('span', 'ntf-now-v', valueText || 'no value yet'));
+  n.appendChild(el('span', 'ntf-now-w', active === null || active === undefined ? '' : op === 'changed' ? 'watching'
+    : active ? 'met now' : 'not met'));
+  n.title = active === null || active === undefined ? 'The device has not said this yet' : op === 'changed'
+    ? 'Every change is an alert' : active ? 'The condition holds now' : 'The condition does not hold now';
+  return n;
+}
+function ntfConds(k) {
+  var rules = k.rules || [], most = (NTF.d && NTF.d.rules_most) || 50;
+  var box = el('div', 'ntf-conds');
+  var head = el('div', 'ntf-conds-head');
+  var t = el('span', 'ntf-conds-t');
+  t.innerHTML = iconMarkup('pulse', 15);
+  t.appendChild(el('span', '', 'Conditions'));
+  t.appendChild(el('span', 'ntf-conds-n', rules.length ? rules.length + ' of ' + most : 'none yet'));
+  head.appendChild(t);
+  var add = cmdButton('Add condition', 'add', 'small');
+  add.classList.add('ntf-cond-add');
+  add.disabled = rules.length >= most;
+  if (add.disabled) add.title = 'At most ' + most + ' conditions per key';
+  add.onclick = function () { ntfRuleEdit(k, null); };
+  head.appendChild(add);
+  box.appendChild(head);
+  if (!rules.length) {
+    box.appendChild(el('p', 'ntf-conds-none', 'Alert on any reading of any device too: a room over 25 °C, a socket drawing more '
+      + 'than 2000 W, a thermostat switched to eco, a battery under 15 %. The app lists them beside the sensors.'));
+    return box;
+  }
+  var list = el('div', 'ntf-cond-list');
+  rules.forEach(function (r) {
+    var row = el('div', 'ntf-cond' + (r.missing ? ' gone' : ''));
+    row.dataset.id = r.id;
+    row.appendChild(el('span', 'ntf-cond-ic', ntfKindIcon(r.kind)));
+    var who = el('div', 'ntf-cond-who');
+    who.appendChild(el('b', '', r.label || r.device_name || r.device));
+    who.appendChild(el('span', 'ntf-sub', r.missing ? 'the device is gone - this never fires'
+      : [r.label ? r.device_name : '', r.room].filter(Boolean).join(' · ') || (r.label ? '' : 'no room')));
+    row.appendChild(who);
+    var pill = el('span', 'ntf-cpill', r.text || '');
+    pill.title = r.hyst ? 'Clears only when it is off by more than ' + ntfNum(r.hyst) + (r.unit ? ' ' + r.unit : '') : '';
+    if (r.hyst) pill.appendChild(el('span', 'ntf-hy', '±' + ntfNum(r.hyst)));
+    row.appendChild(pill);
+    row.appendChild(r.missing ? el('span', 'ntf-now unk', 'device gone') : ntfNow(r.active, r.value_text, r.op));
+    var acts = el('span', 'ntf-cond-acts');
+    var ed = iconButton('edit', 'Edit the condition');
+    ed.classList.add('ntf-cond-edit');
+    ed.onclick = function () { ntfRuleEdit(k, r); };
+    var dr = iconButton('trash', 'Take the condition away');
+    dr.classList.add('ntf-cond-drop', 'danger');
+    dr.onclick = function () {
+      zconfirm('Take away the condition?', (r.device_name || r.device) + ': ' + (r.text || '') + ' - the app stops '
+        + 'alerting on it from its next question.', 'Take it away', function () {
+          ntfAsk({action: 'rule_delete', id: k.id, rule_id: r.id}, dr).then(function (x) { if (x.message) toast(x.message, true); }, zoops);
+        });
+    };
+    acts.appendChild(ed);
+    acts.appendChild(dr);
+    row.appendChild(acts);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  return box;
+}
+NTF.attrs = {};
+function ntfAttrs(id) {
+  if (!NTF.attrs[id]) {
+    NTF.attrs[id] = api('notifier-attrs&device=' + encodeURIComponent(id)).then(function (x) {
+      setTimeout(function () { delete NTF.attrs[id]; }, 20000);
+      return x;
+    }, function (e) { delete NTF.attrs[id]; throw e; });
+  }
+  return NTF.attrs[id];
+}
+/* The editor: one popup in four steps and a sentence that says what it will do. */
+function ntfRuleEdit(k, rule) {
+  var devs = (NTF.d && NTF.d.rule_devices) || [];
+  var S = {dev: null, attrs: null, attr: null, op: rule ? rule.op : null, loading: false};
+  if (rule) S.dev = devs.filter(function (x) { return x.id === rule.device; })[0]
+    || {id: rule.device, name: rule.device_name || rule.device, room: rule.room, kind: rule.kind, source: ''};
+  var wrap = el('div', 'ntf-re');
+  var sDev = el('section', 'ntf-step'), sAttr = el('section', 'ntf-step'), sOp = el('section', 'ntf-step'),
+      sMore = el('section', 'ntf-step');
+  var preview = el('div', 'ntf-preview');
+  preview.id = 'ntf-preview';
+  var v1 = el('input', 'ntf-in'), v2 = el('input', 'ntf-in'), hy = el('input', 'ntf-in'), tx = el('input', 'ntf-in');
+  v1.type = v2.type = hy.type = 'number'; v1.step = v2.step = hy.step = 'any'; hy.min = '0';
+  v1.id = 'ntf-v1'; v2.id = 'ntf-v2'; hy.id = 'ntf-hy'; tx.id = 'ntf-tx';
+  tx.type = 'text'; tx.maxLength = 100; tx.autocomplete = 'off';
+  var sel = el('select', 'ntf-in');
+  sel.id = 'ntf-sel';
+  var lab = zText(rule ? rule.label : '', 'Optional - e.g. Living room too warm');
+  lab.id = 'ntf-label'; lab.maxLength = 60;
+  if (rule) {
+    if (typeof rule.value === 'number') v1.value = rule.value;
+    else if (typeof rule.value === 'string') tx.value = rule.value;
+    if (typeof rule.value2 === 'number') v2.value = rule.value2;
+    if (typeof rule.hyst === 'number') hy.value = rule.hyst;
+  }
+  function stepHead(sec, n, title, says) {
+    var h = el('div', 'ntf-step-h');
+    h.appendChild(el('span', 'ntf-step-n', String(n)));
+    var t = el('span', 'ntf-step-t');
+    t.appendChild(el('b', '', title));
+    if (says) t.appendChild(el('span', '', says));
+    h.appendChild(t);
+    sec.appendChild(h);
+    return h;
+  }
+  function type() { return S.attr ? S.attr.type : 'number'; }
+  function unit() { return S.attr && S.attr.unit ? S.attr.unit : ''; }
+  function drawDev() {
+    sDev.innerHTML = '';
+    var h = stepHead(sDev, 1, 'Device', S.dev ? '' : 'any device of the house - sockets, thermostats, sensors, the weather');
+    if (S.dev) {
+      sDev.classList.add('done');
+      var c = el('div', 'ntf-chosen');
+      c.appendChild(el('span', 'ntf-oic', ntfKindIcon(S.dev.kind)));
+      var t = el('span', 'ntf-ot');
+      t.appendChild(el('b', '', S.dev.name));
+      t.appendChild(el('span', '', [S.dev.room, S.dev.source].filter(Boolean).join(' · ')));
+      c.appendChild(t);
+      var ch = cmdButton('Change', 'edit', 'small');
+      ch.id = 'ntf-dev-change';
+      ch.onclick = function () { S.dev = null; S.attrs = null; S.attr = null; drawAll(); };
+      c.appendChild(ch);
+      sDev.appendChild(c);
+      return;
+    }
+    sDev.classList.remove('done');
+    var find = el('input', 'ntf-find');
+    find.type = 'search'; find.placeholder = 'Find a device, a room or a kind…'; find.autocomplete = 'off';
+    find.id = 'ntf-dev-find';
+    var rows = el('div', 'ntf-opts ntf-devs');
+    rows.id = 'ntf-devs';
+    devs.forEach(function (x) {
+      var b = el('button', 'ntf-opt ntf-dev');
+      b.type = 'button';
+      b.dataset.id = x.id;
+      b.dataset.find = [x.name, x.room || '', x.source || '', x.kind || '', x.id].join(' ').toLowerCase();
+      b.appendChild(el('span', 'ntf-oic', ntfKindIcon(x.kind)));
+      var t = el('span', 'ntf-ot');
+      t.appendChild(el('b', '', x.name));
+      t.appendChild(el('span', '', [x.room, x.source].filter(Boolean).join(' · ')));
+      b.appendChild(t);
+      b.onclick = function () { S.dev = x; S.attrs = null; S.attr = null; drawAll(); };
+      rows.appendChild(b);
+    });
+    if (!devs.length) rows.appendChild(el('p', 'note small', 'No device on the dashboard yet.'));
+    find.oninput = function () {
+      var q = find.value.trim().toLowerCase();
+      Array.prototype.forEach.call(rows.querySelectorAll('.ntf-dev'), function (o) { o.hidden = !!q && o.dataset.find.indexOf(q) < 0; });
+    };
+    sDev.appendChild(find);
+    sDev.appendChild(rows);
+    setTimeout(function () { try { find.focus(); } catch (e) {} }, 0);
+  }
+  function drawAttr() {
+    sAttr.innerHTML = '';
+    sAttr.hidden = !S.dev;
+    if (!S.dev) return;
+    stepHead(sAttr, 2, 'Reading', 'what it reports, as it is now');
+    if (!S.attrs) {
+      sAttr.appendChild(el('p', 'note small ntf-wait', 'Asking the device’s readings…'));
+      if (!S.loading) {
+        S.loading = true;
+        var want = S.dev.id;
+        ntfAttrs(want).then(function (x) {
+          S.loading = false;
+          if (!S.dev || S.dev.id !== want) return;
+          S.attrs = x.attrs || [];
+          if (x.device) S.dev = Object.assign({}, S.dev, {name: x.device.name, room: x.device.room, kind: x.device.kind});
+          var keep = rule && rule.device === want ? rule.attr : S.attr && S.attr.key;
+          S.attr = S.attrs.filter(function (a) { return a.key === keep; })[0] || null;
+          if (!S.attr && keep && rule) S.attr = {key: keep, label: rule.attr_label || keep, type: ntfGuessType(rule), unit: rule.unit,
+                                         values: null, value: null, value_text: null};
+          drawAll();
+        }, function (e) { S.loading = false; S.attrs = []; zmodalSaid(e, gen); drawAll(); });
+      }
+      return;
+    }
+    if (!S.attrs.length) {
+      sAttr.appendChild(el('p', 'note small', 'This device has said nothing yet that a condition could watch.'));
+      return;
+    }
+    var grid = el('div', 'ntf-attrs');
+    grid.id = 'ntf-attrs';
+    var find = null;
+    if (S.attrs.length > 8) {
+      find = el('input', 'ntf-find');
+      find.type = 'search'; find.placeholder = 'Find a reading…'; find.autocomplete = 'off';
+      find.oninput = function () {
+        var q = find.value.trim().toLowerCase();
+        Array.prototype.forEach.call(grid.children, function (o) { o.hidden = !!q && o.dataset.find.indexOf(q) < 0; });
+      };
+      sAttr.appendChild(find);
+    }
+    S.attrs.forEach(function (a) {
+      var c = el('button', 'ntf-attr' + (S.attr && S.attr.key === a.key ? ' on' : '') + (a.main ? ' main' : ''));
+      c.type = 'button';
+      c.dataset.key = a.key;
+      c.dataset.find = [a.label, a.key, a.type].join(' ').toLowerCase();
+      var top = el('span', 'ntf-attr-top');
+      top.appendChild(el('b', '', a.label));
+      top.appendChild(el('span', 'ntf-attr-ty ' + a.type, NTF_TYPE_WORD[a.type] || a.type));
+      c.appendChild(top);
+      c.appendChild(el('span', 'ntf-attr-v', a.value_text === null || a.value_text === undefined ? '—' : a.value_text));
+      c.appendChild(el('span', 'ntf-attr-k mono', a.key));
+      c.onclick = function () {
+        var was = type();
+        S.attr = a;
+        if (!S.op || was !== a.type || !(NTF_OPS[a.type] || []).some(function (o) { return o[0] === S.op; })) S.op = null;
+        drawAll();
+      };
+      grid.appendChild(c);
+    });
+    sAttr.appendChild(grid);
+  }
+  function drawOp() {
+    sOp.innerHTML = '';
+    sOp.hidden = !S.attr;
+    if (!S.attr) return;
+    stepHead(sOp, 3, 'Condition', ntfWord(S.attr.label) + (unit() ? ', in ' + unit() : ''));
+    var chips = el('div', 'ntf-chips');
+    chips.id = 'ntf-ops';
+    if (!S.op) S.op = (NTF_OPS[type()] || NTF_OPS.number)[0][0];
+    (NTF_OPS[type()] || NTF_OPS.number).forEach(function (o) {
+      var c = el('button', 'ntf-chip' + (S.op === o[0] ? ' on' : ''), o[1]);
+      c.type = 'button';
+      c.dataset.op = o[0];
+      c.setAttribute('aria-pressed', S.op === o[0] ? 'true' : 'false');
+      c.onclick = function () { S.op = o[0]; drawOp(); drawPreview(); };
+      chips.appendChild(c);
+    });
+    sOp.appendChild(chips);
+    var vals = el('div', 'ntf-vals');
+    var u = unit();
+    function withUnit(input, label) {
+      var f = el('label', 'ntf-val');
+      f.appendChild(el('span', 'ntf-flabel', label));
+      var g = el('span', 'ntf-ingroup');
+      g.appendChild(input);
+      if (u) g.appendChild(el('span', 'ntf-unit', u));
+      f.appendChild(g);
+      return f;
+    }
+    var op = S.op, t = type();
+    if (t === 'number' && ['gt', 'ge', 'lt', 'le', 'eq', 'ne'].indexOf(op) >= 0) {
+      vals.appendChild(withUnit(v1, 'Value'));
+    } else if (op === 'between' || op === 'outside') {
+      vals.appendChild(withUnit(v1, op === 'between' ? 'From' : 'Below'));
+      vals.appendChild(el('span', 'ntf-and', op === 'between' ? 'and' : 'or above'));
+      vals.appendChild(withUnit(v2, op === 'between' ? 'To' : 'Above'));
+    } else if (t === 'enum' && (op === 'eq' || op === 'ne')) {
+      sel.innerHTML = '';
+      var opts = (S.attr.values || []).slice();
+      if (rule && typeof rule.value === 'string' && opts.indexOf(rule.value) < 0) opts.push(rule.value);
+      opts.forEach(function (x, i) { var o = el('option', '', String(x)); o.value = String(i); sel.appendChild(o); });
+      sel._vals = opts;
+      var at = rule ? opts.indexOf(rule.value) : -1;
+      if (at < 0) at = Math.max(0, opts.indexOf(S.attr.value));
+      if (sel.dataset.chosen !== undefined && +sel.dataset.chosen < opts.length) at = +sel.dataset.chosen;
+      sel.value = String(at);
+      sel.onchange = function () { sel.dataset.chosen = sel.value; drawPreview(); };
+      if (opts.length) {
+        var f = el('label', 'ntf-val');
+        f.appendChild(el('span', 'ntf-flabel', 'Value'));
+        f.appendChild(sel);
+        vals.appendChild(f);
+      } else {
+        var f2 = el('label', 'ntf-val');
+        f2.appendChild(el('span', 'ntf-flabel', 'Value'));
+        f2.appendChild(tx);
+        vals.appendChild(f2);
+      }
+    } else if (['eq', 'ne', 'contains', 'not_contains'].indexOf(op) >= 0) {
+      var f3 = el('label', 'ntf-val wide');
+      f3.appendChild(el('span', 'ntf-flabel', op === 'contains' || op === 'not_contains' ? 'Text' : 'Value'));
+      f3.appendChild(tx);
+      vals.appendChild(f3);
+    } else {
+      vals.appendChild(el('p', 'ntf-noval', op === 'changed' ? 'Every change of the value is an alert - the first value heard is not.'
+        : 'No value to give: on is on.'));
+    }
+    if (['gt', 'ge', 'lt', 'le'].indexOf(op) >= 0) {
+      var fh = withUnit(hy, 'Hysteresis (optional)');
+      fh.classList.add('ntf-hyst');
+      fh.title = 'Once met, it clears only when it is off by more than this - no flapping around the line';
+      vals.appendChild(fh);
+    }
+    sOp.appendChild(vals);
+    [v1, v2, hy, tx].forEach(function (i) { i.oninput = drawPreview; });
+  }
+  function drawMore() {
+    sMore.innerHTML = '';
+    sMore.hidden = !S.attr;
+    if (!S.attr) return;
+    stepHead(sMore, 4, 'Name', 'what the alert is called - the device’s name when left empty');
+    sMore.appendChild(lab);
+    lab.oninput = drawPreview;
+  }
+  function value(input) { var s = String(input.value).trim(); return s === '' ? null : Number(s); }
+  function built() {
+    if (!S.dev || !S.attr || !S.op) return null;
+    var r = {device: S.dev.id, attr: S.attr.key, op: S.op, value: null, value2: null, hyst: null, label: lab.value.trim()};
+    var t = type();
+    if (t === 'number' && ['gt', 'ge', 'lt', 'le', 'eq', 'ne', 'between', 'outside'].indexOf(S.op) >= 0) {
+      r.value = value(v1);
+      if (S.op === 'between' || S.op === 'outside') r.value2 = value(v2);
+      if (['gt', 'ge', 'lt', 'le'].indexOf(S.op) >= 0) r.hyst = value(hy);
+    } else if (t === 'enum' && (S.op === 'eq' || S.op === 'ne') && (sel._vals || []).length) {
+      r.value = sel._vals[+sel.value];
+    } else if (['eq', 'ne', 'contains', 'not_contains'].indexOf(S.op) >= 0) {
+      r.value = tx.value.trim();
+    }
+    return r;
+  }
+  function drawPreview() {
+    preview.innerHTML = '';
+    var r = built();
+    var ic = el('span', 'ntf-preview-ic');
+    ic.innerHTML = iconMarkup('bell', 18);
+    preview.appendChild(ic);
+    var p = el('div', 'ntf-preview-t');
+    if (!r) {
+      preview.classList.add('empty');
+      p.appendChild(el('span', '', !S.dev ? 'Choose a device to begin.' : !S.attr ? 'Choose the reading to watch.' : 'Choose a condition.'));
+      preview.appendChild(p);
+      return;
+    }
+    preview.classList.remove('empty');
+    var needs = (r.value === null && ['gt', 'ge', 'lt', 'le', 'eq', 'ne', 'between', 'outside', 'contains', 'not_contains'].indexOf(r.op) >= 0)
+      || ((r.op === 'between' || r.op === 'outside') && r.value2 === null) || (typeof r.value === 'number' && !isFinite(r.value))
+      || r.value === '';
+    var text = ntfWord(S.attr.label) + ' ' + (needs ? '…' : ntfCond(r, unit()));
+    var s = el('span', 'ntf-preview-s');
+    s.appendChild(document.createTextNode('Alert when '));
+    s.appendChild(el('b', '', S.dev.name));
+    s.appendChild(document.createTextNode(': '));
+    s.appendChild(el('b', 'ntf-preview-c', text));
+    s.appendChild(document.createTextNode('.'));
+    p.appendChild(s);
+    var now = el('span', 'ntf-preview-now');
+    var vt = S.attr.value_text;
+    var met = needs ? null : ntfMet(r, S.attr.value);
+    now.appendChild(document.createTextNode(vt === null || vt === undefined ? 'It has not said this yet.' : 'Now ' + vt + ' → '));
+    if (vt !== null && vt !== undefined) {
+      now.appendChild(el('b', 'ntf-met ' + (met === true ? 'yes' : met === false ? 'no' : ''),
+        met === null ? '…' : r.op === 'changed' ? 'every change alerts' : met ? 'met' : 'not met'));
+      now.appendChild(document.createTextNode('.'));
+    }
+    p.appendChild(now);
+    if (r.hyst && !needs) p.appendChild(el('span', 'ntf-preview-h', 'Once met, it clears only past '
+      + ntfNum(r.op === 'gt' || r.op === 'ge' ? r.value - r.hyst : r.value + r.hyst) + (unit() ? ' ' + unit() : '') + '.'));
+    preview.appendChild(p);
+  }
+  function drawAll() { drawDev(); drawAttr(); drawOp(); drawMore(); drawPreview(); }
+  var gen;
+  zmodal(rule ? 'Edit the condition' : 'New condition for ' + (k.name || 'the key'), function (body) {
+    body.classList.add('ntf-dlg', 'ntf-re-dlg');
+    body.appendChild(el('p', 'note', 'The app alerts when the condition becomes true - and, if it is asked to there, when it '
+      + 'clears. Only this key’s computer hears it.'));
+    wrap.appendChild(sDev); wrap.appendChild(sAttr); wrap.appendChild(sOp); wrap.appendChild(sMore);
+    body.appendChild(wrap);
+    body.appendChild(preview);
+    drawAll();
+  }, [{words: 'Cancel', close: true},
+      {words: rule ? 'Save' : 'Add the condition', cls: 'primary', icon: rule ? 'save' : 'add', go: function (b) {
+        var r = built();
+        if (!r) { zmodalSaid(new Error('choose a device, its reading and a condition'), gen); return; }
+        var body = rule ? {action: 'rule_update', id: k.id, rule_id: rule.id, rule: r} : {action: 'rule_add', id: k.id, rule: r};
+        ntfAsk(body, b).then(function (x) { closeZModal(); if (x.message) toast(x.message, true); },
+                             function (e) { zmodalSaid(e, gen); });
+      }}], 'medium ntf-dlg-box ntf-re-box');
+  gen = ZM.gen;
+}
+function ntfGuessType(rule) {
+  if (!rule) return 'number';
+  if (rule.op === 'is_true' || rule.op === 'is_false') return 'bool';
+  if (rule.op === 'contains' || rule.op === 'not_contains') return 'text';
+  if ((rule.op === 'eq' || rule.op === 'ne') && typeof rule.value === 'string') return 'text';
+  return 'number';
 }
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {

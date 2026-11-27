@@ -11762,6 +11762,7 @@ class Daemon(object):
             self._ntf_seen = {}           # key id -> (at, from): the last use, in memory
             self._ntf_waiting = 0
             self._ntf_cond = threading.Condition()
+        self._ntf_rules_setup()           # (5.58) the conditions on any sensor
 
     def notifier_edges(self, device_id, before, said):
         """The edges in one report, into the ring. On the broker's thread: a look at a few
@@ -11802,6 +11803,605 @@ class Daemon(object):
                 self._ntf_state[(device_id, kind)] = (now, active)
             self._ntf_cond.notify_all()
 
+    # ---- conditions on any sensor (5.58): a key's own "rules" ------------------------------
+    # An administrator may give a key conditions on any device's attribute - temperature >= 25,
+    # a preset changed, a socket's power over 2000 W - and the app is told when one BECOMES true
+    # (and when it clears). Kept with the key (its "rules"), evaluated on the broker's thread
+    # against an index in memory {device: [(key id, rule, unit, label)]}, rebuilt when the keys
+    # change; the truth of each rule is kept in memory too, seeded from what was known before
+    # the first report it hears, so a restart does not fire every rule that is already true.
+    NOTIFIER_RULES_MOST = 50
+    NOTIFIER_RULE_OPS_NUM = ('gt', 'ge', 'lt', 'le', 'between', 'outside')
+    NOTIFIER_RULE_OPS_TEXT = ('contains', 'not_contains')
+    NOTIFIER_RULE_OPS = ('gt', 'ge', 'lt', 'le', 'eq', 'ne', 'between', 'outside', 'contains', 'not_contains',
+                         'is_true', 'is_false', 'changed')
+    NOTIFIER_RULE_SIGN = {'gt': '>', 'ge': '≥', 'lt': '<', 'le': '≤', 'eq': '=', 'ne': '≠'}
+    NOTIFIER_RULE_SKIP_SOURCES = ('sms', 'group', 'proxy')
+    NOTIFIER_RULE_ATTR = re.compile(r'^[A-Za-z0-9_:.\-]{1,64}$')
+
+    def _ntf_rules_setup(self):
+        if self.__dict__.get('_ntf_rules_lock') is None:
+            self._ntf_rules_lock = threading.Lock()
+            self._ntf_index = None            # {device: [(key id, rule, unit, label)]}, None: build it
+            self._ntf_rstate = {}             # rule id -> {'sig', 'truth', 'last', 'at'}
+
+    def _ntf_values(self, device_id):
+        """What a device is known to say now: its live payload, else its snapshot."""
+        snap = self.live.get(device_id)
+        values = (snap or {}).get('payload') or {}
+        if not values:
+            cached = self.store._snap_cache.get(device_id)
+            values = (cached[0] if cached else {}) or {}
+        return values
+
+    def _ntf_attr_meta(self, dev, attr):
+        """(label, unit) of an attribute: what the device's exposes say, else the known keys."""
+        info = ((dev or {}).get('exposes') or {}).get(attr) or {}
+        label = info.get('label') or key_label(attr)
+        unit = info.get('unit') or key_unit(attr) or ''
+        return str(label), str(unit)
+
+    @staticmethod
+    def _ntf_word(label):
+        """'Temperature' -> 'temperature' in a sentence; 'CO2' stays as it is."""
+        label = str(label or '')
+        if len(label) > 1 and label[0].isupper() and label[1].islower():
+            return label[0].lower() + label[1:]
+        return label
+
+    @staticmethod
+    def _ntf_num(v):
+        if isinstance(v, bool):
+            return 'on' if v else 'off'
+        if isinstance(v, float):
+            if v == int(v) and abs(v) < 1e15:
+                return str(int(v))
+            return ('%.2f' % v).rstrip('0').rstrip('.')
+        return str(v)
+
+    @classmethod
+    def _ntf_vtext(cls, value, unit=''):
+        """A value as a person reads it: '23.4 °C', 'on', 'eco'."""
+        if value is None or value == '':
+            return None
+        if isinstance(value, bool):
+            return 'on' if value else 'off'
+        if isinstance(value, (int, float)):
+            return (cls._ntf_num(value) + (' ' + unit if unit else '')).strip()
+        if isinstance(value, (list, dict)):
+            text = json.dumps(value, ensure_ascii=False)
+        else:
+            text = re.sub(r'[\x00-\x1f\x7f]', '', str(value)).strip()
+        return text[:80]
+
+    @classmethod
+    def _ntf_rule_cond(cls, rule, unit):
+        """The condition without its attribute: '≥ 25 °C', 'between 18 and 24 °C', 'is on'."""
+        op = rule.get('op')
+        v, v2 = rule.get('value'), rule.get('value2')
+        u = (' ' + unit) if unit else ''
+        if op in ('gt', 'ge', 'lt', 'le'):
+            return '%s %s%s' % (cls.NOTIFIER_RULE_SIGN[op], cls._ntf_num(v), u)
+        if op in ('eq', 'ne'):
+            if isinstance(v, bool):
+                return 'is %s' % ('on' if v == (op == 'eq') else 'off')
+            if isinstance(v, (int, float)):
+                return '%s %s%s' % (cls.NOTIFIER_RULE_SIGN[op], cls._ntf_num(v), u)
+            return '%s %s' % (cls.NOTIFIER_RULE_SIGN[op], v)
+        if op == 'between':
+            return 'between %s and %s%s' % (cls._ntf_num(v), cls._ntf_num(v2), u)
+        if op == 'outside':
+            return 'outside %s–%s%s' % (cls._ntf_num(v), cls._ntf_num(v2), u)
+        if op == 'contains':
+            return "contains '%s'" % v
+        if op == 'not_contains':
+            return "does not contain '%s'" % v
+        if op == 'is_true':
+            return 'is on'
+        if op == 'is_false':
+            return 'is off'
+        return 'changes'
+
+    @classmethod
+    def _ntf_rule_text(cls, rule, unit, label):
+        return '%s %s' % (cls._ntf_word(label or rule.get('attr')), cls._ntf_rule_cond(rule, unit))
+
+    @staticmethod
+    def _ntf_same(a, b):
+        if a == b:
+            return True
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) \
+                and not isinstance(b, bool):
+            return abs(float(a) - float(b)) < 1e-9
+        return str(a).strip().lower() == str(b).strip().lower()
+
+    @classmethod
+    def notifier_rule_truth(cls, rule, x, prev=None):
+        """Whether the condition holds for the value x: True, False, or None (x unknown, or not
+        of the kind the condition asks about). prev: the truth until now, for the hysteresis."""
+        op = rule.get('op')
+        if x is None or x == '' or isinstance(x, (list, dict)):
+            return None
+        if op == 'changed':
+            return True
+        if op == 'is_true':
+            return cls._truthy(x)
+        if op == 'is_false':
+            return not cls._truthy(x)
+        a, b = rule.get('value'), rule.get('value2')
+        if op in ('eq', 'ne') and isinstance(a, bool):
+            same = cls._truthy(x) == a
+            return same if op == 'eq' else not same
+        if op in ('contains', 'not_contains') or (op in ('eq', 'ne') and isinstance(a, str)):
+            s, t = str(x).strip().lower(), str(a).strip().lower()
+            if op == 'eq':
+                return s == t
+            if op == 'ne':
+                return s != t
+            return (t in s) if op == 'contains' else (t not in s)
+        v = numeric(x)
+        if v is None or not isinstance(a, (int, float)):
+            return None
+        h = float(rule.get('hyst') or 0) if prev is True else 0.0
+        if op == 'gt':
+            return v > a - h
+        if op == 'ge':
+            return v >= a - h
+        if op == 'lt':
+            return v < a + h
+        if op == 'le':
+            return v <= a + h
+        if op == 'eq':
+            return abs(v - a) < 1e-9
+        if op == 'ne':
+            return abs(v - a) >= 1e-9
+        if not isinstance(b, (int, float)):
+            return None
+        if op == 'between':
+            return a <= v <= b
+        if op == 'outside':
+            return v < a or v > b
+        return None
+
+    @staticmethod
+    def _ntf_sig(rule):
+        return (rule.get('device'), rule.get('attr'), rule.get('op'), json.dumps(rule.get('value')),
+                rule.get('value2'), rule.get('hyst'))
+
+    def _ntf_rule_index(self):
+        """{device: [(key id, rule, unit, label)]} - built once for each change of the keys."""
+        self._ntf_rules_setup()
+        index = self._ntf_index
+        # rebuilt now and then as well: a device a rule is about may have come since
+        if index is not None and time.monotonic() - self.__dict__.get('_ntf_index_at', 0) < 300:
+            return index
+        index = {}
+        devs = {}
+        for key in self.notifier_keys():
+            for rule in key.get('rules') or []:
+                if not isinstance(rule, dict) or not rule.get('id') or not rule.get('device'):
+                    continue
+                did = rule['device']
+                if did not in devs:
+                    devs[did] = self.store.device(did)
+                dev = devs[did]
+                if dev is None or dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+                    continue                       # gone: kept for the administrator, never fires
+                label, unit = self._ntf_attr_meta(dev, rule.get('attr') or '')
+                index.setdefault(did, []).append((key['id'], dict(rule), unit, label))
+        with self._ntf_rules_lock:
+            live_ids = {r[1]['id'] for rows in index.values() for r in rows}
+            for rid in [r for r in self._ntf_rstate if r not in live_ids]:
+                self._ntf_rstate.pop(rid, None)
+            self._ntf_index = index
+            self._ntf_index_at = time.monotonic()
+        return index
+
+    def _ntf_rules_safe(self, device_id, before, said):
+        """notifier_rules_heard, never in the way of what calls it."""
+        try:
+            self.notifier_rules_heard(device_id, before, said)
+        except Exception as e:                     # noqa: BLE001
+            log('%s: the notifier conditions: %s' % (device_id, e), 'debug')
+
+    def notifier_rules_heard(self, device_id, before, said):
+        """The rules on a device that one report touches, into the ring when one changes its
+        truth. On the broker's thread (and a socket's poll): a dict look-up for a device no
+        rule is about, and only the rules whose attribute was said are worked out."""
+        if self.__dict__.get('_ntf_cond') is None or not said:
+            return
+        index = self._ntf_rule_index()
+        rows = index.get(device_id)
+        if not rows:
+            return
+        replay = bool(getattr(self, '_retained_msg', False))
+        before = before or {}
+        fired = []
+        now = time.time()
+        with self._ntf_rules_lock:
+            for kid, rule, unit, label in rows:
+                attr = rule.get('attr')
+                if attr not in said:
+                    continue
+                x = said[attr]
+                sig = self._ntf_sig(rule)
+                st = self._ntf_rstate.get(rule['id'])
+                if st is None or st.get('sig') != sig:
+                    # first heard since the start (or since it was changed): what was known
+                    # before this report is where it stands, so nothing already true fires
+                    was = before.get(attr)
+                    st = {'sig': sig, 'truth': self.notifier_rule_truth(rule, was, None),
+                          'last': was if was not in ('',) else None, 'at': None}
+                    if attr == 'action':
+                        st['truth'] = None
+                    self._ntf_rstate[rule['id']] = st
+                if x is None or x == '' or isinstance(x, (list, dict)):
+                    continue
+                op = rule.get('op')
+                if op == 'changed':
+                    prev = st.get('last')
+                    st['last'] = x
+                    if attr != 'action' and (prev is None or self._ntf_same(prev, x)):
+                        continue
+                    if replay:
+                        continue
+                    st['at'] = now
+                    vt = self._ntf_vtext(x, unit)
+                    pv = self._ntf_vtext(prev, unit)
+                    what = '%s: %s' % (self._ntf_word(label), vt) + (' (was %s)' % pv if pv else '')
+                    fired.append((kid, rule, unit, label, True, x, what))
+                    continue
+                old = None if attr == 'action' else st.get('truth')
+                truth = self.notifier_rule_truth(rule, x, old)
+                st['last'] = x
+                if truth is None:
+                    continue
+                st['truth'] = False if attr == 'action' else truth
+                if replay or truth == (old is True):
+                    continue                       # no edge: the same as it was (or a replay)
+                st['at'] = now
+                vt = self._ntf_vtext(x, unit)
+                if truth:
+                    what = '%s %s (%s)' % (self._ntf_word(label), vt, self._ntf_rule_cond(rule, unit))
+                else:
+                    what = 'back to normal: %s %s' % (self._ntf_word(label), vt)
+                fired.append((kid, rule, unit, label, truth, x, what))
+        if not fired:
+            return
+        with self._ntf_cond:
+            for kid, rule, unit, label, active, x, what in fired:
+                self._ntf_seq += 1
+                extra = {'kid': kid, 'dev': device_id, 'label': rule.get('label') or '',
+                         'value': x if isinstance(x, (int, float, str, bool)) else None,
+                         'value_text': self._ntf_vtext(x, unit),
+                         'rule_text': self._ntf_rule_text(rule, unit, label)}
+                self._ntf_ring.append((self._ntf_seq, now, 'rule:' + rule['id'], 'rule', rule.get('attr'),
+                                       active, what[:120], extra))
+            self._ntf_cond.notify_all()
+
+    def _ntf_rule_now(self, rule, dev, values=None):
+        """How a rule stands now: (active, value, value_text, unit, label, at)."""
+        self._ntf_rules_setup()
+        label, unit = self._ntf_attr_meta(dev, rule.get('attr') or '')
+        if dev is None:
+            return None, None, None, unit, label, None
+        values = self._ntf_values(dev['id']) if values is None else values
+        x = values.get(rule.get('attr'))
+        st = self._ntf_rstate.get(rule.get('id')) or {}
+        if st.get('sig') != self._ntf_sig(rule):
+            st = {}
+        if rule.get('op') == 'changed':
+            active = None if x is None or x == '' else True
+        elif rule.get('attr') == 'action':
+            active = None if x is None or x == '' else self.notifier_rule_truth(rule, x, None)
+        else:
+            active = self.notifier_rule_truth(rule, x, st.get('truth'))
+        if isinstance(x, (list, dict)):
+            x = None
+        return active, x, self._ntf_vtext(x, unit), unit, label, st.get('at')
+
+    def notifier_rule_devices(self):
+        """Every device a condition may be about: everything but the texts, the groups and
+        the server in front - with what it is, for the icon."""
+        rooms = self._ntf_rooms()
+        out = []
+        for dev in self.store.devices():
+            if dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+                continue
+            out.append({'id': dev['id'], 'name': dev.get('alias') or dev['name'],
+                        'room': rooms.get(dev['id']) or rooms.get(dev['name']), 'source': dev.get('source'),
+                        'kind': self._ntf_dev_kind(dev)})
+        out.sort(key=lambda r: (str(r['name']).lower(), r['id']))
+        return out
+
+    def _ntf_dev_kind(self, dev, values=None):
+        """What a device is, as the page's deviceCategory says it, from what it reports."""
+        src = dev.get('source')
+        if src == 'plug':
+            p = self.plugs.get(dev.get('name')) if isinstance(getattr(self, 'plugs', None), dict) else None
+            return 'light' if p is not None and (p.cfg or {}).get('role') == 'light' else 'plug'
+        if src == 'weather':
+            return 'weather'
+        if src == 'wifi':
+            return 'ap'
+        if src == 'gateway' or dev.get('kind') in ('Router', 'Coordinator'):
+            return 'router'
+        v = self._ntf_values(dev['id']) if values is None else values
+        ex = dev.get('exposes') or {}
+        has = lambda *ks: any(k in v or k in ex for k in ks)      # noqa: E731
+        if has('current_heating_setpoint', 'occupied_heating_setpoint', 'pi_heating_demand'):
+            return 'valve'
+        if has('action') or dev.get('has_action'):
+            return 'button'
+        if has('occupancy', 'presence', 'motion'):
+            return 'motion'
+        if has('contact', 'window', 'window_open', 'open_window', 'water_leak', 'smoke'):
+            return 'contact'
+        if has('temperature', 'local_temperature', 'humidity', 'tC'):
+            return 'thermo'
+        if has('state', 'brightness'):
+            return 'light'
+        return 'sensor'
+
+    def notifier_rule_view(self, rule, rooms=None):
+        """One rule as the administrator sees it."""
+        did = rule.get('device') or ''
+        dev = self.store.device(did)
+        if dev is not None and dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+            dev = None
+        rooms = self._ntf_rooms() if rooms is None else rooms
+        active, x, vt, unit, label, at = self._ntf_rule_now(rule, dev)
+        name = (dev.get('alias') or dev.get('name')) if dev else did
+        return {'id': rule.get('id'), 'device': did, 'device_name': name,
+                'room': (rooms.get(did) or rooms.get((dev or {}).get('name'))) if dev else None,
+                'kind': self._ntf_dev_kind(dev) if dev else 'sensor',
+                'attr': rule.get('attr'), 'attr_label': label, 'op': rule.get('op'), 'value': rule.get('value'),
+                'value2': rule.get('value2'), 'hyst': rule.get('hyst'), 'label': rule.get('label') or '',
+                'text': self._ntf_rule_text(rule, unit, label), 'unit': unit or None, 'missing': dev is None,
+                'active': active, 'value_text': vt, 'at': at}
+
+    def notifier_rule_sensors(self, key):
+        """A key's rules, as entries of its sensors list (kind 'rule')."""
+        rules = [r for r in key.get('rules') or [] if isinstance(r, dict) and r.get('id')]
+        if not rules:
+            return []
+        rooms = self._ntf_rooms()
+        out = []
+        for rule in rules:
+            did = rule.get('device') or ''
+            dev = self.store.device(did)
+            if dev is not None and dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+                dev = None
+            active, x, vt, unit, label, at = self._ntf_rule_now(rule, dev)
+            dname = (dev.get('alias') or dev.get('name')) if dev else did
+            battery, online = None, False
+            if dev is not None:
+                seen = self.describe(dev, self.live.get(did))
+                b = seen.get('battery')
+                battery = int(round(b)) if isinstance(b, (int, float)) else None
+                online = bool(seen.get('online'))
+            out.append({'id': 'rule:' + rule['id'], 'name': rule.get('label') or dname,
+                        'room': (rooms.get(did) or rooms.get((dev or {}).get('name'))) if dev else None,
+                        'kind': 'rule', 'active': active, 'at': at, 'battery': battery, 'online': online,
+                        'device': did, 'device_name': dname,
+                        'rule': {'attr': rule.get('attr'), 'op': rule.get('op'), 'value': rule.get('value'),
+                                 'value2': rule.get('value2'), 'hyst': rule.get('hyst'), 'unit': unit or None,
+                                 'text': self._ntf_rule_text(rule, unit, label)},
+                        'value': x if isinstance(x, (int, float, str, bool)) else None, 'value_text': vt})
+        out.sort(key=lambda r: (str(r['name']).lower(), r['id']))
+        return out
+
+    def notifier_attrs(self, device_id):
+        """What a condition on a device may be about: its attributes as it reports them now
+        (flattened) and as its exposes describe them - the type, the unit, the values of an
+        enum, the range - its main readings first."""
+        dev = self.store.device(str(device_id or ''))
+        if dev is None or dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+            raise ValueError('there is no such device to watch')
+        values = self._ntf_values(dev['id'])
+        exposes = dev.get('exposes') or {}
+        actions = None
+        names = []
+        for k in list(values.keys()) + [k for k in exposes if k not in values]:
+            if not isinstance(k, str) or not self.NOTIFIER_RULE_ATTR.match(k):
+                continue
+            if k in IGNORE_KEYS or k.startswith('update') or k in names:
+                continue
+            info = exposes.get(k) or {}
+            if not isinstance(info, dict):
+                info = {}
+            t = str(info.get('type') or '')
+            if t in ('composite', 'list') and k not in values:
+                continue
+            acc = info.get('access')
+            if isinstance(acc, int) and not isinstance(acc, bool) and acc and not acc & 1 and k not in values:
+                continue                       # only to be set, never said: nothing to watch
+            if isinstance(values.get(k), (list, dict)):
+                continue
+            names.append(k)
+        out = []
+        for k in names[:300]:
+            info = exposes.get(k) or {}
+            if not isinstance(info, dict):
+                info = {}
+            x = values.get(k)
+            label, unit = self._ntf_attr_meta(dev, k)
+            t = str(info.get('type') or '')
+            opts = info.get('values') if isinstance(info.get('values'), list) else None
+            if k == 'action':
+                if actions is None:
+                    try:
+                        declared = list(opts or [])
+                        actions = declared + [a for a in self.store.actions_seen(dev['id']) if a not in declared]
+                    except Exception:                 # noqa: BLE001
+                        actions = list(opts or [])
+                kind, opts = 'enum', actions
+            elif t == 'numeric':
+                kind = 'number'
+            elif t == 'binary':
+                kind = 'bool'
+            elif t == 'enum':
+                kind = 'enum'
+            elif t == 'text':
+                kind = 'text'
+            elif isinstance(x, bool):
+                kind = 'bool'
+            elif isinstance(x, (int, float)):
+                kind = 'number'
+            elif isinstance(x, str) and x.strip().upper() in ('ON', 'OFF', 'TRUE', 'FALSE', 'OPEN', 'CLOSED',
+                                                               'CLOSE', 'YES', 'NO'):
+                kind = 'bool'
+            elif isinstance(x, str) and numeric(x) is not None:
+                kind = 'number'
+            else:
+                kind = 'text'
+            words = None
+            if kind == 'bool':
+                on, off = info.get('value_on'), info.get('value_off')
+                if isinstance(on, (str, bool)) and isinstance(off, (str, bool)):
+                    words = [on, off]
+                elif isinstance(x, str):
+                    up = x.strip().upper()
+                    words = {'ON': ['ON', 'OFF'], 'OFF': ['ON', 'OFF'], 'OPEN': ['OPEN', 'CLOSED'],
+                             'CLOSED': ['OPEN', 'CLOSED'], 'CLOSE': ['OPEN', 'CLOSE'], 'YES': ['YES', 'NO'],
+                             'NO': ['YES', 'NO']}.get(up)
+            mn, mx = info.get('min'), info.get('max')
+            rank = (headline_rank(k) if dev.get('source') not in ('plug', 'proxy') else
+                    (PLUG_HEADLINE.index(k) if dev.get('source') == 'plug' and k in PLUG_HEADLINE else None))
+            out.append(((0, rank) if rank is not None else (1, 0), str(label).lower(), {
+                'key': k, 'label': label, 'type': kind, 'unit': unit or None,
+                'values': [v for v in (opts if kind == 'enum' else words) or [] if isinstance(v, (str, int, float, bool))][:100]
+                or None,
+                'min': mn if isinstance(mn, (int, float)) and not isinstance(mn, bool) else None,
+                'max': mx if isinstance(mx, (int, float)) and not isinstance(mx, bool) else None,
+                'value': x if isinstance(x, (int, float, str, bool)) else None,
+                'value_text': self._ntf_vtext(x, unit), 'main': rank is not None}))
+        out.sort(key=lambda r: (r[0], r[1]))
+        rooms = self._ntf_rooms()
+        return {'ok': True, 'device': {'id': dev['id'], 'name': dev.get('alias') or dev['name'],
+                                       'room': rooms.get(dev['id']) or rooms.get(dev['name']),
+                                       'source': dev.get('source'), 'kind': self._ntf_dev_kind(dev, values)},
+                'attrs': [r[2] for r in out]}
+
+    def _ntf_clean_rule(self, given, was=None):
+        """A rule as the page sends it, checked word by word - or ValueError, in words."""
+        if not isinstance(given, dict):
+            raise ValueError('a condition is an object: device, attr, op, value')
+        did = str(given.get('device') if 'device' in given else (was or {}).get('device') or '').strip()
+        if not did:
+            raise ValueError('a condition needs a device')
+        dev = self.store.device(did)
+        if dev is None or dev.get('source') in self.NOTIFIER_RULE_SKIP_SOURCES:
+            if not (was and was.get('device') == did):
+                raise ValueError('%s is not a device a condition can watch' % did[:60])
+        attr = str(given.get('attr') if 'attr' in given else (was or {}).get('attr') or '').strip()
+        if not self.NOTIFIER_RULE_ATTR.match(attr):
+            raise ValueError('the attribute is a name of up to 64 letters, digits and _ : . - (like temperature '
+                             'or switch:0.output)')
+        op = str(given.get('op') if 'op' in given else (was or {}).get('op') or '').strip()
+        if op not in self.NOTIFIER_RULE_OPS:
+            raise ValueError('the operator is one of %s' % ', '.join(self.NOTIFIER_RULE_OPS))
+        value = given.get('value')
+        value2 = given.get('value2')
+        hyst = given.get('hyst')
+
+        def number(v, what):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > 1e12:
+                raise ValueError('%s must be a number' % what)
+            return v
+
+        if op in ('gt', 'ge', 'lt', 'le', 'between', 'outside'):
+            value = number(value, 'the value')
+            if op in ('between', 'outside'):
+                value2 = number(value2, 'the second value')
+                if value > value2:
+                    raise ValueError('the first value must not be above the second')
+            else:
+                value2 = None
+        elif op in ('eq', 'ne'):
+            value2 = None
+            if isinstance(value, bool):
+                pass
+            elif isinstance(value, (int, float)):
+                value = number(value, 'the value')
+            elif isinstance(value, str):
+                value = re.sub(r'[\x00-\x1f\x7f]', '', value).strip()
+                if not value:
+                    raise ValueError('the value to compare with is empty')
+                if len(value) > 100:
+                    raise ValueError('a text value is at most 100 characters')
+            else:
+                raise ValueError('the value must be a number, a text or true/false')
+        elif op in ('contains', 'not_contains'):
+            value2 = None
+            if not isinstance(value, str):
+                raise ValueError('the text to look for must be a text')
+            value = re.sub(r'[\x00-\x1f\x7f]', '', value).strip()
+            if not value:
+                raise ValueError('the text to look for is empty')
+            if len(value) > 100:
+                raise ValueError('a text value is at most 100 characters')
+        else:
+            value, value2 = None, None
+        if hyst in (None, '', 0, 0.0) or isinstance(hyst, bool) and not hyst:
+            hyst = None
+        elif op not in ('gt', 'ge', 'lt', 'le'):
+            raise ValueError('a hysteresis is only for >, ≥, < and ≤')
+        else:
+            hyst = number(hyst, 'the hysteresis')
+            if hyst < 0:
+                raise ValueError('the hysteresis must not be below zero')
+        label = re.sub(r'[\x00-\x1f\x7f]', '', str(given.get('label') if 'label' in given
+                                                     else (was or {}).get('label') or '')).strip()
+        if len(label) > 60:
+            raise ValueError('a label is at most 60 characters')
+        return {'id': (was or {}).get('id') or secrets.token_hex(5), 'device': did, 'attr': attr, 'op': op,
+                'value': value, 'value2': value2, 'hyst': hyst, 'label': label}
+
+    def _ntf_rule_said(self, rule):
+        """'Obývák: temperature ≥ 25 °C' - what the events say of a rule (never anything secret)."""
+        dev = self.store.device(rule.get('device') or '')
+        label, unit = self._ntf_attr_meta(dev, rule.get('attr') or '')
+        name = (dev.get('alias') or dev.get('name')) if dev else rule.get('device')
+        return '%s: %s' % (name, self._ntf_rule_text(rule, unit, label))
+
+    def _ntf_rules_post(self, act, mine, rows, body, by):
+        rules = [r for r in mine.get('rules') or [] if isinstance(r, dict) and r.get('id')]
+        who = by or 'somebody'
+        if act == 'rule_add':
+            if len(rules) >= self.NOTIFIER_RULES_MOST:
+                raise ValueError('at most %d conditions per key' % self.NOTIFIER_RULES_MOST)
+            rule = self._ntf_clean_rule(body.get('rule'))
+            while any(r['id'] == rule['id'] for r in rules):
+                rule['id'] = secrets.token_hex(5)
+            rules.append(rule)
+            said = "%s added the desktop alert condition '%s' to key '%s'"
+            word = 'added'
+        else:
+            rid = str(body.get('rule_id') or '')
+            was = next((r for r in rules if r['id'] == rid), None)
+            if was is None:
+                raise ValueError('there is no such condition on this key')
+            if act == 'rule_delete':
+                rules = [r for r in rules if r['id'] != rid]
+                rule = was
+                said = "%s took away the desktop alert condition '%s' from key '%s'"
+                word = 'taken away'
+            else:
+                rule = self._ntf_clean_rule(body.get('rule'), was)
+                rules = [rule if r['id'] == rid else r for r in rules]
+                said = "%s changed the desktop alert condition '%s' on key '%s'"
+                word = 'saved'
+        mine['rules'] = rules
+        self._ntf_put(rows)
+        with self._ntf_cond:
+            self._ntf_cond.notify_all()
+        self.store.add_event('control', said % (who, self._ntf_rule_said(rule)[:160], mine['name']), 'info')
+        out = {'message': 'the condition is %s' % word}
+        if act != 'rule_delete':
+            out['rule'] = self.notifier_rule_view(rule)
+        return out
+
     # -- the keys --
     def notifier_keys(self):
         """The keys as kept: id, name, devices, created, by, last_at, last_from, hint, hash."""
@@ -11815,19 +12415,28 @@ class Daemon(object):
 
     def _ntf_put(self, rows):
         self.store.set_meta('notifier_keys', json.dumps(rows))
+        self._ntf_index = None            # (5.58) the rules' index is built again
 
     def notifier_keys_view(self):
         """The keys as an administrator sees them: never the hash, the last use as it is now."""
         self._ntf_setup()
         out = []
+        rooms = None
         for r in self.notifier_keys():
             seen = self._ntf_seen.get(r['id'])
             last_at, last_from = r.get('last_at'), r.get('last_from')
             if seen and (not last_at or seen[0] > float(last_at)):
                 last_at, last_from = seen
-            out.append({'id': r['id'], 'name': r.get('name') or '', 'devices': list(r.get('devices') or []),
-                        'created': r.get('created'), 'by': r.get('by') or '', 'last_at': last_at,
-                        'last_from': last_from or None, 'hint': r.get('hint') or ''})
+            row = {'id': r['id'], 'name': r.get('name') or '', 'devices': list(r.get('devices') or []),
+                   'created': r.get('created'), 'by': r.get('by') or '', 'last_at': last_at,
+                   'last_from': last_from or None, 'hint': r.get('hint') or ''}
+            rules = [x for x in r.get('rules') or [] if isinstance(x, dict) and x.get('id')]
+            if rules:
+                # (5.58) its conditions - only when it has some, so a key without is as it was
+                if rooms is None:
+                    rooms = self._ntf_rooms()
+                row['rules'] = [self.notifier_rule_view(x, rooms) for x in rules]
+            out.append(row)
         return out
 
     def notifier_find(self, given):
@@ -11912,6 +12521,8 @@ class Daemon(object):
         mine = next((r for r in rows if r['id'] == kid), None)
         if mine is None:
             raise ValueError('there is no such key')
+        if act in ('rule_add', 'rule_update', 'rule_delete'):
+            return self._ntf_rules_post(act, mine, rows, body, by)          # (5.58)
         if act == 'delete':
             rows = [r for r in rows if r['id'] != kid]
             self._ntf_put(rows)
@@ -11932,7 +12543,7 @@ class Daemon(object):
             self.store.add_event('control', "%s changed the desktop notifier key '%s' (%s)"
                                  % (by or 'somebody', mine['name'], said(mine['devices'])), 'info')
             return {'message': "the key '%s' is saved" % mine['name']}
-        raise ValueError('what with the key? (create, update, delete)')
+        raise ValueError('what with the key? (create, update, delete, rule_add, rule_update, rule_delete)')
 
     # -- what a key sees --
     def _ntf_rooms(self):
@@ -11992,10 +12603,13 @@ class Daemon(object):
     def notifier_hello(self, key):
         self._ntf_setup()
         seen = [s for s in self.notifier_sensors() if self.notifier_may_see(key, s['id'])]
+        nrules = len([r for r in key.get('rules') or [] if isinstance(r, dict) and r.get('id')])
         app = self.notifier_app()
         return {'ok': True, 'api': 1, 'server': 'zigmon', 'version': __version__,
                 'house': socket.gethostname().split('.')[0] or 'zigmon',
-                'key': {'name': key.get('name') or '', 'devices': len(seen), 'hint': key.get('hint') or ''},
+                'key': dict({'name': key.get('name') or '', 'devices': len(seen), 'hint': key.get('hint') or ''},
+                            # (5.58) how many conditions it has, when it has some
+                            **({'rules': nrules} if nrules else {})),
                 'boot': self.notifier_boot, 'seq': self._ntf_seq,
                 # (5.57) the app this server hands out, for the app to update itself from
                 'app': None if app is None else {'version': app['version']}}
@@ -12107,7 +12721,9 @@ class Daemon(object):
     def notifier_sensors_for(self, key):
         self._ntf_setup()
         return {'ok': True, 'boot': self.notifier_boot, 'seq': self._ntf_seq,
-                'sensors': [s for s in self.notifier_sensors(full=True) if self.notifier_may_see(key, s['id'])]}
+                'sensors': [s for s in self.notifier_sensors(full=True) if self.notifier_may_see(key, s['id'])]
+                # (5.58) and its conditions after them, kind "rule"
+                + self.notifier_rule_sensors(key)}
 
     def notifier_wait(self, key, after, boot, timeout=None):
         """The edges after `after` this key may see: at once when there are some, or when
@@ -12126,7 +12742,9 @@ class Daemon(object):
                 key = self.notifier_key_by_id(kid)
                 if key is None:
                     return None
-                got = [e for e in self._ntf_ring if e[0] > after and self.notifier_may_see(key, e[2])]
+                got = [e for e in self._ntf_ring if e[0] > after and (
+                    # (5.58) a condition's event is its own key's only
+                    e[7]['kid'] == kid if len(e) > 7 else self.notifier_may_see(key, e[2]))]
                 if got:
                     break
                 remaining = deadline - time.monotonic()
@@ -12138,13 +12756,21 @@ class Daemon(object):
         names = {}
         rooms = self._ntf_rooms()
         events = []
-        for s, at, dev, kind, k, active, what in got:
-            if dev not in names:
-                row = self.store.device(dev) or {}
-                names[dev] = row.get('alias') or row.get('name') or dev
-            events.append({'seq': s, 'at': round(at, 3), 'device': dev, 'name': names[dev],
-                           'room': rooms.get(dev) or rooms.get(names[dev]), 'kind': kind, 'key': k,
-                           'active': active, 'what': what})
+        for e in got:
+            s, at, dev, kind, k, active, what = e[:7]
+            extra = e[7] if len(e) > 7 else None
+            real = extra['dev'] if extra else dev
+            if real not in names:
+                row = self.store.device(real) or {}
+                names[real] = row.get('alias') or row.get('name') or real
+            one = {'seq': s, 'at': round(at, 3), 'device': dev, 'name': names[real],
+                   'room': rooms.get(real) or rooms.get(names[real]), 'kind': kind, 'key': k,
+                   'active': active, 'what': what}
+            if extra:
+                one['name'] = extra.get('label') or names[real]
+                one.update(value=extra.get('value'), value_text=extra.get('value_text'),
+                           rule_text=extra.get('rule_text'))
+            events.append(one)
         # more than one answer holds: the number goes only as far as this answer, so the
         # next one carries on from there
         return {'ok': True, 'boot': self.notifier_boot, 'seq': got[-1][0] if more else seq,
@@ -12164,6 +12790,7 @@ class Daemon(object):
             self.notifier_edges(device_id, before, said)
         except Exception as e:
             log('%s: the notifier ring: %s' % (name, e), 'debug')
+        self._ntf_rules_safe(device_id, before, said)      # (5.58) the conditions on it
         for key, (about, level, bad, good) in self.DANGER_KEYS.items():
             if key not in said:
                 continue
@@ -23893,7 +24520,9 @@ class Daemon(object):
             self.store.add_event('plug', 'switched %s' % ('on' if output else 'off'),
                                  'info', p.device_id)
         p.output = output
+        was_flat = p.flat
         p.flat = flat
+        self._ntf_rules_safe(p.device_id, was_flat or self._ntf_values(p.device_id), flat)   # (5.58)
         p.generated = int(now)
 
         values = self._plug_values(flat)
@@ -24134,6 +24763,7 @@ class Daemon(object):
         entry = self.live.get(p.device_id)
         if entry and entry.get('payload') is old:
             entry['payload'] = p.flat
+        self._ntf_rules_safe(p.device_id, old, changes)     # (5.58) a condition on the socket
 
     def _plug_switched(self, p, on, origin):
         """The relay just obeyed: show it at once, confirm the numbers later.
@@ -27313,8 +27943,10 @@ class Daemon(object):
                 'last_seen': int(time.time())})
         now = int(time.time())
         entry = self.live.setdefault(device_id, {'payload': {}, 'ts': now})
-        entry['payload'] = dict(entry.get('payload') or {}, **merged)
+        was_payload = entry.get('payload') or {}
+        entry['payload'] = dict(was_payload, **merged)
         entry['ts'] = now
+        self._ntf_rules_safe(device_id, was_payload, merged)     # (5.58) a condition on the gateway
         # It just answered on its own network API, so it is up whatever the
         # bridge says. Zigbee2MQTT marks the coordinator offline because it
         # does not answer availability pings like an end device - that used
@@ -43096,8 +43728,10 @@ class Daemon(object):
                         payload['wifi.%sg.%s' % (band, key)] = numeric(value)
             payload = {k: v for k, v in payload.items() if v is not None}
             entry = self.live.setdefault(device_id, {'payload': {}, 'ts': now})
-            entry['payload'] = dict(entry.get('payload') or {}, **payload)
+            was_payload = entry.get('payload') or {}
+            entry['payload'] = dict(was_payload, **payload)
             entry['ts'] = now
+            self._ntf_rules_safe(device_id, was_payload, payload)     # (5.58) a condition on the access point
             entry['availability'] = 'online' if ap.get('state') in ('online', 'connected', '') else 'offline'
             self.store.store_snapshot(device_id, now, entry['payload'], entry.get('availability'))
             last = self._gw_last.setdefault(device_id, {})
@@ -47312,7 +47946,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # the keys of the desktop notifier (5.57): who may watch which sensors
                      '/api/notifier/keys',
                      # the app itself, for an administrator to hand to a computer (5.57)
-                     '/api/notifier/app')
+                     '/api/notifier/app',
+                     # what a condition of a key may watch on a device (5.58)
+                     '/api/notifier/attrs')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -47891,7 +48527,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 raw = urlparse(self.path).query
                 return self._tap(d, path[len('/api/tap/'):], 'link',
                                  ask=bool(re.match(r'(^|.*&)ask(=|&|$)', raw)))
-            if path.startswith('/api/notifier/') and path not in ('/api/notifier/keys', '/api/notifier/app'):
+            if path.startswith('/api/notifier/') and path not in ('/api/notifier/keys', '/api/notifier/app',
+                                                                  '/api/notifier/attrs'):
                 # (5.57) the desktop notifier: its own key in its own header is the whole
                 # of its authority, as a one-tap link's secret is - before the sign-in and
                 # the view, which it does not need; it can only look
@@ -48649,7 +49286,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                 where = re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip())
                 return self._send(200, {'ok': True, 'keys': d.notifier_keys_view(),
                                         'sensors': d.notifier_sensors(), 'most': d.NOTIFIER_MOST,
-                                        'address': where, 'app': d.notifier_app_short()})
+                                        'address': where, 'app': d.notifier_app_short(),
+                                        # (5.58) every device a condition may be about
+                                        'rule_devices': d.notifier_rule_devices(),
+                                        'rules_most': d.NOTIFIER_RULES_MOST})
+            if path == '/api/notifier/attrs':
+                # (5.58) what a condition may watch on one device: its attributes, their
+                # types, units and values - an administrator's (ALWAYS_LOCKED), asked again
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                try:
+                    return self._send(200, d.notifier_attrs(str(q.get('device') or '')[:200]))
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
             if path == '/api/notifier/app':
                 # the app itself (5.57), as a download for the page: an administrator's
                 # (ALWAYS_LOCKED), asked again here so a road moved out of that list never opens
