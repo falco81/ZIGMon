@@ -5767,6 +5767,143 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   }
   /* ---- Settings - Messages - Desktop app (5.57): the keys of ZIGMon Notifier, drawn as the
      Device backups card is - the title with its button, the words, the tiles, the rows ---- */
+  /* (5.59) Settings - Messages - Stream Deck */
+  .dk-card h2{margin-bottom:12px}
+  .dk-hero{display:flex;gap:22px;align-items:center;padding:18px 20px;margin:0 0 14px;border-radius:16px;border:1px solid var(--line);
+    background:radial-gradient(120% 140% at 0% 0%,rgba(163,113,247,.14),transparent 55%),
+               radial-gradient(120% 140% at 100% 100%,rgba(88,166,255,.10),transparent 55%),var(--panel2)}
+  .dk-hero.on{border-color:rgba(63,185,80,.35)}
+  .dk-hero-art{flex:0 0 auto;width:196px;filter:saturate(.35) brightness(.8);transition:filter .3s}
+  .dk-hero-art.on{filter:none}
+  .dk-hero-art svg{display:block;width:100%;height:auto}
+  .dk-hero-art .hb{stroke:#3a4354;stroke-width:1.5}
+  .dk-hero-art .hk{fill:#0d1117;stroke:#303846}
+  .dk-hero-art.on .hk0{fill:rgba(240,136,62,.22);stroke:rgba(240,136,62,.6)}
+  .dk-hero-art.on .hk1{fill:rgba(88,166,255,.2);stroke:rgba(88,166,255,.55)}
+  .dk-hero-art.on .hk2{fill:rgba(63,185,80,.18);stroke:rgba(63,185,80,.55)}
+  .dk-hero-art.on .hk3{fill:rgba(163,113,247,.2);stroke:rgba(163,113,247,.55)}
+  .dk-hero-art .hs{fill:#0d1117;stroke:#303846} .dk-hero-art .hsf{fill:var(--info);opacity:.75}
+  .dk-hero-art .hd{fill:#222936;stroke:#3a4354} .dk-hero-art .hd2{fill:#151a22} .dk-hero-art .hdm{stroke:var(--tx-dim);stroke-width:2;stroke-linecap:round}
+  .dk-hero-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:10px}
+  .dk-hero-title{font-size:18px;font-weight:700;letter-spacing:.01em}
+  .dk-hero-lede{margin:0;color:var(--tx-dim);font-size:13.5px;line-height:1.55;max-width:820px}
+  .dk-master{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:12px;border:1px solid var(--line);
+    background:var(--panel);align-self:flex-start;max-width:100%}
+  .dk-hero.on .dk-master{border-color:rgba(63,185,80,.4);background:var(--ok-bg)}
+  .dk-master-t{display:flex;flex-direction:column;min-width:0;cursor:pointer}
+  .dk-master-t b{font-size:14.5px}
+  .dk-state{font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
+  .dk-hero.on .dk-state{color:var(--ok)}
+  .dk-card .facts .fact.ok .v{color:var(--ok)} .dk-card .facts .fact.warn .v{color:var(--warn)}
+  .dk-card .facts .fact.wide{grid-column:span 2}
+  .dk-card .facts .fact .v.dk-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px;overflow-wrap:anywhere}
+  .dk-card .copyable{cursor:pointer;user-select:none;-webkit-user-select:none;transition:border-color .12s,box-shadow .12s}
+  .dk-card .copyable:hover{border-color:var(--info);box-shadow:0 0 0 1px var(--info) inset}
+  .dk-card .copyable.copied{border-color:var(--ok)!important;box-shadow:0 0 0 1px var(--ok) inset!important}
+  .dk-steps{margin:2px 0 0;padding-left:20px;font-size:13px;color:var(--tx-dim);display:flex;flex-direction:column;gap:3px}
+  .dk-steps li::marker{color:var(--info);font-weight:700}
+  .dk-sec{margin-top:18px}
+  .dk-sec-h{margin:0 0 10px;font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut)}
+  .dk-none{margin:0;color:var(--tx-dim);font-size:13.5px}
+  .dk-pair{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px 20px;align-items:center;padding:14px 16px;
+    margin-bottom:10px;border-radius:14px;border:1px solid rgba(210,153,34,.45);background:linear-gradient(90deg,var(--warn-bg),transparent 60%),var(--panel)}
+  .dk-pair-code{display:flex;flex-direction:column;gap:3px;padding:10px 16px;border-radius:12px;background:var(--bg);
+    border:1px solid var(--line);text-align:center}
+  .dk-pair-code .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-mut)}
+  .dk-code{font-size:30px;font-weight:700;letter-spacing:.12em;color:#fff;line-height:1.15;white-space:nowrap}
+  .dk-pair-ask{font-size:12px;color:var(--warn)}
+  .dk-pair-main{min-width:0;display:flex;flex-direction:column;gap:6px}
+  .dk-pair-t{display:flex;align-items:center;gap:8px;flex-wrap:wrap} .dk-pair-t b{font-size:15px;overflow-wrap:anywhere}
+  .dk-pc{font-size:18px;line-height:1}
+  .dk-tag{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--info-bg);color:var(--info);border:1px solid rgba(88,166,255,.3)}
+  .dk-pair-sub{font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
+  .dk-pair-acts{display:flex;flex-direction:column;gap:8px}
+  .dk-devs{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start}
+  .dk-dev{display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);
+    max-width:100%;min-width:0}
+  .dk-dev.ok{border-color:rgba(63,185,80,.35)} .dk-dev.wait{border-color:rgba(210,153,34,.5);border-style:dashed}
+  .dk-dev.off{opacity:.45}
+  .dk-art{overflow:hidden;max-width:100%} .dk-art svg{display:block;max-width:100%;height:auto}
+  .dk-art .dk-body{fill:#10151c;stroke:#394152}
+  .dk-art .dk-key{fill:#1d2430;stroke:#2c3442;stroke-width:.8}
+  .dk-art .dk-key.lit0{fill:rgba(240,136,62,.4)} .dk-art .dk-key.lit1{fill:rgba(88,166,255,.38)} .dk-art .dk-key.lit2{fill:rgba(63,185,80,.36)}
+  .dk-art .dk-strip{fill:#1d2430;stroke:#2c3442} .dk-art .dk-dial{fill:#262d3a;stroke:#3d4657}
+  .dk-art .dk-dialmark{stroke:var(--tx-dim);stroke-width:1.4;stroke-linecap:round}
+  .dk-devt{display:flex;flex-direction:column;min-width:0} .dk-devt b{font-size:13px;overflow-wrap:anywhere}
+  .dk-devt span{font-size:11.5px;color:var(--tx-mut)}
+  .dk-devst{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .dk-ok{font-size:12px;font-weight:600;color:var(--ok)} .dk-wait{font-size:12px;font-weight:600;color:var(--warn);width:100%}
+  .dk-link{background:none;border:0;padding:0;color:var(--tx-mut);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline}
+  .dk-link:hover{color:var(--crit)}
+  .dk-tick{display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer}
+  .dk-tick input{width:auto;margin:0;accent-color:var(--ok)}
+  .dk-inst{display:flex;flex-direction:column;gap:12px;padding:14px 16px;margin-bottom:10px;border-radius:14px;
+    border:1px solid var(--line);background:var(--panel)}
+  .dk-inst-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .dk-inst-n{display:flex;flex-direction:column;min-width:0;flex:1 1 220px} .dk-inst-n b{font-size:15px;overflow-wrap:anywhere}
+  .dk-inst-sub{font-size:12.5px;color:var(--tx-dim);overflow-wrap:anywhere}
+  .dk-inst-f{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}
+  .dk-inst-acts{display:flex;gap:6px;flex-wrap:wrap}
+  .dk-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+  .dk-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;
+    background:var(--info-bg);color:var(--tx);border:1px solid rgba(88,166,255,.28)}
+  .dk-chip.sys{background:var(--warn-bg);border-color:rgba(210,153,34,.35)}
+  .dk-chip.none{background:var(--panel2);color:var(--tx-mut);border-color:var(--line)}
+  .dk-chip-ic{font-size:13px;line-height:1}
+  .dk-hold{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--warn)}
+  .dk-foot{margin-top:12px}
+  /* the permission editor */
+  .dk-dlg .dk-field{margin-top:14px}
+  .dk-cmp{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;border-radius:12px;background:var(--warn-bg);
+    border:1px solid rgba(210,153,34,.4);margin-bottom:12px;font-size:13px}
+  .dk-cmp .dk-code{font-size:24px}
+  .dk-presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr));gap:8px}
+  .dk-preset{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:9px 12px;border-radius:11px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx);font:inherit;text-align:left}
+  .dk-preset b{font-size:13.5px} .dk-preset span{font-size:11.5px;color:var(--tx-mut)}
+  .dk-preset:hover{border-color:rgba(88,166,255,.5)}
+  .dk-preset.on{border-color:var(--info);background:var(--info-bg);box-shadow:0 0 0 1px var(--info) inset}
+  .dk-summary{margin:10px 0 12px;padding:9px 12px;border-radius:10px;background:var(--bg);border:1px solid var(--line);
+    font-size:13px;color:var(--tx-dim);line-height:1.5}
+  .dk-caps{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr));gap:10px;align-items:start}
+  .dk-cap{border:1px solid var(--line);border-radius:12px;padding:11px 13px;background:var(--panel2);display:flex;flex-direction:column;gap:10px;min-width:0}
+  .dk-cap.on{border-color:rgba(63,185,80,.4);background:linear-gradient(180deg,rgba(63,185,80,.07),transparent 70%),var(--panel2)}
+  .dk-cap[data-cap=system].on{border-color:rgba(210,153,34,.45)}
+  .dk-cap-h{display:flex;align-items:center;gap:11px}
+  .dk-cap-ic{font-size:21px;line-height:1;width:28px;text-align:center;flex:0 0 auto}
+  .dk-cap-t{display:flex;flex-direction:column;min-width:0;flex:1 1 auto} .dk-cap-t b{font-size:14px}
+  .dk-cap-t span{font-size:12px;color:var(--tx-dim);line-height:1.4}
+  .dk-cap-more{display:flex;flex-direction:column;gap:8px}
+  .dk-scope{display:flex;flex-wrap:wrap;gap:6px}
+  .dk-scope-o{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel);font-size:12.5px;cursor:pointer}
+  .dk-scope-o:has(input:checked){border-color:var(--info);background:var(--info-bg)}
+  .dk-dlg .dk-scope-o input,.dk-dlg .dk-opt input,.dk-dlg .dk-holdo input{width:auto;margin:0;flex:0 0 auto;accent-color:var(--info)}
+  .dk-pick{display:flex;flex-direction:column;gap:6px}
+  .dk-pickbar{display:flex;gap:8px;align-items:center}
+  .dk-pickbar .dk-find{flex:1 1 auto;min-width:0;height:32px;box-sizing:border-box}
+  .dk-count{font-size:12px;color:var(--tx-dim);white-space:nowrap}
+  .dk-opts{max-height:min(34vh,240px);overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+  .dk-grp-h{position:sticky;top:0;z-index:1;padding:4px 11px;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--tx-mut);background:var(--panel);border-bottom:1px solid var(--line)}
+  .dk-opt{display:flex;gap:9px;align-items:center;padding:6px 11px;border-bottom:1px solid var(--line);cursor:pointer}
+  .dk-opt:hover{background:var(--panel2)}
+  .dk-oic{font-size:16px;line-height:1;width:20px;text-align:center;flex:0 0 auto}
+  .dk-ot{display:flex;flex-direction:column;min-width:0} .dk-ot b{font-weight:600;font-size:13px;overflow-wrap:anywhere}
+  .dk-ot span{font-size:11.5px;color:var(--tx-mut)}
+  .dk-holdo{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;cursor:pointer}
+  .dk-holdo input{margin-top:3px!important}
+  .dk-holdo > span{display:flex;flex-direction:column} .dk-holdo span span{color:var(--tx-mut);font-size:11.5px}
+  @media (max-width:720px){
+    .dk-hero{flex-direction:column;align-items:stretch;padding:14px;gap:14px}
+    .dk-hero-art{width:min(196px,70%);align-self:center}
+    .dk-master{align-self:stretch}
+    .dk-pair{grid-template-columns:minmax(0,1fr);padding:12px}
+    .dk-pair-acts{flex-direction:row;flex-wrap:wrap}
+    .dk-code{font-size:26px}
+    .dk-card .facts .fact.wide{grid-column:1/-1}
+    .dk-inst{padding:12px}
+  }
   .ntf-card h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .ntf-card .ntf-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
   .ntf-card .ntf-lede{max-width:900px}
@@ -6504,6 +6641,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <button type="button" data-sec="msg-sms" data-icon="sms">SMS gateway</button>
     <button type="button" data-sec="msg-taps" data-icon="link">One-tap links</button>
     <button type="button" data-sec="msg-desktop" data-icon="terminal" title="ZIGMon Notifier for Windows: an alert at the front of the screen when a sensor is triggered - its read-only keys.">Desktop app</button>
+    <button type="button" data-sec="msg-deck" data-icon="deck" title="ZIGMon for Stream Deck: the house on the keys and dials of an Elgato Stream Deck - each computer and each deck approved here, each thing granted.">Stream Deck</button>
     <div class="ctl-group">Security</div>
     <button type="button" data-sec="sec-block" data-icon="shield">Blocking</button>
     <button type="button" data-sec="sec-front" data-icon="router">Front server &amp; router</button>
@@ -7058,6 +7196,10 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <!-- Settings - Messages - Desktop app (5.57): the read-only keys of ZIGMon Notifier -->
     <div class="card full ot ntf-card" data-sec="msg-desktop" id="ntf-card">
       <div id="ntf-host"></div>
+    </div>
+    <!-- Settings - Messages - Stream Deck (5.59): the master switch, the pairing requests, the installations -->
+    <div class="card full ot dk-card" data-sec="msg-deck" id="dk-card">
+      <div id="dk-host"></div>
     </div>
     <div class="card full ot sbk-card" data-sec="dev-backups" id="sbk-card">
       <div id="sbk-host"></div>
@@ -19668,6 +19810,8 @@ var ICONS = {
   power: '<path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/>',
   // the kinds of a destination of the backups, and the guide (5.36.2), as plexmon draws them
   terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M12.5 15H17"/>',
+  // (5.59) a Stream Deck: keys in a grid, the dials below
+  deck: '<rect x="3" y="3" width="18" height="18" rx="3"/><rect x="6" y="6" width="3.5" height="3.5" rx=".8"/><rect x="10.25" y="6" width="3.5" height="3.5" rx=".8"/><rect x="14.5" y="6" width="3.5" height="3.5" rx=".8"/><rect x="6" y="10.5" width="3.5" height="3.5" rx=".8"/><rect x="10.25" y="10.5" width="3.5" height="3.5" rx=".8"/><rect x="14.5" y="10.5" width="3.5" height="3.5" rx=".8"/><circle cx="8" cy="17.5" r="1.3"/><circle cx="12" cy="17.5" r="1.3"/><circle cx="16" cy="17.5" r="1.3"/>',
   book: '<path d="M12 6.5C10 5 7 4.5 3.5 5v13.5C7 18 10 18.5 12 20c2-1.5 5-2 8.5-1.5V5C17 4.5 14 5 12 6.5z"/><path d="M12 6.5V20"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   // a key and a going-round-again: asked for by name and drawn as nothing at
@@ -37980,6 +38124,628 @@ function ntfShowKey(x, name) {
   /* closed, the key is gone from the page: nothing keeps it */
   ZM.onClose = function () { x.key = ''; var s = $('ntf-secret'); if (s) s.textContent = ''; };
 }
+/* ---- Settings - Messages - Stream Deck (5.59) ---------------------------------------------
+   ZIGMon for Stream Deck, the Elgato plugin for Windows: switched on here (off until then),
+   each copy of the plugin (an installation) paired by comparing a code and approved by an
+   administrator, each physical deck approved by itself, and what it may do granted one
+   capability at a time - every thing of a kind or only the ones chosen, a long press to
+   confirm where asked. The token goes to the plugin once; only its fingerprint is kept. */
+var DK = {d: null};
+var DK_CAPS = {
+  view: ['👁️', 'See the house', 'States and readings on the keys - every sensor, socket and light it is shown.', 'thing'],
+  'switch': ['💡', 'Switch', 'Sockets, lights and relays: on, off, toggle.', 'socket, light and relay'],
+  dim: ['🔆', 'Dim', 'The brightness and colour of the lights - a dial turns it.', 'dimmable light'],
+  climate: ['🌡️', 'Heating', 'Thermostats and rooms: the wanted temperature, the mode, the preset.', 'thermostat and room'],
+  cover: ['🪟', 'Blinds', 'Open, close, stop, a position.', 'blind'],
+  scenes: ['🎬', 'Scenes', 'Scenes, sequences and groups of actions.', 'scene, sequence and group'],
+  automations: ['⚡', 'Automations', 'Rules, schedules and groups switched on and off.', 'rule, schedule and group'],
+  messages: ['🔔', 'Messages', 'The reports and messages the house sends.', 'report and message'],
+  system: ['⚙️', 'System', 'A backup now, hush the alerts, ask everything again… - each held to confirm by default.', 'system action'],
+  status: ['🩺', 'ZIGMon’s health', 'Standing alerts, blocked addresses, the server in front, devices unwell, the gateway.', '']
+};
+var DK_ORDER = ['view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system', 'status'];
+var DK_KIND_ICON = {socket: ICON.plug, light: ICON.light, 'switch': ICON.zb, dimmer: '🔆', thermostat: ICON.valve,
+                    cover: '🪟', scene: ICON.scene, sequence: ICON.seq, group: ICON.agroup, rule: '⚡', schedule: '⏰',
+                    message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺'};
+var DK_PRESETS = [
+  ['look', 'Look only', ['view', 'status']],
+  ['lights', 'Lights & sockets', ['view', 'status', 'switch', 'dim']],
+  ['everyday', 'Everyday', ['view', 'status', 'switch', 'dim', 'climate', 'cover', 'scenes', 'messages'],
+   'no system, no automations'],
+  ['all', 'Everything', DK_ORDER]
+];
+/* the keys of each kind of deck, as the SDK numbers them: columns, rows, dials, strip */
+var DK_SHAPES = {0: [5, 3], 1: [3, 2], 2: [8, 4], 3: [5, 3], 5: [3, 1, 0, 0, 'pedal'], 7: [4, 2, 4, 1], 9: [4, 2, 0, 1],
+                 10: [16, 2, 2, 0]};
+function loadDeck(quiet) {
+  var host = $('dk-host');
+  if (!host) return;
+  rootTimer('msg-deck', function () { loadDeck(true); }, DK.d && (DK.d.pairs || []).length ? 4000 : 15000);
+  if (!isUnlocked()) {
+    rootLocked(host, 'An administrator’s to see: a Stream Deck that is approved here can see and control the house.', loadDeck);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('deck-admin').then(function (d) {
+    var had = DK.d && (DK.d.pairs || []).length;
+    DK.d = d; drawDeck();
+    if (!had !== !(d.pairs || []).length) rootTimer('msg-deck', function () { loadDeck(true); }, (d.pairs || []).length ? 4000 : 15000);
+  }).catch(function (e) { if (!quiet) zoops(e); });
+}
+function dkAsk(body, b) {
+  if (b) zbusy(b, true);
+  return post('deck-admin', body).then(function (x) {
+    if (b) zbusy(b, false);
+    DK.d = Object.assign({}, DK.d || {}, x);
+    drawDeck();
+    return x;
+  }, function (e) { if (b) zbusy(b, false); throw e; });
+}
+function dkAddress() {
+  var a = String((DK.d && DK.d.address) || '');
+  if (!a) a = location.origin + location.pathname.replace(/\/index\.php$/, '');
+  return a.replace(/\/+$/, '');
+}
+/* A deck drawn to scale: its keys in their grid, the dials and the touch strip of a +, a
+   tick or a clock on it for approved or waiting. */
+function dkDeckArt(deck, mark) {
+  var shape = DK_SHAPES[deck.type] || [deck.cols || 5, deck.rows || 3];
+  var cols = deck.cols || shape[0], rows = deck.rows || shape[1], dials = shape[2] || 0, strip = shape[3] || 0;
+  var k = cols > 8 ? 9 : 13, g = cols > 8 ? 3 : 4, pad = 8;
+  var w = pad * 2 + cols * k + (cols - 1) * g;
+  var h = pad * 2 + rows * k + (rows - 1) * g + (strip ? 12 : 0) + (dials ? 20 : 0);
+  var svg = '<svg viewBox="0 0 ' + w + ' ' + h + '" width="' + w + '" height="' + h + '" aria-hidden="true">'
+    + '<rect x="0.5" y="0.5" width="' + (w - 1) + '" height="' + (h - 1) + '" rx="7" class="dk-body"/>';
+  var lit = [1, 3, 6, 10, 12];
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      var i = r * cols + c;
+      svg += '<rect x="' + (pad + c * (k + g)) + '" y="' + (pad + r * (k + g)) + '" width="' + k + '" height="' + k
+        + '" rx="2.5" class="dk-key' + (lit.indexOf(i % 13) >= 0 && mark !== 'wait' ? ' lit' + (i % 3) : '') + '"/>';
+    }
+  }
+  var y = pad + rows * k + (rows - 1) * g + 4;
+  if (strip) {
+    svg += '<rect x="' + pad + '" y="' + y + '" width="' + (w - pad * 2) + '" height="7" rx="3" class="dk-strip"/>';
+    y += 12;
+  }
+  for (var j = 0; j < dials; j++) {
+    var cx = pad + (w - pad * 2) * (j + 0.5) / dials;
+    svg += '<circle cx="' + cx + '" cy="' + (y + 7) + '" r="7" class="dk-dial"/><path d="M' + cx + ' ' + (y + 1.5) + 'v3" class="dk-dialmark"/>';
+  }
+  svg += '</svg>';
+  var box = el('div', 'dk-dev' + (mark ? ' ' + mark : ''));
+  var art = el('div', 'dk-art');
+  art.innerHTML = svg;
+  box.appendChild(art);
+  var t = el('div', 'dk-devt');
+  t.appendChild(el('b', '', deck.name || deck.type_name || 'Stream Deck'));
+  t.appendChild(el('span', '', [deck.type_name || 'Stream Deck', (deck.cols && deck.rows) ? deck.cols + '×' + deck.rows : '']
+    .filter(Boolean).join(' · ')));
+  box.appendChild(t);
+  return box;
+}
+/* The hero's drawing: a Stream Deck +, lit with the house. */
+function dkHeroArt(on) {
+  var d = el('div', 'dk-hero-art' + (on ? ' on' : ''));
+  var keys = '', icons = ['💡', '🔌', '🌡️', '🎬', '🪟', '🔔', '🔆', '🩺'];
+  for (var r = 0; r < 2; r++) for (var c = 0; c < 4; c++) {
+    var i = r * 4 + c;
+    keys += '<g transform="translate(' + (18 + c * 40) + ' ' + (16 + r * 40) + ')"><rect width="34" height="34" rx="7" class="hk hk' + (i % 4) + '"/>'
+      + '<text x="17" y="22" text-anchor="middle" font-size="15">' + icons[i] + '</text></g>';
+  }
+  var dials = '';
+  for (var j = 0; j < 4; j++) {
+    dials += '<g transform="translate(' + (35 + j * 40) + ' 133)"><circle r="12" class="hd"/><circle r="8" class="hd2"/>'
+      + '<path d="M0 -10v4" class="hdm"/></g>';
+  }
+  d.innerHTML = '<svg viewBox="0 0 196 156" aria-hidden="true"><defs><linearGradient id="dkg" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0" stop-color="#2a3140"/><stop offset="1" stop-color="#151a22"/></linearGradient></defs>'
+    + '<rect x="4" y="4" width="188" height="148" rx="16" fill="url(#dkg)" class="hb"/>' + keys
+    + '<rect x="18" y="98" width="154" height="16" rx="5" class="hs"/><rect x="22" y="102" width="' + (on ? 88 : 30)
+    + '" height="8" rx="3" class="hsf"/>' + dials + '</svg>';
+  return d;
+}
+function dkCapChips(caps) {
+  var box = el('div', 'dk-chips');
+  DK_ORDER.forEach(function (c) {
+    var one = (caps || {})[c] || {};
+    if (!one.on) return;
+    var chip = el('span', 'dk-chip' + (c === 'system' ? ' sys' : ''));
+    chip.appendChild(el('span', 'dk-chip-ic', DK_CAPS[c][0]));
+    var words = DK_CAPS[c][1];
+    if (c !== 'status' && !one.all) words += ' · ' + (one.targets || []).length;
+    chip.appendChild(el('span', '', words));
+    if (one.hold) chip.appendChild(el('span', 'dk-hold', 'hold'));
+    chip.title = c === 'status' ? DK_CAPS[c][2] : (one.all ? 'every ' : 'only these: ') + DK_CAPS[c][3]
+      + (one.hold ? ' - a long press confirms' : '');
+    box.appendChild(chip);
+  });
+  if (!box.children.length) box.appendChild(el('span', 'dk-chip none', 'Nothing yet'));
+  return box;
+}
+function drawDeck() {
+  var host = $('dk-host');
+  if (!host || !DK.d || host.dataset.locked === '1') return;
+  if (typingIn(host)) return;
+  var d = DK.d, installs = d.installs || [], pairs = d.pairs || [], most = d.most || {installs: 10};
+  host.innerHTML = '';
+  host.appendChild(el('h2', '', 'Stream Deck'));
+  /* the hero: the drawing, the master switch, how it stands */
+  var hero = el('div', 'dk-hero' + (d.enabled ? ' on' : ''));
+  hero.id = 'dk-hero';
+  hero.appendChild(dkHeroArt(d.enabled));
+  var hm = el('div', 'dk-hero-main');
+  hm.appendChild(el('div', 'dk-hero-title', 'ZIGMon for Stream Deck'));
+  hm.appendChild(el('p', 'dk-hero-lede', 'Your Elgato Stream Deck as a control panel for the house - a key for a lamp, a dial '
+    + 'for the heating, the blinds, the scenes, the readings and ZIGMon’s own health on the keys. Made for the Stream Deck XL '
+    + 'and the Stream Deck +, on Windows. Nothing can be controlled until it is switched on here, the computer is paired and '
+    + 'approved, each deck is approved, and the thing itself is granted.'));
+  var swr = el('div', 'dk-master');
+  var sw = makeSwitch(!!d.enabled, function (on, box) {
+    box.checked = !on;
+    if (on) {
+      dkAsk({action: 'enable'}, null).then(function (x) { toast(x.message || 'on', true); }, zoops);
+      return;
+    }
+    zconfirm('Switch Stream Deck control off?', 'Every Stream Deck is refused from its next question on - pairing too. '
+      + 'The installations and their permissions are kept: switched on again, they carry on.', 'Switch it off', function () {
+      dkAsk({action: 'disable'}, null).then(function (x) { toast(x.message || 'off', true); }, zoops);
+    });
+  });
+  sw.id = 'dk-switch';
+  sw.input.id = 'dk-switch-input';
+  swr.appendChild(sw);
+  var swt = el('label', 'dk-master-t');
+  swt.htmlFor = 'dk-switch-input';
+  swt.appendChild(el('b', '', 'Allow Stream Deck control'));
+  var live = installs.filter(function (x) { return x.last_at && Date.now() / 1000 - x.last_at < 120; }).length;
+  swt.appendChild(el('span', 'dk-state', d.enabled
+    ? 'On · ' + installs.length + ' installation' + (installs.length === 1 ? '' : 's') + ' · ' + live + ' connected now'
+      + (pairs.length ? ' · ' + pairs.length + ' asking to pair' : '')
+    : 'Off - every Stream Deck is refused, pairing too'));
+  swr.appendChild(swt);
+  hm.appendChild(swr);
+  hero.appendChild(hm);
+  host.appendChild(hero);
+  host.appendChild(dkGet(d.plugin));
+  var tiles = el('div', 'facts');
+  [['Installations', installs.length + ' of ' + (most.installs || 10)], ['Connected now', String(live)],
+   ['Waiting to pair', String(pairs.length)], ['The address for the plugin', dkAddress()]].forEach(function (f, i) {
+    var t = el('div', 'fact' + (i === 3 ? ' wide' : (i === 2 && pairs.length ? ' warn' : (i === 1 && live ? ' ok' : ''))));
+    t.appendChild(el('span', 'k', f[0]));
+    t.appendChild(el('span', 'v' + (i === 3 ? ' dk-mono' : ''), f[1]));
+    if (i === 3) { t.id = 'dk-address'; pushCopy(t, dkAddress()); }
+    tiles.appendChild(t);
+  });
+  host.appendChild(tiles);
+  /* the requests */
+  var ps = el('div', 'dk-sec');
+  ps.id = 'dk-pairs';
+  ps.appendChild(el('h3', 'dk-sec-h', 'Pairing requests'));
+  if (!pairs.length) {
+    ps.appendChild(el('p', 'dk-none', d.enabled ? 'No Stream Deck is asking to be paired. In the plugin: Connect, with the '
+      + 'address above - the request shows here with its code.' : 'Switch Stream Deck control on, then press Connect in the '
+      + 'plugin - the request shows here with its code.'));
+  }
+  pairs.forEach(function (p) { ps.appendChild(dkPairCard(p)); });
+  host.appendChild(ps);
+  /* the installations */
+  var is = el('div', 'dk-sec');
+  is.id = 'dk-installs';
+  is.appendChild(el('h3', 'dk-sec-h', 'Installations'));
+  if (!installs.length) is.appendChild(el('p', 'dk-none', 'No Stream Deck is approved yet.'));
+  installs.forEach(function (x) { is.appendChild(dkInstallCard(x)); });
+  host.appendChild(is);
+  host.appendChild(el('p', 'note small dk-foot', 'Every command a deck sends is written into the events with its name, '
+    + 'and goes through the same doors as a one-tap link. Revoked, a computer is refused at once; its decks show “revoked”.'));
+}
+function dkGet(p) {
+  var box = el('div', 'ntf-get dk-get' + (p ? '' : ' none'));
+  box.id = 'dk-get';
+  var ic = el('div', 'ntf-get-ic');
+  ic.innerHTML = iconMarkup('download');
+  box.appendChild(ic);
+  var main = el('div', 'ntf-get-main');
+  main.appendChild(el('div', 'ntf-get-title', 'Get the plugin'));
+  if (!p) {
+    main.appendChild(el('p', 'ntf-get-said', 'Not in this package.'));
+    box.appendChild(main);
+    return box;
+  }
+  var row = el('div', 'ntf-get-row');
+  var b = cmdButton('Download ZIGMon for Stream Deck ' + p.version, 'download', 'primary');
+  b.id = 'dk-download';
+  b.onclick = function () {
+    zbusy(b, true);
+    downloadBehindPin('deck-plugin', 'ZIGMon.streamDeckPlugin').then(function () { zbusy(b, false); });
+  };
+  row.appendChild(b);
+  row.appendChild(el('span', 'ntf-get-size', hlBytes(p.size) + ' · ' + (p.requires || 'Stream Deck 7.1, Windows 10/11')));
+  main.appendChild(row);
+  var sha = el('div', 'ntf-sha');
+  sha.appendChild(el('span', 'k', 'SHA-256'));
+  sha.appendChild(el('span', 'v mono', p.sha256 || ''));
+  sha.id = 'dk-sha';
+  main.appendChild(pushCopy(sha, p.sha256 || ''));
+  var ol = el('ol', 'dk-steps');
+  ['Download it and open the file: the Stream Deck app installs it.',
+   'Drag a ZIGMon action onto a key. In its settings, the address above, then Connect.',
+   'A request shows here with a code: the same on the deck? Approve, and choose what it may do.']
+    .forEach(function (s) { ol.appendChild(el('li', '', s)); });
+  main.appendChild(ol);
+  main.appendChild(el('p', 'ntf-get-note', 'It updates itself from this server with ZIGMon’s own updates (it checks the '
+    + 'signature of ZIGMon’s release key first).'));
+  box.appendChild(main);
+  return box;
+}
+function dkPairCard(p) {
+  var card = el('div', 'dk-pair');
+  card.dataset.pair = p.pair;
+  var left = el('div', 'dk-pair-code');
+  left.appendChild(el('span', 'k', 'The code'));
+  left.appendChild(el('span', 'dk-code mono', p.code));
+  left.appendChild(el('span', 'dk-pair-ask', 'Make sure the deck shows ' + p.code));
+  card.appendChild(left);
+  var mid = el('div', 'dk-pair-main');
+  var t = el('div', 'dk-pair-t');
+  t.appendChild(el('span', 'dk-pc', '🖥️'));
+  t.appendChild(el('b', '', p.computer || 'a computer'));
+  if (p.known) t.appendChild(el('span', 'dk-tag', 'paired before'));
+  mid.appendChild(t);
+  var left_s = Math.max(0, Math.round((p.expires || 0) - Date.now() / 1000));
+  mid.appendChild(el('div', 'dk-pair-sub', 'From ' + (p.from || '?') + ' · asked ' + ago(p.at) + ' · runs out in '
+    + Math.floor(left_s / 60) + ' min' + (p.plugin ? ' · plugin ' + p.plugin : '')));
+  var decks = el('div', 'dk-devs');
+  (p.decks || []).forEach(function (x) { decks.appendChild(dkDeckArt(x, 'new')); });
+  if (!(p.decks || []).length) decks.appendChild(el('span', 'dk-none', 'No deck connected yet - each one is approved when it shows.'));
+  mid.appendChild(decks);
+  card.appendChild(mid);
+  var acts = el('div', 'dk-pair-acts');
+  var ok = cmdButton('Approve…', 'check', 'primary');
+  ok.classList.add('dk-approve');
+  ok.onclick = function () { dkCapsEdit({pair: p}); };
+  var no = cmdButton('Deny', 'close', 'danger');
+  no.classList.add('dk-deny');
+  no.onclick = function () {
+    zconfirm('Deny ' + (p.computer || 'this computer') + '?', 'The plugin is told it was refused, and nothing is paired. '
+      + 'It can ask again.', 'Deny it', function () {
+      dkAsk({action: 'deny', pair: p.pair}, no).then(function (x) { toast(x.message || 'denied', true); }, zoops);
+    });
+  };
+  acts.appendChild(ok);
+  acts.appendChild(no);
+  card.appendChild(acts);
+  return card;
+}
+function dkSeen(x) {
+  var fresh = x.last_at && Date.now() / 1000 - x.last_at < 120;
+  var s = el('span', 'ntf-state ' + (fresh ? 'ok' : x.last_at ? '' : 'info'));
+  s.appendChild(el('span', 'dot'));
+  s.appendChild(el('span', '', fresh ? 'connected' : x.last_at ? 'seen ' + ago(x.last_at) : 'not connected yet'));
+  if (x.last_at) s.title = 'Last asked ' + stamp(x.last_at) + (x.last_from ? ' from ' + x.last_from : '');
+  return s;
+}
+function dkInstallCard(x) {
+  var card = el('div', 'dk-inst');
+  card.dataset.id = x.id;
+  var head = el('div', 'dk-inst-h');
+  head.appendChild(el('span', 'dk-pc', '🖥️'));
+  var n = el('div', 'dk-inst-n');
+  var nb = el('b', '', x.name || x.computer || 'Stream Deck');
+  n.appendChild(nb);
+  n.appendChild(el('span', 'dk-inst-sub', (x.computer && x.computer !== x.name ? x.computer + ' · ' : '') + 'approved by '
+    + (x.approved_by || '?') + ' ' + (x.approved_at ? ago(x.approved_at) : '') + ' · token …' + (x.hint || '')
+    + (x.plugin ? ' · plugin ' + x.plugin : '')));
+  head.appendChild(n);
+  head.appendChild(dkSeen(x));
+  var ren = iconButton('pencil', 'Rename');
+  ren.classList.add('dk-rename');
+  ren.onclick = function () { dkRename(x); };
+  head.appendChild(ren);
+  card.appendChild(head);
+  var decks = el('div', 'dk-devs');
+  (x.decks || []).forEach(function (dv) {
+    var art = dkDeckArt(dv, dv.approved ? 'ok' : 'wait');
+    var st = el('div', 'dk-devst');
+    if (dv.approved) {
+      st.appendChild(el('span', 'dk-ok', '✓ approved'));
+      var rm = el('button', 'dk-link', 'Remove');
+      rm.type = 'button';
+      rm.onclick = function () { dkDeckRemove(x, dv); };
+      st.appendChild(rm);
+    } else {
+      st.appendChild(el('span', 'dk-wait', 'New Stream Deck waiting'));
+      var ap = cmdButton('Approve', 'check', 'small primary');
+      ap.classList.add('dk-deck-ok');
+      ap.onclick = function () {
+        dkAsk({action: 'deck_approve', install: x.id, deck: dv.id}, ap).then(function (r) { toast(r.message, true); }, zoops);
+      };
+      var rm2 = cmdButton('Remove', 'trash', 'small');
+      rm2.onclick = function () { dkDeckRemove(x, dv); };
+      st.appendChild(ap);
+      st.appendChild(rm2);
+    }
+    art.appendChild(st);
+    decks.appendChild(art);
+  });
+  if (!(x.decks || []).length) decks.appendChild(el('span', 'dk-none', 'No deck has shown yet.'));
+  card.appendChild(decks);
+  var foot = el('div', 'dk-inst-f');
+  foot.appendChild(dkCapChips(x.caps));
+  var acts = el('div', 'dk-inst-acts');
+  var pe = cmdButton('Permissions…', 'shield', 'small');
+  pe.classList.add('dk-perms');
+  pe.onclick = function () { dkCapsEdit({install: x}); };
+  var rv = cmdButton('Revoke', 'trash', 'small danger');
+  rv.classList.add('dk-revoke');
+  rv.onclick = function () {
+    zconfirm('Revoke ' + (x.name || 'this installation') + '?', 'Its next question is refused and its decks show “revoked”. '
+      + 'It cannot be given back: the plugin is paired again, with a new code.', 'Revoke it', function () {
+      dkAsk({action: 'revoke', install: x.id}, rv).then(function (r) { toast(r.message, true); }, zoops);
+    });
+  };
+  acts.appendChild(pe);
+  acts.appendChild(rv);
+  foot.appendChild(acts);
+  card.appendChild(foot);
+  return card;
+}
+function dkDeckRemove(x, dv) {
+  zconfirm('Remove ' + (dv.name || 'this Stream Deck') + '?', 'It can control nothing from now on. Connected again, it shows '
+    + 'here as a new Stream Deck waiting.', 'Remove it', function () {
+    dkAsk({action: 'deck_remove', install: x.id, deck: dv.id}, null).then(function (r) { toast(r.message, true); }, zoops);
+  });
+}
+function dkRename(x) {
+  var name = zText(x.name || '', 'Office PC');
+  name.id = 'dk-name';
+  name.maxLength = 60;
+  var gen;
+  zmodal('Rename ' + (x.name || 'the installation'), function (body) {
+    body.appendChild(zField('Name', name, 'What the events and the plugin call it - at most 60 characters.'));
+  }, [{words: 'Cancel', close: true}, {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
+    dkAsk({action: 'rename', install: x.id, name: name.value.trim()}, b).then(function (r) { closeZModal(); toast(r.message, true); },
+      function (e) { zmodalSaid(e, gen); });
+  }}], 'narrow');
+  gen = ZM.gen;
+}
+/* What the permissions say, in a line. */
+function dkSummary(caps) {
+  var parts = [];
+  var see = caps.view || {};
+  parts.push(see.on ? (see.all ? 'sees the whole house' : 'sees ' + (see.targets || []).length + ' thing'
+    + ((see.targets || []).length === 1 ? '' : 's')) : 'sees only what it may control');
+  DK_ORDER.forEach(function (c) {
+    if (c === 'view' || c === 'status') return;
+    var one = caps[c] || {};
+    if (!one.on) return;
+    parts.push(DK_CAPS[c][1].toLowerCase() + ' ' + (one.all ? 'everything' : (one.targets || []).length + ' chosen')
+      + (one.hold ? ' (held)' : ''));
+  });
+  if ((caps.status || {}).on) parts.push('ZIGMon’s health');
+  var none = DK_ORDER.every(function (c) { return c === 'view' || c === 'status' || !(caps[c] || {}).on; });
+  return 'This Stream Deck ' + parts[0] + (parts.length > 1 ? ', ' : '') + parts.slice(1).join(', ')
+    + (none ? ' - and controls nothing' : '') + '.';
+}
+/* The permission editor: presets, then a card per capability - its switch, every one or
+   only the ones chosen in a list to search grouped by room, and the hold. For a pairing
+   request, the name and the decks approved with it come first. */
+function dkCapsEdit(opts) {
+  var d = DK.d || {};
+  var items = d.items || [];
+  var base = (opts.install && opts.install.caps) || d.default_caps || {};
+  var caps = JSON.parse(JSON.stringify(base));
+  DK_ORDER.forEach(function (c) {
+    caps[c] = Object.assign(c === 'status' ? {on: false} : {on: false, all: false, targets: []}, caps[c] || {});
+    if (c !== 'status' && c !== 'view' && caps[c].hold === undefined) caps[c].hold = c === 'system';
+  });
+  var summary = el('div', 'dk-summary');
+  summary.id = 'dk-summary';
+  var cards = {};
+  var tell = function () {
+    summary.textContent = dkSummary(caps);
+    Array.prototype.forEach.call(presets.querySelectorAll('.dk-preset'), function (b) {
+      var p = DK_PRESETS.filter(function (x) { return x[0] === b.dataset.p; })[0];
+      var same = DK_ORDER.every(function (c) {
+        var want = p[2].indexOf(c) >= 0;
+        return !!caps[c].on === want && (!want || c === 'status' || caps[c].all);
+      });
+      b.classList.toggle('on', same);
+    });
+  };
+  var presets = el('div', 'dk-presets');
+  DK_PRESETS.forEach(function (p) {
+    var b = el('button', 'dk-preset');
+    b.type = 'button';
+    b.dataset.p = p[0];
+    b.appendChild(el('b', '', p[1]));
+    if (p[3]) b.appendChild(el('span', '', p[3]));
+    b.onclick = function () {
+      DK_ORDER.forEach(function (c) {
+        caps[c].on = p[2].indexOf(c) >= 0;
+        if (caps[c].on && c !== 'status') caps[c].all = true;
+      });
+      DK_ORDER.forEach(function (c) { cards[c].sync(); });
+      tell();
+    };
+    presets.appendChild(b);
+  });
+  var list = el('div', 'dk-caps');
+  DK_ORDER.forEach(function (c) {
+    var meta = DK_CAPS[c];
+    var mine = items.filter(function (it) { return c === 'view' ? it.cap !== 'status' : it.cap === c; });
+    if (c !== 'view' && c !== 'status' && !mine.length && !caps[c].on) return;
+    var card = el('div', 'dk-cap');
+    card.dataset.cap = c;
+    var h = el('div', 'dk-cap-h');
+    h.appendChild(el('span', 'dk-cap-ic', meta[0]));
+    var t = el('div', 'dk-cap-t');
+    t.appendChild(el('b', '', meta[1]));
+    t.appendChild(el('span', '', meta[2]));
+    h.appendChild(t);
+    var sw = makeSwitch(caps[c].on, function (on) { caps[c].on = on; card.sync(); tell(); });
+    sw.classList.add('dk-cap-sw');
+    h.appendChild(sw);
+    card.appendChild(h);
+    var more = el('div', 'dk-cap-more');
+    if (c !== 'status') {
+      var modes = el('div', 'dk-scope');
+      var name = 'dk-scope-' + c;
+      [['all', 'Every ' + meta[3] + ' (' + mine.length + ')'], ['some', 'Only these']].forEach(function (m) {
+        var lab = el('label', 'dk-scope-o');
+        var rb = el('input');
+        rb.type = 'radio'; rb.name = name; rb.value = m[0];
+        rb.onchange = function () { caps[c].all = m[0] === 'all'; card.sync(); tell(); };
+        lab.appendChild(rb);
+        lab.appendChild(el('span', '', m[1]));
+        modes.appendChild(lab);
+      });
+      more.appendChild(modes);
+      var pick = el('div', 'dk-pick');
+      var find = el('input', 'ntf-find dk-find');
+      find.type = 'search'; find.placeholder = 'Find a thing, a room or a kind…'; find.autocomplete = 'off';
+      var count = el('span', 'dk-count');
+      var bar = el('div', 'dk-pickbar');
+      bar.appendChild(find);
+      bar.appendChild(count);
+      pick.appendChild(bar);
+      var opts_ = el('div', 'dk-opts');
+      var rooms = {};
+      mine.forEach(function (it) { (rooms[it.room || ''] = rooms[it.room || ''] || []).push(it); });
+      Object.keys(rooms).sort(function (a, b) { return !a ? 1 : !b ? -1 : a.localeCompare(b); }).forEach(function (r) {
+        var grp = el('div', 'dk-grp');
+        grp.appendChild(el('div', 'dk-grp-h', r || 'No room'));
+        rooms[r].forEach(function (it) {
+          var lab = el('label', 'dk-opt');
+          lab.dataset.id = it.id;
+          lab.dataset.find = [it.name, it.room || '', it.kind, it.id].join(' ').toLowerCase();
+          var cb = el('input');
+          cb.type = 'checkbox';
+          cb.checked = (caps[c].targets || []).indexOf(it.id) >= 0;
+          cb.onchange = function () {
+            var ts = caps[c].targets = (caps[c].targets || []).filter(function (x) { return x !== it.id; });
+            if (cb.checked) ts.push(it.id);
+            card.sync(); tell();
+          };
+          lab.appendChild(cb);
+          lab.appendChild(el('span', 'dk-oic', DK_KIND_ICON[it.kind] || ICON.sensor));
+          var ot = el('span', 'dk-ot');
+          ot.appendChild(el('b', '', it.name));
+          ot.appendChild(el('span', '', it.kind));
+          lab.appendChild(ot);
+          grp.appendChild(lab);
+        });
+        opts_.appendChild(grp);
+      });
+      if (!mine.length) opts_.appendChild(el('p', 'dk-none', 'Nothing of this kind in the house yet.'));
+      find.oninput = function () {
+        var q = find.value.trim().toLowerCase();
+        Array.prototype.forEach.call(opts_.querySelectorAll('.dk-grp'), function (g) {
+          var shown = 0;
+          Array.prototype.forEach.call(g.querySelectorAll('.dk-opt'), function (o) {
+            o.hidden = !!q && o.dataset.find.indexOf(q) < 0;
+            if (!o.hidden) shown += 1;
+          });
+          g.hidden = !shown;
+        });
+      };
+      pick.appendChild(opts_);
+      more.appendChild(pick);
+      if (c !== 'view') {
+        var hold = el('label', 'dk-holdo');
+        var hb = el('input');
+        hb.type = 'checkbox';
+        hb.onchange = function () { caps[c].hold = hb.checked; tell(); };
+        hold.appendChild(hb);
+        var ht = el('span', '');
+        ht.appendChild(el('b', '', 'Hold to confirm'));
+        ht.appendChild(el('span', '', 'the key is held for a second and a half, a ring filling on it, before it acts'));
+        hold.appendChild(ht);
+        more.appendChild(hold);
+        card.hold = hb;
+      }
+      card.modes = modes;
+      card.pick = pick;
+      card.count = count;
+    }
+    card.appendChild(more);
+    card.sync = function () {
+      card.classList.toggle('on', !!caps[c].on);
+      more.hidden = !caps[c].on || c === 'status';
+      sw.input.checked = !!caps[c].on;
+      if (c === 'status') return;
+      Array.prototype.forEach.call(card.modes.querySelectorAll('input'), function (rb) {
+        rb.checked = (rb.value === 'all') === !!caps[c].all;
+      });
+      card.pick.hidden = !!caps[c].all;
+      card.count.textContent = (caps[c].targets || []).length + ' chosen';
+      if (card.hold) card.hold.checked = !!caps[c].hold;
+    };
+    cards[c] = card;
+    card.sync();
+    list.appendChild(card);
+  });
+  DK_ORDER.forEach(function (c) { if (!cards[c]) cards[c] = {sync: function () {}}; });
+  var name, ticks = {};
+  if (opts.pair) {
+    name = zText(opts.pair.computer || '', 'Office PC');
+    name.id = 'dk-pair-name';
+    name.maxLength = 60;
+    (opts.pair.decks || []).forEach(function (x) { ticks[x.id] = true; });
+  }
+  var gen;
+  var title = opts.pair ? 'Approve ' + (opts.pair.computer || 'the Stream Deck') : 'What ' + (opts.install.name || 'it') + ' may do';
+  zmodal(title, function (body) {
+    body.classList.add('dk-dlg', 'ntf-dlg');
+    if (opts.pair) {
+      var cmp = el('div', 'dk-cmp');
+      cmp.appendChild(el('span', 'dk-code mono', opts.pair.code));
+      cmp.appendChild(el('span', '', 'Approve only when the deck shows this same code.'));
+      body.appendChild(cmp);
+      body.appendChild(zField('Name', name, 'What the events and the cards call it - the computer, say.'));
+      if ((opts.pair.decks || []).length) {
+        var dw = el('div', 'dk-field');
+        dw.appendChild(el('div', 'ntf-flabel', 'Decks approved with it'));
+        var dd = el('div', 'dk-devs');
+        opts.pair.decks.forEach(function (x) {
+          var art = dkDeckArt(x, 'ok');
+          var lab = el('label', 'dk-tick');
+          var cb = el('input');
+          cb.type = 'checkbox'; cb.checked = true;
+          cb.dataset.deck = x.id;
+          cb.onchange = function () { if (cb.checked) ticks[x.id] = true; else delete ticks[x.id]; art.classList.toggle('off', !cb.checked); };
+          lab.appendChild(cb);
+          lab.appendChild(el('span', '', 'approve'));
+          art.appendChild(lab);
+          dd.appendChild(art);
+        });
+        dw.appendChild(dd);
+        body.appendChild(dw);
+      }
+    }
+    var pw = el('div', 'dk-field');
+    pw.appendChild(el('div', 'ntf-flabel', 'What it may do'));
+    pw.appendChild(presets);
+    pw.appendChild(summary);
+    pw.appendChild(list);
+    body.appendChild(pw);
+  }, [{words: 'Cancel', close: true},
+      {words: opts.pair ? 'Approve' : 'Save', cls: 'primary', icon: opts.pair ? 'check' : 'save', go: function (b) {
+        var out = {};
+        DK_ORDER.forEach(function (c) {
+          out[c] = c === 'status' ? {on: !!caps[c].on} : {on: !!caps[c].on, all: !!caps[c].all, targets: caps[c].targets || []};
+          if (c !== 'status' && c !== 'view') out[c].hold = !!caps[c].hold;
+        });
+        var bad = DK_ORDER.filter(function (c) { return c !== 'status' && out[c].on && !out[c].all && !out[c].targets.length; });
+        if (bad.length) { zmodalSaid(new Error('choose at least one thing under ' + DK_CAPS[bad[0]][1] + ', or Every'), gen); return; }
+        var body = opts.pair ? {action: 'approve', pair: opts.pair.pair, name: name.value.trim(), decks: Object.keys(ticks), caps: out}
+                             : {action: 'caps', install: opts.install.id, caps: out};
+        dkAsk(body, b).then(function (x) { closeZModal(); toast(x.message || 'saved', true); }, function (e) { zmodalSaid(e, gen); });
+      }}], 'medium dk-dlg-box');
+  gen = ZM.gen;
+  tell();
+}
 /* ---- Conditions on any sensor (5.58) -------------------------------------------------------
    A key may carry conditions on any device's reading - a temperature over a line, a socket's
    power, a thermostat's preset changed - and the app alerts when one becomes true (and, if
@@ -38447,6 +39213,7 @@ function rootPaneShown(sec) {
   if (sec === 'sec-selinux') loadSelinux(); else sePoll(false);
   if (sec === 'dev-backups') loadSbk(); else sbkPoll(false);
   if (sec === 'msg-desktop') loadNtf();
+  if (sec === 'msg-deck') loadDeck();
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-proxy') drawProxy();
@@ -38471,6 +39238,7 @@ var CONTROL_SECTIONS = {
   'msg-alerts': ['Alerts', 'The messages the house sends, and the channels they go down.'],
   'msg-sms': ['SMS gateway', 'The modem, the texts it sends, and what a text message may make happen.'],
   'msg-taps': ['One-tap links', 'Links that do one thing when opened, and the second factor they ask for.'],
+  'msg-deck': ['Stream Deck', 'ZIGMon for Stream Deck: the house on the keys and dials of an Elgato Stream Deck - the XL, the + and the rest - on Windows. Off until it is switched on here; then each computer is paired by a code and approved, each deck by itself, and what it may do is granted one capability at a time.'],
   'msg-desktop': ['Desktop app', 'ZIGMon Notifier for Windows: an alert brought to the front of the screen the moment a sensor is triggered - motion, a door opened, a leak, smoke, a button pressed. Each computer signs in with a read-only key of its own, made here and shown once.'],
   'sec-block': ['Blocking', 'Which addresses are kept out, for how long, and which lists are trusted.'],
   'sec-front': ['Front server & router', 'The server in front of the house, and the router that carries the list of addresses kept out.'],
