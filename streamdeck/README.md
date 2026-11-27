@@ -21,7 +21,7 @@ and the administrator grants the functions one by one.
 
 ## 1. Download and install
 
-1. In ZIGMon, as the administrator: **Settings → Stream Deck**.
+1. In ZIGMon, as the administrator: **Settings → Messages → Stream Deck**.
 2. Switch on **Allow Stream Deck control**.
 3. Click **Download ZIGMon for Stream Deck 1.0.0**. Compare the SHA-256 shown there with the
    file if you like (`Get-FileHash ZIGMon.streamDeckPlugin` in PowerShell).
@@ -35,7 +35,7 @@ and the administrator grants the functions one by one.
 2. Type your dashboard address, for example `https://zigmon.example.net`, and press
    **Connect**.
 3. A code like **K7Q-4PX** appears big in the settings **and on every ZIGMon key**.
-4. In ZIGMon → **Settings → Stream Deck** the request appears with the computer's name, its
+4. In ZIGMon → **Settings → Messages → Stream Deck** the request appears with the computer's name, its
    Stream Decks (drawn to scale), the address it came from and the same code. Check the code
    matches, choose what this computer may do and **Approve** (with your PIN) - or **Deny**.
 5. The keys come alive within a second or two. The settings now show the house, ZIGMon's

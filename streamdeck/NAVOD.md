@@ -20,7 +20,7 @@ a administrátor povoluje funkce jednu po druhé.
 
 ## 1. Stažení a instalace
 
-1. V ZIGMonu jako administrátor: **Nastavení → Stream Deck**.
+1. V ZIGMonu jako administrátor: **Nastavení → Messages → Stream Deck**.
 2. Zapněte **Povolit ovládání ze Stream Decku**.
 3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.0.0**. Pokud chcete, porovnejte SHA-256
    zobrazený tamtéž se souborem (`Get-FileHash ZIGMon.streamDeckPlugin` v PowerShellu).
@@ -33,7 +33,7 @@ a administrátor povoluje funkce jednu po druhé.
    a kliknutím otevřete její nastavení.
 2. Napište adresu dashboardu, např. `https://zigmon.example.net`, a stiskněte **Connect**.
 3. Objeví se kód, např. **K7Q-4PX** - velký v nastavení **a na všech tlačítkách ZIGMonu**.
-4. V ZIGMonu → **Nastavení → Stream Deck** se objeví žádost se jménem počítače, jeho Stream
+4. V ZIGMonu → **Nastavení → Messages → Stream Deck** se objeví žádost se jménem počítače, jeho Stream
    Decky (nakreslené v měřítku), adresou, odkud přišla, a stejným kódem. Ověřte, že kód
    souhlasí, vyberte, co smí tento počítač dělat, a **Schvalte** (PINem) - nebo **Zamítněte**.
 5. Tlačítka do pár sekund ožijí. Nastavení teď ukazuje dům, verzi ZIGMonu, vaše Stream Decky

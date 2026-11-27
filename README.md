@@ -2083,7 +2083,36 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.58.1**
+Current version: **5.59.0**
+
+5.59.0 — ZIGMon for Stream Deck: the house on the keys and dials of a Stream Deck XL and Stream Deck +.
+
+* A Windows plugin for the Stream Deck app (streamdeck/), in the package and
+  downloaded from Settings - Messages - Stream Deck. Seven actions: Control
+  (any socket, light, relay, scene, rule...), Reading (a value with a trend
+  and a sparkline, coloured past chosen lines), Thermostat (a dial for the
+  wanted temperature, a push for the mode or preset), Light (a dial for the
+  brightness), Blinds (a dial for the position), Scene, and ZIGMon's own
+  health (alerts, blocked addresses, the server in front, devices, the
+  gateway). Keys and the + touch strip are drawn in the dashboard's colours
+  and redraw as the house changes.
+* Nothing can be controlled until an administrator allows it: Stream Deck
+  control is off until switched on; a computer asks to pair with a code its
+  keys show, and is approved (or denied) in ZIGMon after the code is
+  compared; every physical deck is approved by itself; what it may do is
+  granted one capability at a time - see the house, switch, dim, heating,
+  blinds, scenes, automations, messages, system, ZIGMon's health - each for
+  every thing of its kind or only chosen ones, with a long press to confirm
+  where asked. Changes reach a running deck at once; revoking refuses it at
+  once.
+* The plugin holds a token given to it once, encrypted for the Windows user
+  (DPAPI); ZIGMon keeps only its fingerprint. A wrong token is counted like a
+  wrong one-tap secret, commands are limited to 10 a second and 300 a minute,
+  and every one goes through the same doors as a one-tap link and is written
+  into the events with the deck's name. HTTPS only (a certificate the system
+  does not trust only after its fingerprint is pinned); no redirects.
+* It updates itself from ZIGMon: only a build whose description is signed by
+  ZIGMon's release key and whose sha256 matches.
 
 5.58.1 — the front server's logs of 17-27 November replayed: more of what attacks the house through it is recognised, and sooner.
 

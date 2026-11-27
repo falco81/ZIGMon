@@ -277,7 +277,7 @@ function connectForm(st: Status | null): HTMLElement[] {
   ];
   if (connectError) out.push(h("div", "err", [connectError]));
   out.push(h("div", "note", [ic("info", "sm"), h("span", "", [
-    "In ZIGMon, switch on ", h("b", "", ["Settings → Stream Deck → Allow Stream Deck control"]),
+    "In ZIGMon, switch on ", h("b", "", ["Settings → Messages → Stream Deck → Allow Stream Deck control"]),
     " first. Connecting shows a code here and on your keys; approve it in ZIGMon.",
   ])]));
   return out;
@@ -349,7 +349,7 @@ function connectionCard(): HTMLElement {
       if (st.pair) {
         card.append(codeBlock(st.pair.code));
         card.append(h("ol", "steps", [
-          h("li", "", ["Open ZIGMon → ", h("b", "", ["Settings → Stream Deck"])]),
+          h("li", "", ["Open ZIGMon → ", h("b", "", ["Settings → Messages → Stream Deck"])]),
           h("li", "", ["Check the request shows ", h("b", "", [st.pair.code])]),
           h("li", "", ["Choose what this deck may do and ", h("b", "", ["Approve"])]),
         ]));
@@ -386,7 +386,7 @@ function connectionCard(): HTMLElement {
       card.append(h("div", "btns", [btn("Try now", "", "refresh", () => toPlugin({ t: "retry" })), btn("Disconnect", "danger", "unlink", () => toPlugin({ t: "disconnect" }))]));
       break;
     case "off":
-      card.append(h("p", "", ["The administrator has switched Stream Deck control off. In ZIGMon: ", h("b", "", ["Settings → Stream Deck → Allow Stream Deck control"]), "."]));
+      card.append(h("p", "", ["The administrator has switched Stream Deck control off. In ZIGMon: ", h("b", "", ["Settings → Messages → Stream Deck → Allow Stream Deck control"]), "."]));
       card.append(h("div", "btns", [btn("Check again", "", "refresh", () => toPlugin({ t: "retry" })), btn("Disconnect", "danger", "unlink", () => toPlugin({ t: "disconnect" }))]));
       break;
     case "revoked":
@@ -408,7 +408,7 @@ function connectionCard(): HTMLElement {
       card.append(h("div", "sep"));
       card.append(h("h2", "", [ic("key", "sm"), "Allowed by ZIGMon"]));
       card.append(capsSummary(st.install?.caps ?? {}));
-      card.append(h("p", "muted small", ["Only what is allowed here can be used. The administrator changes it in ZIGMon → Settings → Stream Deck."]));
+      card.append(h("p", "muted small", ["Only what is allowed here can be used. The administrator changes it in ZIGMon → Settings → Messages → Stream Deck."]));
       card.append(h("div", "sep"));
       const addr = h("div", "muted small mono", [st.address]);
       card.append(addr);
@@ -492,7 +492,7 @@ function picker(): HTMLElement {
       btn("Change", "", "edit", () => { pickerOpen = true; query = ""; render(); }, "change"),
     ]);
     card.append(row);
-    if (it && !it.allowed) card.append(h("div", "note crit", [ic("lock", "sm"), h("span", "", ["ZIGMon does not allow this deck to control it. The administrator can grant it in ", h("b", "", ["Settings → Stream Deck → Permissions"]), "."])]));
+    if (it && !it.allowed) card.append(h("div", "note crit", [ic("lock", "sm"), h("span", "", ["ZIGMon does not allow this deck to control it. The administrator can grant it in ", h("b", "", ["Settings → Messages → Stream Deck → Permissions"]), "."])]));
     else if (it && it.hold) card.append(h("div", "note warn", [ic("hand", "sm"), "ZIGMon asks for a confirmation: hold the key (or the dial) for 1.5 s - a ring fills while you hold."]));
     if (preview) {
       const img = h("img") as HTMLImageElement;

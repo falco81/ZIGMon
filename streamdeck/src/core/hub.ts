@@ -430,7 +430,7 @@ export class Hub {
         return null;
       }
       if (e.status === 403 && e.body.off === true) {
-        this.setPhase("off", "Stream Deck control is switched off in ZIGMon (Settings → Stream Deck).");
+        this.setPhase("off", "Stream Deck control is switched off in ZIGMon (Settings → Messages → Stream Deck).");
         return 60_000;
       }
       if (e.status === 429) {
@@ -547,7 +547,7 @@ export class Hub {
       return;
     }
     if (e instanceof ApiError && e.status === 403 && e.body.off === true) {
-      this.setPhase("off", "Stream Deck control is switched off in ZIGMon - switch it on under Settings → Stream Deck, then connect again.");
+      this.setPhase("off", "Stream Deck control is switched off in ZIGMon - switch it on under Settings → Messages → Stream Deck, then connect again.");
       return;
     }
     this.setPhase("unpaired", errorWords(e));
@@ -629,7 +629,7 @@ export class Hub {
           return { ok: false, why: "deck", message: e.message };
         }
         if (e.status === 403 && b.off === true) {
-          this.setPhase("off", "Stream Deck control is switched off in ZIGMon (Settings → Stream Deck).");
+          this.setPhase("off", "Stream Deck control is switched off in ZIGMon (Settings → Messages → Stream Deck).");
           return { ok: false, why: "off", message: e.message };
         }
         if (e.status === 403) {
