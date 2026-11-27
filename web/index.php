@@ -225,7 +225,7 @@ if (isset($_GET['api'])) {
     // download taken away before its owner fetched it. The page fetches all
     // of these itself (same-origin); a shortcut or curl says nothing and is
     // let through as before.
-    if ((preg_match('/-download$/', $what) || $what === 'export' || $what === 'notifier-app') && zigmon_foreign_request()) {
+    if ((preg_match('/-download$/', $what) || $what === 'export' || $what === 'notifier-app' || $what === 'deck-plugin') && zigmon_foreign_request()) {
         http_response_code(403);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode(['ok' => false, 'error' => 'refused: this request was sent by another site']);
@@ -680,6 +680,18 @@ if (isset($_GET['api'])) {
         zigmon_relay_download('/api/notifier/app', 60, zigmon_download_session(), [], 'ZigmonNotifier.exe');
         exit;
     }
+    if ($what === 'deck-plugin' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59) ZIGMon for Stream Deck itself, for an administrator to take to a computer:
+        // the .streamDeckPlugin in this package, behind the sign-in in the daemon
+        zigmon_relay_download('/api/deck/plugin', 60, zigmon_download_session(), [], 'ZIGMon.streamDeckPlugin');
+        exit;
+    }
+    if ($what === 'deck-admin' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59) the Stream Deck installations, the pairing requests and the permissions -
+        // never a token - an administrator's, behind the sign-in in the daemon
+        zigmon_relay('/api/deck/admin', 'GET', null, 15.0);
+        exit;
+    }
     if ($what === 'notifier-keys' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.57) the desktop notifier's keys: their names, sensors and last use - never a
         // key - an administrator's, behind the sign-in in the daemon
@@ -1070,6 +1082,72 @@ if (isset($_GET['api'])) {
                      ['X-Zigmon-Notifier: ' . $key]);
         exit;
     }
+    // (5.59) ZIGMon for Stream Deck, the Elgato plugin: pairing, hello, the catalogue, the
+    // states and their long wait, a command, and its own update. Its token rides in
+    // X-Zigmon-Deck, the installation in X-Zigmon-Deck-Install and a pairing request's secret
+    // in X-Zigmon-Deck-Pair - never in the address, which a log keeps - and the daemon checks
+    // them; no sign-in and no API token of its own, as a one-tap link. Each value is cut down
+    // to what it may hold before it goes into a header line or the daemon's address.
+    if ($what === 'deck') {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        $do = (string) ($_GET['do'] ?? '');
+        $roads = ['pair', 'pair_wait', 'hello', 'catalog', 'state', 'wait', 'do', 'update', 'download'];
+        if (!in_array($do, $roads, true)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'do is ' . implode(', ', $roads)]);
+            exit;
+        }
+        if ($method !== 'GET' && $method !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'error' => 'the Stream Deck asks by GET or POST']);
+            exit;
+        }
+        $cut = function (string $name): string {
+            return substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($_SERVER[$name] ?? '')), 0, 80);
+        };
+        $headers = ['X-Zigmon-Deck: ' . $cut('HTTP_X_ZIGMON_DECK'),
+                    'X-Zigmon-Deck-Install: ' . $cut('HTTP_X_ZIGMON_DECK_INSTALL'),
+                    'X-Zigmon-Deck-Pair: ' . $cut('HTTP_X_ZIGMON_DECK_PAIR')];
+        if ($do === 'download') {
+            // the plugin's new version: streamed through with its own headers
+            zigmon_relay_download('/api/deck/download', 30, '', $headers, 'ZIGMon.streamDeckPlugin');
+            exit;
+        }
+        $ask = [];
+        $after = preg_replace('/\D/', '', substr((string) ($_GET['after'] ?? ''), 0, 18));
+        if ($after !== '') { $ask[] = 'after=' . $after; }
+        $boot = preg_replace('/[^0-9a-f]/', '', strtolower(substr((string) ($_GET['boot'] ?? ''), 0, 32)));
+        if ($boot !== '') { $ask[] = 'boot=' . $boot; }
+        $decks = preg_replace('/[^A-Za-z0-9_.:,-]/', '', substr((string) ($_GET['decks'] ?? ''), 0, 600));
+        if ($decks !== '') { $ask[] = 'decks=' . rawurlencode($decks); }
+        $info = preg_replace('/[^A-Za-z0-9_=-]/', '', substr((string) ($_GET['deck_info'] ?? ''), 0, 2800));
+        if ($info !== '') { $ask[] = 'deck_info=' . $info; }
+        $ids = (string) ($_GET['ids'] ?? '');
+        if ($ids !== '') { $ask[] = 'ids=' . rawurlencode(substr(preg_replace('/[\x00-\x1f\x7f]/', '', $ids), 0, 8000)); }
+        $path = '/api/deck/' . $do . ($ask ? '?' . implode('&', $ask) : '');
+        /* the waits are held up to 25 s in the daemon: the relay is given longer */
+        $timeout = in_array($do, ['wait', 'pair_wait'], true) ? 45.0 : 15.0;
+        if ($method === 'POST') {
+            $raw = (string) file_get_contents('php://input', false, null, 0, 16385);
+            if (strlen($raw) > 16384) {
+                http_response_code(413);
+                echo json_encode(['ok' => false, 'error' => 'a Stream Deck question is at most 16 KB']);
+                exit;
+            }
+            $in = $raw === '' ? [] : json_decode($raw, true);
+            if (!is_array($in)) {
+                http_response_code(400);
+                echo json_encode(['ok' => false, 'error' => 'the body is not a JSON object']);
+                exit;
+            }
+            zigmon_relay($path, 'POST', $in, $timeout, $headers);
+            exit;
+        }
+        zigmon_relay($path, 'GET', null, $timeout, $headers);
+        exit;
+    }
     if ($what === 'tap-preview') {
         zigmon_relay('/api/tap-preview?target=' . rawurlencode((string) ($_GET['target'] ?? ''))
             . '&do=' . rawurlencode((string) ($_GET['do'] ?? 'toggle')));
@@ -1101,7 +1179,7 @@ if (isset($_GET['api'])) {
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
                        'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do', 'shellybackup-do', 'shelly-tls',
-                       'notifier-keys', 'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'notifier-keys', 'deck-admin', 'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -1160,6 +1238,7 @@ if (isset($_GET['api'])) {
                   'selinux-do' => '/api/selinux',   /* a look, a step, the report: root does it */
                   'shellybackup-do' => '/api/shellybackup',   /* (5.50) the Shelly boxes' configuration: back up, restore, download */
                   'notifier-keys' => '/api/notifier/keys',    /* (5.57) the desktop notifier's keys: make, change, take away */
+                  'deck-admin' => '/api/deck/admin',          /* (5.59) Stream Deck: switch, approve, permissions, revoke */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',

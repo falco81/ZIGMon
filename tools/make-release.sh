@@ -31,6 +31,9 @@
 # and put in the package; a new signature is to be committed with the release.
 # No windows/dist: a package without the app, as before.
 #
+# (5.59) streamdeck/dist/plugin.json, the manifest of ZIGMon for Stream Deck, is signed the
+# same way into streamdeck/dist/plugin.json.sig; no streamdeck/dist: a package without it.
+#
 # The version is read from zigmon.py and must be the same in install.sh,
 # tools/snort-debug.py and README.md (with an entry of its own there).
 set -euo pipefail
@@ -115,6 +118,49 @@ NTFCHECK
         echo "$NTF_SIG is new: it must be committed with the release"
     fi
 fi
+# (5.59) the Stream Deck plugin's manifest, signed the same way - the plugin checks it
+# before it installs the .streamDeckPlugin the manifest describes
+SD_DIST="streamdeck/dist"
+SD_SIG=""
+if [[ -f "$SD_DIST/plugin.json" ]]; then
+    [[ -f "$SD_DIST/com.zigmon.streamdeck.streamDeckPlugin" ]] \
+        || { echo "$SD_DIST/plugin.json without $SD_DIST/com.zigmon.streamdeck.streamDeckPlugin"; exit 1; }
+    python3 -I - "$SD_DIST/plugin.json" "$SD_DIST/com.zigmon.streamdeck.streamDeckPlugin" <<'SDCHECK' || exit 1
+import hashlib, json, sys
+raw = open(sys.argv[1], 'rb').read()
+try:
+    m = json.loads(raw.decode('utf-8'))
+except ValueError:
+    sys.exit('streamdeck/dist/plugin.json does not read')
+plugin = open(sys.argv[2], 'rb').read()
+if m.get('product') != 'ZIGMon for Stream Deck' or m.get('file') != 'com.zigmon.streamdeck.streamDeckPlugin':
+    sys.exit('streamdeck/dist/plugin.json is not of ZIGMon for Stream Deck')
+if m.get('size') != len(plugin) or m.get('sha256') != hashlib.sha256(plugin).hexdigest():
+    sys.exit('streamdeck/dist/plugin.json does not describe streamdeck/dist/com.zigmon.streamdeck.streamDeckPlugin '
+             '(build it again: streamdeck/build.sh)')
+print('Stream Deck plugin: ZIGMon for Stream Deck %s, %d bytes' % (m.get('version'), len(plugin)))
+SDCHECK
+    [[ -f "$WORK/release-key.pub" ]] || openssl pkey -in "$KEY" -pubout -out "$WORK/release-key.pub" 2>/dev/null \
+        || { echo "the private key does not read"; exit 1; }
+    if [[ ! -f "$SD_DIST/plugin.json.sig" ]] || ! openssl pkeyutl -verify -pubin -inkey "$WORK/release-key.pub" -rawin \
+            -in "$SD_DIST/plugin.json" -sigfile "$SD_DIST/plugin.json.sig" >/dev/null 2>&1; then
+        openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$SD_DIST/plugin.json" -out "$SD_DIST/plugin.json.sig"
+        echo "$SD_DIST/plugin.json signed into $SD_DIST/plugin.json.sig"
+    fi
+    sd_ok=""
+    for k in deploy/release-keys/*.pub; do
+        if openssl pkeyutl -verify -pubin -inkey "$k" -rawin -in "$SD_DIST/plugin.json" \
+                -sigfile "$SD_DIST/plugin.json.sig" >/dev/null 2>&1; then
+            sd_ok="$(basename "$k" .pub)"; break
+        fi
+    done
+    [[ -n "$sd_ok" ]] || { echo "$SD_DIST/plugin.json.sig does not verify against deploy/release-keys"; exit 1; }
+    echo "$SD_DIST/plugin.json signed by $sd_ok"
+    if [[ -n "$(git status --porcelain -- "$SD_DIST/plugin.json.sig")" ]]; then
+        SD_SIG="$SD_DIST/plugin.json.sig"
+        echo "$SD_SIG is new: it must be committed with the release"
+    fi
+fi
 git ls-files | grep -v -E '^(release/|LICENSE.md$|MANIFEST$|MANIFEST.sig$|release.json$)' | while read -r f; do
     [[ -f "$f" ]] || continue
     mkdir -p "$S/$(dirname "$f")"
@@ -124,6 +170,10 @@ done
 if [[ -n "$NTF_SIG" ]]; then
     mkdir -p "$S/$NTF_DIST"
     cp -p "$NTF_SIG" "$S/$NTF_SIG"
+fi
+if [[ -n "$SD_SIG" ]]; then
+    mkdir -p "$S/$SD_DIST"
+    cp -p "$SD_SIG" "$S/$SD_SIG"
 fi
 cd "$S"
 find . -name __pycache__ -prune -exec rm -rf {} +
@@ -175,7 +225,7 @@ if d.get("version") is None or d.get("said"):
 print("checked: zigmon %s, signed by %s, %d files" % (d["version"], d["signed_by"], d["files"]))'
 echo "release/zigmon-$V.tar.gz signed by $ok"
 if [[ -f "$HERE/release.json" ]]; then
-    echo "now:  git add release/zigmon-$V.tar.gz release/zigmon-$V.release.json release/zigmon-$V.release.json.sig release.json MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG} && git commit -m 'Release $V' && git push"
+    echo "now:  git add release/zigmon-$V.tar.gz release/zigmon-$V.release.json release/zigmon-$V.release.json.sig release.json MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG}${SD_SIG:+ $SD_SIG} && git commit -m 'Release $V' && git push"
 else
-    echo "now:  git add release/zigmon-$V.tar.gz MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG} && git commit -m 'Release $V' && git push"
+    echo "now:  git add release/zigmon-$V.tar.gz MANIFEST MANIFEST.sig${NTF_SIG:+ $NTF_SIG}${SD_SIG:+ $SD_SIG} && git commit -m 'Release $V' && git push"
 fi
