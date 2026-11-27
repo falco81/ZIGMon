@@ -2087,13 +2087,18 @@ Current version: **5.57.0**
 
 5.57.0 — ZIGMon Notifier: a Windows app that brings a triggered sensor to the front.
 
-* ZIGMon Notifier (windows/, release/zigmon-notifier-1.0.0-win-x64.zip): sits
-  by the clock, watches the sensors chosen in it, and when one is triggered -
-  motion, a door opened, water, smoke, gas, CO, tamper, vibration, a button
-  pressed - slides an alert in at the bottom right, on top of everything.
-  Right-click: connection, watched sensors, pause, sound, start with Windows.
+* ZIGMon Notifier 1.1.0 for Windows (windows/), in the package: sits by the
+  clock, watches the sensors chosen in it, and when one is triggered - motion,
+  a door opened, water, smoke, gas, CO, tamper, vibration, a button pressed -
+  slides an alert in at the bottom right, on top of everything. Right-click:
+  connection, watched sensors, pause, sound, start with Windows, updates.
   The key is kept encrypted for the Windows user (DPAPI); HTTPS only, a
   certificate the system does not trust only after its fingerprint is pinned.
+  A 0.6 MB exe; it needs the .NET 10 Desktop Runtime (Windows offers it).
+* Downloaded from Settings - Messages - Desktop app, installed with ZIGMon into
+  /usr/local/lib/zigmon/notifier/; new versions come with ZIGMon's updates and
+  the app updates itself from its server - only a build whose description is
+  signed by ZIGMon's release key (checked by the app) and whose sha256 matches.
 * Settings - Messages - Desktop app: a read-only key per computer, shown once
   (only its sha256 is kept), for every sensor or chosen ones; who made it,
   when and from where it was last used; edited or taken away at once.
