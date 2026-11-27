@@ -215,6 +215,7 @@ def report(name, payload):
 
 
 def events():
+    d.store.flush(10)                 # the events are written on the store's own thread
     with d.store.lock:
         return [r[0] for r in d.store.db.execute('SELECT detail FROM events ORDER BY id').fetchall()]
 
@@ -792,7 +793,6 @@ try:
     code, out = call('/api/deck/admin', {'action': 'rename', 'install': INSTALL, 'name': ' '}, session=S)
     check(code == 400, 'an empty name: %s %r' % (code, out))
     code, out = deck('do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'off'})
-    print('DEBUG', code, out, [e for e in events() if 'Kancel' in e or 'Lampa' in e][-4:])
     check(code == 200 and any("Stream Deck 'Kancelář' (XL) turned off Lampa" == e for e in events()),
           'the new name in the events: %s %r' % (code, [e for e in events() if e.startswith('Stream Deck')][-2:]))
     t0 = time.time()
