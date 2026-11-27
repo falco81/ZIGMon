@@ -156,7 +156,7 @@ export interface UpdateAnswer {
 export function cleanText(v: unknown, max: number): string {
   if (typeof v !== "string" && typeof v !== "number") return "";
   let s = String(v)
-    .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿￹-￻]/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if ([...s].length > max) s = [...s].slice(0, Math.max(0, max - 1)).join("").trimEnd() + "…";

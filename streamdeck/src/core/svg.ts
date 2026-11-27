@@ -4,7 +4,7 @@ import { FONT } from "./palette.js";
 /** Escapes text for SVG/XML text and attribute values. Everything from the server goes through it. */
 export function esc(v: unknown): string {
   return String(v ?? "")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f￾￿]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069\ufffe\uffff]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

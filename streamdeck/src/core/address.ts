@@ -34,6 +34,7 @@ export function parseAddress(input: unknown): AddressResult {
     }
   }
   if (!s.includes("://")) s = "https://" + s;
+  if (/\/\.\.?(\/|$)/.test(s.replace(/^[a-z]+:\/\//i, ""))) return { ok: false, error: "The path in that address looks wrong." };
   if (s.includes("?") || s.includes("#")) return { ok: false, error: "Use the dashboard address only, without a ?... or #... part." };
   let u: URL;
   try {
