@@ -13051,7 +13051,7 @@ class Daemon(object):
                             a['via'] = 'zb:%s:position' % did
                             attrs.append(a)
                         common(t['value'], t['name'], 'cover', 'blind', 'cover',
-                               ['open', 'close', 'stop'] + (['set'] if attrs else []), attrs,
+                               ['open', 'close', 'stop'] + (['set', 'step'] if attrs else []), attrs,
                                pos if isinstance(pos, (int, float)) and not isinstance(pos, bool) else None,
                                None if not up else up in ('OPEN', 'ON'),
                                {'position': pos} if isinstance(pos, (int, float)) and not isinstance(pos, bool) else {})
@@ -13271,33 +13271,38 @@ class Daemon(object):
         return 'sensor'
 
     def _deck_status_items(self):
+        """ZIGMon's own health. Each says on = all is well (true), wants a look (false) or not
+        known (null), and its level - ok, warn, crit or unknown - among its attrs."""
         out = []
 
-        def add(k, name, icon, value, vtext, on, extra=None):
+        def add(k, name, icon, value, vtext, on, level, extra=None):
             out.append({'id': 'status:' + k, 'name': name, 'room': None, 'kind': 'status', 'icon': icon,
                         'cap': 'status', 'actions': [], 'attrs': [],
-                        'state': {'on': on, 'value': value, 'value_text': vtext, 'attrs': extra or {},
+                        'state': {'on': on, 'value': value, 'value_text': vtext, 'attrs': dict(extra or {}, level=level),
                                   'online': True, 'battery': None, 'at': None},
                         '_target': None})
         alerts = self.active_alerts()
-        add('alerts', 'Alerts', 'bell', len(alerts),
-            ('%d standing' % len(alerts)) if alerts else 'none', bool(alerts),
+        add('alerts', 'Alerts', 'bell', len(alerts), ('%d standing' % len(alerts)) if alerts else 'none',
+            not alerts, 'crit' if alerts else 'ok',
             {'latest': str(alerts[-1].get('text') or '')[:120]} if alerts else {})
         try:
             n_blocked = self.store.blocked_summary()[0] if self.blacklist_on() else 0
         except Exception:                                   # noqa: BLE001
             n_blocked = 0
-        add('blocked', 'Blocked addresses', 'shield', n_blocked, '%d kept out' % n_blocked, bool(n_blocked))
+        add('blocked', 'Blocked addresses', 'shield', n_blocked, '%d kept out' % n_blocked, True, 'ok',
+            {'guarding': bool(self.blacklist_on())})
         try:
             px = proxy_tile_state(self) if proxy_tile_on(self) else {'on': False}
         except Exception:                                   # noqa: BLE001
             px = {'on': False}
         if px.get('on'):
             sur = px.get('suricata') or {}
-            add('proxy', 'Server in front', 'router', px.get('state'), px.get('state'), px.get('state') == 'online',
+            st = px.get('state')
+            add('proxy', 'Server in front', 'router', st, st, st == 'online',
+                'ok' if st == 'online' else 'crit' if st == 'offline' else 'warn',
                 {'alerts': sur.get('alerts')} if sur.get('alerts') is not None else {})
         else:
-            add('proxy', 'Server in front', 'router', None, 'not watched', None)
+            add('proxy', 'Server in front', 'router', None, 'not watched', None, 'unknown')
         worst, bad = 'ok', 0
         order = {'ok': 0, 'warn': 1, 'crit': 2}
         for dev in self.store.devices():
@@ -13307,13 +13312,12 @@ class Daemon(object):
                 bad += 1
                 if order.get(lv, 0) > order.get(worst, 0):
                     worst = lv
-        add('health', 'Device health', 'pulse', bad, ('%d unwell' % bad) if bad else 'all well', not bad,
-            {'level': worst})
+        add('health', 'Device health', 'pulse', bad, ('%d unwell' % bad) if bad else 'all well', not bad, worst)
         bridge = self.bridge.get('state')
         ok = bool(self.connected) and bridge != 'offline'
         add('gateway', 'Zigbee gateway', 'mesh', bridge or ('online' if self.connected else 'offline'),
             ('online' if ok else 'offline' if not self.connected else 'Zigbee2MQTT %s' % (bridge or 'unknown')), ok,
-            {'broker': bool(self.connected), 'bridge': bridge})
+            'ok' if ok else 'crit', {'broker': bool(self.connected), 'bridge': bridge})
         return out
 
     def deck_items(self, fresh=False):
