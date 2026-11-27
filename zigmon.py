@@ -28876,6 +28876,20 @@ class Daemon(object):
     # each on its own was one request and never counted. The second one in a
     # neighbourhood counts the first as its own earlier try.
     NEAR_WITHIN = 600
+    # (5.58) ...and for the things asked for by name - a key, a break-in, an
+    # appliance's page - a week, as an address's own are remembered. A pool
+    # does not have to hurry: in the logs of 17-27 November 2026 one /24 asked
+    # for a wiki's application-links manifest from four addresses over four
+    # days, once each, and another sent the SAP NetWeaver upload twice from
+    # two addresses a day apart; each was one request and none was ever kept
+    # out. The second address of a street doing the same named thing within
+    # the week now counts the first as its own earlier try. Not the kinds an
+    # agent or the line itself decides (a scanner's name, bytes that are not
+    # a request, a burst): those say nothing about which page was wanted, and
+    # a street on a mobile network is shared by many people.
+    STREET_KINDS = ('proxy-secret-hunt', 'proxy-exploit', 'proxy-payload', 'proxy-fingerprint',
+                    'proxy-open-proxy', 'proxy-header-trick', 'proxy-multipart', 'proxy-default-login',
+                    'proxy-forged-token')
     # The light things a round is made of when it is done slowly: a name the
     # server does not carry, a page that is not there, a knock, a handshake,
     # bytes that are not a request, an odd method. Not a refusal or a guess
@@ -28976,7 +28990,10 @@ class Daemon(object):
                         self._strong_seen.pop(gone, None)
                 near = self._strong_near.setdefault(self.neighbourhood(ip), [])
                 near.append((now, ip, kind))
-                near[:] = [x for x in near if x[0] > now - self.NEAR_WITHIN][-20:]
+                # (5.58) what was asked for by name is kept for the week, as
+                # the address's own is; the rest for the minutes it always was
+                near[:] = [x for x in near if x[0] > now - (self.STRONG_MEMORY if x[2] in self.STREET_KINDS
+                                                            else self.NEAR_WITHIN)][-20:]
                 if len(self._strong_near) > 3000:
                     for gone in sorted(self._strong_near, key=lambda k: self._strong_near[k][-1][0]
                                        if self._strong_near[k] else 0)[:500]:
@@ -29084,7 +29101,8 @@ class Daemon(object):
         # started, so two neighbours cannot each count the other.
         mine = min(x[0] for x in recent if x[1] in self.STRONG_KINDS)
         for t, other, k in (getattr(self, '_strong_near', {}).get(self.neighbourhood(ip)) or []):
-            if other != str(ip) and k in doing and now - self.NEAR_WITHIN < t < mine:
+            reach = self.STRONG_MEMORY if k in self.STREET_KINDS else self.NEAR_WITHIN
+            if other != str(ip) and k in doing and now - reach < t < mine:
                 earlier.append((t, k))
         earlier = sorted(earlier)[-2:]
         return len(earlier), sum(self.ANOMALY_WEIGHT.get(k, 1) for _t, k in earlier)
@@ -30888,7 +30906,13 @@ class Daemon(object):
     # shape Suricata recognises: Emerging Threats writes them as ET DROP
     # (Spamhaus DROP), ET DROP Dshield, ET CINS and ET COMPROMISED, and the
     # signature says which. Anchored at the front: it is the rule's own name.
-    IDS_LISTS = re.compile(r'^(?:ET|GPL) (?:DROP|CINS|COMPROMISED|3CORESec)\b')
+    # (5.58) ...and ET TOR, the list of Tor's exits and relays. It was read
+    # as "Suricata saw something that looks like an attack" - severity 2, four
+    # apiece, two rules on the one packet - which it is not: it is where the
+    # packet came from, and the same first SYN as the other lists. In the
+    # front server's logs of 17-27 November 2026 it named addresses that sent
+    # nothing else at all and were counted eight towards a block for it.
+    IDS_LISTS = re.compile(r'^(?:ET|GPL) (?:DROP|CINS|COMPROMISED|3CORESec|TOR Known Tor)\b')
 
     @classmethod
     def _ids_list_name(cls, signature):
@@ -30898,7 +30922,8 @@ class Daemon(object):
             return ''
         low = text.lower()
         for word, name in (('dshield', 'DShield'), ('spamhaus', 'Spamhaus DROP'), ('cins', 'CINS'),
-                           ('compromised', 'ET Compromised'), ('3coresec', '3CORESec')):
+                           ('compromised', 'ET Compromised'), ('3coresec', '3CORESec'),
+                           ('tor known tor', 'Tor')):
             if word in low:
                 return name
         return 'ET DROP'
@@ -31215,9 +31240,20 @@ class Daemon(object):
         """
         seen = {}
         least = max(1, min(3, int(CONFIG.get('suricata_least') or 2)))
+        # (5.58) The severities below the floor, as eve.json writes them, so
+        # that a line of one is passed over before it is even read. On 26
+        # November 2026 the engine wrote 58,000 alerts in one hour about one
+        # stream's out-of-window packets - severity 3, weighed against nobody
+        # - and reading each of them, and working out and checking its
+        # address before looking at its severity, held one reading for seven
+        # seconds. The text is the key as Suricata writes it: inside a value
+        # the quotes would be escaped, so no request can put it there.
+        below = tuple('"severity":%d' % n for n in range(least + 1, 4))
         for line in lines:
             line = line.strip()
             if not line.startswith('{') or '"alert"' not in line:
+                continue
+            if below and any(mark in line for mark in below):
                 continue
             try:
                 one = json.loads(line)
@@ -31226,22 +31262,17 @@ class Daemon(object):
             if str(one.get('event_type') or '') != 'alert':
                 continue
             alert = one.get('alert') or {}
-            # (5.43.3) the address as everything else here writes it: what is
-            # kept about it below is looked up again under that name
-            ip = self.same_address(one.get('src_ip') or '')
-            if not ip or '/' in ip or self.spared(ip):
-                continue
-            # an alert about what WE sent is ours to fix, not somebody's to
-            # answer for: those are weighed against nobody
-            if self.own_house(ip):
-                continue
-            how_sure = int(alert.get('severity') or 3)
+            # (5.58) how sure it is, and what kind of thing, before whose it
+            # was: both cost nothing, and most lines stop at one of them
+            try:
+                how_sure = int(alert.get('severity') or 3)
+            except (TypeError, ValueError):
+                how_sure = 3
             if how_sure > least:
                 continue
             # Suricata writes the class in words - "Not Suspicious Traffic" -
             # so it is matched loosely rather than as an exact name, which is
             # how "not-suspicious" failed to match the very thing it is for.
-            what = str(alert.get('category') or '').strip().lower().replace(' ', '-')
             # Matched anywhere in the words, not only at their start: Suricata
             # writes "Generic Protocol Command Decode" and "Detection of a
             # Network Scan", so a check for the name at the front missed both
@@ -31251,7 +31282,17 @@ class Daemon(object):
             # out-of-window ACKs would have weighed against whoever sent them.
             # "Misc Attack" and "Attempted Information Leak" match no entry
             # either way, so the real ones are untouched.
+            what = str(alert.get('category') or '').strip().lower().replace(' ', '-')
             if any(harmless in what for harmless in self.IDS_HARMLESS):
+                continue
+            # (5.43.3) the address as everything else here writes it: what is
+            # kept about it below is looked up again under that name
+            ip = self.same_address(one.get('src_ip') or '')
+            if not ip or '/' in ip or self.spared(ip):
+                continue
+            # an alert about what WE sent is ours to fix, not somebody's to
+            # answer for: those are weighed against nobody
+            if self.own_house(ip):
                 continue
             # (5.45) A packet the server never answered proves nothing about
             # who sent it: the source of a first SYN is whatever was written
@@ -31579,6 +31620,25 @@ class Daemon(object):
                     and self._multipart(one.get('ct')):
                 found.append(('proxy-multipart', '%s %s, a multipart body of %s byte(s)'
                               % (method, where[:30], str(one.get('clen') or '?')[:12])))
+            # (5.58) Plain HTTP sent to the TLS port: nginx answers it 400 and
+            # writes the scheme as http. On the one-tap road nothing of the
+            # house ever does this - the phones and the watch carry an https
+            # link - and in the logs of 17-27 November 2026 the 82 that came
+            # were all tools: zgrab, Go's client, Odin, and one round that
+            # came back to eleven addresses, curl, then bytes that were no
+            # request, then curl again ten seconds later, which weighed 10 of
+            # 15 and was never kept out. It is the bytes-that-are-not-a-request
+            # kind - the port speaks TLS and this does not - and is weighed as
+            # that. The access log has the same line as a knock at the road,
+            # and keeps it: one request, a light note there and this here.
+            # Not the notification server's: the house's own publisher talks to
+            # it in plain HTTP on purpose, and one of its requests refused is
+            # not a probe. Nor anybody who pressed a link lately: a phone of
+            # the house that somebody typed an odd address into is still the
+            # house.
+            if str(one.get('which') or '') != 'ntfy' and status == 400 and method \
+                    and str(one.get('scheme') or '').strip().lower() == 'http' and not self._was_let_in(ip):
+                found.append(('proxy-junk', '%s %s in plain HTTP, at the TLS port' % (method, where[:30])))
             if str(one.get('which') or '') == 'ntfy':
                 # The notification server: an API with many roads, so the
                 # shape rules above do not apply - somebody publishing a
@@ -31598,7 +31658,7 @@ class Daemon(object):
                 # both counts once
                 if self._after_secrets(where):
                     found.append(('proxy-secret-hunt', '%s %s' % (method, where)))
-                elif self._known_way_in(where):
+                elif self._known_way_in(where) and not self._wordpress_ping(where, one.get('ua')):
                     found.append(('proxy-exploit', '%s %s' % (method, where)))
                 elif self._climbing(where):
                     found.append(('proxy-payload', '%s %s' % (method, where)))
@@ -31862,6 +31922,22 @@ class Daemon(object):
     LINK_PREVIEWS = ('facebookexternalhit', 'facebot', 'twitterbot', 'networkingextension/',
                      'whatsapp/', 'telegrambot', 'slackbot-linkexpanding', 'discordbot',
                      'skypeuripreview', 'viber', 'linkedinbot')
+
+    # (5.58) WordPress.com's own servers, and Jetpack's, still posting to the
+    # xmlrpc.php of a blog that once lived at this address: four of them in
+    # the logs of 17-27 November 2026, two of them twice, each "WordPress.com"
+    # or "Jetpack by WordPress.com" in its agent - and the same request from
+    # a stranger's browser agent is the WordPress round it always was. A
+    # stale registration somewhere else is not a break-in; the agent can be
+    # borrowed, but what it buys is not being blocked for asking a machine
+    # with no WordPress for its WordPress.
+    WORDPRESS_SERVICES = ('jetpack', 'wordpress.com')
+
+    @classmethod
+    def _wordpress_ping(cls, path, agent):
+        low = str(agent or '').strip().lower()[:200]
+        return ('xmlrpc.php' in str(path or '').lower() and bool(low)
+                and any(word in low for word in cls.WORDPRESS_SERVICES))
 
     @classmethod
     def _link_preview(cls, agent):
@@ -32179,7 +32255,11 @@ class Daemon(object):
         # pages by another name, a config left as .dev or .local
         r'|/\.(?:bash|zsh|mysql|psql|python)_history$|/user_secrets\.ya?ml$|/_vti_pvt/'
         r'|/storage/logs/laravel\.log$|/(?:server-info|server-status)\.php$'
-        r'|/config\.(?:dev|local|prod|old|bak|backup)\.php$', re.I)
+        r'|/config\.(?:dev|local|prod|old|bak|backup)\.php$'
+        # (5.58) PHP's settings page by the names a round tries after
+        # phpinfo.php (php_info, phpinf, sysinfo, env.php), and the recipe a
+        # container was built from, which names what is inside it
+        r'|/(?:php_?inf\w*|sys_?info|env)\.php$|/dockerfile$', re.I)
 
     # Known ways in, by the shape of the request. Every one of these is a
     # published break-in against a particular product: asking is the attempt.
@@ -32228,7 +32308,13 @@ class Daemon(object):
         r'|/\+cscou\+/|/auth_portal/|/fonts/ftnt-icons|/dana-na/|/global-protect/'
         r'|/remote/fgt_lang|/prx/000/http/|/vpn/index\.html'
         r'|/query\?q=show\+diagnostics'                                  # InfluxDB
-        r'|/wp-json/[\w-]+/v\d/tests?/|/wp-content/plugins/[\w-]+/readme\.txt', re.I)
+        r'|/wp-json/[\w-]+/v\d/tests?/|/wp-content/plugins/[\w-]+/readme\.txt'
+        # (5.58) What the logs of 17-27 November 2026 added: the GPON
+        # routers' diagnostic form (a command run as root through one field,
+        # CVE-2018-10561/10562 and still asked for), and a Citrix gateway's
+        # login being posted to, by both of its names - a login tried at an
+        # appliance this machine is not, which is nobody's mistake
+        r'|/gponform/|/(?:nf/auth|p/u)/doauthentication\.do', re.I)
 
     # What a round asks for when it is not trying to get in yet, but working
     # out WHAT this machine is: the one file, login page or version endpoint
@@ -32274,13 +32360,36 @@ class Daemon(object):
         # asking for it.
         r'|/favicon-[0-9a-f]{6,}\.'
         r'|/app_themes/|/themes/admin/|/javascript/validation/|/plugin/webs_model_cfg\.js'
-        r'|/css/(?:eonweb|elfinder)|/i18n/component/js$|/webapp/js/ui_string\.js', re.I)
+        r'|/css/(?:eonweb|elfinder)|/i18n/component/js$|/webapp/js/ui_string\.js'
+        # (5.58) ...and what the logs of 17-27 November 2026 added, each asked
+        # for at a name this machine does not carry and each weighed as a
+        # page that is not there: a server board's own management API
+        # (Redfish), a report server, a Citrix gateway's logon page, Cisco's
+        # VPN portal by its other names, an Axis web service, the team
+        # server of a command-and-control kit, a DNS-over-HTTPS resolver
+        # (an open one is worth finding), and - new this autumn - the
+        # endpoint an AI agent's tool server (MCP) answers on, posted to by a
+        # scanner that names itself. This house serves none of them; the ones
+        # that are a bare word are matched as the whole path, so no topic of
+        # the notification server that merely starts with the word is caught.
+        r'|/logon/logonpoint/|/\+webvpn\+/|/axis2?/services(?:/|$)'
+        # ...and the description of an API, asked for so as to know what to
+        # try: Swagger and OpenAPI by their usual file names
+        r'|/swagger(?:-ui)?(?:/v\d)?/(?:index\.html|swagger\.json)$|/(?:openapi|swagger)\.(?:json|ya?ml)$'
+        r'|/v[23]/api-docs/?$', re.I)
+    # (5.58) The ones of those that are a whole path from its start, matched
+    # there and only there: tried at every place in every path as part of the
+    # list above, they cost a quarter again of what the whole list did.
+    PRODUCT_NAMES = re.compile(
+        r'/(?:redfish/v1(?:/|$)|reportserver(?:/|$)|webvpn\.html$|havoc/|dns-query(?:$|\?)|mcp/?$'
+        r'|api/swagger(?:\.json)?/?$|api-docs/?$)', re.I)
 
     @classmethod
     def _asking_what_it_is(cls, path):
         """A name only one product answers to: somebody working out what this
         machine is before deciding what to try on it."""
-        return bool(cls.PRODUCT_PROBES.search(str(path or '')))
+        path = str(path or '')
+        return bool(cls.PRODUCT_NAMES.match(path) or cls.PRODUCT_PROBES.search(path))
 
     @classmethod
     def _after_secrets(cls, path):
@@ -33547,8 +33656,10 @@ class Daemon(object):
                 # to these, so nothing finds them by following links: asking
                 # is the intent, whatever the answer was.
                 kind = 'proxy-secret-hunt'
-            elif self._known_way_in(path):
+            elif self._known_way_in(path) and not self._wordpress_ping(path, agent):
                 # a published break-in against some product, asked for by name
+                # - not WordPress.com's own servers knocking at the xmlrpc.php
+                # of a blog that used to live at this address (5.58)
                 kind = 'proxy-exploit'
             elif self._climbing(path):
                 # A path that climbs out of where it is, or is written to get
