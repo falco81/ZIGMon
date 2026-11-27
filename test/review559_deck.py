@@ -48,6 +48,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -87,6 +88,57 @@ for _p in (API_PORT, PHP_PORT):
     if not port_free(_p):
         print('port %d stays busy' % _p)
         sys.exit(2)
+
+# ---- a throwaway release key and a fake plugin --------------------------------------------------
+KEYDIR = W / 'keys'
+KEYDIR.mkdir()
+TKEY, TPUB = KEYDIR / 'throwaway.key', KEYDIR / 'throwaway.pub'
+OKEY, OPUB = KEYDIR / 'other.key', KEYDIR / 'other.pub'
+OPENSSL = True
+for _k, _p in ((TKEY, TPUB), (OKEY, OPUB)):
+    _r = sh(['openssl', 'genpkey', '-algorithm', 'ed25519', '-out', str(_k)]) if shutil.which('openssl') else None
+    if _r is None or _r.returncode != 0:
+        OPENSSL = False
+        break
+    sh(['openssl', 'pkey', '-in', str(_k), '-pubout', '-out', str(_p)])
+PLUGIN = b'PK\x03\x04' + os.urandom(200 * 1024 + 11) + b'fake ZIGMon for Stream Deck, not a plugin'
+
+
+def manifest(data, version='1.0.0', size=None, sha=None):
+    return (json.dumps({'product': 'ZIGMon for Stream Deck', 'file': 'com.zigmon.streamdeck.streamDeckPlugin',
+                        'version': version, 'size': len(data) if size is None else size,
+                        'sha256': sha or hashlib.sha256(data).hexdigest(),
+                        'requires': 'Stream Deck 7.1, Windows 10/11'}, separators=(',', ':')) + '\n').encode()
+
+
+def sign(path_json, path_sig, key=TKEY):
+    r = sh(['openssl', 'pkeyutl', '-sign', '-inkey', str(key), '-rawin', '-in', str(path_json), '-out', str(path_sig)])
+    assert r.returncode == 0, r.stderr
+
+
+def verifies(path_json, path_sig, pub=TPUB):
+    return sh(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(pub), '-rawin', '-in', str(path_json),
+               '-sigfile', str(path_sig)]).returncode == 0
+
+
+SD_FILES = ('com.zigmon.streamdeck.streamDeckPlugin', 'plugin.json', 'plugin.json.sig')
+
+
+def dist(where, data=PLUGIN, man=None, with_sig=True):
+    where.mkdir(parents=True, exist_ok=True)
+    for n in SD_FILES:
+        if (where / n).exists():
+            (where / n).unlink()
+    (where / SD_FILES[0]).write_bytes(data)
+    (where / 'plugin.json').write_bytes(man if man is not None else manifest(data))
+    if with_sig and OPENSSL:
+        sign(where / 'plugin.json', where / 'plugin.json.sig')
+    elif with_sig:
+        (where / 'plugin.json.sig').write_bytes(b'\0' * 64)
+
+
+DIST = W / 'dist'
+dist(DIST)
 
 sys.argv = ['zigmon']
 sys.path.insert(0, str(HERE))
@@ -740,6 +792,7 @@ try:
     code, out = call('/api/deck/admin', {'action': 'rename', 'install': INSTALL, 'name': ' '}, session=S)
     check(code == 400, 'an empty name: %s %r' % (code, out))
     code, out = deck('do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'off'})
+    print('DEBUG', code, out, [e for e in events() if 'Kancel' in e or 'Lampa' in e][-4:])
     check(code == 200 and any("Stream Deck 'Kancelář' (XL) turned off Lampa" == e for e in events()),
           'the new name in the events: %s %r' % (code, [e for e in events() if e.startswith('Stream Deck')][-2:]))
     t0 = time.time()
@@ -785,5 +838,321 @@ try:
     code, out = call('/api/deck/pair', dict(PAIR_BODY, install='%032x' % 999), client='192.168.40.25')
     check(code == 403 and '10' in out.get('error', ''), 'the eleventh installation: %s %r' % (code, out))
     d._deck_put(rows[:1])
+    # ---- the plugin: update and download ---------------------------------------------------
+    print('the plugin: update and download')
+    if not OPENSSL:
+        print('  SKIPPED (openssl has no Ed25519 here)')
+    else:
+        code, out = deck('update')
+        check(code == 200 and out == {'ok': True, 'available': False}, 'no plugin in the package: %s %r' % (code, out))
+        code, out = deck('download')
+        check(code == 404, 'a download with none: %s %r' % (code, out))
+        zigmon.CONFIG['deck_dir'] = str(DIST)
+        code, out = deck('hello')
+        check(out.get('plugin') == {'version': '1.0.0'}, 'hello.plugin: %r' % out.get('plugin'))
+        code, out = deck('update')
+        check(code == 200 and out.get('available') is True and out.get('version') == '1.0.0'
+              and out.get('size') == len(PLUGIN) and out.get('sha256') == hashlib.sha256(PLUGIN).hexdigest()
+              and set(out) == {'ok', 'available', 'version', 'size', 'sha256', 'manifest', 'sig'},
+              'update: %s %r' % (code, out))
+        man, sig = base64.b64decode(out.get('manifest') or ''), base64.b64decode(out.get('sig') or '')
+        (W / 'got.json').write_bytes(man)
+        (W / 'got.sig').write_bytes(sig)
+        check(man == (DIST / 'plugin.json').read_bytes() and len(sig) == 64 and verifies(W / 'got.json', W / 'got.sig'),
+              'the manifest and its signature do not verify')
+        code, data, hdr = call('/api/deck/download', token=TOKEN, install=INSTALL, raw=True)
+        check(code == 200 and data == PLUGIN and hdr.get('Content-Type') == 'application/octet-stream'
+              and hdr.get('Content-Disposition') == 'attachment; filename="ZIGMon.streamDeckPlugin"'
+              and hdr.get('Content-Length') == str(len(PLUGIN)), 'the download: %s %r' % (code, hdr))
+        code, data, hdr = call('/api/deck/download', token='zsd_' + 'D' * 40, install=INSTALL, raw=True,
+                               client='198.51.100.12')
+        check(code == 401 and data != PLUGIN, 'a download with a wrong token: %s' % code)
+        code, data, hdr = call('/api/deck/plugin', raw=True)
+        check(code == 403, 'the plugin for nobody: %s' % code)
+        code, data, hdr = call('/api/deck/plugin', session=SO, raw=True)
+        check(code == 403, 'the plugin for an operator: %s' % code)
+        code, data, hdr = call('/api/deck/plugin', session=S, raw=True)
+        check(code == 200 and data == PLUGIN and 'ZIGMon.streamDeckPlugin' in hdr.get('Content-Disposition', ''),
+              'the plugin for the admin: %s %r' % (code, hdr))
+        code, out = call('/api/deck/admin', session=S)
+        check(out.get('plugin') == {'version': '1.0.0', 'size': len(PLUGIN), 'sha256': hashlib.sha256(PLUGIN).hexdigest(),
+                                    'requires': 'Stream Deck 7.1, Windows 10/11',
+                                    'file': 'com.zigmon.streamdeck.streamDeckPlugin'},
+              'the plugin in the admin view: %r' % out.get('plugin'))
+        # a file that is not the one described, a signature missing: not offered
+        LOG.clear()
+        bad_dir = W / 'baddist'
+        dist(bad_dir, data=PLUGIN + b'x', man=manifest(PLUGIN))
+        zigmon.CONFIG['deck_dir'] = str(bad_dir)
+        code, out = deck('update')
+        check(out == {'ok': True, 'available': False} and d.deck_plugin_short() is None, 'a wrong file offered: %r' % out)
+        check(len([x for x in LOG if 'Stream Deck plugin' in x and 'plugin.json says' in x]) == 1,
+              'one warning of the wrong file: %r' % [x for x in LOG if 'Stream Deck' in x])
+        deck('update')
+        check(len([x for x in LOG if 'Stream Deck plugin' in x and 'not offered' in x]) == 1, 'warned again')
+        dist(bad_dir, man=manifest(PLUGIN, sha='0' * 64))
+        check(d.deck_plugin() is None and any('SHA-256 differs' in x for x in LOG), 'offered with another SHA-256')
+        dist(bad_dir, with_sig=False)
+        check(d.deck_plugin() is None, 'offered without a signature')
+        zigmon.CONFIG['deck_dir'] = str(DIST)
+
+    # ---- never a secret ------------------------------------------------------------------------
+    print('never in the log, the events or the meta')
+    whole = '\n'.join(LOG)
+    with d.store.lock:
+        evs = '\n'.join(str(x[0]) for x in d.store.db.execute('SELECT detail FROM events').fetchall())
+        meta = '\n'.join(str(x[0]) for x in d.store.db.execute('SELECT value FROM meta').fetchall())
+    for k in [t for t in TOKENS + SECRETS if t]:
+        check(k not in whole, 'a secret is in the log')
+        check(k not in evs, 'a secret is in the events')
+        check(k not in meta, 'a secret is in the meta')
+    check(any('/api/deck/' in x for x in LOG), 'the debug log wrote nothing of the deck')
+
+    # ---- the relay ----------------------------------------------------------------------------
+    print('the relay')
+    page = (HERE / 'web' / 'index.php').read_text()
+    for words in ("$what === 'deck'", "$what === 'deck-admin' && $_SERVER['REQUEST_METHOD'] === 'GET'",
+                  "$what === 'deck-plugin' && $_SERVER['REQUEST_METHOD'] === 'GET'", "'deck-admin' => '/api/deck/admin'",
+                  'HTTP_X_ZIGMON_DECK_INSTALL', 'HTTP_X_ZIGMON_DECK_PAIR', 'data-sec="msg-deck"'):
+        check(words in page, 'the page has no %s' % words)
+    shutil.copytree(HERE / 'web', W / 'web')
+    api_php = (W / 'web' / 'zigmon-api.php').read_text()
+    api_php = api_php.replace("const ZIGMON_PORT  = 9849;", "const ZIGMON_PORT  = %d;" % API_PORT)
+    api_php = api_php.replace("const ZIGMON_TOKEN = '/run/zigmon/api-token';", "const ZIGMON_TOKEN = '%s';" % (W / 'token'))
+    (W / 'web' / 'zigmon-api.php').write_text(api_php)
+    php = subprocess.Popen(['php', '-S', '127.0.0.1:%d' % PHP_PORT, str(W / 'web' / 'index.php')], cwd=str(W / 'web'),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                           env=dict(os.environ, PHP_CLI_SERVER_WORKERS='4'))
+    PROCS.append(php)
+    for _ in range(50):
+        try:
+            socket.create_connection(('127.0.0.1', PHP_PORT), 0.2).close()
+            break
+        except OSError:
+            time.sleep(0.1)
+
+    def relay(query, body=None, token=None, install=INSTALL, pair=None, raw=False, method=None, timeout=60):
+        headers = {'User-Agent': 'ZIGMon-StreamDeck/1.0.0 (Windows)', 'Content-Type': 'application/json'}
+        if token is not None:
+            headers['X-Zigmon-Deck'] = token
+        if install is not None:
+            headers['X-Zigmon-Deck-Install'] = install
+        if pair is not None:
+            headers['X-Zigmon-Deck-Pair'] = pair
+        data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
+        req = urllib.request.Request('http://127.0.0.1:%d/index.php?%s' % (PHP_PORT, query), headers=headers, data=data,
+                                     method=method or ('GET' if body is None else 'POST'))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                got = r.read()
+                return (r.status, got, dict(r.headers)) if raw else (r.status, json.loads(got or b'{}'))
+        except urllib.error.HTTPError as e:
+            got = e.read()
+            return (e.code, got, dict(e.headers)) if raw else (e.code, json.loads(got or b'{}'))
+
+    d._deck_rates.clear()
+    code, out = relay('api=deck&do=hello', token=TOKEN)
+    check(code == 200 and out.get('install', {}).get('name') == 'OFFICE-PC', 'hello through the relay: %s %r' % (code, out))
+    code, out = relay('api=deck&do=hello', token=TOKEN + '!*"<>', install=INSTALL + '\';')
+    check(code == 200, 'the headers are not cut down to their letters: %s %r' % (code, out))
+    code, out = relay('api=deck&do=keys', token=TOKEN)
+    check(code == 400, 'a do that is not one of them: %s %r' % (code, out))
+    code, out = relay('api=deck&do=hello', token='zsd_not-a-real-token-000')
+    check(code == 401, 'a wrong token through the relay: %s %r' % (code, out))
+    code, out = relay('api=deck&do=catalog&decks=%s,%s&deck_info=%s' % (XL['id'], PLUS['id'], b64u([XL, PLUS])), token=TOKEN)
+    check(code == 200 and any(it['id'] == 'Lampa' for it in out.get('items') or []), 'the catalogue through the relay: %s'
+          % code)
+    code, out = relay('api=deck&do=state&ids=' + urllib.parse.quote('Lampa,read:%s:temperature' % TEMP), token=TOKEN)
+    check(code == 200 and set(out.get('items') or {}) == {'Lampa', 'read:%s:temperature' % TEMP},
+          'state through the relay: %s %r' % (code, out))
+    RAN.clear()
+    code, out = relay('api=deck&do=do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'on'}, token=TOKEN)
+    time.sleep(0.2)
+    check(code == 200 and out.get('said') == 'turned on Lampa' and RAN and RAN[-1][:3] == ('plug', 'Lampa', 'on'),
+          'a command through the relay: %s %r %r' % (code, out, RAN))
+    code, out = relay('api=deck&do=do', b'{"deck": "x", ' + b' ' * 17000 + b'}', token=TOKEN)
+    check(code == 413, 'a body past 16 KB: %s %r' % (code, out))
+    code, out = relay('api=deck&do=do', b'not json', token=TOKEN)
+    check(code == 400, 'a body that is not JSON: %s %r' % (code, out))
+    SEQ = d._deck_seq
+    d.plugs['Lampa'].flat = {'switch.output': False, 'switch.apower': 0.0}
+    d.bump()
+    code, out = relay('api=deck&do=wait&after=%dzz&boot=%s;x&ids=Lampa' % (SEQ, BOOT), token=TOKEN)
+    check(code == 200 and [c['id'] for c in out.get('changes') or []] == ['Lampa'], 'the wait through the relay: %s %r'
+          % (code, out))
+    code, out = relay('api=deck&do=pair', dict(PAIR_BODY, install='%032x' % 555, computer='RELAY-PC'), install=None)
+    check(code == 200 and out.get('code'), 'pairing through the relay: %s %r' % (code, out))
+    SECRETS.append(out.get('secret'))
+    code, out2 = relay('api=deck&do=pair_wait', pair=out.get('secret'), install=None)
+    check(code == 200 and out2.get('state') == 'pending', 'pair_wait through the relay: %s %r' % (code, out2))
+    if OPENSSL:
+        code, data, hdr = relay('api=deck&do=update', token=TOKEN, raw=True)
+        check(code == 200 and json.loads(data).get('sha256') == hashlib.sha256(PLUGIN).hexdigest(), 'update through the relay')
+        code, data, hdr = relay('api=deck&do=download', token=TOKEN, raw=True)
+        check(code == 200 and data == PLUGIN and hdr.get('Content-Type') == 'application/octet-stream'
+              and 'filename="ZIGMon.streamDeckPlugin"' in hdr.get('Content-Disposition', ''),
+              'the download through the relay: %s %r' % (code, hdr))
+        code, data, hdr = relay('api=deck&do=download', token='zsd_wrong', raw=True)
+        check(code == 401 and data != PLUGIN, 'a download with a wrong token through the relay: %s' % code)
+        code, data, hdr = relay('api=deck-plugin', raw=True, install=None)
+        check(code == 403 and data != PLUGIN, 'the plugin through the relay, signed out: %s' % code)
+    code, out = relay('api=deck-admin', install=None)
+    check(code == 403, 'the admin view through the relay, signed out: %s %r' % (code, out))
+    code, out = relay('api=deck-admin', {'action': 'disable'}, install=None)
+    check(code == 403 and d.deck_enabled(), 'switched off through the relay, signed out: %s %r' % (code, out))
 finally:
-    pass
+    for p in PROCS:
+        p.terminate()
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+    try:
+        api.stop()
+    except Exception:                                       # noqa: BLE001
+        pass
+zigmon.log = _real_log
+
+# ---- install.sh ---------------------------------------------------------------------------------
+print('install.sh')
+src_text = (HERE / 'install.sh').read_text()
+check(re.search(r'install_program\(\) \{[^}]*install_streamdeck_plugin', src_text, re.S),
+      'install_program does not put the plugin in (install and --upgrade both run it)')
+inst = W / 'install-functions.sh'
+inst.write_text('\n'.join(src_text.splitlines()[:-1]) + '\n')
+ISRC, ILIB = W / 'isrc', W / 'ilib'
+dist(ISRC / 'streamdeck' / 'dist')
+
+
+def installer(fn, dry=False):
+    script = 'source %s\nSOURCE_DIR=%s\nLIB_DIR=%s\nDRY_RUN=%s\n%s\n' % (inst, ISRC, ILIB, 'yes' if dry else '""', fn)
+    return sh(['bash', '-c', script], timeout=60)
+
+
+got = installer('install_streamdeck_plugin', dry=True)
+check(got.returncode == 0 and not ILIB.exists() and '[would run] install -m 644' in got.stdout
+      and 'plugin.json.sig' in got.stdout and 'com.zigmon.streamdeck.streamDeckPlugin' in got.stdout,
+      'the dry run: %s %s' % (got.stdout[-300:], got.stderr[-300:]))
+got = installer('install_streamdeck_plugin')
+sd = ILIB / 'streamdeck'
+check(got.returncode == 0 and all((sd / n).read_bytes() == (ISRC / 'streamdeck' / 'dist' / n).read_bytes() for n in SD_FILES),
+      'the files were not copied: %s %s' % (got.stdout[-300:], got.stderr[-300:]))
+check(sd.is_dir() and (sd.stat().st_mode & 0o777) == 0o755
+      and all(((sd / n).stat().st_mode & 0o777) == 0o644 for n in SD_FILES),
+      'the modes: %o %r' % (sd.stat().st_mode & 0o777, [oct((sd / n).stat().st_mode & 0o777) for n in os.listdir(sd)]))
+check('ZIGMon for Stream Deck 1.0.0' in got.stdout, 'it does not say which: %s' % got.stdout[-200:])
+P2 = PLUGIN + b'-1.1.0'
+dist(ISRC / 'streamdeck' / 'dist', data=P2, man=manifest(P2, version='1.1.0'))
+got = installer('install_streamdeck_plugin')
+check((sd / SD_FILES[0]).read_bytes() == P2, 'the newer one did not replace the old')
+zigmon.CONFIG['deck_dir'] = str(sd)
+if OPENSSL:
+    check((d.deck_plugin_short() or {}).get('version') == '1.1.0', 'the daemon does not read what install.sh put')
+# the daemon finds it beside zigmon.py as installed, and in the source tree
+zigmon.CONFIG['deck_dir'] = ''
+check(d.deck_plugin_dir() in (HERE / 'streamdeck', HERE / 'streamdeck' / 'dist'), 'where it looks: %s' % d.deck_plugin_dir())
+(ISRC / 'streamdeck' / 'dist' / 'plugin.json.sig').unlink()
+got = installer('install_streamdeck_plugin', dry=True)
+check(got.returncode == 0 and (sd / SD_FILES[0]).exists() and '[would run] rm -f' in got.stdout,
+      'the dry run of taking it away: %s' % got.stdout[-300:])
+got = installer('install_streamdeck_plugin')
+check(got.returncode == 0 and not any(sd.iterdir()), 'a stale plugin is left: %r %s' % (os.listdir(sd), got.stdout[-200:]))
+shutil.rmtree(ISRC / 'streamdeck')
+got = installer('install_streamdeck_plugin')
+check(got.returncode == 0, 'no streamdeck/dist at all: %s %s' % (got.stdout[-200:], got.stderr[-200:]))
+# the notifier's own step is as it was
+check('install_notifier_app\n    install_streamdeck_plugin' in src_text, 'the two steps are not side by side')
+
+# ---- tools/make-release.sh ------------------------------------------------------------------------
+print('tools/make-release.sh')
+mr = (HERE / 'tools' / 'make-release.sh').read_text()
+check('streamdeck/dist' in mr and 'plugin.json.sig' in mr and '${SD_SIG:+ $SD_SIG}' in mr,
+      'make-release does not sign the Stream Deck manifest')
+if not shutil.which('git') or not OPENSSL:
+    print('  SKIPPED (no git or no openssl with Ed25519)')
+else:
+    ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@example.invalid', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@example.invalid')
+
+    def tree(name, files=None, sig=None):
+        """A copy of the files git has (not release/), the throwaway key among the release keys,
+        committed - and streamdeck/dist as given (the plugin itself is another work's)."""
+        t = W / name
+        t.mkdir()
+        listed = sh(['git', 'ls-files', '-z'], cwd=str(HERE)).stdout.split('\0')
+        for f in listed:
+            if not f or f.startswith('release/') or f.startswith('streamdeck/') or not (HERE / f).is_file():
+                continue
+            (t / f).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(HERE / f, t / f)
+        for f in ('test/review559_deck.py', 'zigmon.py', 'install.sh', 'tools/make-release.sh', 'web/index.php'):
+            shutil.copy2(HERE / f, t / f)
+        if (t / 'windows' / 'dist').exists():
+            shutil.rmtree(t / 'windows' / 'dist')          # the desktop app is review557_notifier_app's
+        shutil.copy(TPUB, t / 'deploy' / 'release-keys' / 'zigmon-test-throwaway.pub')
+        if files:
+            dist(t / 'streamdeck' / 'dist', with_sig=False)
+            if sig is not None:
+                (t / 'streamdeck' / 'dist' / 'plugin.json.sig').write_bytes(sig)
+        for cmd in (['git', 'init', '-q'], ['git', 'add', '-A'], ['git', 'commit', '-q', '-m', 'test']):
+            r = sh(cmd, cwd=str(t), env=ENV)
+            assert r.returncode == 0, r.stderr
+        return t
+
+    def release(t):
+        return sh(['bash', str(t / 'tools' / 'make-release.sh'), str(TKEY)], cwd=str(t), timeout=300)
+
+    V = zigmon.__version__
+
+    def package_has(t, rel):
+        with tarfile.open(t / 'release' / ('zigmon-%s.tar.gz' % V)) as tar:
+            names = tar.getnames()
+            man = tar.extractfile('zigmon-%s/MANIFEST' % V).read().decode()
+            body = tar.extractfile('zigmon-%s/%s' % (V, rel)).read() if 'zigmon-%s/%s' % (V, rel) in names else None
+        return body, ('  ' + rel + '\n') in man
+
+    t = tree('rel-none')
+    got = release(t)
+    check(got.returncode == 0 and 'signed by' in got.stdout and 'Stream Deck' not in got.stdout,
+          'a release without the plugin: %s %s' % (got.stdout[-500:], got.stderr[-500:]))
+    t = tree('rel-unsigned', files=True)
+    got = release(t)
+    out = got.stdout
+    sigf = t / 'streamdeck' / 'dist' / 'plugin.json.sig'
+    check(got.returncode == 0 and sigf.is_file() and verifies(t / 'streamdeck' / 'dist' / 'plugin.json', sigf),
+          'the manifest was not signed: %s %s' % (out[-600:], got.stderr[-400:]))
+    check('streamdeck/dist/plugin.json signed by zigmon-test-throwaway' in out and 'must be committed' in out
+          and 'Stream Deck plugin: ZIGMon for Stream Deck 1.0.0' in out
+          and re.search(r'now: .*git add .* streamdeck/dist/plugin\.json\.sig', out), 'what it says: %s' % out[-600:])
+    body, listed = package_has(t, 'streamdeck/dist/plugin.json.sig')
+    check(body == sigf.read_bytes() and listed, 'the signature is not in the package or its MANIFEST')
+    body, listed = package_has(t, 'streamdeck/dist/com.zigmon.streamdeck.streamDeckPlugin')
+    check(body == PLUGIN and listed, 'the plugin is not in the package')
+    (W / 'o.json').write_bytes(manifest(PLUGIN))
+    sign(W / 'o.json', W / 'o.sig', key=OKEY)
+    t = tree('rel-other', files=True, sig=(W / 'o.sig').read_bytes())
+    got = release(t)
+    sigf = t / 'streamdeck' / 'dist' / 'plugin.json.sig'
+    check(got.returncode == 0 and verifies(t / 'streamdeck' / 'dist' / 'plugin.json', sigf)
+          and 'streamdeck/dist/plugin.json.sig' in got.stdout.splitlines()[-1],
+          'a signature by another key is not made again: %s %s' % (got.stdout[-500:], got.stderr[-300:]))
+    sign(W / 'o.json', W / 't.sig')
+    t = tree('rel-signed', files=True, sig=(W / 't.sig').read_bytes())
+    got = release(t)
+    check(got.returncode == 0 and (t / 'streamdeck' / 'dist' / 'plugin.json.sig').read_bytes() == (W / 't.sig').read_bytes()
+          and 'must be committed' not in got.stdout and 'plugin.json.sig' not in got.stdout.splitlines()[-1]
+          and 'streamdeck/dist/plugin.json signed by zigmon-test-throwaway' in got.stdout,
+          'a good signature: %s %s' % (got.stdout[-500:], got.stderr[-300:]))
+    t = tree('rel-bad', files=True)
+    (t / 'streamdeck' / 'dist' / SD_FILES[0]).write_bytes(PLUGIN + b'x')
+    sh(['git', 'commit', '-q', '-am', 'bad'], cwd=str(t), env=ENV)
+    got = release(t)
+    check(got.returncode != 0 and 'does not describe' in (got.stdout + got.stderr)
+          and not (t / 'release' / ('zigmon-%s.tar.gz' % V)).exists(), 'a wrong plugin was released: %s' % got.stdout[-300:])
+
+shutil.rmtree(W, ignore_errors=True)
+if bad:
+    print('%d FAILED' % len(bad))
+    sys.exit(1)
+print('all good')
