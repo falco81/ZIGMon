@@ -137,3 +137,23 @@ describe("Next mode pressed round", () => {
     assert.equal(sent[0]!.value, "max");
   });
 });
+
+describe("(1.3) a thermostat heats when it says so", () => {
+  function head(running: string): Item {
+    const r = JSON.parse(JSON.stringify(sampleItems().find((i) => (i.state.attrs as Record<string, unknown>)?.running_state !== undefined)!)) as Record<string, unknown> & { state: { attrs: Record<string, unknown> } };
+    r.state.attrs.running_state = running;
+    return parseItem(r);
+  }
+  it("a head with a set point but idle does not heat; one running heat does", () => {
+    assert.equal(key("thermostat", head("idle"), {}).v.thermoModel().heating, false);
+    assert.equal(key("thermostat", head("heat"), {}).v.thermoModel().heating, true);
+  });
+  it("a room heats when it calls for heat", () => {
+    const calling = (c: boolean) => {
+      const r = room("comfort");
+      return parseItem({ ...JSON.parse(JSON.stringify(r)), state: { on: null, value: 21, value_text: "21 °C", attrs: { mode: "comfort", target: 22, temperature: 21, calling: c } } });
+    };
+    assert.equal(key("thermostat", calling(true), {}).v.thermoModel().heating, true);
+    assert.equal(key("thermostat", calling(false), {}).v.thermoModel().heating, false);
+  });
+});

@@ -440,7 +440,12 @@ export class ActionView implements HubView {
     const curKey = Object.keys(st.attrs).find((k) => /local_temp|current_temp|^temperature$/i.test(k));
     const current = st.value ?? (curKey ? numOf(st.attrs[curKey]) : null);
     const mode = enumAttr(it, /mode/i), preset = enumAttr(it, /preset/i);
-    const run = Object.entries(st.attrs).find(([k]) => /running|heating|demand|valve/i.test(k));
+    // (1.3) what says it heats: a room's "calling", a head's running state or demand - never a set point
+    // (current_heating_setpoint matched "heating", so a head read as heating whatever it did)
+    const keys = Object.keys(st.attrs).filter((k) => !/setpoint|target|temp/i.test(k));
+    const pick = (re: RegExp) => keys.find((k) => re.test(k));
+    const rk = pick(/^calling$/) ?? pick(/running/i) ?? pick(/demand/i) ?? pick(/heating/i) ?? pick(/valve/i);
+    const run = rk !== undefined ? ([rk, st.attrs[rk]] as const) : undefined;
     const heating = run ? run[1] === true || run[1] === "heat" || run[1] === "heating" || (typeof run[1] === "number" && run[1] > 0) : st.on === true;
     let modeText = [mode ? strOf(st.attrs[mode.key]) : "", preset ? strOf(st.attrs[preset.key]) : ""].filter(Boolean).join(" · ");
     const room = this.isRoom();
