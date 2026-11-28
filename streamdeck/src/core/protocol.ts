@@ -11,16 +11,22 @@ export class ProtocolError extends Error {
   }
 }
 
-export const CAPS = ["view", "switch", "dim", "climate", "cover", "scenes", "automations", "messages", "system", "status"] as const;
+export const CAPS = ["view", "switch", "dim", "climate", "cover", "scenes", "automations", "messages", "system", "status",
+  // (1.3, ZIGMon 5.59.4) the deck's SMS keys that ask the desktop app (windows/PROTOCOL-SMS.md section 3)
+  "sms"] as const;
 export type Cap = (typeof CAPS)[number];
 
 export const KINDS = [
   "socket", "light", "switch", "dimmer", "thermostat", "cover", "scene", "sequence", "group",
   "rule", "schedule", "message", "system", "sensor", "reading", "status",
+  // (1.3, ZIGMon 5.59.4) the summaries (PROTOCOL-5.59.4.md sections 1-7, 9 and 10)
+  "power", "security", "heatgroup", "away", "openings", "batteries", "zigbee", "room", "sms",
 ] as const;
 export type Kind = (typeof KINDS)[number];
 
-export const ACTIONS = ["toggle", "on", "off", "run", "set", "open", "close", "stop", "step"] as const;
+export const ACTIONS = ["toggle", "on", "off", "run", "set", "open", "close", "stop", "step",
+  // (1.3, ZIGMon 5.59.4) a switch's timer; a status item's acknowledge, mute and unmute (granted under system)
+  "timer", "ack", "mute", "unmute"] as const;
 export type ItemAction = (typeof ACTIONS)[number];
 
 export interface CapGrant {
@@ -42,11 +48,14 @@ export interface Attr {
   values: string[];
 }
 
+/** A state attribute: a number, a word, a yes/no, (1.3) a short list of names (the windows open), or unknown. */
+export type AttrValue = number | string | boolean | null | string[];
+
 export interface ItemState {
   on: boolean | null;
   value: number | null;
   valueText: string;
-  attrs: Record<string, number | string | boolean | null>;
+  attrs: Record<string, AttrValue>;
   online: boolean;
   battery: number | null;
   at: number | null;
@@ -66,6 +75,17 @@ export interface Item {
   allowed: boolean;
   hold: boolean;
   state: ItemState;
+  /** (1.3, ZIGMon 5.59.4, extended catalogue) An action granted under a capability of its own
+   * (a status item's ack / mute / unmute under system): use this, not the item's allowed and hold. */
+  act?: Partial<Record<ItemAction, ActGrant>>;
+  /** (1.3, ZIGMon 5.59.4, extended catalogue) A room's items this deck may see, in catalogue order. */
+  members?: string[];
+}
+
+export interface ActGrant {
+  cap: Cap;
+  allowed: boolean;
+  hold: boolean;
 }
 
 export interface Room {
@@ -96,6 +116,8 @@ export interface Hello {
   install: Install;
   decks: DeckStatus[];
   plugin: { version: string } | null;
+  /** (1.3, ZIGMon 5.59.4) What this ZIGMon offers beyond 5.59.3: "extended", "timer"... Empty for an older one. */
+  features: string[];
 }
 
 export interface Catalog {
@@ -263,22 +285,27 @@ export function parseInstall(v: unknown): Install {
   return { id, name: str(o.name, 60), caps: parseCaps(o.caps), hint: str(o.hint, 8) };
 }
 
-function parseAttrValue(v: unknown): number | string | boolean | null {
+/** (1.3) The few state texts longer than a word: the latest alert, the latest SMS. */
+const LONG_TEXT: Readonly<Record<string, number>> = { latest: 120, last_text: 80 };
+
+function parseAttrValue(v: unknown, key = ""): AttrValue {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (typeof v === "boolean") return v;
-  if (typeof v === "string") return cleanText(v, 60);
+  if (typeof v === "string") return cleanText(v, LONG_TEXT[key] ?? 60);
+  // (1.3) a short list of names (the windows open): at most 6, each at most 40 characters, words only
+  if (Array.isArray(v)) return v.slice(0, 6).filter((x): x is string => typeof x === "string").map((x) => cleanText(x, 40)).filter(Boolean);
   return null;
 }
 
 export function parseState(v: unknown): ItemState {
   const o = v === null || typeof v !== "object" || Array.isArray(v) ? {} : (v as Record<string, unknown>);
-  const attrs: Record<string, number | string | boolean | null> = {};
+  const attrs: Record<string, AttrValue> = {};
   if (o.attrs && typeof o.attrs === "object" && !Array.isArray(o.attrs)) {
     let n = 0;
     for (const [k, val] of Object.entries(o.attrs as Record<string, unknown>)) {
       if (n++ >= 40) break;
       if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(k)) continue;
-      attrs[k] = parseAttrValue(val);
+      attrs[k] = parseAttrValue(val, k);
     }
   }
   const battery = num(o.battery);
@@ -322,6 +349,8 @@ export function parseItem(v: unknown): Item {
   const cap = (CAPS as readonly string[]).includes(o.cap as string) ? (o.cap as Cap) : "view";
   const actions = arr(o.actions, "actions", 12).filter((a): a is ItemAction => (ACTIONS as readonly string[]).includes(a as string));
   const attrs = arr(o.attrs, "attrs", 24).map(parseAttr).filter((a): a is Attr => a !== null);
+  const act = parseAct(o.act);
+  const members = o.members === undefined || o.members === null ? undefined : parseMembers(o.members);
   return {
     id,
     name: str(o.name, 80) || id,
@@ -334,7 +363,42 @@ export function parseItem(v: unknown): Item {
     allowed: bool(o.allowed),
     hold: bool(o.hold),
     state: parseState(o.state),
+    ...(act ? { act } : {}),
+    ...(members ? { members } : {}),
   };
+}
+
+/** (1.3) `act`: {action: {cap, allowed, hold}}, for the actions this plugin knows under a capability it knows. */
+export function parseAct(v: unknown): Partial<Record<ItemAction, ActGrant>> | undefined {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Partial<Record<ItemAction, ActGrant>> = {};
+  let n = 0;
+  for (const [a, g] of Object.entries(v as Record<string, unknown>)) {
+    if (n++ >= 12) break;
+    if (!(ACTIONS as readonly string[]).includes(a) || g === null || typeof g !== "object" || Array.isArray(g)) continue;
+    const gg = g as Record<string, unknown>;
+    if (!(CAPS as readonly string[]).includes(gg.cap as string)) continue;
+    out[a as ItemAction] = { cap: gg.cap as Cap, allowed: bool(gg.allowed), hold: bool(gg.hold) };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** (1.3) A room's `members`: item ids, at most 200, each a valid id, no repeats. */
+export function parseMembers(v: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of arr(v, "members", 200)) {
+    if (typeof m !== "string" || !ID_RE.test(m) || seen.has(m)) continue;
+    seen.add(m);
+    out.push(m);
+  }
+  return out;
+}
+
+/** (1.3) hello's `features`: short lowercase words, at most 16; none from an older ZIGMon. */
+export function parseFeatures(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.slice(0, 16).filter((f): f is string => typeof f === "string" && /^[a-z0-9][a-z0-9._-]{0,39}$/.test(f)))];
 }
 
 export function parseHello(v: unknown): Hello {
@@ -365,6 +429,7 @@ export function parseHello(v: unknown): Hello {
     install: parseInstall(o.install),
     decks,
     plugin,
+    features: parseFeatures(o.features),
   };
 }
 

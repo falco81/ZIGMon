@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { iconMarkup } from "../src/core/icons.js";
 import { LAYOUTS } from "../src/core/layouts.js";
-import { P } from "../src/core/palette.js";
+import { A, P } from "../src/core/palette.js";
 import { keySvg } from "../src/core/render.js";
 import { icon, rect, svgDoc, text } from "../src/core/svg.js";
 
@@ -33,6 +33,17 @@ export const ACTIONS: { id: string; icon: string; accent: string; title: string;
   { id: "blinds", icon: "blinds", accent: P.purple, title: "Blinds", line: "position" },
   { id: "scene", icon: "scene", accent: P.purple, title: "Scene", line: "run it" },
   { id: "status", icon: "heart", accent: P.ok, title: "ZIGMon", line: "status" },
+  // (1.3, ZIGMon 5.59.4)
+  { id: "power", icon: "bolt", accent: P.warn, title: "Power", line: "the house" },
+  { id: "security", icon: "shieldOk", accent: P.ok, title: "Security", line: "network" },
+  { id: "heatgroup", icon: "flame", accent: P.orange, title: "Heating", line: "every room" },
+  { id: "away", icon: "suitcase", accent: A.indigo, title: "Away", line: "or home" },
+  { id: "openings", icon: "windowOpen", accent: P.water, title: "Windows", line: "& doors" },
+  { id: "batteries", icon: "batteryLow", accent: P.ok, title: "Batteries", line: "low ones" },
+  { id: "zigbee", icon: "mesh", accent: P.info, title: "Zigbee", line: "network" },
+  { id: "timer", icon: "stopwatch", accent: P.water, title: "Timer", line: "on for…" },
+  { id: "room", icon: "sofa", accent: P.info, title: "Room", line: "at a glance" },
+  { id: "sms", icon: "message", accent: A.indigo, title: "SMS", line: "messages" },
 ];
 
 /** A plain stroke icon in a w x h box (action list 20, category 28): light strokes, no fill, as Stream Deck shows them. */
@@ -84,7 +95,7 @@ export function main(): void {
     write(`imgs/actions/${a.id}/key.svg`, keyImage(a));
     write(`imgs/actions/${a.id}/encoder.svg`, encoderIcon(a));
   }
-  console.log("assets: " + Object.keys(LAYOUTS).length + " layouts, " + ACTIONS.length * 3 + 2 + " images");
+  console.log("assets: " + Object.keys(LAYOUTS).length + " layouts, " + (ACTIONS.length * 3 + 2) + " images");
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();

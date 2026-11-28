@@ -29,20 +29,30 @@ export function catalogMessage(hub: Hub, kind: ActionKind): PiReply {
     const st = hub.state(i.id) ?? i.state;
     return {
       id: i.id, name: i.name, room: i.room, kind: i.kind, icon: i.icon, cap: i.cap, allowed: i.allowed, hold: i.hold,
-      actions: i.actions, attrs: i.attrs, valueText: st.valueText, on: st.on, online: st.online,
+      actions: i.actions, attrs: i.attrs, valueText: st.valueText, on: st.on, online: st.online, ...(i.act ? { act: i.act } : {}),
     };
   });
-  return { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };
+  const msg: PiReply = { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };
+  // (1.3) Away / Home: the switches it may turn off as well, each under its own capability
+  if (kind === "away") msg.extras = awayChoices(hub);
+  return msg;
+}
+
+/** (1.3) What an Away key may switch off with it: whatever can be switched off, but the summaries and Away itself. */
+export function awayChoices(hub: Hub): Record<string, unknown>[] {
+  return hub.allItems().filter((i) => i.actions.includes("off") && (i.cap === "switch" || i.cap === "dim") && fits("control", i)).slice(0, 500).map((i) => ({
+    id: i.id, name: i.name, room: i.room, kind: i.kind, icon: i.icon, cap: i.cap, allowed: i.allowed, hold: i.hold,
+  }));
 }
 
 /** What a preview function gives: the key as it is, and (1.1) the Look section's pictures. */
-export type Preview = () => string | { image: string; looks?: unknown } | null;
+export type Preview = () => string | { image: string; looks?: unknown; facts?: unknown } | null;
 
 export function previewMessage(preview?: Preview): PiReply[] {
   const p = preview?.();
   if (!p) return [];
   if (typeof p === "string") return [{ t: "preview", image: p }];
-  return [{ t: "preview", image: p.image, ...(p.looks ? { looks: p.looks } : {}) }];
+  return [{ t: "preview", image: p.image, ...(p.looks ? { looks: p.looks } : {}), ...(p.facts ? { facts: p.facts } : {}) }];
 }
 
 export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview?: Preview): Promise<PiReply[]> {

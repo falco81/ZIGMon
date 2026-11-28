@@ -23,8 +23,14 @@ import {
   blindsFeedback, controlFeedback, iconPix, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
 } from "./strip.js";
 import { dataUri, svgDoc } from "./svg.js";
+import { factsOf, faceOfSummary, summaryOf, type Member, type Summary } from "./extra.js";
+import { extraFeedback, renderExtra } from "./extra-render.js";
+import { countdown, isNewKind, itemFor, NEEDS_ZIGMON, needs, POWER_SPANS, spanWord, stepMinutes, type NewKind } from "./kinds.js";
 
-export type ActionKind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status";
+export type ActionKind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind;
+
+/** (1.3) The summaries' kinds: they only tell, so a Control key is not offered them. */
+const SUMMARY_KINDS = new Set(["power", "security", "heatgroup", "openings", "batteries", "zigbee", "room", "sms"]);
 
 export interface Surface {
   readonly controller: "Keypad" | "Encoder";
@@ -40,7 +46,7 @@ export interface Surface {
 export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions" | "attrs" | "state">): boolean {
   switch (kind) {
     case "control":
-      return it.actions.length > 0 && it.kind !== "status";
+      return it.actions.length > 0 && it.kind !== "status" && !SUMMARY_KINDS.has(it.kind);
     case "reading":
       // (1.3) and what is on or off: a scene (as it leaves things, or not), a rule, a group, a switch
       return it.kind !== "status" && (it.state.value !== null || it.state.on !== null || it.kind === "scene" || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"));
@@ -54,6 +60,19 @@ export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions"
       return it.actions.includes("run") || ["scene", "sequence", "group", "rule", "schedule", "message", "system"].includes(it.kind);
     case "status":
       return it.kind === "status" || it.cap === "status";
+    // (1.3, ZIGMon 5.59.4)
+    case "power":
+    case "security":
+    case "heatgroup":
+    case "away":
+    case "openings":
+    case "batteries":
+    case "zigbee":
+    case "room":
+    case "sms":
+      return it.kind === kind;
+    case "timer":
+      return it.cap === "switch" && (it.actions.includes("timer") || it.actions.includes("toggle"));
   }
 }
 
@@ -65,10 +84,24 @@ const NOT_CHOSEN: Record<ActionKind, string> = {
   blinds: "Pick the blinds",
   scene: "Pick a scene",
   status: "Pick what to watch",
+  power: "", security: "", heatgroup: "", away: "", openings: "", batteries: "", zigbee: "", sms: "",
+  timer: "Pick a switch",
+  room: "Pick a room",
 };
 
 const LAYOUT_OF: Record<ActionKind, keyof typeof LAYOUTS> = {
   control: "control", reading: "reading", thermostat: "thermostat", dimmer: "dimmer", blinds: "blinds", scene: "control", status: "control",
+  power: "power", security: "summary", heatgroup: "summary", away: "summary", openings: "summary", batteries: "summary", zigbee: "summary",
+  timer: "timer", room: "room", sms: "summary",
+};
+
+/** (1.3) A summary ZIGMon has none of here: why, in its words. */
+const NONE_HERE: Partial<Record<ActionKind, string[]>> = {
+  heatgroup: ["no heated room", "in ZIGMon"],
+  away: ["no heated room", "in ZIGMon"],
+  openings: ["no window or door", "sensor reports yet"],
+  batteries: ["no device", "reports a battery"],
+  sms: ["SMS is not set up", "or not allowed here"],
 };
 
 const STATUS_LOOK: Record<string, { label: string; icon: string; count: "crit" | "warn" | null }> = {
@@ -77,6 +110,10 @@ const STATUS_LOOK: Record<string, { label: string; icon: string; count: "crit" |
   "status:proxy": { label: "Proxy", icon: "globe", count: null },
   "status:health": { label: "Health", icon: "heart", count: null },
   "status:gateway": { label: "Zigbee gateway", icon: "router", count: null },
+  // (1.3, ZIGMon 5.59.4) also on a ZIGMon status key
+  "status:security": { label: "Network security", icon: "shield", count: "crit" },
+  "status:zigbee": { label: "Zigbee network", icon: "mesh", count: null },
+  "status:sms": { label: "Text messages", icon: "message", count: null },
 };
 
 /** The modes of a heated room as the dashboard words them. */
@@ -89,7 +126,12 @@ export const DETAILS_MS = 3000;
 
 /** The actions that do something - the hold switch is theirs; Reading and ZIGMon status only look. */
 export function acts(kind: ActionKind): boolean {
-  return kind !== "reading" && kind !== "status";
+  return kind !== "reading" && kind !== "status" && kind !== "power" && kind !== "openings" && kind !== "batteries" && kind !== "zigbee";
+}
+
+/** (1.3) The new actions that only look: a press asks again, as a Reading's does. */
+function looksOnly(kind: ActionKind): boolean {
+  return kind === "power" || kind === "openings" || kind === "batteries" || kind === "zigbee";
 }
 
 /** "14:30" for a unix time, on this computer's clock. */
@@ -129,6 +171,17 @@ export class ActionView implements HubView {
    * the presses stop - going round to Max no longer switches the room through Off on the way. */
   private cycle: { attr: string; value: string; id: string } | null = null;
   private cycleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** (1.3) House power's span as the dial set it (until the key is set up again). */
+  private spanTurned: number | null = null;
+  /** (1.3) The Timer's minutes as the dial set them. */
+  private minutesTurned: number | null = null;
+  /** (1.3) A timer's whole length, by its off_at, so its ring drains from full. */
+  private timerLength = new Map<number, number>();
+  private timerStarted: { at: number; minutes: number } | null = null;
+  /** (1.3) A countdown ticking on the key, once a second. */
+  private ticker: ReturnType<typeof setInterval> | null = null;
+  /** (1.3) The Room dial's member scrolled to. */
+  private memberAt = 0;
 
   constructor(
     readonly kind: ActionKind,
@@ -144,7 +197,16 @@ export class ActionView implements HubView {
   // ------------------------------------------------------------------ HubView
 
   ids(): string[] {
-    return this.settings.item ? [this.settings.item] : [];
+    const id = this.itemId();
+    if (!id) return [];
+    // (1.3) a Room dial watches the member it shows as well
+    const m = this.kind === "room" && this.surface.controller === "Encoder" ? this.member() : null;
+    return m ? [id, m.item.id] : [id];
+  }
+
+  /** The item this key shows: (1.3) a new action's fixed summary or SMS mode's item, else the one picked. */
+  itemId(): string | undefined {
+    return isNewKind(this.kind) ? itemFor(this.kind, this.settings) : this.settings.item;
   }
 
   refresh(): void {
@@ -153,11 +215,13 @@ export class ActionView implements HubView {
   }
 
   setSettings(s: unknown): void {
-    const before = this.settings.item;
+    const before = this.itemId();
     this.settings = normalizeAction(s);
     this.dial.cancel();
+    this.spanTurned = null;
+    this.minutesTurned = null;
     // a new item, or a graph of another span: the hub asks again (it only restarts the wait for a new item)
-    if (before !== this.settings.item || this.series().length) this.hub.resubscribe();
+    if (before !== this.itemId() || this.series().length) this.hub.resubscribe();
     if (this.surface.controller === "Encoder") void this.surface.setTriggerDescription?.(this.triggers());
     this.draw(true);
   }
@@ -170,30 +234,32 @@ export class ActionView implements HubView {
     if (this.flashTimer) clearTimeout(this.flashTimer);
     if (this.detailsTimer) clearTimeout(this.detailsTimer);
     if (this.cycleTimer) clearTimeout(this.cycleTimer);
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = null;
     this.cycle = null;
   }
 
   /** (1.1) The series this key draws, for the hub to ask ZIGMon for. */
   series(): { id: string; span: number }[] {
-    const id = this.settings.item;
-    if (!id || (this.kind !== "reading" && this.kind !== "thermostat")) return [];
+    const id = this.itemId();
+    if (!id || (this.kind !== "reading" && this.kind !== "thermostat" && this.kind !== "power")) return [];
     return this.info().graph ? [{ id, span: this.span() }] : [];
   }
 
   span(): number {
-    return this.settings.span ?? 86400;
+    return this.spanTurned ?? this.settings.span ?? 86400;
   }
 
   // ------------------------------------------------------------------ the item
 
   private get item(): Item | undefined {
-    return this.hub.item(this.settings.item);
+    return this.hub.item(this.itemId());
   }
 
   private get st(): ItemState | undefined {
-    const st = this.hub.state(this.settings.item);
+    const st = this.hub.state(this.itemId());
     const c = this.cycle;
-    if (!st || !c || c.id !== this.settings.item) return st;
+    if (!st || !c || c.id !== this.itemId()) return st;
     // the mode stepped to, until it is sent and ZIGMon says where the room is
     return { ...st, attrs: { ...st.attrs, [c.attr]: c.value, by_hand: false } };
   }
@@ -278,8 +344,12 @@ export class ActionView implements HubView {
     if (this.hub.deckIsApproved(this.surface.deckId) === false) {
       return { icon: "deck", title: "Approve deck", lines: ["in ZIGMon →", "Settings → Stream Deck"], tone: "warn" };
     }
-    if (!this.settings.item) return { icon: "search", title: "Choose", lines: [NOT_CHOSEN[this.kind]], tone: "muted" };
-    if (!this.item) return { icon: "search", title: "Not found", lines: ["ZIGMon does not", "show it to this deck"], tone: "muted" };
+    // (1.3) the new actions need a ZIGMon that offers them; an older one is never asked
+    if (isNewKind(this.kind) && ph === "online" && this.hub.supports) {
+      for (const f of needs(this.kind)) if (this.hub.supports(f) === false) return { icon: "download", title: "Needs ZIGMon", lines: [NEEDS_ZIGMON + " or newer"], tone: "warn" };
+    }
+    if (!this.itemId()) return { icon: "search", title: "Choose", lines: [NOT_CHOSEN[this.kind]], tone: "muted" };
+    if (!this.item) return { icon: "search", title: "Not found", lines: NONE_HERE[this.kind] ?? ["ZIGMon does not", "show it to this deck"], tone: "muted" };
     return null;
   }
 
@@ -313,6 +383,7 @@ export class ActionView implements HubView {
         this.lastFeedback = key;
         void this.surface.setFeedback(fb);
       }
+      this.syncTicker(!n);
       return;
     }
     let svg: string;
@@ -327,6 +398,27 @@ export class ActionView implements HubView {
       this.lastImage = img;
       void this.surface.setImage(img);
     }
+    this.syncTicker(!n);
+  }
+
+  /** (1.3) A timer counting down redraws its key every second; none, no ticking. */
+  private syncTicker(shown: boolean): void {
+    const want = shown && !this.disposed && this.counting();
+    if (want && !this.ticker) {
+      this.ticker = setInterval(() => this.draw(), 1000);
+      (this.ticker as { unref?: () => void }).unref?.();
+    } else if (!want && this.ticker) {
+      clearInterval(this.ticker);
+      this.ticker = null;
+    }
+  }
+
+  /** (1.3) Whether a way back to off is pending on this key's switch (its off_at is still to come). */
+  counting(): boolean {
+    if (this.kind !== "timer" && this.kind !== "control") return false;
+    const st = this.st;
+    const t = st && typeof st.attrs.off_at === "number" ? st.attrs.off_at : null;
+    return t !== null && t > Date.now() / 1000 && st!.on !== false;
   }
 
   /** The key as it looks now, for the property inspector's preview (keys and dials alike). */
@@ -352,7 +444,7 @@ export class ActionView implements HubView {
       const on = dataUri(this.keyImage());
       this.forced = "off";
       const off = dataUri(this.keyImage());
-      return { themes, on, off, words: ON_OFF_WORDS[this.kind] };
+      return { themes, on, off, words: this.kind === "sms" ? SMS_WORDS[this.smsMode()] : ON_OFF_WORDS[this.kind] };
     } finally {
       this.themeOverride = keep[0];
       this.forced = keep[1];
@@ -366,6 +458,7 @@ export class ActionView implements HubView {
     if (this.kind === "dimmer") return P.warn;
     if (this.kind === "thermostat") return P.orange;
     if (this.kind === "blinds") return P.purple;
+    if (isNewKind(this.kind) && it) return this.summary().accent;
     return it ? lookFor(it.kind, it.icon).accent : P.info;
   }
 
@@ -384,6 +477,9 @@ export class ActionView implements HubView {
       on: st.on, valueText: st.valueText, online: st.online, battery: st.battery, hold: this.needsHold(it), allowed: it.allowed,
       taken: st.held === true,
     };
+    // (1.3) a timer running on the switch: its countdown by the state
+    const offAt = numOf(st.attrs.off_at);
+    if (offAt !== null && st.on === true && offAt > Date.now() / 1000) m.valueText = "⏱ " + countdown(offAt - Date.now() / 1000);
     if (this.forced) {
       m.on = this.forced === "on";
       m.online = true;
@@ -577,6 +673,7 @@ export class ActionView implements HubView {
   private keyImage(): string {
     if (this.theme !== "classic") return renderLook(this.theme, this.face(), { info: this.info(), fit: this.nameFit() });
     const o = this.classicOpts();
+    if (isNewKind(this.kind)) return renderExtra(this.summary(), o);
     switch (this.kind) {
       case "control":
         return renderControl(this.controlModel(), o);
@@ -599,8 +696,193 @@ export class ActionView implements HubView {
     }
   }
 
+  // ------------------------------------------------------------------ (1.3) the new actions
+
+  private smsMode(): "last" | "compose" | "status" {
+    const m = this.settings.smsMode;
+    return m === "compose" || m === "status" ? m : "last";
+  }
+
+  /** The Timer's minutes: as the dial set them, else the key's setting, else half an hour. */
+  minutes(): number {
+    return this.minutesTurned ?? this.settings.minutes ?? 30;
+  }
+
+  /** The press of a new action: its item's grant for that action (an `act` grant where there is one). */
+  grantFor(id: string, action: ItemAction): { allowed: boolean; hold: boolean } {
+    const it = this.hub.item(id);
+    if (!it) return { allowed: false, hold: false };
+    const g = it.act?.[action];
+    const own = this.settings.hold === true && acts(this.kind);
+    return g ? { allowed: g.allowed, hold: g.hold || own } : { allowed: it.allowed, hold: it.hold || own };
+  }
+
+  /** Whether a press must be held: its own grant, and (Away) the switches it then turns off. */
+  private holdFor(cmd: Omit<Command, "deck">): boolean {
+    let h = this.grantFor(cmd.id, cmd.action).hold;
+    if (this.kind === "away" && this.goingAway()) for (const id of this.settings.awayOff ?? []) h ||= this.hub.item(id)?.hold === true;
+    return h;
+  }
+
+  private goingAway(): boolean {
+    const st = this.st;
+    return !!st && !(st.attrs.away === true || (st.attrs.away === undefined && st.on === true));
+  }
+
+  /** The room's members this deck may see and the plugin knows, in the catalogue's order. */
+  private members(): Item[] {
+    const it = this.item;
+    if (!it?.members) return [];
+    return it.members.map((id) => this.hub.item(id)).filter((m): m is Item => !!m);
+  }
+
+  private member(): Member | null {
+    const ms = this.members();
+    if (!ms.length) return null;
+    const i = ((this.memberAt % ms.length) + ms.length) % ms.length;
+    const m = ms[i]!;
+    return { item: m, state: this.hub.state(m.id) ?? m.state, index: i, count: ms.length };
+  }
+
+  /** The timer's whole length (s), to drain its ring from: as started here, else what was left when first seen. */
+  private timerTotal(st: ItemState): number | null {
+    const offAt = numOf(st.attrs.off_at);
+    if (offAt === null) return null;
+    const known = this.timerLength.get(offAt);
+    if (known !== undefined) return known;
+    const now = Date.now() / 1000;
+    const s = this.timerStarted;
+    const total = s && Math.abs(offAt - (s.at + s.minutes * 60)) < 15 ? s.minutes * 60 : Math.max(60, Math.ceil((offAt - now) / 60) * 60);
+    if (this.timerLength.size > 8) this.timerLength.clear();
+    this.timerLength.set(offAt, total);
+    return total;
+  }
+
+  /** (1.3) What a new action has to say now (extra.ts), for every look, the strip and the inspector. */
+  summary(): Summary {
+    const it = this.item!;
+    const st = this.st ?? it.state;
+    const cmd = this.keyCommand();
+    const g = cmd ? this.grantFor(cmd.id, cmd.action) : { allowed: it.allowed, hold: false };
+    const hold = cmd ? this.holdFor(cmd) : this.settings.hold === true && acts(this.kind);
+    return summaryOf({
+      kind: this.kind as NewKind, it, st, label: this.settings.label || it.name, accent: this.accentOverride(), offAccent: this.offOverride(),
+      forced: this.forced, now: Date.now() / 1000, series: this.kind === "power" ? this.historyOf(it.id) : [], span: this.span(),
+      hold: looksOnly(this.kind) ? false : hold, allowed: looksOnly(this.kind) || this.kind === "room" ? true : g.allowed,
+      minutes: this.minutes(), total: this.timerTotal(st), cycle: this.cycle && this.cycle.id === it.id ? this.cycle.value : null,
+      member: this.kind === "room" ? this.member() : null, to: this.settings.smsTo ?? [], muteMinutes: this.settings.muteMinutes ?? 60,
+    });
+  }
+
+  /** (1.3) The inspector's "Now": what the item says beyond the key (every window open, the whole latest alert...). */
+  facts(): [string, string][] | null {
+    if (!isNewKind(this.kind) || this.notice()) return null;
+    const it = this.item!;
+    const s = this.summary();
+    return factsOf({ kind: this.kind, it, st: this.st ?? it.state, label: s.name, forced: null, now: Date.now() / 1000, series: [], span: this.span(),
+      hold: s.hold, allowed: s.allowed, minutes: this.minutes(), total: null, cycle: null, member: null, to: this.settings.smsTo ?? [], muteMinutes: 60 }, s, this.members());
+  }
+
+  /** The strip of a new action: its own layout, with what a push does. */
+  private extraStrip(): Feedback {
+    const s = this.summary();
+    const m = this.kind === "room" ? this.member() : null;
+    const hint = this.kind === "timer" ? (s.x.running ? "push = off" : "turn · push = on")
+      : this.kind === "power" ? "turn: " + POWER_SPANS.map(spanWord).join(" / ") : "";
+    let mem = null;
+    if (m) {
+      const look = lookFor(m.item.kind, m.item.icon, m.state.on);
+      const word = !m.state.online ? "Offline" : m.state.on === true ? "On" : m.state.on === false ? "Off" : m.state.valueText || "—";
+      const val = m.state.on !== null && m.state.valueText && m.state.online ? word + " · " + m.state.valueText : word;
+      mem = { name: m.item.name, icon: look.icon, colour: look.accent, state: m.item.allowed ? val : val + " · locked", lit: m.state.on === true && m.state.online, index: m.index, count: m.count };
+    }
+    return extraFeedback(s, hint, mem);
+  }
+
+  /** (1.3) What a press of a new action sends. */
+  private extraCommand(): Omit<Command, "deck"> | null {
+    const it = this.item;
+    if (!it) return null;
+    const st = this.st ?? it.state;
+    switch (this.kind as NewKind) {
+      case "security":
+        return it.actions.includes("ack") ? { id: it.id, action: "ack" } : null;
+      case "heatgroup": {
+        const want = this.settings.press ?? "mode";
+        const e = enumAttr(it, /^mode$/) ?? enumAttr(it, /mode/i);
+        if (!it.actions.includes("set")) return null;
+        if (want.startsWith("set:")) {
+          const m = want.slice(4);
+          return (ROOM_MODES as readonly string[]).includes(m) && (!e || e.values.includes(m)) ? { id: it.id, action: "set", attr: e?.key ?? "mode", value: m } : null;
+        }
+        const values = e?.values.length ? e.values : [...ROOM_MODES];
+        const cur = strOf(st.attrs[e?.key ?? "mode"]);
+        return { id: it.id, action: "set", attr: e?.key ?? "mode", value: values[(values.indexOf(cur) + 1) % values.length]! };
+      }
+      case "away":
+        return it.actions.includes("toggle") ? { id: it.id, action: "toggle" } : null;
+      case "timer":
+        return this.timerCommand(it);
+      case "sms": {
+        const mode = this.smsMode();
+        if (mode === "status") {
+          const muted = (numOf(st.attrs.muted_until) ?? 0) > Date.now() / 1000;
+          if (muted) return it.actions.includes("unmute") ? { id: it.id, action: "unmute" } : null;
+          return it.actions.includes("mute") ? { id: it.id, action: "mute", minutes: this.settings.muteMinutes ?? 60 } : null;
+        }
+        const to = this.settings.smsTo ?? [];
+        return mode === "compose" && to.length ? { id: it.id, action: "run", to: to.slice(0, 20) } : { id: it.id, action: "run" };
+      }
+      case "room": {
+        const m = this.member();
+        return m ? memberCommand(m.item, m.state) : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** A switch's timer: on for the minutes, or (one running) off, which cancels it. */
+  private timerCommand(it: Item): Omit<Command, "deck"> | null {
+    if (!it.actions.includes("timer") && !it.actions.includes("toggle")) return null;
+    if (this.counting()) return it.actions.includes("off") || it.actions.includes("toggle") ? { id: it.id, action: it.actions.includes("off") ? "off" : "toggle" } : null;
+    const cmd: Omit<Command, "deck"> = { id: it.id, action: "timer", minutes: Math.max(1, Math.min(720, Math.round(this.minutes()))) };
+    return this.settings.byHand === true && it.cap === "switch" ? { ...cmd, by_hand: true } : cmd;
+  }
+
+  /** After a press went through: Away turns off the chosen switches too; a timer remembers its length. */
+  private async afterPress(cmd: Omit<Command, "deck">, r: CommandResult, held: number | undefined): Promise<void> {
+    if (!r.ok) return;
+    if (cmd.action === "timer" && cmd.minutes) this.timerStarted = { at: Date.now() / 1000, minutes: cmd.minutes };
+    if (this.kind !== "away" || !cmd.id) return;
+    const st = r.state ?? this.hub.state(cmd.id);
+    const away = !!st && (st.attrs.away === true || (st.attrs.away === undefined && st.on === true));
+    const extra = this.settings.awayOff ?? [];
+    if (!away || !extra.length) return;
+    let off = 0, refused = 0, missing = 0;
+    for (const id of extra) {
+      const x = this.hub.item(id);
+      if (!x || !x.actions.includes("off")) {
+        missing++;
+        continue;
+      }
+      if (!x.allowed) {
+        refused++;
+        continue;
+      }
+      const c: Omit<Command, "deck"> = { id, action: "off" };
+      if (held !== undefined && x.hold) c.held_ms = Math.round(held);
+      const rr = await this.hub.command({ deck: this.surface.deckId, ...c });
+      if (rr.ok) off++;
+      else refused++;
+    }
+    if (refused || missing) this.showToast("Away", off + " off · " + (refused + missing) + " not", "warn", 2400);
+    else this.showToast("Away", off + (off === 1 ? " switch off" : " switches off"), "ok", 1800);
+  }
+
   /** (1.1) What the key has to say, for the looks other than Classic. */
   face(): Face {
+    if (isNewKind(this.kind)) return faceOfSummary(this.summary());
     const it = this.item!;
     const st = this.st ?? it.state;
     const base = {
@@ -696,7 +978,10 @@ export class ActionView implements HubView {
       const v = out[k];
       return typeof v === "object" && v !== null ? v : { value: v as string | number };
     };
-    if (!i.name && "name" in out) out.name = { ...val("name"), value: !i.room || !f.room || this.kind === "reading" ? "" : f.room };
+    // (1.3) a Room dial's "name" is the member it shows; its own name is on the top line
+    if (this.kind === "room" && !i.name && "top" in out) out.top = { ...val("top"), value: "" };
+    else if (this.kind === "room") { /* the member stays */ }
+    else if (!i.name && "name" in out) out.name = { ...val("name"), value: !i.room || !f.room || this.kind === "reading" ? "" : f.room };
     else if ("name" in out && (this.kind === "control" || this.kind === "dimmer" || this.kind === "blinds")) {
       out.name = { ...val("name"), value: f.name + (i.room && f.room && this.showRoom() ? " · " + f.room : "") };
     }
@@ -730,8 +1015,8 @@ export class ActionView implements HubView {
     };
     this.recolour(out, layout, inkOf);
     out.bg = dataUri(stripPaper(t, lit, c));
-    if (i.icon && "icon" in out) {
-      const size = layout === "dimmer" ? 36 : layout === "reading" ? 22 : 40;
+    if (i.icon && "icon" in out && !(this.kind === "room" && this.member())) {
+      const size = layout === "dimmer" || layout === "room" ? 36 : layout === "reading" || layout === "power" ? 22 : 40;
       out.icon = paperInk || t === "light"
         ? iconPix(f.icon, t === "light" ? (lit ? c : X.inkDim) : P.bg, size, t === "light" && lit ? c : undefined)
         : t === "contrast" ? iconPix(f.icon, off ?? X.white, size) : t === "minimal" || t === "mono" ? iconPix(f.icon, lit ? c : off ?? P.muted, size)
@@ -758,6 +1043,7 @@ export class ActionView implements HubView {
   }
 
   private feedback(): Feedback {
+    if (isNewKind(this.kind)) return this.extraStrip();
     switch (this.kind) {
       case "control": {
         const m = this.controlModel();
@@ -821,6 +1107,30 @@ export class ActionView implements HubView {
         return { push: "Run", touch: "Run" };
       case "status":
         return { push: "Refresh", touch: "Refresh" };
+      // (1.3)
+      case "power":
+        return { push: "Refresh", rotate: "Span", touch: "Refresh" };
+      case "openings":
+      case "batteries":
+      case "zigbee":
+        return { push: "Refresh", touch: "Refresh" };
+      case "security":
+        return { push: "Hold: acknowledge", touch: "Hold the dial" };
+      case "heatgroup": {
+        const p = this.settings.press ?? "mode";
+        const push = p.startsWith("set:") ? MODE_WORDS[p.slice(4)] ?? "Mode" : "Next mode";
+        return { push: (this.needsHold(this.item) ? "Hold: " : "") + push, rotate: "Mode", touch: push };
+      }
+      case "away":
+        return { push: "Away / home", touch: "Away / home" };
+      case "timer":
+        return { push: "Start / cancel", rotate: "Minutes", touch: "Start / cancel" };
+      case "room":
+        return { push: "Switch it", rotate: "Scroll", touch: "Switch it" };
+      case "sms": {
+        const m = this.smsMode();
+        return m === "status" ? { push: "Hold: mute / unmute", touch: "Hold the dial" } : m === "compose" ? { push: "Write", touch: "Write" } : { push: "Show", touch: "Show" };
+      }
     }
   }
 
@@ -864,9 +1174,16 @@ export class ActionView implements HubView {
       rate: ["Too fast", "wait a moment", "warn"],
       net: ["No answer", r.message, "crit"],
       offline: ["Not connected", "", "crit"],
+      // (1.3) the deck's SMS keys ask the desktop app linked to this Stream Deck: none is running
+      noapp: ["No desktop app running", "link one in ZIGMon", "warn"],
     };
+    // (1.3) acknowledged with nothing standing: all is well, not a failure
+    if (r.why === "invalid" && cmd.action === "ack" && /no alert/i.test(r.message)) {
+      this.showToast("All clear", "no alert standing", "ok");
+      return r;
+    }
     const w = words[r.why] ?? ["Failed", r.message, "crit"];
-    this.showToast(w[0], w[1], w[2]);
+    this.showToast(w[0], w[1], w[2], r.why === "noapp" ? 3200 : 1800);
     return r;
   }
 
@@ -887,12 +1204,13 @@ export class ActionView implements HubView {
 
   /** A press of the key or the dial: what it does, through the hold ring when ZIGMon asks for it. */
   private pressStart(what: () => Omit<Command, "deck"> | null): void {
-    if (this.kind === "reading" || this.kind === "status") {
+    if (this.kind === "reading" || this.kind === "status" || looksOnly(this.kind) || (this.kind === "room" && this.surface.controller === "Keypad")) {
       this.hub.resubscribe();
       if (this.hub.currentPhase !== "online") this.hub.retryNow();
       void this.surface.showOk?.();
       return;
     }
+    if (isNewKind(this.kind)) return this.pressNew(what);
     if (this.kind === "thermostat" && this.settings.press === "details" && !this.notice()) {
       this.showDetails();
       return;
@@ -941,6 +1259,68 @@ export class ActionView implements HubView {
     this.press.down();
   }
 
+  /** (1.3) A press of a new action: its own grant and hold (an `act` grant for ack / mute / unmute,
+   * a Room member's own), Next mode stepped and sent once it stops, Away's switches after it. */
+  private pressNew(what: () => Omit<Command, "deck"> | null): void {
+    if (this.notice()) {
+      void this.surface.showAlert();
+      return;
+    }
+    const cmd = what();
+    if (!cmd) {
+      void this.surface.showAlert();
+      this.showToast(this.kind === "room" ? "Nothing here" : "Nothing to do", this.kind === "room" ? "turn to pick an item" : "this item has no such action", "warn");
+      return;
+    }
+    const g = this.grantFor(cmd.id, cmd.action);
+    if (!g.allowed) {
+      void this.surface.showAlert();
+      this.showToast("Not allowed", this.kind === "security" || this.kind === "sms" && this.smsMode() === "status" ? "needs System in ZIGMon" : "grant it in ZIGMon", "crit");
+      return;
+    }
+    const held = this.holdFor(cmd);
+    if (this.kind === "heatgroup" && cmd.attr && typeof cmd.value === "string" && !(this.settings.press ?? "mode").startsWith("set:") && !held) {
+      this.stepCycle(cmd.id, cmd.attr, cmd.value);
+      return;
+    }
+    this.press?.cancel();
+    this.press = new HoldPress(held, {
+      progress: (p) => {
+        this.holdProgress = p;
+        this.draw();
+      },
+      fire: (ms) => {
+        setTimeout(() => {
+          this.holdProgress = null;
+          this.draw();
+        }, ms === undefined ? 0 : 350);
+        const c = ms === undefined ? cmd : { ...cmd, held_ms: Math.round(ms) };
+        void this.run(c).then((r) => this.afterPress(c, r, ms));
+      },
+      tooShort: () => {
+        this.holdProgress = null;
+        this.showToast("Hold to confirm", "keep it pressed 1.5 s", "warn");
+      },
+    });
+    this.press.down();
+  }
+
+  /** (1.2) A mode stepped to at once, sent CYCLE_SETTLE_MS after the last press or turn. */
+  private stepCycle(id: string, attr: string, value: string): void {
+    this.cycle = { attr, value, id };
+    if (this.cycleTimer) clearTimeout(this.cycleTimer);
+    this.cycleTimer = setTimeout(() => {
+      this.cycleTimer = null;
+      const c = this.cycle;
+      if (!c || this.disposed) return;
+      void this.run({ id: c.id, action: "set", attr: c.attr, value: c.value }).finally(() => {
+        if (this.cycle === c) this.cycle = null;
+        this.draw();
+      });
+    }, CYCLE_SETTLE_MS);
+    this.draw();
+  }
+
   /** (1.2) A thermostat key that goes round its modes or presets - not one that sets one outright,
    * and not one held to confirm (each confirmed press is meant, and is sent). */
   private cycles(it: Item): boolean {
@@ -976,10 +1356,13 @@ export class ActionView implements HubView {
   private keyCommand(): Omit<Command, "deck"> | null {
     const it = this.item;
     if (!it) return null;
+    if (isNewKind(this.kind)) return this.extraCommand();
     switch (this.kind) {
       case "control": {
         const a = this.pressAction();
         if (!a || a === "set" || a === "step") return null;
+        // (1.3) Timer: on for the minutes chosen, a press again cancels it
+        if (a === "timer") return this.timerCommand(it);
         // (1.2) "By hand": only a switch, and only a press that switches it, takes anything over
         return this.settings.byHand === true && it.cap === "switch" && (a === "toggle" || a === "on" || a === "off")
           ? { id: it.id, action: a, by_hand: true } : { id: it.id, action: a };
@@ -1058,6 +1441,14 @@ export class ActionView implements HubView {
 
   touch(_long: boolean): void {
     const it = this.item;
+    if (isNewKind(this.kind) && !looksOnly(this.kind) && it) {
+      // a quick press - one that must be held needs the dial itself held down
+      const cmd = this.notice() ? null : this.keyCommand();
+      if (cmd && this.grantFor(cmd.id, cmd.action).allowed && this.holdFor(cmd)) return this.showToast("Hold the dial", "to confirm", "warn");
+      this.pressStart(() => this.keyCommand());
+      this.pressEnd();
+      return;
+    }
     if (this.kind === "thermostat" && it) {
       if (!this.guard()) return;
       const cmd = this.thermoPush("boost");
@@ -1081,6 +1472,7 @@ export class ActionView implements HubView {
   /** One turn of the dial: the value moves at once; ZIGMon gets the sum as a `delta`. */
   rotate(ticks: number): void {
     if (this.kind === "reading" || this.kind === "status" || this.kind === "scene") return;
+    if (isNewKind(this.kind)) return this.rotateNew(ticks);
     const it = this.guard();
     if (!it) return;
     if (it.hold) {
@@ -1096,6 +1488,50 @@ export class ActionView implements HubView {
     const st = this.st ?? it.state;
     const current = numOf(st.attrs[a.key]) ?? a.min ?? 0;
     this.dial.turn(ticks, current, this.stepFor(a), a);
+    this.draw();
+  }
+
+  /** (1.3) A turn of a new action's dial: House power's span, the Timer's minutes, a Room's member, Heating's mode. */
+  private rotateNew(ticks: number): void {
+    if (this.notice() || !ticks) return;
+    const it = this.item!;
+    switch (this.kind) {
+      case "power": {
+        const L = POWER_SPANS as readonly number[];
+        const i = Math.max(0, L.indexOf(this.span()));
+        const next = L[Math.max(0, Math.min(L.length - 1, i + Math.sign(ticks)))]!;
+        if (next !== this.span()) {
+          this.spanTurned = next;
+          this.hub.resubscribe();
+        }
+        break;
+      }
+      case "timer":
+        this.minutesTurned = stepMinutes(this.minutes(), ticks);
+        break;
+      case "room": {
+        const n = this.members().length;
+        if (!n) return this.showToast("Nothing here", "no items in this room", "warn");
+        this.memberAt = (((this.memberAt + ticks) % n) + n) % n;
+        this.hub.resubscribe();
+        break;
+      }
+      case "heatgroup": {
+        const e = enumAttr(it, /^mode$/) ?? enumAttr(it, /mode/i);
+        if (!it.actions.includes("set")) return this.showToast("Cannot adjust", "nothing to turn here", "warn");
+        if (!it.allowed) return this.showToast("Not allowed", "grant it in ZIGMon", "crit");
+        if (this.needsHold(it)) return this.showToast("Hold to confirm", "use the key / push", "warn");
+        const values = e?.values.length ? e.values : [...ROOM_MODES];
+        const st = this.st ?? it.state;
+        const cur = strOf(st.attrs[e?.key ?? "mode"]);
+        const i = values.indexOf(cur);
+        const j = i < 0 ? (ticks > 0 ? ticks - 1 : values.length + ticks) : i + ticks;
+        this.stepCycle(it.id, e?.key ?? "mode", values[((j % values.length) + values.length) % values.length]!);
+        return;
+      }
+      default:
+        return;
+    }
     this.draw();
   }
 
@@ -1123,7 +1559,19 @@ export class ActionView implements HubView {
 const ON_OFF_WORDS: Record<ActionKind, [string, string]> = {
   control: ["On", "Off"], reading: ["Alert", "Normal"], thermostat: ["Heating", "Idle"], dimmer: ["On", "Off"], blinds: ["Open", "Closed"],
   scene: ["Done", "Ready"], status: ["Problem", "All good"],
+  power: ["Using power", "Nothing on"], security: ["Alerts", "Quiet"], heatgroup: ["Heating", "Idle"], away: ["Away", "Home"], openings: ["Open", "Closed"],
+  batteries: ["Low", "All OK"], zigbee: ["Offline", "All online"], timer: ["Running", "Idle"], room: ["Heating / on", "Quiet"], sms: ["Unread", "Read"],
 };
+const SMS_WORDS: Record<"last" | "compose" | "status", [string, string]> = { last: ["Unread", "Read"], compose: ["Pressed", "Ready"], status: ["Muted", "Listening"] };
+
+/** (1.3) A Room member's push: switched, run or turned on, by its own actions - or nothing. */
+function memberCommand(m: Item, st: ItemState): Omit<Command, "deck"> | null {
+  if (m.actions.includes("toggle")) return { id: m.id, action: "toggle" };
+  if (m.actions.includes("run")) return { id: m.id, action: "run" };
+  if (m.actions.includes("on") && m.actions.includes("off")) return { id: m.id, action: st.on ? "off" : "on" };
+  if (m.actions.includes("open") && m.actions.includes("close")) return { id: m.id, action: (st.value ?? 0) >= 50 ? "close" : "open" };
+  return null;
+}
 
 /** The look's paper behind a dial's strip (200 x 100). */
 function stripPaper(theme: string, lit: boolean, c: string): string {
@@ -1212,7 +1660,7 @@ function stripPaper(theme: string, lit: boolean, c: string): string {
 }
 
 function pressWord(a: ItemAction | null): string {
-  const w: Record<string, string> = { toggle: "Toggle", on: "On", off: "Off", run: "Run", open: "Open", close: "Close", stop: "Stop" };
+  const w: Record<string, string> = { toggle: "Toggle", on: "On", off: "Off", run: "Run", open: "Open", close: "Close", stop: "Stop", timer: "Timer" };
   return a ? w[a] ?? a : "";
 }
 
