@@ -7,7 +7,7 @@
  */
 import { countdown, minutesWord, spanWord, type NewKind } from "./kinds.js";
 import { P, X, A } from "./palette.js";
-import type { AttrValue, Item, ItemState } from "./protocol.js";
+import type { AttrValue, Item, ItemState, SmsBook } from "./protocol.js";
 import type { Face } from "./themes.js";
 
 export interface Member {
@@ -45,6 +45,8 @@ export interface ExtraCtx {
   member: Member | null;
   /** SMS, Write new: whom to. */
   to: string[];
+  /** (1.3) SMS, Write new: ZIGMon's address book, to name the contacts (null: it sent none). */
+  book?: SmsBook | null;
   /** SMS status: the hush a press sets. */
   muteMinutes: number;
 }
@@ -121,10 +123,18 @@ export const MODE_WORD: Readonly<Record<string, string>> = {
   plan: "Plan", comfort: "Comfort", eco: "Eco", night: "Night", max: "Max", off: "Off", manual: "By hand", mixed: "Mixed",
 };
 
-/** A recipient as the key and the inspector name it: "Family" for group:Family, "…456" for a number. */
-export function recipientWord(r: string): string {
+/**
+ * A recipient as the key and the inspector name it: "Family" for group:Family, "…456" for a number,
+ * and (1.3) a contact by its name from ZIGMon's address book - "missing contact" when the book no
+ * longer has it, "contact" when ZIGMon sent no book.
+ */
+export function recipientWord(r: string, book: SmsBook | null = null): string {
   if (r.startsWith("group:")) return r.slice(6);
-  if (r.startsWith("contact:")) return "contact";
+  if (r.startsWith("contact:")) {
+    if (!book) return "contact";
+    const id = r.slice(8);
+    return book.contacts.find((c) => c.id === id)?.name ?? "missing contact";
+  }
   return "…" + r.replace(/\D/g, "").slice(-3);
 }
 
@@ -291,7 +301,7 @@ function smsSummary(c: ExtraCtx, base: Summary): Summary {
     };
   }
   if (it.id === "sms:compose") {
-    const to = c.to.map(recipientWord);
+    const to = c.to.map((r) => recipientWord(r, c.book ?? null));
     return {
       ...base, room: null, icon: "send", accent: c.accent ?? P.info, tone: "info", active: unread > 0 && base.online, state: "Write", unit: "",
       detail: to.length ? "to " + to.join(", ") : "to anyone", mode: unread ? unread + " unread" : "", badge: unread || null,

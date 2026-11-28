@@ -75,6 +75,9 @@ export const ICONS: Readonly<Record<string, string>> = {
   grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   home: '<path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/>',
   person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-5.5 7-5.5s7 1.9 7 5.5"/>',
+  // (1.3) a favourite contact in the SMS picker
+  star: '<path d="M12 3.6l2.55 5.2 5.7.83-4.13 4.02.98 5.68L12 16.65l-5.1 2.68.98-5.68-4.13-4.02 5.7-.83z"/>',
+  people: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19c0-3.1 2.4-4.8 5.5-4.8s5.5 1.7 5.5 4.8"/><path d="M15.5 5.8a3 3 0 0 1 0 5.4"/><path d="M17 14.4c2.1.5 3.5 2 3.5 4.6"/>',
   deck: '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M6 9h2M11 9h2M16 9h2M6 12.5h2M11 12.5h2M16 12.5h2"/><path d="M7 16h10"/>',
   dial: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 3.5v3"/>',
   fan: '<circle cx="12" cy="12" r="1.6"/><path d="M12 10.4C11 7 12 3.5 15 3.5c2.5 0 2.5 3.5-1.6 7"/><path d="M13.6 12.6c3.4-.6 6.9 1 6.4 3.9-.4 2.4-3.7 1.8-6.6-1.5"/><path d="M10.6 13c-1.9 2.9-5.3 4.6-6.9 2.1-1.3-2.1 1.7-3.8 5.9-3.6"/>',

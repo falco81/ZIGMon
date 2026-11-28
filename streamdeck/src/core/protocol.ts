@@ -3,6 +3,9 @@
  * field, text is cleaned and shortened, and anything unexpected becomes a ProtocolError.
  * Nothing the server sends is trusted to be well-formed; the renderers escape it again.
  */
+import { parseSmsBook, type SmsBook } from "./smsbook.js";
+
+export { parseSmsBook, type SmsBook, type SmsContact } from "./smsbook.js";
 
 export class ProtocolError extends Error {
   constructor(message: string) {
@@ -131,6 +134,11 @@ export interface Catalog {
   seq: number;
   rooms: Room[];
   items: Item[];
+  /**
+   * (1.3, windows/PROTOCOL-SMS.md 3) The address book for the "New SMS" picker, without numbers. Only in
+   * the extended catalogue of an installation with the cap `sms`; null when ZIGMon sent none.
+   */
+  sms: SmsBook | null;
 }
 
 export interface StateAnswer {
@@ -458,7 +466,7 @@ export function parseCatalog(v: unknown): Catalog {
     seen.add(it.id);
     items.push(it);
   }
-  return { boot: bootOf(o.boot), seq: int(o.seq, "seq"), rooms, items };
+  return { boot: bootOf(o.boot), seq: int(o.seq, "seq"), rooms, items, sms: parseSmsBook(o) };
 }
 
 export function parseStateAnswer(v: unknown): StateAnswer {

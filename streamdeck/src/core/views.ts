@@ -23,7 +23,7 @@ import {
   blindsFeedback, controlFeedback, iconPix, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
 } from "./strip.js";
 import { dataUri, svgDoc } from "./svg.js";
-import { factsOf, faceOfSummary, summaryOf, type Member, type Summary } from "./extra.js";
+import { factsOf, faceOfSummary, recipientWord, summaryOf, type Member, type Summary } from "./extra.js";
 import { extraFeedback, renderExtra } from "./extra-render.js";
 import { countdown, isNewKind, itemFor, NEEDS_ZIGMON, needs, POWER_SPANS, spanWord, stepMinutes, type NewKind } from "./kinds.js";
 
@@ -770,7 +770,7 @@ export class ActionView implements HubView {
       forced: this.forced, now: Date.now() / 1000, series: this.kind === "power" ? this.historyOf(it.id) : [], span: this.span(),
       hold: looksOnly(this.kind) ? false : hold, allowed: looksOnly(this.kind) || this.kind === "room" ? true : g.allowed,
       minutes: this.minutes(), total: this.timerTotal(st), cycle: this.cycle && this.cycle.id === it.id ? this.cycle.value : null,
-      member: this.kind === "room" ? this.member() : null, to: this.settings.smsTo ?? [], muteMinutes: this.settings.muteMinutes ?? 60,
+      member: this.kind === "room" ? this.member() : null, to: this.settings.smsTo ?? [], book: this.hub.smsBook?.() ?? null, muteMinutes: this.settings.muteMinutes ?? 60,
     });
   }
 
@@ -780,7 +780,7 @@ export class ActionView implements HubView {
     const it = this.item!;
     const s = this.summary();
     return factsOf({ kind: this.kind, it, st: this.st ?? it.state, label: s.name, forced: null, now: Date.now() / 1000, series: [], span: this.span(),
-      hold: s.hold, allowed: s.allowed, minutes: this.minutes(), total: null, cycle: null, member: null, to: this.settings.smsTo ?? [], muteMinutes: 60 }, s, this.members());
+      hold: s.hold, allowed: s.allowed, minutes: this.minutes(), total: null, cycle: null, member: null, to: this.settings.smsTo ?? [], book: this.hub.smsBook?.() ?? null, muteMinutes: 60 }, s, this.members());
   }
 
   /** The strip of a new action: its own layout, with what a push does. */
@@ -1174,16 +1174,19 @@ export class ActionView implements HubView {
       rate: ["Too fast", "wait a moment", "warn"],
       net: ["No answer", r.message, "crit"],
       offline: ["Not connected", "", "crit"],
-      // (1.3) the deck's SMS keys ask the desktop app linked to this Stream Deck: none is running
-      noapp: ["No desktop app running", "link one in ZIGMon", "warn"],
+      // (1.3) the deck's SMS keys ask the desktop app linked to this Stream Deck (by the answer's flags):
+      // none is running; the linked app's key may not; an entry of To names nothing
+      noapp: ["Desktop app not running", "link one in ZIGMon", "warn"],
+      notallowed: ["Not allowed in the app", "grant SMS to its key", "warn"],
+      badto: ["Unknown recipient", r.bad?.length ? recipientWord(r.bad[0]!, this.hub.smsBook?.() ?? null) : "check the key's To", "warn"],
     };
     // (1.3) acknowledged with nothing standing: all is well, not a failure
-    if (r.why === "invalid" && cmd.action === "ack" && /no alert/i.test(r.message)) {
-      this.showToast("All clear", "no alert standing", "ok");
+    if (r.why === "nothing") {
+      this.showToast("No alert", "nothing standing", "ok");
       return r;
     }
     const w = words[r.why] ?? ["Failed", r.message, "crit"];
-    this.showToast(w[0], w[1], w[2], r.why === "noapp" ? 3200 : 1800);
+    this.showToast(w[0], w[1], w[2], r.why === "noapp" || r.why === "notallowed" || r.why === "badto" ? 3200 : 1800);
     return r;
   }
 
