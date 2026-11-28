@@ -166,8 +166,11 @@ try:
     raw = d.store.get_meta('notifier_keys') or ''
     check(KEY not in raw and hashlib.sha256(KEY.encode()).hexdigest() in raw, 'what is kept: %r' % raw[:200])
     code, out = call('/api/notifier/keys', session=S)
+    # (5.59.4) and what it may do with SMS (all off when made) and the Stream Decks that may ask it
     check(KEY not in json.dumps(out) and set(out['keys'][0]) == {'id', 'name', 'devices', 'created', 'by', 'last_at',
-                                                                 'last_from', 'hint'}, 'the read: %r' % out)
+                                                                 'last_from', 'hint', 'sms', 'decks'}
+          and out['keys'][0]['sms'] == {'read': False, 'send': False, 'contacts': False} and out['keys'][0]['decks'] == [],
+          'the read: %r' % out)
     check(out['keys'][0]['by'] == 'owner', 'who made it: %r' % out['keys'][0])
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Door only', 'devices': [DOOR]}, session=S)
     KEY2, KID2 = out.get('key') or '', out.get('id')
