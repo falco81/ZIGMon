@@ -1223,7 +1223,7 @@ export class ActionView implements HubView {
     if (this.kind === "reading" || this.kind === "status" || looksOnly(this.kind) || (this.kind === "room" && this.surface.controller === "Keypad")) {
       this.hub.resubscribe();
       if (this.hub.currentPhase !== "online") this.hub.retryNow();
-      void this.surface.showOk?.();
+      // (1.3) no Stream Deck green tick over the key any more: it covered it and looked out of place
       return;
     }
     if (isNewKind(this.kind)) return this.pressNew(what);

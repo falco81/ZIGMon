@@ -454,7 +454,8 @@ describe("1.3 commands", () => {
       await press(v);
       v.touch(false);
       assert.equal(sent.length, 0, k);
-      assert.ok(asked >= 2 && s.oks >= 2, k + ": refreshed");
+      assert.ok(asked >= 2, k + ": refreshed");
+      assert.equal(s.oks, 0, k + ": (1.3) never the green tick over the key");
     }
     const sent: Sent[] = [];
     const r = view("room", all(), { item: "room:r2" }, { sent });
