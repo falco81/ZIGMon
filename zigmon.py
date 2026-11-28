@@ -15652,6 +15652,13 @@ class Daemon(EspGateways):
                     dev, key = self._deck_room_thermometer(r)[0] or None, 'temperature'
             elif item_id.startswith('zb:') and it.get('kind') == 'thermostat':
                 dev, key = item_id[3:].rsplit(':', 1)[0], 'local_temperature'
+            elif item_id.startswith('calc:'):
+                # (5.59.4) a computed value: the stored power samples where there are any, else its ring
+                try:
+                    out[item_id] = {'span': span, 'points': self._deck_calc_history(it, span, points)}
+                except Exception as e:                        # noqa: BLE001
+                    log('the Stream Deck history of %s: %s' % (item_id, e), 'debug')
+                continue
             elif item_id == 'house:power':
                 # (5.59.4) the house's total: the last hour minute by minute from memory, longer
                 # from the hourly figures the Energy tab draws
@@ -16173,6 +16180,490 @@ class Daemon(EspGateways):
                 log('the Stream Deck catalogue (%s): %s' % (part.__name__, e), 'warn')
         return out
 
+    # -- (5.59.4) computed values (streamdeck/PROTOCOL-CALC.md): calc:<fn>:<metric>:<scope> - a sum,
+    # a mean, the extremes or a count over the house, a kind, a room, inside or outside. Made from what
+    # this pass already holds (the items above, the payloads in memory), never a store read per item;
+    # shown only in the extended catalogue, under "view", the most useful first, at most 600.
+    DECK_CALC_MOST = 600
+    DECK_CALC_RING_MOST = 300               # items ringed at once, a minute apart
+    DECK_CALC_WATCH_S = 7 * 86400           # a watch keeps its item ringed this long
+    DECK_CALC_KINDS = ('socket', 'light', 'switch', 'dimmer', 'thermostat', 'sensor', 'cover')
+    DECK_CALC_KIND_WORDS = {'socket': 'Sockets', 'light': 'Lights', 'switch': 'Switches', 'dimmer': 'Dimmers',
+                            'thermostat': 'Thermostats', 'sensor': 'Sensors', 'cover': 'Covers'}
+    DECK_CALC_ROOM_ID = re.compile(r'^[A-Za-z0-9_.-]{1,60}$')
+    # a room whose name says it is out of doors: what is in it is "outside", with the weather
+    DECK_CALC_OUTSIDE_WORDS = ('outside', 'outdoor', 'outdoors', 'garden', 'yard', 'terrace', 'balcony', 'patio',
+                               'venku', 'venek', 'zahrada', 'zahradka', 'dvur', 'terasa', 'balkon')
+    # metric: unit, icon, the fns it takes (most useful first), the scopes beyond "all" it takes
+    # ('kind', 'room', 'roomkind'; 'io' = inside and outside), decimals, the honest scale ('pct' 0-100,
+    # 'count' 0..members, a (min, max) pair, or None)
+    DECK_CALC_METRICS = collections.OrderedDict((
+        ('power', ('W', 'bolt', ('sum', 'avg', 'max', 'min', 'count'), ('kind', 'room', 'roomkind'), 1, (0, None))),
+        ('state', (None, 'switch', ('on', 'off', 'pct_on', 'count'), ('kind', 'room', 'roomkind'), 0, 'count')),
+        ('energy_today', ('kWh', 'bolt', ('sum', 'max', 'min', 'avg'), ('kind', 'room', 'roomkind'), 2, (0, None))),
+        ('temperature', ('°C', 'thermo', ('avg', 'min', 'max', 'spread', 'count'), ('kind', 'room', 'io'), 1,
+                         None)),
+        ('room_temperature', ('°C', 'thermo', ('min', 'max', 'avg', 'spread'), ('io',), 1, None)),
+        ('humidity', ('%', 'drop', ('avg', 'min', 'max', 'spread'), ('kind', 'room', 'io'), 1, 'pct')),
+        ('open', (None, 'contact', ('on', 'count'), ('room', 'io'), 0, 'count')),
+        ('online', (None, 'router', ('off', 'on', 'count'), ('kind', 'room'), 0, 'count')),
+        ('battery_low', (None, 'battery', ('on', 'pct_on'), ('kind', 'room'), 0, 'count')),
+        ('battery', ('%', 'battery', ('min', 'avg', 'count'), ('kind', 'room'), 0, 'pct')),
+        ('co2', ('ppm', 'wind', ('avg', 'max', 'min'), ('room', 'io'), 0, None)),
+        ('illuminance', ('lx', 'sun', ('avg', 'min', 'max'), ('room', 'io'), 0, None)),
+        ('pressure', ('hPa', 'gauge', ('avg', 'min', 'max'), ('room', 'io'), 1, None)),
+        ('linkquality', (None, 'router', ('avg', 'min', 'max'), ('kind', 'room'), 0, (0, 255))),
+        ('energy_total', ('kWh', 'bolt', ('sum', 'max'), ('kind', 'room'), 1, (0, None))),
+    ))
+    # where each reading is read from: the first key that is there (as _reading_of reads a temperature)
+    DECK_CALC_KEYS = (('temperature', ('temperature', 'local_temperature', 'tC', 'temperature.tC')),
+                      ('humidity', ('humidity', 'rh', 'humidity.rh')),
+                      ('pressure', ('pressure',)),
+                      ('illuminance', ('illuminance_lux', 'illuminance', 'lux')),
+                      ('co2', ('co2',)),
+                      ('linkquality', ('linkquality',)))
+    DECK_CALC_WHAT = {
+        ('power', 'sum'): 'Power', ('power', 'avg'): 'Average power', ('power', 'max'): 'Highest power',
+        ('power', 'min'): 'Lowest power', ('power', 'count'): 'Power meters',
+        ('energy_today', 'sum'): 'Energy today', ('energy_today', 'avg'): 'Average energy today',
+        ('energy_today', 'max'): 'Most energy today', ('energy_today', 'min'): 'Least energy today',
+        ('energy_total', 'sum'): 'Energy total', ('energy_total', 'max'): 'Most energy total',
+        ('temperature', 'avg'): 'Average temperature', ('temperature', 'min'): 'Lowest temperature',
+        ('temperature', 'max'): 'Highest temperature', ('temperature', 'spread'): 'Temperature spread',
+        ('temperature', 'count'): 'Thermometers',
+        ('room_temperature', 'min'): 'Coldest room', ('room_temperature', 'max'): 'Warmest room',
+        ('room_temperature', 'avg'): 'Average room temperature',
+        ('room_temperature', 'spread'): 'Room temperature spread',
+        ('humidity', 'avg'): 'Average humidity', ('humidity', 'min'): 'Lowest humidity',
+        ('humidity', 'max'): 'Highest humidity', ('humidity', 'spread'): 'Humidity spread',
+        ('pressure', 'avg'): 'Average pressure', ('pressure', 'min'): 'Lowest pressure',
+        ('pressure', 'max'): 'Highest pressure',
+        ('illuminance', 'avg'): 'Average illuminance', ('illuminance', 'min'): 'Lowest illuminance',
+        ('illuminance', 'max'): 'Highest illuminance',
+        ('co2', 'avg'): 'Average CO2', ('co2', 'max'): 'Highest CO2', ('co2', 'min'): 'Lowest CO2',
+        ('battery', 'min'): 'Lowest battery', ('battery', 'avg'): 'Average battery',
+        ('battery', 'count'): 'Battery devices',
+        ('battery_low', 'on'): 'Low batteries', ('battery_low', 'pct_on'): 'Low batteries (%)',
+        ('linkquality', 'avg'): 'Average signal', ('linkquality', 'min'): 'Weakest signal',
+        ('linkquality', 'max'): 'Strongest signal',
+        ('open', 'on'): 'Windows open', ('open', 'count'): 'Window sensors'}
+    DECK_CALC_COUNTED = {('state', 'on'): ' on', ('state', 'off'): ' off', ('state', 'pct_on'): ' on (%)',
+                         ('state', 'count'): ' (count)', ('online', 'on'): ' online', ('online', 'off'): ' offline',
+                         ('online', 'count'): ' (count)'}
+    DECK_CALC_DEVICE_WORDS = {'socket': 'Socket devices', 'light': 'Light devices', 'switch': 'Switch devices',
+                              'dimmer': 'Dimmer devices', 'thermostat': 'Thermostats', 'sensor': 'Sensors',
+                              'cover': 'Cover devices'}
+
+    @classmethod
+    def _deck_calc_outside_room(cls, name):
+        """A room whose name says it is out of doors ("Zahrada", "Garden", "Terasa u kuchyně")."""
+        words = re.sub(r'[^a-z]+', ' ', _fact_ascii(name).lower()).split()
+        return any(w in cls.DECK_CALC_OUTSIDE_WORDS for w in words)
+
+    def _deck_calc_members(self, items, rooms, rooms_list):
+        """What the computed values are made of, from this pass: {metric: [member]}, a member being
+        {name, kind, rid, outside, coord, v} (v None: not known now)."""
+        rid_of, outside_room = {}, {}
+        for r in rooms_list:
+            rid_of.setdefault(r['name'], r['id'])
+            outside_room[r['id']] = self._deck_calc_outside_room(r['name'])
+        by = collections.defaultdict(list)
+
+        def add(metric, name, kind, room, v, outside=False, coord=False):
+            rid = rid_of.get(room) if room else None
+            by[metric].append({'name': str(name or ''), 'kind': kind, 'rid': rid,
+                               'outside': bool(outside or (rid and outside_room.get(rid))), 'coord': coord, 'v': v})
+        # what switches: the items themselves (a socket, a light, a Zigbee or ESP relay; each endpoint one)
+        zb_kind = {}
+        order = {'thermostat': 5, 'cover': 4, 'light': 3, 'dimmer': 2, 'switch': 1}
+        for it in items:
+            if it.get('_new'):
+                continue
+            k = it.get('kind')
+            if k in ('socket', 'light', 'switch') and it.get('cap') in ('switch', 'view'):
+                on = it['state'].get('on')
+                add('state', it['name'], k, it.get('room'), on if isinstance(on, bool) else None)
+            if it['id'].startswith('zb:') and k in order:
+                did = it['id'][3:].rsplit(':', 1)[0]
+                if order[k] > order.get(zb_kind.get(did), 0):
+                    zb_kind[did] = k
+        # power and energy: the metered sockets and lights, read as the dashboard's total and the
+        # Energy tab read them (today's from the summary ZIGMon keeps warm: not known until it is made)
+        kept = getattr(self, '_energy_summary', None)
+        today = None
+        if kept:
+            try:
+                today = {str(r.get('name')): float(r.get('today_wh') or 0) / 1000.0
+                         for r in (dict(kept[1]).get('plugs') or []) if r.get('name') is not None}
+            except (TypeError, ValueError, AttributeError, IndexError):
+                today = None
+        plug_of = {}
+        for p in list(self.plugs.values()):
+            plug_of[p.device_id] = p
+            kind = 'light' if str((p.cfg or {}).get('role') or 'plug') == 'light' else 'socket'
+            dev = self.store.device(p.device_id) or {}
+            name = dev.get('alias') or p.name
+            room = rooms.get(p.device_id) or rooms.get(p.name)
+            add('power', name, kind, room, self.latest_value('plug:' + p.name, 'switch.apower'))
+            flat = p.flat or (self.live.get(p.device_id) or {}).get('payload') or {}
+            total = numeric(flat.get('switch.aenergy.total')) if 'switch.aenergy.total' in flat else None
+            add('energy_total', name, kind, room, None if total is None else total / 1000.0)
+            add('energy_today', name, kind, room, None if today is None else today.get(p.name))
+        # the devices: their readings, their batteries, whether they answer
+        warn = numeric(CONFIG.get('battery_warn'))
+        warn = 30.0 if warn is None else warn
+        for dev in self.store.devices():
+            src = dev.get('source')
+            did = str(dev.get('id') or '')
+            if src in ('group', 'sms', 'proxy', 'wifi') or did.startswith('name:'):
+                continue
+            values = self._ntf_values(did)
+            exposes = dev.get('exposes') or {}
+            weather = src == 'weather'
+            coord = src == 'gateway' or dev.get('kind') == 'Coordinator'
+            p = plug_of.get(did)
+            if p is not None:
+                kind = 'light' if str((p.cfg or {}).get('role') or 'plug') == 'light' else 'socket'
+            elif coord:
+                kind = None
+            else:
+                kind = zb_kind.get(did, 'sensor')
+            name = dev.get('alias') or dev.get('name') or did
+            room = None if weather else (rooms.get(did) or rooms.get(dev.get('name')))
+            try:
+                online = bool(self.describe(dev, self.live.get(did)).get('online'))
+            except Exception:                                # noqa: BLE001
+                online = None
+            for metric, keys in self.DECK_CALC_KEYS:
+                if metric == 'linkquality' and (weather or src != 'zigbee'):
+                    continue
+                if p is not None and metric == 'temperature':
+                    continue           # a socket's own temperature is its relay's, not the room's
+                key = next((k for k in keys if k in values), None) or next((k for k in keys if k in exposes), None)
+                if key is None:
+                    continue
+                v = numeric(values.get(key))
+                # a reading of a device that is not there now is not known now (the weather's is
+                # the hour it last told, as the dashboard shows it)
+                add(metric, name, kind, room, v if (online is not False or weather) else None, weather, coord)
+            if weather:
+                continue
+            if 'contact' in values or 'contact' in exposes:
+                c = values.get('contact')
+                add('open', name, kind, room, None if c is None else not bool(c), False, coord)
+            bkey = 'battery.percent' if (numeric(values.get('battery')) is None
+                                         and numeric(values.get('battery.percent')) is not None) else 'battery'
+            if bkey in values or 'battery' in exposes:
+                b = numeric(values.get(bkey))
+                b = None if b is None else max(0.0, min(100.0, b))
+                add('battery', name, kind, room, b, False, coord)
+                add('battery_low', name, kind, room, None if b is None else b <= warn, False, coord)
+            add('online', name, kind, room, online, False, coord)
+        # a room's temperature as its own room:<id> item says it (the heating's, else its thermometer)
+        for it in items:
+            if it.get('kind') == 'room' and it.get('_new') and it['id'].startswith('room:'):
+                if outside_room.get(it['id'][5:]):
+                    continue
+                v = it['state'].get('value')
+                by['room_temperature'].append({'name': it['name'], 'kind': None, 'rid': None, 'outside': False,
+                                               'coord': False,
+                                               'v': v if isinstance(v, (int, float)) and not isinstance(v, bool)
+                                               else None})
+        return by
+
+    @staticmethod
+    def _deck_calc_value(fn, members, dec):
+        """(value, known, min_of, max_of) of one fn over its members."""
+        got = [(m['v'], m['name']) for m in members if m['v'] is not None]
+        known = len(got)
+        if fn in ('on', 'off', 'pct_on'):
+            on = sum(1 for v, _ in got if v is True)
+            if fn == 'on':
+                return on, known, None, None
+            if fn == 'off':
+                return known - on, known, None, None
+            return (int(round(100.0 * on / known)) if known else None), known, None, None
+        if fn == 'count':
+            return len(members), known, None, None
+        nums = [(float(v), n) for v, n in got if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if not nums:
+            return None, known, None, None
+        lo = min(nums, key=lambda x: x[0])
+        hi = max(nums, key=lambda x: x[0])
+        if fn == 'sum':
+            value = sum(v for v, _ in nums)
+        elif fn == 'avg':
+            value = sum(v for v, _ in nums) / len(nums)
+        elif fn == 'min':
+            value = lo[0]
+        elif fn == 'max':
+            value = hi[0]
+        else:
+            value = hi[0] - lo[0]
+        value = round(value, dec) + 0.0
+        if dec == 0:
+            value = int(value)
+        return (value, known, lo[1] if fn in ('min', 'spread') else None,
+                hi[1] if fn in ('max', 'spread') else None)
+
+    def _deck_calc_items(self, items, rooms):
+        """The computed items: every combination that has a member and makes sense - the house first,
+        then inside and outside, each kind, each room, each kind in a room - at most DECK_CALC_MOST."""
+        rooms_list = [r for r in self.rooms() or [] if r.get('id') and r.get('name')]
+        room_name = {r['id']: r['name'] for r in reversed(rooms_list)}
+        by = self._deck_calc_members(items, rooms, rooms_list)
+        kinds_word = self.DECK_CALC_KIND_WORDS
+
+        def name_of(fn, metric, scope_kind, rid, kind):
+            if metric == 'room_temperature':
+                return self.DECK_CALC_WHAT[(metric, fn)]
+            place = {'all': 'all', 'inside': 'inside', 'outside': 'outside'}.get(scope_kind)
+            if (metric, fn) in self.DECK_CALC_COUNTED:
+                # what is counted says its kind: "Lights on · Obývák", "Lights offline · all"
+                what = (self.DECK_CALC_DEVICE_WORDS if (metric, fn) == ('online', 'count') else kinds_word).get(kind) \
+                    or ('Things' if metric == 'state' else 'Devices')
+                return '%s%s · %s' % (what, self.DECK_CALC_COUNTED[(metric, fn)],
+                                      place or (room_name.get(rid) if rid else 'all'))
+            if scope_kind == 'kind':
+                place = kinds_word[kind].lower()
+            elif scope_kind == 'room':
+                place = room_name.get(rid)
+            elif scope_kind == 'roomkind':
+                place = '%s in %s' % (kinds_word[kind].lower(), room_name.get(rid))
+            return '%s · %s' % (self.DECK_CALC_WHAT[(metric, fn)], place)
+
+        def make(metric, scope, scope_kind, members, rid=None, kind=None):
+            unit, icon, fns, _, dec, scale = self.DECK_CALC_METRICS[metric]
+            made = []
+            for fn in fns:
+                if fn in ('min', 'max', 'spread') and len(members) < 2:
+                    continue               # the extremes of one are that one: its own reading says it
+                value, known, lo, hi = self._deck_calc_value(fn, members, dec)
+                u = '%' if fn == 'pct_on' else (None if fn in ('on', 'off', 'count') else unit)
+                if fn in ('on', 'off', 'count'):
+                    mn, mx = 0, len(members)
+                elif fn == 'pct_on' or scale == 'pct':
+                    mn, mx = 0, 100
+                elif fn == 'spread':
+                    mn, mx = 0, None
+                elif isinstance(scale, tuple):
+                    mn, mx = scale
+                else:
+                    mn, mx = None, None
+                nm = name_of(fn, metric, scope_kind, rid, kind)
+                it = self._deck_new_item(
+                    'calc:%s:%s:%s' % (fn, metric, scope), nm, 'calc', icon, 'view',
+                    room=room_name.get(rid) if rid else None,
+                    attrs=[{'key': 'value', 'label': nm.split(' · ')[0], 'type': 'number', 'unit': u,
+                            'min': mn, 'max': mx}],
+                    value=value, vtext=self._ntf_vtext(value, u or '') if value is not None else None,
+                    extra={'value': value, 'members': len(members), 'known': known,
+                           'min_of': self.deck_scrub(lo, 60) if lo else None,
+                           'max_of': self.deck_scrub(hi, 60) if hi else None},
+                    online=known > 0)
+                it['_calc'] = {'fn': fn, 'metric': metric, 'scope': scope, 'members': len(members), 'unit': u}
+                made.append(it)
+            return made
+
+        tiers = ([], [], [], [], [])         # the house, inside/outside, a kind, a room, a kind in a room
+        roomkind = []
+        for metric, spec in self.DECK_CALC_METRICS.items():
+            members = by.get(metric) or []
+            if not members:
+                continue
+            scopes = spec[3]
+            if metric == 'room_temperature':
+                tiers[1].extend(make(metric, 'inside', 'inside', members))
+                continue
+            tiers[0].extend(make(metric, 'all', 'all', members))
+            if 'io' in scopes:
+                inside = [m for m in members if not m['outside'] and not m['coord']]
+                outside = [m for m in members if m['outside']]
+                if inside:
+                    tiers[1].extend(make(metric, 'inside', 'inside', inside))
+                if outside:
+                    tiers[1].extend(make(metric, 'outside', 'outside', outside))
+            if 'kind' in scopes:
+                for k in self.DECK_CALC_KINDS:
+                    mine = [m for m in members if m['kind'] == k]
+                    if mine:
+                        tiers[2].extend(make(metric, 'kind=' + k, 'kind', mine, kind=k))
+            if 'room' in scopes:
+                for rid in [r['id'] for r in rooms_list]:
+                    if not self.DECK_CALC_ROOM_ID.match(str(rid)):
+                        continue           # an id a comma-separated list or the id itself would break
+                    mine = [m for m in members if m['rid'] == rid]
+                    if not mine:
+                        continue
+                    tiers[3].extend(make(metric, 'room=' + rid, 'room', mine, rid=rid))
+                    if 'roomkind' in scopes:
+                        for k in self.DECK_CALC_KINDS:
+                            some = [m for m in mine if m['kind'] == k]
+                            # a kind that is the whole room says what the room says
+                            if some and len(some) < len(mine):
+                                roomkind.append((metric, rid, k, some))
+        for metric, rid, k, some in roomkind:
+            tiers[4].extend(make(metric, 'room=%s,kind=%s' % (rid, k), 'roomkind', some, rid=rid, kind=k))
+        out, seen = [], set()
+        for tier in tiers:
+            for it in tier:
+                if len(out) >= self.DECK_CALC_MOST:
+                    return out
+                if it['id'] not in seen:
+                    seen.add(it['id'])
+                    out.append(it)
+        return out
+
+    # the history of a computed value no store keeps: a ring per watched item, a minute apart for
+    # the last six hours, by the half hour for seven days
+    DECK_CALC_RING_MINUTES = 360
+    DECK_CALC_RING_HALVES = 7 * 48
+
+    def _deck_calc_setup(self):
+        if self.__dict__.get('_deck_calc_lock') is None:
+            self.__dict__.setdefault('_deck_calc_lock', threading.Lock())
+            self._deck_calc_watch = {}       # item id -> when a deck last watched it
+            self._deck_calc_rings = {}       # item id -> {'m': deque, 'h': deque, 'cur': [slot, sum, n]}
+            self._deck_calc_thread = None
+
+    def deck_calc_watch(self, ids, now=None):
+        """Decks watch these (state or wait named them): each is ringed from now on, for 7 days after
+        the last watch, at most DECK_CALC_RING_MOST at once (the longest unwatched go first)."""
+        ids = [i for i in ids or [] if isinstance(i, str) and i.startswith('calc:')]
+        if not ids:
+            return
+        self._deck_calc_setup()
+        now = time.time() if now is None else now
+        start = False
+        with self._deck_calc_lock:
+            for i in ids:
+                self._deck_calc_watch[i] = now
+            while len(self._deck_calc_watch) > self.DECK_CALC_RING_MOST:
+                old = min(self._deck_calc_watch, key=self._deck_calc_watch.get)
+                self._deck_calc_watch.pop(old, None)
+                self._deck_calc_rings.pop(old, None)
+            t = self._deck_calc_thread
+            if t is None or not t.is_alive():
+                start = True
+        if start and not getattr(self, '_deck_calc_no_thread', False):
+            t = threading.Thread(target=self._deck_calc_ringer, name='deck-calc', daemon=True)
+            self._deck_calc_thread = t
+            t.start()
+
+    def _deck_calc_ringer(self):
+        """A minute apart while anything is watched; gone when nothing is."""
+        while not self._stop.is_set():
+            try:
+                if not self.deck_calc_sample():
+                    break
+            except Exception as e:                            # noqa: BLE001
+                log('the Stream Deck computed history: %s' % e, 'debug')
+            if self._stop.wait(60.0 - (time.time() % 60.0) + 0.5):
+                break
+        with self._deck_calc_lock:
+            if self._deck_calc_thread is threading.current_thread():
+                self._deck_calc_thread = None
+
+    def deck_calc_sample(self, now=None, items=None):
+        """One sample of every watched item into its ring; False when nothing is watched any more."""
+        self._deck_calc_setup()
+        now = time.time() if now is None else now
+        with self._deck_calc_lock:
+            for i in [i for i, at in self._deck_calc_watch.items() if now - at > self.DECK_CALC_WATCH_S]:
+                self._deck_calc_watch.pop(i, None)
+                self._deck_calc_rings.pop(i, None)
+            watched = set(self._deck_calc_watch)
+        if not watched:
+            return False
+        kept = getattr(self, '_energy_summary', None)
+        if any(':energy_today:' in i for i in watched) and (not kept or now - kept[0] >= 60) \
+                and not getattr(self, '_energy_busy', False) and not getattr(self, '_deck_calc_no_thread', False):
+            # today's energy, watched: the summary the Energy tab keeps warm is made again, away from here
+            self._energy_busy = True
+            threading.Thread(target=self._energy_refresh, name='energy-sum', daemon=True).start()
+        if items is None:
+            items = self.deck_items()
+        minute = int(now // 60) * 60
+        half = int(now // 1800) * 1800
+        with self._deck_calc_lock:
+            for it in items:
+                if it['id'] not in watched:
+                    continue
+                v = it['state'].get('value')
+                if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
+                    continue
+                ring = self._deck_calc_rings.get(it['id'])
+                if ring is None:
+                    ring = self._deck_calc_rings[it['id']] = {
+                        'm': collections.deque(maxlen=self.DECK_CALC_RING_MINUTES),
+                        'h': collections.deque(maxlen=self.DECK_CALC_RING_HALVES), 'cur': None}
+                if ring['m'] and ring['m'][-1][0] == minute:
+                    ring['m'][-1] = (minute, float(v))
+                else:
+                    ring['m'].append((minute, float(v)))
+                cur = ring['cur']
+                if cur is not None and cur[0] != half:
+                    ring['h'].append((cur[0], cur[1] / cur[2]))
+                    cur = None
+                if cur is None:
+                    cur = ring['cur'] = [half, 0.0, 0]
+                cur[1] += float(v)
+                cur[2] += 1
+        return True
+
+    @staticmethod
+    def _deck_thin(pts, points):
+        """At most `points` of them, each the mean of an even share of the span, the newest kept last."""
+        if len(pts) <= points:
+            return pts
+        last, rest = pts[-1], pts[:-1]          # the newest as it is: what the key shows now
+        t0, t1 = rest[0][0], rest[-1][0]
+        width = (t1 - t0) / float(points - 1) or 1.0
+        buckets = {}
+        for ts, v in rest:
+            b = min(points - 2, int((ts - t0) / width))
+            one = buckets.setdefault(b, [ts, 0.0, 0])
+            one[1] += v
+            one[2] += 1
+        return [[int(ts), round(s / n, 3)] for ts, s, n in (buckets[b] for b in sorted(buckets))] + [list(last)]
+
+    def _deck_calc_ring_history(self, item_id, span, points, now=None):
+        self._deck_calc_setup()
+        now = time.time() if now is None else now
+        cut = now - span
+        with self._deck_calc_lock:
+            ring = self._deck_calc_rings.get(item_id)
+            if ring is None:
+                return []
+            if span <= 6 * 3600:
+                rows = list(ring['m'])
+            else:
+                rows = list(ring['h'])
+                if ring['cur'] is not None and ring['cur'][2]:
+                    rows.append((ring['cur'][0], ring['cur'][1] / ring['cur'][2]))
+        pts = [[int(ts), round(float(v), 3)] for ts, v in rows if ts >= cut]
+        return self._deck_thin(pts, points)
+
+    def _deck_calc_history(self, it, span, points):
+        """The stored power samples for the house, its lights and its sockets; the ring for the rest."""
+        c = it.get('_calc') or {}
+        if c.get('metric') == 'power' and c.get('fn') == 'sum' and c.get('scope') in ('all', 'kind=light',
+                                                                                      'kind=socket'):
+            pts = []
+            try:
+                if c['scope'] == 'all':
+                    pts = self._deck_power_history(span, points)
+                elif span > 3600:
+                    col = 'lights' if c['scope'] == 'kind=light' else 'sockets'
+                    pts = [[int(r['ts']), round(float(r[col]), 1)] for r in self.power_series(span, points)
+                           if isinstance(r.get(col), (int, float)) and math.isfinite(r[col])][-points:]
+            except Exception as e:                            # noqa: BLE001
+                log('the Stream Deck history of %s: %s' % (it['id'], e), 'debug')
+                pts = []
+            if pts:
+                return pts
+        return self._deck_calc_ring_history(it['id'], span, points)
+
     def _deck_timer_of(self, it):
         """When a switch's pending way back to off is due (its timer, or a rule's "on for N"), or None."""
         backs = self.__dict__.get('_for_waiting')
@@ -16261,6 +16752,16 @@ class Daemon(EspGateways):
             if it['id'] not in seen:
                 seen.add(it['id'])
                 items.append(it)
+        # (5.59.4) the computed values, from everything above; extended only, as the summaries
+        try:
+            calc = self._deck_calc_items(items, rooms)
+        except Exception as e:                               # noqa: BLE001
+            log('the Stream Deck catalogue (computed): %s' % e, 'warn')
+            calc = []
+        for it in calc:
+            if it['id'] not in seen:
+                seen.add(it['id'])
+                items.append(it)
         self._deck_items_kept = (key, items)
         return items
 
@@ -16301,6 +16802,8 @@ class Daemon(EspGateways):
             members = self.deck_members(item['state'], visible_ids)
             if members is not None:
                 out['members'] = members
+            if item.get('_calc'):
+                out['calc'] = dict(item['_calc'])      # (5.59.4) a computed value: what it is made of
         return out
 
     @staticmethod
@@ -16526,7 +17029,7 @@ class Daemon(EspGateways):
                            'cols': x.get('cols'), 'rows': x.get('rows')} for x in inst.get('decks') or []],
                 'plugin': None if plugin is None else {'version': plugin['version']},
                 # (5.59.4) what may be asked for beyond api 1: the summaries ("extended") and a timer
-                'features': ['extended', 'timer', 'summaries-5.59.4']
+                'features': ['extended', 'timer', 'summaries-5.59.4', 'calc']
                 # (5.59.4) the SMS keys, where they exist and this installation is granted them
                 + (['sms'] if self._deck_sms_keys_for(inst) else [])}
 
@@ -16549,9 +17052,18 @@ class Daemon(EspGateways):
 
     @staticmethod
     def _deck_ids(text):
-        ids = []
+        parts = []
         for x in str(text or '').split(','):
             x = x.strip()
+            # (5.59.4) a computed value of one kind in one room has a comma of its own
+            # (calc:sum:power:room=r1,kind=light): the kind goes back onto its item
+            if x.startswith('kind=') and parts and parts[-1].startswith('calc:') \
+                    and ':room=' in parts[-1] and ',kind=' not in parts[-1]:
+                parts[-1] += ',' + x
+                continue
+            parts.append(x)
+        ids = []
+        for x in parts:
             if x and len(x) <= 200 and x not in ids:
                 ids.append(x)
         return ids[:500]
@@ -16569,6 +17081,8 @@ class Daemon(EspGateways):
             if not want or it['id'] in want:
                 out[it['id']] = self.deck_state_view(it['id'], it['state'], visible_ids)
                 shown.append(it)
+        if want:
+            self.deck_calc_watch([i for i in out if i.startswith('calc:')])     # (5.59.4) their history
         answer = {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq, 'items': out}
         if isinstance(history, dict) and want:
             # (for Stream Deck 1.1) asked for {"history": {"span": seconds, "points": n}}: the series too
@@ -16615,6 +17129,9 @@ class Daemon(EspGateways):
                     visible = (json.dumps(inst.get('caps'), sort_keys=True),
                                {it['id'] for it in self.deck_shown(caps, extended, want)},
                                {it['id'] for it in self.deck_shown(caps, True)})
+                    if want:
+                        # (5.59.4) the computed values a deck waits on are ringed for their history
+                        self.deck_calc_watch(sorted(i for i in want if i.startswith('calc:') and i in visible[1]))
                 got = sorted(((v[0], k, v[1]) for k, v in self._deck_states.items()
                               if v[0] > after and k in visible[1] and (not want or k in want)),
                              key=lambda x: x[0])

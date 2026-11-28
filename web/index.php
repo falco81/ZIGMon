@@ -40067,11 +40067,13 @@ var DK_KIND_ICON = {socket: ICON.plug, light: ICON.light, 'switch': ICON.zb, dim
                     message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺', lock: '🔐',
                     /* (5.59.4) the summaries and the SMS keys */
                     power: '⚡', security: '🛡️', heatgroup: '🔥', away: '🧳', openings: '🚪', batteries: '🔋',
-                    zigbee: '📡', room: '🏠', sms: '💬'};
+                    zigbee: '📡', room: '🏠', sms: '💬',
+                    /* (5.59.4) the computed values (streamdeck/PROTOCOL-CALC.md) */
+                    calc: '🧮'};
 /* (5.59.4) the words under a thing in an "Only these" list: what it is, and what it does there */
 var DK_KIND_WORD = {power: 'house power', security: 'network security', heatgroup: 'every heated room', away: 'away',
                     openings: 'doors and windows open', batteries: 'batteries low', zigbee: 'Zigbee network',
-                    room: 'room summary', sms: 'asks the desktop app'};
+                    room: 'room summary', sms: 'asks the desktop app', calc: 'computed'};
 var DK_PRESETS = [
   ['look', 'Look only', ['view', 'status']],
   ['lights', 'Lights & sockets', ['view', 'status', 'switch', 'dim']],
@@ -40655,19 +40657,23 @@ function dkCapsEdit(opts) {
       var rooms = {};
       /* (5.59.4) what is chosen here for an action of its own (acknowledge, hush) comes first, together */
       var ACTS = '\u0001';
+      /* (5.59.4) the computed values together, under "Computed", after the rooms */
+      var CALC = '\u0002';
       mine.forEach(function (it) {
-        var r = it.cap !== c && c !== 'view' ? ACTS : (it.room || '');
+        var r = it.cap !== c && c !== 'view' ? ACTS : it.kind === 'calc' ? CALC : (it.room || '');
         (rooms[r] = rooms[r] || []).push(it);
       });
       Object.keys(rooms).sort(function (a, b) {
-        return a === ACTS ? -1 : b === ACTS ? 1 : !a ? 1 : !b ? -1 : a.localeCompare(b);
+        return a === ACTS ? -1 : b === ACTS ? 1 : a === CALC ? 1 : b === CALC ? -1
+          : !a ? 1 : !b ? -1 : a.localeCompare(b);
       }).forEach(function (r) {
         var grp = el('div', 'dk-grp');
-        grp.appendChild(el('div', 'dk-grp-h', r === ACTS ? 'Acknowledge and hush' : r || 'No room'));
+        grp.appendChild(el('div', 'dk-grp-h', r === ACTS ? 'Acknowledge and hush' : r === CALC ? 'Computed' : r || 'No room'));
         rooms[r].forEach(function (it) {
           var lab = el('label', 'dk-opt');
           lab.dataset.id = it.id;
-          var word = (it.kind === 'sms' && it.cap !== 'sms' ? 'the text gateway' : DK_KIND_WORD[it.kind] || it.kind)
+          var word = (it.kind === 'sms' && it.cap !== 'sms' ? 'the text gateway'
+                      : it.kind === 'calc' && it.room ? 'computed · ' + it.room : DK_KIND_WORD[it.kind] || it.kind)
             + (it.cap !== c && c !== 'view' ? ' · acknowledge, hush' : '')
             + (c === 'switch' && it.kind !== 'scene' ? ' · timer too' : '');
           lab.dataset.find = [it.name, it.room || '', it.kind, word, it.id].join(' ').toLowerCase();
