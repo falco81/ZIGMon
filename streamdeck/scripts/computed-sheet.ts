@@ -73,10 +73,10 @@ const ROWS: [string, Record<string, unknown>][] = [
   ["Power of lights", { item: "calc:sum:power:kind=light" }],
   ["Lights on", { item: "calc:on:state:kind=light" }],
   ["Average inside", { item: "calc:avg:temperature:inside", decimals: 1 }],
-  ["Coldest room", { item: "calc:min:temperature:inside", warnBelow: 19, critBelow: 16 }],
+  ["Coldest room", { item: "calc:min:room_temperature:inside", warnBelow: 19, critBelow: 16 }],
   ["Windows open", { item: "calc:on:open:all", label: "Windows open" }],
   ["Devices offline", { item: "calc:off:online:all", warnAbove: 1 }],
-  ["Lowest battery", { item: "calc:min:battery:all", warnBelow: 20, critBelow: 10 }],
+  ["Low batteries", { item: "calc:on:battery_low:all", warnAbove: 1, critAbove: 4 }],
   ["Energy today", { item: "calc:sum:energy_today:all" }],
 ];
 const LOOKS = ["classic", "bigvalue", "neon", "light", "huge", "gauge", "lcd", "aurora", "namebar"].filter((l) => THEMES.some((t) => t.id === l));
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
     const ui = join(root, "com.zigmon.streamdeck.sdPlugin", "ui");
     const pis: [string, Record<string, unknown>, string][] = [
       ["calc-pi-lights", { item: "calc:sum:power:kind=light" }, "Power of lights picked: only lights and sockets have a power sum; Ložnice has none"],
-      ["calc-pi-coldest", { item: "calc:min:temperature:inside" }, "Coldest inside: no Sum of a temperature, no Min outside (one thermometer)"],
+      ["calc-pi-coldest", { item: "calc:min:temperature:inside" }, "Lowest temperature inside: no Sum of a temperature, no Min outside (one thermometer)"],
     ];
     for (const [name, settings, cap] of pis) {
       const hub = hubFor();

@@ -141,66 +141,91 @@ export function extendedItems(now = Math.floor(Date.now() / 1000)): FakeItem[] {
 
 /**
  * (5.59.4, PROTOCOL-CALC.md) Values computed over the house, as an extended catalogue of a ZIGMon whose
- * hello says "calc" has them. Rooms: r1 Obývák, r2 Ložnice, r3 Kitchen. No pressure or light level here.
+ * hello says "calc" has them, in the server's own shape (test/review5594_calc.py): the attr with its
+ * label and type, bounds null where unknown, a count's unit null, min_of / max_of null unless an
+ * extreme. Rooms: r1 Obývák, r2 Ložnice, r3 Kitchen. No pressure or light level here.
  */
 export function calcItems(): FakeItem[] {
-  const UNIT: Record<string, string> = { power: "W", energy_today: "kWh", energy_total: "kWh", temperature: "°C", humidity: "%", co2: "ppm", battery: "%", linkquality: "" };
-  const ICON: Record<string, string> = { power: "bolt", energy_today: "bolt", energy_total: "bolt", temperature: "thermo", humidity: "drop", co2: "leaf", battery: "battery", linkquality: "wifi", state: "bulbOn", open: "windowOpen", online: "mesh" };
+  const UNIT: Record<string, string> = {
+    power: "W", energy_today: "kWh", energy_total: "kWh", temperature: "°C", room_temperature: "°C", humidity: "%", co2: "ppm", battery: "%", linkquality: "",
+  };
+  const ICON: Record<string, string> = {
+    power: "bolt", energy_today: "bolt", energy_total: "bolt", temperature: "thermo", room_temperature: "thermo", humidity: "drop", co2: "leaf", battery: "battery",
+    battery_low: "battery", linkquality: "wifi", state: "bulbOn", open: "windowOpen", online: "mesh",
+  };
   const ROOMS: Record<string, string> = { r1: "Obývák", r2: "Ložnice", r3: "Kitchen" };
-  const c = (fn: string, metric: string, scope: string, name: string, value: number | null, members: number, o: { known?: number; min_of?: string; max_of?: string; max?: number } = {}): FakeItem => {
+  const c = (fn: string, metric: string, scope: string, name: string, value: number | null, members: number, o: { known?: number; min_of?: string; max_of?: string } = {}): FakeItem => {
     const counts = ["count", "on", "off"].includes(fn);
-    const unit = fn === "pct_on" ? "%" : counts ? "" : UNIT[metric] ?? "";
+    const unit = fn === "pct_on" ? "%" : counts ? null : UNIT[metric] || null;
     const room = /^room=(r\d)/.exec(scope)?.[1];
-    const pct = unit === "%";
+    // the honest scale as the server gives it: % 0-100, a count 0..members, signal 0-255, from 0 for power, energy and a spread
+    const [min, max] = unit === "%" ? [0, 100] : counts ? [0, members] : metric === "linkquality" ? [0, 255]
+      : fn === "spread" || metric === "power" || metric.startsWith("energy") ? [0, null] : [null, null];
     const text = value === null ? "" : (Number.isInteger(value) ? String(value) : value.toFixed(1)) + (unit ? " " + unit : "");
     return {
       id: `calc:${fn}:${metric}:${scope}`, name, room: room ? ROOMS[room]! : null, kind: "calc", icon: ICON[metric] ?? "gauge", cap: "view", actions: [],
-      attrs: [{ key: "value", label: "Value", type: "number", unit, ...(pct ? { min: 0, max: 100 } : o.max !== undefined ? { min: 0, max: o.max } : {}) }],
+      attrs: [{ key: "value", label: name.split(" · ")[0], type: "number", unit, min, max }],
       allowed: true, hold: false,
       state: { on: null, value, value_text: text, online: value !== null, battery: null, at: null,
-        attrs: { value, members, known: o.known ?? (value === null ? 0 : members), ...(o.min_of ? { min_of: o.min_of } : {}), ...(o.max_of ? { max_of: o.max_of } : {}) } },
+        attrs: { value, members, known: o.known ?? (value === null ? 0 : members), min_of: o.min_of ?? null, max_of: o.max_of ?? null } },
       calc: { fn, metric, scope, members, unit },
     };
   };
   return [
-    c("sum", "power", "all", "Power · everything", 412.5, 9, { known: 8, max: 3680 }),
-    c("sum", "power", "kind=light", "Power · all lights", 64, 4, { max: 240 }),
-    c("sum", "power", "kind=socket", "Power · all sockets", 348.5, 5, { known: 4, max: 3440 }),
+    c("sum", "power", "all", "Power · all", 412.5, 9, { known: 8 }),
+    c("sum", "power", "kind=light", "Power · lights", 64, 4),
+    c("sum", "power", "kind=socket", "Power · sockets", 348.5, 5, { known: 4 }),
     c("sum", "power", "room=r1", "Power · Obývák", 186, 3),
-    c("sum", "power", "room=r1,kind=light", "Power · lights · Obývák", 42, 2),
+    c("sum", "power", "room=r1,kind=light", "Power · lights in Obývák", 42, 2),
     c("sum", "power", "room=r3", "Power · Kitchen", 120, 2),
     c("avg", "power", "kind=socket", "Average power · sockets", 87.1, 5, { known: 4 }),
-    c("max", "power", "all", "Highest power", 1840, 9, { max_of: "Heat pump" }),
-    c("sum", "energy_today", "all", "Energy today · everything", 12.4, 6),
+    c("max", "power", "all", "Highest power · all", 1840, 9, { max_of: "Heat pump" }),
+    c("sum", "energy_today", "all", "Energy today · all", 12.4, 6),
     c("sum", "energy_today", "kind=socket", "Energy today · sockets", 11.1, 5),
-    c("sum", "energy_total", "all", "Energy total · everything", 1843.2, 6),
+    c("sum", "energy_total", "all", "Energy total · all", 1843.2, 6),
     c("avg", "temperature", "inside", "Average temperature · inside", 21.3, 4),
-    c("avg", "temperature", "all", "Average temperature · everything", 17.5, 5),
-    c("avg", "temperature", "outside", "Temperature · outside", 7.3, 1),
+    c("avg", "temperature", "all", "Average temperature · all", 17.5, 5),
+    c("avg", "temperature", "outside", "Average temperature · outside", 7.3, 1),
     c("avg", "temperature", "room=r2", "Average temperature · Ložnice", 19.4, 2),
-    c("min", "temperature", "inside", "Coldest · inside", 18.5, 4, { min_of: "Ložnice" }),
-    c("max", "temperature", "inside", "Warmest · inside", 23.1, 4, { max_of: "Obývák" }),
-    c("min", "temperature", "all", "Coldest · everything", 7.3, 5, { min_of: "Outdoor temperature" }),
-    c("spread", "temperature", "inside", "Temperature spread · inside", 4.6, 4),
+    c("min", "temperature", "inside", "Lowest temperature · inside", 18.5, 4, { min_of: "Ložnice" }),
+    c("max", "temperature", "inside", "Highest temperature · inside", 23.1, 4, { max_of: "Obývák" }),
+    c("min", "temperature", "all", "Lowest temperature · all", 7.3, 5, { min_of: "Outdoor temperature" }),
+    c("spread", "temperature", "inside", "Temperature spread · inside", 4.6, 4, { min_of: "Ložnice", max_of: "Obývák" }),
+    c("min", "room_temperature", "inside", "Coldest room · inside", 19.4, 3, { min_of: "Ložnice" }),
+    c("max", "room_temperature", "inside", "Warmest room · inside", 23.1, 3, { max_of: "Obývák" }),
+    c("avg", "room_temperature", "inside", "Average room temperature · inside", 21.2, 3),
+    c("spread", "room_temperature", "inside", "Room temperature spread · inside", 3.7, 3, { min_of: "Ložnice", max_of: "Obývák" }),
     c("avg", "humidity", "inside", "Average humidity · inside", 48, 3),
-    c("max", "humidity", "inside", "Most humid · inside", 61, 3, { max_of: "Koupelna" }),
-    c("max", "co2", "inside", "Highest CO₂ · inside", 1320, 1, { max_of: "Office CO₂" }),
-    c("min", "battery", "all", "Lowest battery", 5, 11, { min_of: "Dveře" }),
-    c("avg", "battery", "all", "Average battery", 71, 11),
-    c("min", "linkquality", "all", "Weakest signal", 38, 24, { min_of: "Hlavice" }),
-    c("on", "state", "kind=light", "Lights on", 3, 4),
-    c("off", "state", "kind=light", "Lights off", 1, 4),
-    c("pct_on", "state", "kind=light", "Lights on · %", 75, 4),
-    c("count", "state", "kind=light", "Lights", 4, 4),
-    c("on", "state", "kind=socket", "Sockets on", 2, 5),
-    c("on", "state", "room=r1", "On · Obývák", 2, 3),
+    c("max", "humidity", "inside", "Highest humidity · inside", 61, 3, { max_of: "Koupelna" }),
+    c("max", "co2", "inside", "Highest CO2 · inside", 1320, 2, { max_of: "Office CO₂" }),
+    c("min", "battery", "all", "Lowest battery · all", 5, 11, { min_of: "Dveře" }),
+    c("avg", "battery", "all", "Average battery · all", 71, 11),
+    c("on", "battery_low", "all", "Low batteries · all", 2, 11),
+    c("pct_on", "battery_low", "all", "Low batteries (%) · all", 18, 11),
+    c("min", "linkquality", "all", "Weakest signal · all", 38, 24, { min_of: "Hlavice" }),
+    c("on", "state", "kind=light", "Lights on · all", 3, 4),
+    c("off", "state", "kind=light", "Lights off · all", 1, 4),
+    c("pct_on", "state", "kind=light", "Lights on (%) · all", 75, 4),
+    c("count", "state", "kind=light", "Lights (count) · all", 4, 4),
+    c("on", "state", "kind=socket", "Sockets on · all", 2, 5),
+    c("on", "state", "room=r1", "Things on · Obývák", 2, 3),
     c("on", "state", "room=r1,kind=light", "Lights on · Obývák", 1, 2),
-    c("on", "open", "all", "Windows and doors open", 2, 6),
-    c("count", "open", "all", "Windows and doors", 6, 6),
-    c("off", "online", "all", "Devices offline", 1, 24),
-    c("on", "online", "all", "Devices online", 23, 24),
-    c("count", "online", "all", "Devices", 24, 24),
+    c("on", "open", "all", "Windows open · all", 2, 6),
+    c("count", "open", "all", "Window sensors · all", 6, 6),
+    c("off", "online", "all", "Devices offline · all", 1, 24),
+    c("on", "online", "all", "Devices online · all", 23, 24),
+    c("count", "online", "all", "Devices (count) · all", 24, 24),
   ];
+}
+
+/** `ids` as ZIGMon reads them: comma-separated, a `kind=` piece glued back onto the `calc:…:room=…` before it (PROTOCOL-CALC.md). */
+export function splitIds(s: string): string[] {
+  const out: string[] = [];
+  for (const p of s.split(",")) {
+    if (p.startsWith("kind=") && out.length && /^calc:[^:]+:[^:]+:room=[^,]+$/.test(out[out.length - 1]!)) out[out.length - 1] += "," + p;
+    else out.push(p);
+  }
+  return out;
 }
 
 /** (PROTOCOL-SMS.md 3) An address book as the extended catalogue carries it: names and groups, no numbers. */
@@ -416,7 +441,7 @@ export class FakeZigmon {
         });
       case "state": {
         const b = (body && typeof body === "object" ? body : {}) as { ids?: string; history?: { span?: number; points?: number } };
-        const ids = (u.searchParams.get("ids") ?? b.ids ?? "").split(",");
+        const ids = splitIds(u.searchParams.get("ids") ?? b.ids ?? "");
         const items: Record<string, unknown> = {};
         for (const i of all()) if (ids.includes(i.id)) items[i.id] = i.state;
         if (!b.history || !this.withHistory) return send(200, { ok: true, boot: this.boot, seq: this.seq, items });
@@ -436,7 +461,8 @@ export class FakeZigmon {
         const after = Number(u.searchParams.get("after") ?? b0.after);
         const boot = u.searchParams.get("boot") ?? (b0.boot === undefined ? null : String(b0.boot));
         if (String(this.boot) !== boot) return send(200, { ok: true, boot: this.boot, seq: this.seq, reset: true, changes: [] });
-        const ids = (u.searchParams.get("ids") ?? (typeof b0.ids === "string" ? b0.ids : null))?.split(",");
+        const idq = u.searchParams.get("ids") ?? (typeof b0.ids === "string" ? b0.ids : null);
+        const ids = idq === null ? undefined : splitIds(idq);
         const summary = new Set([...this.extended, ...this.calc].map((i) => i.id));
         const relevant = () => this.changes.filter((c) => c.seq > after && (ids ? ids.includes(c.id) : ext || !summary.has(c.id)));
         await this.hold(this.waitMs, () => relevant().length > 0 || t.revoked);

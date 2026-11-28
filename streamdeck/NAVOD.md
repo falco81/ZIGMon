@@ -305,13 +305,14 @@ Hodnota, kterou **ZIGMon spočítá přes celý dům**, ukázaná přesně jako 
 s jednotkou, trend, graf za 1 h / 6 h / 24 h / 7 dní, vaše žluté a červené meze, počet desetinných
 míst i vlastní popisek, ve všech vzhledech a barvách a se stejnými poctivými stupnicemi. Například
 celkový příkon všeho, příkon jen světel, kolik světel svítí, průměrná teplota uvnitř, nejchladnější
-místnost, otevřená okna, zařízení offline, nejslabší baterie nebo dnešní spotřeba.
+místnost, otevřená okna, zařízení offline, vybité baterie nebo dnešní spotřeba.
 
 Místo seznamu stovek položek má nastavení **skládačku**:
 
 1. **What (co)** - Power (příkon), Energy today (spotřeba dnes), Energy total (spotřeba celkem),
-   Temperature, Humidity, Pressure, Light level (osvětlení), CO₂, Battery, Signal, On / off, Open
-   (otevřeno) nebo Online.
+   Temperature, Rooms' temperature (teplota místností, jedna za místnost, uvnitř: nejchladnější nebo
+   nejteplejší místnost), Humidity, Pressure, Light level (osvětlení), CO₂, Battery, Low battery
+   (baterie na varovné hranici ZIGMonu nebo pod ní), Signal, On / off, Open (otevřeno) nebo Online.
 2. **How (jak)** - Sum (součet), Average (průměr), Min, Max, Count (počet), On, Off, % on nebo
    Spread (rozpětí: nejvyšší mínus nejnižší), jen ty, které pro danou veličinu dávají smysl:
    součet teplot není.
@@ -322,7 +323,7 @@ Vybrat jde jen to, co ZIGMon ve vašem domě opravdu počítá; ostatní je zaš
 tlak, s jedním venkovním teploměrem žádné „nejchladnější venku“). Každá volba posune ty ostatní
 na nejbližší hodnotu, která existuje, a nastavení ukáže její název a hodnotu teď. Řada **Popular**
 nad tím vybere jedním klepnutím: celkový příkon, příkon světel, příkon zásuvek, svítící světla,
-průměr uvnitř, nejchladnější místnost, otevřená okna, zařízení offline, nejslabší baterii, dnešní
+průměr uvnitř, nejchladnější místnost, otevřená okna, zařízení offline, vybité baterie, dnešní
 spotřebu. *Now* jmenuje místnost nebo zařízení s krajní hodnotou (nejchladnější místnost, zařízení
 s nejslabší baterií) a kolik členů hodnotu mělo.
 

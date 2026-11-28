@@ -10,8 +10,8 @@ export const CALC_FNS = ["sum", "avg", "min", "max", "count", "on", "off", "pct_
 export type CalcFn = (typeof CALC_FNS)[number];
 
 export const CALC_METRICS = [
-  "power", "energy_today", "energy_total", "temperature", "humidity", "pressure", "illuminance", "co2", "battery", "linkquality",
-  "state", "open", "online",
+  "power", "energy_today", "energy_total", "temperature", "room_temperature", "humidity", "pressure", "illuminance", "co2",
+  "battery", "battery_low", "linkquality", "state", "open", "online",
 ] as const;
 export type CalcMetric = (typeof CALC_METRICS)[number];
 
@@ -42,11 +42,16 @@ const ON_OFF: Readonly<Partial<Record<CalcMetric, readonly CalcFn[]>>> = {
   state: ["on", "off", "pct_on", "count"],
   open: ["count", "on"],
   online: ["count", "on", "off"],
+  // (the server side) devices with a battery, on = at or below ZIGMon's battery warning
+  battery_low: ["on", "pct_on"],
 };
+
+/** The rooms' temperatures (one per room, inside only): their extremes, mean and spread, nothing else. */
+const ROOM_FNS: readonly CalcFn[] = ["min", "max", "avg", "spread"];
 
 /** Whether a function makes sense of a metric at all: on / off / % on only of what is on or off, and that only so. */
 export function fnFits(fn: CalcFn, metric: CalcMetric): boolean {
-  const only = ON_OFF[metric];
+  const only = ON_OFF[metric] ?? (metric === "room_temperature" ? ROOM_FNS : undefined);
   if (only) return only.includes(fn);
   return fn !== "on" && fn !== "off" && fn !== "pct_on";
 }
@@ -113,11 +118,13 @@ export const METRIC_WORDS: Readonly<Record<CalcMetric, { word: string; icon: str
   energy_today: { word: "Energy today", icon: "sun", accent: P.warn },
   energy_total: { word: "Energy total", icon: "energy", accent: P.orange },
   temperature: { word: "Temperature", icon: "thermo", accent: P.orange },
+  room_temperature: { word: "Rooms' temperature", icon: "sofa", accent: P.orange },
   humidity: { word: "Humidity", icon: "drop", accent: P.water },
   pressure: { word: "Pressure", icon: "gauge", accent: P.info },
   illuminance: { word: "Light level", icon: "sun", accent: P.warn },
   co2: { word: "CO₂", icon: "leaf", accent: P.ok },
   battery: { word: "Battery", icon: "battery", accent: P.purple },
+  battery_low: { word: "Low battery", icon: "batteryLow", accent: P.purple },
   linkquality: { word: "Signal", icon: "wifi", accent: P.info },
   state: { word: "On / off", icon: "power", accent: P.ok },
   open: { word: "Open", icon: "windowOpen", accent: P.water },
@@ -141,6 +148,8 @@ export function fnWord(fn: CalcFn, metric: CalcMetric | null): string {
   if (metric === "open" && fn === "on") return "Open";
   if (metric === "online" && fn === "on") return "Online";
   if (metric === "online" && fn === "off") return "Offline";
+  if (metric === "battery_low" && fn === "on") return "Low";
+  if (metric === "battery_low" && fn === "pct_on") return "% low";
   return FN_WORDS[fn].word;
 }
 
@@ -226,7 +235,7 @@ export function resolveChoice(entries: readonly CalcEntry[], c: CalcChoice): Cal
 /** What a metric is mostly wanted for, when a function has to be picked for it. */
 export const DEFAULT_FN: Readonly<Record<CalcMetric, CalcFn>> = {
   power: "sum", energy_today: "sum", energy_total: "sum", temperature: "avg", humidity: "avg", pressure: "avg", illuminance: "avg",
-  co2: "max", battery: "min", linkquality: "min", state: "on", open: "on", online: "off",
+  co2: "max", battery: "min", linkquality: "min", state: "on", open: "on", online: "off", room_temperature: "min", battery_low: "on",
 };
 
 type Field = "metric" | "fn" | "place" | "kind" | "room";
@@ -322,10 +331,10 @@ export const CALC_PRESETS: readonly CalcPreset[] = [
   { key: "sockets_w", name: "Power of sockets", icon: "socket", ids: ["calc:sum:power:kind=socket"] },
   { key: "lights_on", name: "Lights on", icon: "bulbOn", ids: ["calc:on:state:kind=light"] },
   { key: "temp_in", name: "Average inside", icon: "thermo", ids: ["calc:avg:temperature:inside", "calc:avg:temperature:all"] },
-  { key: "coldest", name: "Coldest room", icon: "snow", ids: ["calc:min:temperature:inside", "calc:min:temperature:all"] },
+  { key: "coldest", name: "Coldest room", icon: "snow", ids: ["calc:min:room_temperature:inside", "calc:min:temperature:inside", "calc:min:temperature:all"] },
   { key: "open", name: "Windows open", icon: "windowOpen", ids: ["calc:on:open:all"] },
   { key: "offline", name: "Devices offline", icon: "wifiOff", ids: ["calc:off:online:all"] },
-  { key: "battery", name: "Lowest battery", icon: "batteryLow", ids: ["calc:min:battery:all"] },
+  { key: "battery", name: "Low batteries", icon: "batteryLow", ids: ["calc:on:battery_low:all"] },
   { key: "energy", name: "Energy today", icon: "sun", ids: ["calc:sum:energy_today:all"] },
 ];
 

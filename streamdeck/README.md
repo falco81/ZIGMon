@@ -293,13 +293,14 @@ A value **ZIGMon computes over the house**, shown exactly like a Reading: the bi
 unit, the trend, the graph over 1 h / 6 h / 24 h / 7 d, your amber and red thresholds, the
 decimals and your label, in every look and colour, with the same honest scales. For example the
 total power of everything, the power of the lights only, how many lights are on, the average
-temperature inside, the coldest room, the windows open, the devices offline, the lowest battery or
+temperature inside, the coldest room, the windows open, the devices offline, the low batteries or
 today's energy.
 
 Instead of a list of hundreds of items, the settings have a **builder**:
 
-1. **What** - Power, Energy today, Energy total, Temperature, Humidity, Pressure, Light level, CO₂,
-   Battery, Signal, On / off, Open or Online.
+1. **What** - Power, Energy today, Energy total, Temperature, Rooms' temperature (one per room, inside:
+   the coldest or warmest room), Humidity, Pressure, Light level, CO₂, Battery, Low battery (at or
+   below ZIGMon's battery warning), Signal, On / off, Open or Online.
 2. **How** - Sum, Average, Min, Max, Count, On, Off, % on or Spread (the highest minus the lowest),
    only those that make sense for it: there is no sum of temperatures.
 3. **Where** - All, Inside or Outside; or one kind (lights, sockets, switches, dimmers,
@@ -309,7 +310,7 @@ Only what ZIGMon really computes in your house can be picked; the rest is greyed
 "Pressure" without a barometer, no "coldest outside" with one thermometer outside). Each choice
 moves the others to the nearest value there is, and the settings show its name and the value now.
 **Popular** above it picks one in one click: total power, power of lights, power of sockets, lights
-on, average inside, coldest room, windows open, devices offline, lowest battery, energy today.
+on, average inside, coldest room, windows open, devices offline, low batteries, energy today.
 *Now* names the room or device at the extreme (the coldest room's name, the lowest battery's
 device) and how many of the members had a value.
 

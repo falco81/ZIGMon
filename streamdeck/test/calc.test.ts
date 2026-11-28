@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 import {
-  builderView, CALC_MOST, CALC_PRESETS, calcEntries, calcFacts, calcId, calcLook, choiceOf, fnFits, NO_CHOICE, parseCalc, parseCalcId, parseScope, pick,
+  builderView, CALC_MOST, CALC_PRESETS, calcEntries, calcFacts, calcId, calcLook, choiceOf, fnFits, fnWord, NO_CHOICE, parseCalc, parseCalcId, parseScope, pick,
   presetId, resolveChoice, scopeText, type CalcChoice,
 } from "../src/core/calc.js";
 import { Hub as RealHub, type Hub } from "../src/core/hub.js";
@@ -75,13 +75,26 @@ describe("Computed: the protocol", () => {
     assert.equal(calcId("pct_on", "state", { place: "all", kind: "light", room: "r9" }), "calc:pct_on:state:room=r9,kind=light");
     assert.ok(fnFits("on", "state") && fnFits("count", "open") && fnFits("off", "online") && fnFits("spread", "temperature"));
     assert.ok(!fnFits("pct_on", "open") && !fnFits("avg", "online") && !fnFits("on", "power"));
+    // the server side's two: the rooms' temperatures (extremes, mean, spread) and low batteries (on, % on)
+    assert.ok(fnFits("min", "room_temperature") && fnFits("spread", "room_temperature") && !fnFits("sum", "room_temperature") && !fnFits("count", "room_temperature"));
+    assert.ok(fnFits("on", "battery_low") && fnFits("pct_on", "battery_low") && !fnFits("off", "battery_low") && !fnFits("min", "battery_low"));
+    assert.equal(parseCalcId("calc:on:room_temperature:inside"), null);
+    assert.equal(parseCalcId("calc:avg:battery_low:all"), null);
+    assert.deepEqual(parseCalcId("calc:min:room_temperature:inside")?.scope, { place: "inside", kind: null, room: null });
   });
 
   it("the calc block: as the contract has it, agreeing with the id, members and unit capped; else none", () => {
     const it = parseItem(calcOf("calc:sum:power:all"));
     assert.equal(it.kind, "calc");
     assert.deepEqual(it.calc, { fn: "sum", metric: "power", scope: "all", members: 9, unit: "W" });
-    assert.deepEqual(it.attrs[0], { key: "value", label: "Value", type: "number", unit: "W", min: 0, max: 3680, step: null, values: [] });
+    assert.deepEqual(it.attrs[0], { key: "value", label: "Power", type: "number", unit: "W", min: 0, max: null, step: null, values: [] });
+    // a count's unit is null in the server's shape: none, and 0..members
+    const lit = parseItem(calcOf("calc:on:state:kind=light"));
+    assert.deepEqual([lit.calc!.unit, lit.attrs[0]!.unit, lit.attrs[0]!.min, lit.attrs[0]!.max], ["", "", 0, 4]);
+    // min_of / max_of null unless an extreme; both for a spread
+    assert.equal(it.state.attrs.min_of, null);
+    const sp = parseItem(calcOf("calc:spread:room_temperature:inside")).state.attrs;
+    assert.deepEqual([sp.min_of, sp.max_of], ["Ložnice", "Obývák"]);
     assert.equal(it.state.value, 412.5);
     assert.equal(it.state.attrs.known, 8);
     const base = calcOf("calc:min:temperature:inside");
@@ -199,6 +212,14 @@ describe("Computed: the builder", () => {
     assert.deepEqual(v.fns.map((f) => f.id), ["count", "on", "off", "pct_on"]);
     assert.deepEqual(builderView(entries, pick(entries, NO_CHOICE, { metric: "open" })).fns.map((f) => f.id), ["count", "on"]);
     assert.equal(v.item?.id, "calc:on:state:kind=light");
+    // the rooms' temperatures: inside only; low batteries: Low and % low
+    v = builderView(entries, pick(entries, NO_CHOICE, { metric: "room_temperature" }));
+    assert.equal(v.item?.id, "calc:min:room_temperature:inside");
+    assert.deepEqual(v.fns.map((f) => [f.id, f.enabled]), [["avg", true], ["min", true], ["max", true], ["spread", true]]);
+    assert.deepEqual(on(v.places), ["inside"]);
+    v = builderView(entries, pick(entries, NO_CHOICE, { metric: "battery_low" }));
+    assert.equal(v.item?.id, "calc:on:battery_low:all");
+    assert.deepEqual(v.fns.map((f) => fnWord(f.id, "battery_low")), ["Low", "% low"]);
     // nothing chosen yet: no item, every metric there is offered
     assert.equal(builderView(entries, NO_CHOICE).item, null);
     assert.equal(builderView([], NO_CHOICE).metrics.filter((m) => m.enabled).length, 0);
@@ -218,11 +239,13 @@ describe("Computed: the builder", () => {
     const got = Object.fromEntries(CALC_PRESETS.map((p) => [p.key, presetId(entries, p)]));
     assert.deepEqual(got, {
       power: "calc:sum:power:all", lights_w: "calc:sum:power:kind=light", sockets_w: "calc:sum:power:kind=socket", lights_on: "calc:on:state:kind=light",
-      temp_in: "calc:avg:temperature:inside", coldest: "calc:min:temperature:inside", open: "calc:on:open:all", offline: "calc:off:online:all",
-      battery: "calc:min:battery:all", energy: "calc:sum:energy_today:all",
+      temp_in: "calc:avg:temperature:inside", coldest: "calc:min:room_temperature:inside", open: "calc:on:open:all", offline: "calc:off:online:all",
+      battery: "calc:on:battery_low:all", energy: "calc:sum:energy_today:all",
     });
     for (const p of CALC_PRESETS) assert.ok(hasIcon(p.icon), p.icon);
     // a house with no inside: the coldest of all; none at all: nothing to click
+    const noRooms = entries.filter((e) => e.metric !== "room_temperature");
+    assert.equal(presetId(noRooms, CALC_PRESETS.find((p) => p.key === "coldest")!), "calc:min:temperature:inside");
     const noInside = entries.filter((e) => e.scope.place !== "inside");
     assert.equal(presetId(noInside, CALC_PRESETS.find((p) => p.key === "coldest")!), "calc:min:temperature:all");
     assert.equal(presetId([], CALC_PRESETS[0]!), null);
@@ -276,13 +299,16 @@ describe("Computed: drawn as the Reading it is", () => {
     assert.notEqual(amber.colour, calm.colour);
     assert.notEqual(red.colour, amber.colour);
     assert.equal(blue.colour, amber.colour);
-    // 380 → 412.5 W is steady against the honest 0..3680 W; 21.3 °C after a history in the hundreds falls
+    // 21.3 °C after a history in the hundreds falls; 380 → 412.5 W is steady on a graph from 0
     assert.equal(view("computed", all(), { item: "calc:sum:power:all" }).v.readingModel().trend, "flat");
     assert.equal(view("computed", all(), { item: "calc:avg:temperature:inside" }).v.readingModel().trend, "down");
-    // the honest scale: the calc attr's min / max (0..the members' sum for power, 0..100 for a %), none where absent
+    // the honest scale: the calc attr's min / max (from 0 for power, 0..members for a count, 0..100 for a %), none where null
     const pw = view("computed", all(), { item: "calc:sum:power:all" }).v.readingModel();
-    assert.deepEqual([pw.scale?.min, pw.scale?.max], [0, 3680]);
-    assert.ok(Math.abs(pw.level! - 412.5 / 3680) < 1e-9);
+    assert.deepEqual([pw.scale?.min, pw.scale?.max, pw.level], [0, null, null]);
+    const cnt = view("computed", all(), { item: "calc:on:state:kind=light" }).v.readingModel();
+    assert.deepEqual([cnt.scale?.min, cnt.scale?.max, cnt.level], [0, 4, 0.75]);
+    const lq = view("computed", all(), { item: "calc:min:linkquality:all" }).v.readingModel();
+    assert.deepEqual([lq.scale?.min, lq.scale?.max], [0, 255]);
     const pct = view("computed", all(), { item: "calc:pct_on:state:kind=light" }).v.readingModel();
     assert.deepEqual([pct.scale?.min, pct.scale?.max, pct.level], [0, 100, 0.75]);
     const avg = view("computed", all(), { item: "calc:avg:temperature:inside" }).v.readingModel();
@@ -370,5 +396,13 @@ describe("Computed: a ZIGMon before 5.59.4, or one that does not compute", () =>
     await until(() => fake.historyAsks.some((a) => a.ids.includes("calc:sum:power:all")), 3000, "its graph asked for");
     fake.setState("calc:sum:power:all", { value: 977, value_text: "977 W" });
     await until(() => texts(s.svg).join(" ").includes("977"), 3000, "the new total");
+    // a room+kind id keeps its comma in ids: ZIGMon glues it back
+    const s2 = new MockSurface("Keypad", "D1");
+    const v2 = new ActionView("computed", hub, s2, { item: "calc:sum:power:room=r1,kind=light", label: "Obývák lights" });
+    hub.watch(v2);
+    cleanups.push(() => v2.dispose());
+    await until(() => fake.historyAsks.some((a) => a.ids.includes("calc:sum:power:room=r1,kind=light")), 3000, "the room+kind id asked whole");
+    fake.setState("calc:sum:power:room=r1,kind=light", { value: 77, value_text: "77 W" });
+    await until(() => texts(s2.svg).join(" ").includes("77"), 3000, "the room's lights");
   });
 });
