@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0D1117">
+<meta name="referrer" content="no-referrer">
+<title>ZIGMon Gateway</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app" class="app">
+  <aside class="side" id="side">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-text"><b>ZIGMon</b> Gateway</span>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <main class="main">
+    <header class="top" id="top">
+      <h1 id="title">ZIGMon Gateway</h1>
+      <div class="top-right" id="topRight"></div>
+    </header>
+    <div id="view" class="view" aria-live="polite"></div>
+  </main>
+</div>
+<div id="sheet" class="sheet" hidden></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
