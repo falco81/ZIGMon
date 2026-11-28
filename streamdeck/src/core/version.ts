@@ -1,5 +1,5 @@
 /** The plugin's version; build.sh checks manifest.json and package.json say the same. */
-export const PLUGIN_VERSION = "1.1.0";
+export const PLUGIN_VERSION = "1.2.0";
 export const PRODUCT = "ZIGMon for Stream Deck";
 export const PLUGIN_UUID = "com.zigmon.streamdeck";
 export const PACKAGE_FILE = "com.zigmon.streamdeck.streamDeckPlugin";

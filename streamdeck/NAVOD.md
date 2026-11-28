@@ -22,7 +22,7 @@ a administrátor povoluje funkce jednu po druhé.
 
 1. V ZIGMonu jako administrátor: **Nastavení → Messages → Stream Deck**.
 2. Zapněte **Povolit ovládání ze Stream Decku**.
-3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.1.0**. Pokud chcete, porovnejte SHA-256
+3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.2.0**. Pokud chcete, porovnejte SHA-256
    zobrazený tamtéž se souborem (`Get-FileHash ZIGMon.streamDeckPlugin` v PowerShellu).
 4. Stažený `.streamDeckPlugin` otevřete dvojklikem. Stream Deck se zeptá na instalaci,
    potvrďte. V seznamu akcí přibude kategorie **ZIGMon for Stream Deck**.
@@ -87,6 +87,10 @@ ukazuje dashboard:
   dashboardu (stejnou cestou v ZIGMonu, platí i oprávnění *climate* a podržení);
 - volba **Show details (3 s)**: stisk na 3 sekundy ukáže kartu s režimem, cílovou a naměřenou
   teplotou a jménem teploměru - nic se nepřepne. Totéž je trvale vidět volbami níže.
+- **od 1.2** se při **Next mode** režim na tlačítku přepne hned, ale do ZIGMonu se pošle jen
+  ten, na kterém se zastavíte (1,2 s po posledním stisku). Dřív se nastavil každý režim cestou,
+  takže cesta na Max vedla přes Off a ventily v místnosti se zavřely. S podržením pro
+  potvrzení se dál posílá každý potvrzený stisk.
 
 ### Grafy (od 1.1)
 
@@ -139,6 +143,14 @@ Reading a ZIGMon status), je přepínač s rukou **Hold to confirm (1.5 s)**. Za
 tlačítka, stisk ovladače i dotyk lišty vyžadují stejné podržení s kroužkem; otáčení
 ovladačem zůstává volné. Když podržení vyžaduje ZIGMon, přepínač je zapnutý a zamčený
 (*ZIGMon requires it for this item*). Ruka je na tlačítku vždy, když se podržení uplatní.
+
+### By hand (1.2, ZIGMon 5.59.3)
+
+Tlačítko **Control** u zásuvky, světla nebo relé má přepínač **By hand**, stejný jako
+tlačítka v ZIGMonu. Když tímto tlačítkem zařízení zapnete, ZIGMon ho převezme ručně a pravidla
+a plány ho nechají být. Když ho jím vypnete, převezmou ho zpátky. Malá postavička na tlačítku
+ukazuje, že je zařízení převzaté, ať už tímto tlačítkem, jiným, nebo tlačítkem v ZIGMonu.
+Starší ZIGMon přepínač ignoruje.
 
 ### Co tlačítka říkají
 

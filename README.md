@@ -2090,6 +2090,16 @@ Current version: **5.59.3**
 - The front server already passed `/tap` and nothing else. Now the dashboard's relay also turns `api=notifier` and `api=deck` away with 403 unless the caller, and every address in `X-Forwarded-For`, `X-Real-IP` and `Forwarded`, is a home address. Home means private, loopback, link-local, the CGNAT range a VPN such as Tailscale gives out, or IPv6 unique-local. An address that does not parse is not home.
 - Nothing else changes: the rest of the API, `/tap` and the dashboard work as before.
 
+Also in 5.59.3:
+
+- **A room switched to Off and then to a heating mode within a few minutes stayed shut.** Seen when going round to Max with a Stream Deck key, through Off: the head took 35 °C but stayed in its "off" mode and pinned shut (force "close"). The ask to take it off its own programme had been made minutes before, so it was not sent again, and from then on only the number was checked. Now a head ZIGMon shut itself is opened again at once, and a head that holds the right number but is off or pinned shut is asked again, at most once in five minutes.
+- **By hand on Stream Deck keys**, as ZIGMon's buttons have it: a Control key on a socket, light or relay can take the thing over. Switched on from the key, rules and schedules leave it alone; switched off from it, they take over again. The deck's states say when something is taken over (`held`), and the key shows a small figure. The command field `by_hand` is additive; an older plugin never sends it.
+- **One set of limits** for the desktop app and the Stream Deck: up to 10, 20, 50 or 100 computers, or no limit, in the same words. Both come as 20, so the Stream Deck's 10 becomes 20.
+- **ZIGMon for Stream Deck 1.2.0**:
+  - 10 more looks for every action (22 in all): Huge, Pill, Orb, Tile, Gauge, Bars, Wave, Aurora, Outline and Mono. Each shows one thing big and at most one small line, and keeps every switch of what is shown, the accent, offline, the lock, the hold and the battery.
+  - *Next mode* pressed round steps the key at once and sends only the mode it stops on.
+  - The By hand switch.
+
 5.59.2 — A test alert for each desktop app key, sent from the dashboard.
 
 * Settings - Messages - Desktop app: a Test alert button on each key's row.

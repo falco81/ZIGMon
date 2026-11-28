@@ -166,7 +166,7 @@ describe("touch-strip layouts", () => {
   it("the manifest names every layout, icon and inspector that exists", () => {
     const m = JSON.parse(readFileSync(join(sd, "manifest.json"), "utf8"));
     assert.equal(m.UUID, "com.zigmon.streamdeck");
-    assert.equal(m.Version, "1.1.0.0");
+    assert.equal(m.Version, "1.2.0.0");
     assert.equal(m.SDKVersion, 3);
     assert.equal(m.Nodejs.Version, "24");
     assert.equal(m.Actions.length, 7);

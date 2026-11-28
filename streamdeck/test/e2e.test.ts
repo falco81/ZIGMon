@@ -171,17 +171,17 @@ describe("end to end against a fake ZIGMon", () => {
     // ---- an update: signed manifest, sha256, saved and opened
     const pkg = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(500, 7)]);
     const sha = createHash("sha256").update(pkg).digest("hex");
-    const manifest = Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.2.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11" }) + "\n");
-    fake.plugin = { version: "1.2.0" };
-    fake.update = { ok: true, available: true, version: "1.2.0", size: pkg.length, sha256: sha, manifest: manifest.toString("base64"), sig: sign(null, manifest, privateKey).toString("base64") };
+    const manifest = Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.3.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11" }) + "\n");
+    fake.plugin = { version: "1.3.0" };
+    fake.update = { ok: true, available: true, version: "1.3.0", size: pkg.length, sha256: sha, manifest: manifest.toString("base64"), sig: sign(null, manifest, privateKey).toString("base64") };
     fake.download = pkg;
     hub.retryNow();
     hub.stop();
     (hub as unknown as { runLoop(): void }).runLoop();
-    await until(() => hub.status().update?.version === "1.2.0", 4000, "the update offered");
+    await until(() => hub.status().update?.version === "1.3.0", 4000, "the update offered");
     await hub.installUpdate();
     assert.equal(hub.status().updating.state, "done", hub.status().updating.message);
-    assert.deepEqual(opened, [join(tmp, "ZIGMon-1.2.0.streamDeckPlugin")]);
+    assert.deepEqual(opened, [join(tmp, "ZIGMon-1.3.0.streamDeckPlugin")]);
     assert.deepEqual(readFileSync(opened[0]!), pkg);
     // tampered download: refused, nothing opened
     fake.download = Buffer.concat([pkg.subarray(0, -1), Buffer.from([8])]);

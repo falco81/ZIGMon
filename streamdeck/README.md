@@ -24,7 +24,7 @@ and the administrator grants the functions one by one.
 
 1. In ZIGMon, as the administrator: **Settings → Messages → Stream Deck**.
 2. Switch on **Allow Stream Deck control**.
-3. Click **Download ZIGMon for Stream Deck 1.1.0**. Compare the SHA-256 shown there with the
+3. Click **Download ZIGMon for Stream Deck 1.2.0**. Compare the SHA-256 shown there with the
    file if you like (`Get-FileHash ZIGMon.streamDeckPlugin` in PowerShell).
 4. Double-click the downloaded `.streamDeckPlugin`. Stream Deck asks to install it; say yes.
    A **ZIGMon for Stream Deck** category appears in the actions list.
@@ -87,6 +87,11 @@ the room by hand exactly as the dashboard's *Set … by hand* slider (the same r
 under the *climate* permission and its hold). **Show details (3 s)** makes a press show the
 mode, target, measured temperature and thermometer on the key for three seconds instead.
 
+Since 1.2, going round with **Next mode** steps the key at once and sends ZIGMon only the mode
+you stop on, 1.2 s after the last press. Before, every mode on the way was set, so going round
+to Max passed through Off and shut the room's valves on the way. A key that needs a hold to
+confirm still sends each confirmed press.
+
 ### Graphs (1.1)
 
 **Reading** and **Thermostat** draw a graph of **ZIGMon's own history** (what its History tab
@@ -123,6 +128,13 @@ Since 1.1 any key or dial that does something can ask for it too: the **Hold to 
 same hold with the same ring; turning a dial stays free. Where ZIGMon requires the hold the
 switch shows on and locked (*ZIGMon requires it for this item*). The hand is on the key
 whenever a hold applies.
+
+### By hand (1.2, ZIGMon 5.59.3)
+
+A **Control** key on a socket, a light or a relay has a **By hand** switch, as ZIGMon's own
+buttons do. Switched on from this key, the thing is taken over: rules and schedules leave it
+alone. Switched off from it, they take over again. A small figure on the key shows it is taken
+over, whether by this key, another key or a button. An older ZIGMon ignores the switch.
 
 ### What the keys tell you
 
