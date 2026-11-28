@@ -2083,7 +2083,17 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.59.1**
+Current version: **5.59.2**
+
+5.59.2 — A test alert for each desktop app key, sent from the dashboard.
+
+* Settings - Messages - Desktop app: a Test alert button on each key's row.
+  The computer holding the key shows "Test alert - sent from the dashboard by
+  ..." at once, whatever it watches, pauses or mutes; one not connected shows
+  it when it connects. Only that key gets it; it is written into the events,
+  and refused while the desktop app is switched off.
+* ZIGMon Notifier 1.3.0 (updates itself from this server): knows the test
+  alert. 1.2.0 lets it pass by unseen.
 
 5.59.1 — Looks for the Stream Deck keys, the heating room on a key, graphs from ZIGMon, and a master switch for the desktop app.
 
