@@ -692,6 +692,25 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/deck/admin', 'GET', null, 15.0);
         exit;
     }
+    if ($what === 'esp-admin' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59.4) the ESP32 gateways: their addresses, certificates, modules and entities -
+        // never a device key - an administrator's, behind the sign-in in the daemon
+        zigmon_relay('/api/esp', 'GET', null, 15.0);
+        exit;
+    }
+    if ($what === 'contacts' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59.4) the contacts: names and numbers - an administrator's, behind the sign-in
+        // in the daemon
+        zigmon_relay('/api/contacts', 'GET', null, 15.0);
+        exit;
+    }
+    if ($what === 'contacts-export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59.4) the contacts as a file: vCard 3.0 or Google's CSV - an administrator's
+        $fmt = ((string) ($_GET['format'] ?? '')) === 'csv' ? 'csv' : 'vcf';
+        zigmon_relay_download('/api/contacts/export?format=' . $fmt, 30, zigmon_download_session(), [],
+                              'contacts.' . $fmt);
+        exit;
+    }
     if ($what === 'notifier-keys' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.57) the desktop notifier's keys: their names, sensors and last use - never a
         // key - an administrator's, behind the sign-in in the daemon
@@ -1230,7 +1249,7 @@ if (isset($_GET['api'])) {
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
                        'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do', 'shellybackup-do', 'shelly-tls',
-                       'notifier-keys', 'deck-admin', 'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'notifier-keys', 'deck-admin', 'esp-admin', 'esp-command', 'passkey-register', 'passkey-begin', 'passkeys-do', 'contacts'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -1290,6 +1309,9 @@ if (isset($_GET['api'])) {
                   'shellybackup-do' => '/api/shellybackup',   /* (5.50) the Shelly boxes' configuration: back up, restore, download */
                   'notifier-keys' => '/api/notifier/keys',    /* (5.57) the desktop notifier's keys: make, change, take away */
                   'deck-admin' => '/api/deck/admin',          /* (5.59) Stream Deck: switch, approve, permissions, revoke */
+                  'esp-admin' => '/api/esp',                  /* (5.59.4) ESP32 gateways: probe, pair, detect, rename, unpair */
+                  'esp-command' => '/api/esp/command',        /* (5.59.4) a gateway's lock or switch, from the dashboard */
+                  'contacts' => '/api/contacts',              /* (5.59.4) the contacts: save, delete, import */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -4168,6 +4190,216 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      rather than a message that failed */
   .sms-line.unsure .sms-bubble{border-color:rgba(210,153,34,.5);background:rgba(210,153,34,.07)}
   .sms-who{display:flex;flex-direction:column;gap:2px;min-width:0}
+  /* ---- (5.59.4) the contacts: a card for each, the editor in a drawer, the recipients as chips ---- */
+  .ct-av{--h:210;flex:0 0 auto;width:40px;height:40px;border-radius:50%;display:inline-flex;align-items:center;
+    justify-content:center;font-weight:700;font-size:14.5px;letter-spacing:.02em;user-select:none;
+    color:hsl(var(--h),85%,80%);background:linear-gradient(145deg,hsla(var(--h),70%,58%,.34),hsla(var(--h),70%,45%,.16));
+    border:1px solid hsla(var(--h),70%,66%,.42);box-shadow:inset 0 1px 0 hsla(var(--h),80%,85%,.12)}
+  .ct-av.sm{width:22px;height:22px;font-size:10px;border-width:1px}
+  .ct-av.lg{width:64px;height:64px;font-size:22px}
+  .ct-av.grp{border-radius:8px}
+  .ct-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+  .ct-top h2{margin:0 !important;display:flex;align-items:baseline;gap:8px}
+  .ct-top h2 .muted{font-weight:500;font-size:13px}
+  .ct-tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ct-tools .btn.cmd.small{padding:5px 11px}
+  .ct-tools .ct-sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  .ct-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-find-wrap{position:relative;flex:1 1 260px;max-width:420px}
+  .ct-find-wrap svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--tx-mut);pointer-events:none}
+  .ct-find{width:100%;box-sizing:border-box;font:inherit;font-size:13.5px;background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:999px;padding:7px 14px 7px 34px}
+  .ct-find:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .ct-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ct-chip{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;
+    gap:6px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);border-radius:999px;padding:4px 11px;
+    line-height:20px;transition:color .12s,border-color .12s,background .12s}
+  .ct-chip:hover{color:var(--tx);border-color:var(--tx-mut)}
+  .ct-chip.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
+  .ct-chip .n{color:var(--tx-mut);font-weight:600;font-size:11.5px}
+  .ct-chip.on .n{color:inherit;opacity:.75}
+  .ct-chip.star.on{color:#e3b341;border-color:rgba(227,179,65,.6);background:rgba(227,179,65,.10)}
+  .ct-scroll{position:relative;min-height:120px}
+  .ct-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+  .ct-letter{grid-column:1/-1;font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--tx-mut);
+    padding:8px 2px 0;border-bottom:1px solid rgba(38,44,55,.7);margin-bottom:2px}
+  .ct-letter:first-child{padding-top:0}
+  .ct-one{position:relative;display:flex;gap:12px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);
+    border-radius:12px;padding:12px 12px 11px;cursor:pointer;transition:border-color .12s,background .12s,transform .12s;min-width:0}
+  .ct-one:hover{border-color:rgba(88,166,255,.45);background:#1f2630}
+  .ct-one:focus-visible{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.18)}
+  .ct-one .ct-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .ct-one .ct-name{font-weight:650;color:var(--tx);font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    padding-right:56px}
+  .ct-one .ct-num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;
+    font-size:12.5px;color:var(--tx-dim);display:flex;align-items:center;gap:6px;min-width:0}
+  .ct-one .ct-num .lbl{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:10.5px;
+    letter-spacing:.06em;text-transform:uppercase;color:var(--tx-mut)}
+  .ct-one .ct-more{font-size:11.5px;color:var(--tx-mut)}
+  .ct-one .ct-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:3px}
+  .ct-tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--tx-dim);
+    background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:999px;padding:1px 8px;line-height:18px}
+  .ct-tag i{width:7px;height:7px;border-radius:50%;background:hsl(var(--h,210),65%,60%);display:inline-block}
+  .ct-note{font-size:12px;color:var(--tx-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .ct-acts{position:absolute;top:8px;right:8px;display:flex;gap:2px}
+  .ct-ib{appearance:none;background:none;border:1px solid transparent;color:var(--tx-mut);cursor:pointer;border-radius:8px;
+    width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;transition:color .12s,background .12s}
+  .ct-ib:hover{color:var(--info);background:rgba(88,166,255,.10)}
+  .ct-ib.star.on{color:#e3b341}
+  .ct-ib.star:hover{color:#e3b341;background:rgba(227,179,65,.10)}
+  .ct-ib svg{display:block}
+  .ct-empty{grid-column:1/-1;text-align:center;padding:42px 16px 36px;color:var(--tx-dim);border:1px dashed var(--line);
+    border-radius:14px;background:rgba(88,166,255,.025)}
+  .ct-empty b{display:block;color:var(--tx);font-size:15px;margin-bottom:6px}
+  .ct-empty .btnrow{justify-content:center;margin-top:14px}
+  .ct-drop{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    border:2px dashed var(--info);border-radius:14px;background:rgba(13,17,23,.88);color:var(--info);font-weight:650;font-size:15px;
+    pointer-events:none}
+  .ct-drop[hidden]{display:none}
+  .ct-drop small{color:var(--tx-dim);font-weight:500;font-size:12.5px}
+  #ct-card{position:relative}
+  /* the drawer */
+  .ct-shade{position:fixed;inset:0;z-index:90;background:rgba(3,6,11,.6);backdrop-filter:blur(1.5px);opacity:0;
+    transition:opacity .18s ease}
+  .ct-shade.open{opacity:1}
+  .ct-drawer{position:fixed;top:0;right:0;bottom:0;z-index:91;width:min(460px,100vw);background:var(--panel);
+    border-left:1px solid var(--line);box-shadow:-24px 0 60px rgba(0,0,0,.5);display:flex;flex-direction:column;
+    transform:translateX(102%);transition:transform .22s cubic-bezier(.2,.8,.2,1)}
+  .ct-drawer.open{transform:none}
+  .ct-dhead{display:flex;align-items:center;gap:14px;padding:18px 18px 16px;border-bottom:1px solid var(--line)}
+  .ct-dhead .ct-dtitle{flex:1 1 auto;min-width:0}
+  .ct-dhead h3{margin:0;font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-dhead .muted{font-size:12.5px}
+  .ct-dbody{flex:1 1 auto;overflow-y:auto;padding:16px 18px 18px;display:flex;flex-direction:column;gap:16px}
+  .ct-field{display:flex;flex-direction:column;gap:6px}
+  .ct-field > label,.ct-field > .lab{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);font-weight:600;
+    display:flex;align-items:center;gap:8px}
+  .ct-field > label .cnt,.ct-field > .lab .cnt{margin-left:auto;letter-spacing:0;text-transform:none;font-weight:500}
+  .ct-drawer input[type=text],.ct-drawer input[type=tel],.ct-drawer textarea{font:inherit;font-size:14px;background:var(--panel2);
+    color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:9px 12px;width:100%;box-sizing:border-box;min-width:0}
+  .ct-drawer input:focus,.ct-drawer textarea:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .ct-drawer textarea{resize:vertical;min-height:70px;line-height:1.45}
+  .ct-drawer input.bad{border-color:var(--crit);box-shadow:0 0 0 3px rgba(248,81,73,.14)}
+  .ct-nums{display:flex;flex-direction:column;gap:8px}
+  .ct-nrow{display:grid;grid-template-columns:112px minmax(0,1fr) 34px;gap:8px;align-items:center}
+  .ct-nrow input.ct-lbl{font-size:13px;color:var(--tx-dim)}
+  .ct-nrow input.ct-tel{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .ct-nrow .ct-ib{width:34px;height:34px}
+  .ct-nrow .ct-ib:hover{color:var(--crit);background:var(--crit-bg)}
+  .ct-addnum{align-self:flex-start}
+  .ct-favrow{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:12px;
+    background:var(--panel2);cursor:pointer;user-select:none}
+  .ct-favrow .ct-star{color:var(--tx-mut);display:inline-flex}
+  .ct-favrow.on{border-color:rgba(227,179,65,.55);background:rgba(227,179,65,.07)}
+  .ct-favrow.on .ct-star{color:#e3b341}
+  .ct-favrow .t{flex:1 1 auto;display:flex;flex-direction:column}
+  .ct-favrow .t b{font-weight:600;font-size:13.5px}
+  .ct-favrow .t span{font-size:12px;color:var(--tx-mut)}
+  .ct-favrow input{width:auto;accent-color:#e3b341}
+  .ct-said{color:var(--crit);font-size:13px;min-height:0;margin:0}
+  .ct-said:empty{display:none}
+  .ct-dfoot{display:flex;gap:8px;align-items:center;padding:12px 18px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);
+    flex-wrap:wrap}
+  .ct-dfoot .spacer{flex:1}
+  /* the import's preview */
+  .ct-imp-sum{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:650;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx-dim)}
+  .ct-pill b{font-size:15px;font-variant-numeric:tabular-nums}
+  .ct-pill.add{color:var(--ok);border-color:rgba(63,185,80,.4);background:var(--ok-bg)}
+  .ct-pill.update{color:var(--info);border-color:rgba(88,166,255,.4);background:var(--info-bg)}
+  .ct-pill.skip{color:var(--warn);border-color:rgba(210,153,34,.4);background:var(--warn-bg)}
+  .ct-pill.removed{color:var(--crit);border-color:rgba(248,81,73,.4);background:var(--crit-bg)}
+  .ct-imp-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-imp-file{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 220px}
+  .ct-imp-file .ico{width:38px;height:38px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;
+    background:var(--info-bg);color:var(--info);border:1px solid rgba(88,166,255,.35);flex:0 0 auto}
+  .ct-imp-file b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-imp-file span{font-size:12px;color:var(--tx-mut)}
+  .ct-seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2)}
+  .ct-seg button{appearance:none;border:0;background:none;color:var(--tx-dim);font:inherit;font-size:13px;font-weight:600;
+    padding:7px 14px;cursor:pointer}
+  .ct-seg button + button{border-left:1px solid var(--line)}
+  .ct-seg button.on{background:var(--info-bg);color:var(--info)}
+  .ct-seg button.on.danger{background:var(--crit-bg);color:var(--crit)}
+  .ct-imp-warn{margin:0 0 12px;padding:9px 12px;border-radius:10px;border:1px solid rgba(248,81,73,.4);background:var(--crit-bg);
+    color:#ffb1ab;font-size:13px}
+  .ct-imp-table{border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:52vh}
+  .ct-imp-row{display:grid;grid-template-columns:92px minmax(150px,1.2fr) minmax(150px,1fr) minmax(90px,.6fr);gap:10px;
+    align-items:center;padding:8px 12px;border-bottom:1px solid rgba(38,44,55,.6);font-size:13px}
+  .ct-imp-row:last-child{border-bottom:0}
+  .ct-imp-row.ct-imp-h{position:sticky;top:0;z-index:1;background:var(--panel);font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--tx-mut);font-weight:600}
+  .ct-imp-row .who{display:flex;align-items:center;gap:8px;min-width:0}
+  .ct-imp-row .who span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-imp-row .nums{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--tx-dim);
+    overflow-wrap:anywhere}
+  .ct-imp-row .why{grid-column:2/-1;font-size:12px;color:var(--warn);margin-top:-4px}
+  .ct-imp-row.skip{background:rgba(210,153,34,.035)}
+  .ct-imp-row.skip .who span{color:var(--tx-dim)}
+  .ct-badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;font-size:11px;font-weight:700;
+    letter-spacing:.04em;padding:1px 9px;line-height:18px;border:1px solid}
+  .ct-badge.add{color:var(--ok);border-color:rgba(63,185,80,.45);background:var(--ok-bg)}
+  .ct-badge.update{color:var(--info);border-color:rgba(88,166,255,.45);background:var(--info-bg)}
+  .ct-badge.same{color:var(--tx-mut);border-color:var(--line);background:none}
+  .ct-badge.skip{color:var(--warn);border-color:rgba(210,153,34,.45);background:var(--warn-bg)}
+  /* Write a message: the recipients as chips */
+  .rc-wrap{position:relative;margin-bottom:12px}
+  .rc-field{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:46px;padding:6px 8px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:12px;cursor:text;transition:border-color .12s,box-shadow .12s}
+  .rc-field.focus{border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .rc-field .rc-to{font-size:12px;font-weight:600;color:var(--tx-mut);padding:0 4px 0 4px;letter-spacing:.04em}
+  .rc-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:2px 4px 2px 3px;border-radius:999px;font-size:13px;
+    background:rgba(88,166,255,.12);border:1px solid rgba(88,166,255,.38);color:var(--tx);line-height:22px;cursor:pointer}
+  .rc-chip.group{background:rgba(163,113,247,.12);border-color:rgba(163,113,247,.42)}
+  .rc-chip.number{background:rgba(255,255,255,.05);border-color:var(--line);padding-left:10px}
+  .rc-chip.person{background:rgba(63,185,80,.10);border-color:rgba(63,185,80,.38)}
+  .rc-chip.sel{box-shadow:0 0 0 2px var(--info)}
+  .rc-chip .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26ch;font-weight:600}
+  .rc-chip .no{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--tx-dim)}
+  .rc-chip .x{appearance:none;border:0;background:none;color:var(--tx-mut);cursor:pointer;width:20px;height:20px;border-radius:50%;
+    display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:15px;line-height:1}
+  .rc-chip .x:hover{color:var(--crit);background:var(--crit-bg)}
+  .rc-in{flex:1 1 160px;min-width:140px;border:0 !important;background:none !important;box-shadow:none !important;color:var(--tx);
+    font:inherit;font-size:14px;padding:5px 4px !important;outline:none}
+  .rc-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:120;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.55);padding:6px;max-height:320px;overflow-y:auto}
+  .rc-pop[hidden]{display:none}
+  .rc-ph{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);padding:6px 9px 4px;font-weight:600}
+  .rc-opt{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:9px;cursor:pointer;min-width:0}
+  .rc-opt.on{background:rgba(88,166,255,.14)}
+  .rc-opt .t{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+  .rc-opt .t b{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-opt .t span{font-size:12px;color:var(--tx-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-opt .t span.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .rc-opt mark{background:none;color:var(--info);font-weight:700}
+  .rc-opt .k{font-size:11px;color:var(--tx-mut);border:1px solid var(--line);border-radius:6px;padding:0 6px;flex:0 0 auto}
+  .rc-opt .ico{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.06);color:var(--tx-dim);flex:0 0 auto}
+  .rc-quick{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0 0}
+  .rc-quick .h{font-size:11px;font-weight:600;color:var(--tx-mut);letter-spacing:.04em;display:inline-flex;align-items:center;gap:4px;
+    margin-right:2px}
+  .rc-quick .h svg{color:#e3b341}
+  .rc-q{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;
+    background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);border-radius:999px;padding:2px 10px 2px 3px;
+    line-height:22px;transition:color .12s,border-color .12s}
+  .rc-q:hover{color:var(--tx);border-color:rgba(88,166,255,.5)}
+  .rc-q.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
+  .rc-q.ppl{padding-left:10px}
+  .sms-name:has(> .ct-av){display:inline-flex;align-items:center;gap:7px}
+  .sms-num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--tx-mut)}
+  @media (max-width:640px){
+    .ct-grid{grid-template-columns:1fr}
+    .ct-find-wrap{max-width:none;flex-basis:100%}
+    .ct-top .spacer,.ct-tools .ct-sep{display:none}
+    .ct-nrow{grid-template-columns:92px minmax(0,1fr) 34px}
+    .ct-imp-row{grid-template-columns:78px minmax(0,1fr);row-gap:3px}
+    .ct-imp-row .nums{grid-column:2}
+    .ct-imp-row .grp{grid-column:2;font-size:12px;color:var(--tx-mut)}
+    .ct-imp-row.ct-imp-h > :nth-child(n+3){display:none}
+    .ct-imp-row .why{grid-column:2}
+    .rc-chip .no{display:none}
+  }
   .sms-name{font-weight:600;color:var(--tx);overflow-wrap:anywhere}
   .sms-when{color:var(--tx-mut);font-size:11.5px}
   /* quiet: it is worth seeing when somebody asks why a message was slow, and
@@ -5955,6 +6187,167 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     .dk-card .facts .fact.wide{grid-column:1/-1}
     .dk-inst{padding:12px}
   }
+  /* (5.59.4) ESP32 gateways: Settings - Devices, the wizard, the locks on the Overview */
+  .esp-card h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .esp-card h2 .esp-h-add{padding:6px 12px;font-size:13px;margin-left:6px}
+  .esp-ic{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;line-height:0}
+  .esp-btn svg{flex:0 0 auto}
+  .esp-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .esp-tag{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--panel);color:var(--tx-dim);border:1px solid var(--line);white-space:nowrap}
+  .esp-tag.warn{background:var(--warn-bg);color:var(--warn);border-color:rgba(210,153,34,.35)}
+  .esp-empty{display:flex;gap:22px;align-items:center;padding:20px 22px;border-radius:16px;border:1px dashed var(--line);
+    background:radial-gradient(120% 140% at 0% 0%,rgba(88,166,255,.10),transparent 55%),
+               radial-gradient(120% 140% at 100% 100%,rgba(63,185,80,.08),transparent 55%),var(--panel2)}
+  .esp-empty-art,.esp-hero-art{display:flex;align-items:center;gap:6px;color:var(--info);flex:0 0 auto}
+  .esp-empty-art > svg:last-child,.esp-hero-art > svg:last-child{color:var(--ok)}
+  .esp-waves{color:var(--tx-mut);display:inline-flex;animation:esp-wave 2.4s ease-in-out infinite}
+  @keyframes esp-wave{0%,100%{opacity:.35}50%{opacity:1}}
+  .esp-empty-t{display:flex;flex-direction:column;gap:10px;align-items:flex-start;min-width:0}
+  .esp-empty-t b{font-size:16px}
+  .esp-steps{margin:0;padding-left:20px;font-size:13px;color:var(--tx-dim);display:flex;flex-direction:column;gap:4px;line-height:1.5}
+  .esp-steps li::marker{color:var(--info);font-weight:700}
+  .esp-gws{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr));gap:12px;align-items:start}
+  .esp-gw{display:flex;flex-direction:column;gap:12px;padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);min-width:0}
+  .esp-gw.on{border-color:rgba(63,185,80,.35);background:linear-gradient(180deg,rgba(63,185,80,.05),transparent 40%),var(--panel)}
+  .esp-gw.off{border-color:rgba(248,81,73,.35)}
+  .esp-gw.crit{border-color:rgba(248,81,73,.6);box-shadow:0 0 0 1px rgba(248,81,73,.25) inset}
+  .esp-gw.dis{opacity:.7}
+  .esp-gw-h{display:flex;align-items:center;gap:12px}
+  .esp-gw-art{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    background:var(--info-bg);color:var(--info);border:1px solid rgba(88,166,255,.3)}
+  .esp-gw.on .esp-gw-art{background:var(--ok-bg);color:var(--ok);border-color:rgba(63,185,80,.35)}
+  .esp-gw.off .esp-gw-art,.esp-gw.crit .esp-gw-art{background:var(--crit-bg);color:var(--crit);border-color:rgba(248,81,73,.35)}
+  .esp-gw-n{display:flex;flex-direction:column;min-width:0;flex:1 1 auto} .esp-gw-n b{font-size:15.5px;overflow-wrap:anywhere}
+  .esp-gw-n span{color:var(--tx-dim)}
+  .esp-status{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;font-size:12.5px;font-weight:600;white-space:nowrap;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx-dim)}
+  .esp-status i{width:8px;height:8px;border-radius:50%;background:var(--tx-mut)}
+  .esp-status.on{color:var(--ok);background:var(--ok-bg);border-color:rgba(63,185,80,.35)} .esp-status.on i{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.2)}
+  .esp-status.off{color:var(--crit);background:var(--crit-bg);border-color:rgba(248,81,73,.35)} .esp-status.off i{background:var(--crit)}
+  .esp-status.crit{color:#fff;background:var(--crit);border-color:var(--crit)} .esp-status.crit i{background:#fff}
+  .esp-status.wait i{background:var(--warn);animation:esp-wave 1.2s infinite}
+  .esp-certbad .btn{white-space:nowrap;flex:0 0 auto}
+  .esp-certbad > svg,.esp-safe > svg,.esp-last > svg{flex:0 0 auto}
+  .esp-certbad{display:flex;gap:12px;align-items:center;padding:11px 13px;border-radius:12px;background:var(--crit-bg);border:1px solid rgba(248,81,73,.45);color:var(--crit)}
+  .esp-certbad > div{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto;color:var(--tx)}
+  .esp-certbad > div span{font-size:12.5px;color:var(--tx-dim);line-height:1.45}
+  .esp-err{font-size:12.5px;color:var(--crit);padding:7px 11px;border-radius:10px;background:var(--crit-bg)}
+  .esp-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+  .esp-fact{display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);min-width:0}
+  .esp-fact .k{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut)}
+  .esp-fact .v{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+  .esp-fact.ok .v{color:var(--ok)} .esp-fact.warn .v{color:var(--warn)}
+  .esp-rssi{display:inline-flex;align-items:center;gap:7px}
+  .esp-bars{display:inline-flex;align-items:flex-end;gap:2px;height:13px}
+  .esp-bars i{width:3.5px;border-radius:1px;background:var(--line)}
+  .esp-bars i:nth-child(1){height:4px} .esp-bars i:nth-child(2){height:7px} .esp-bars i:nth-child(3){height:10px} .esp-bars i:nth-child(4){height:13px}
+  .esp-rssi.good .esp-bars i.on{background:var(--ok)} .esp-rssi.fair .esp-bars i.on{background:var(--warn)} .esp-rssi.poor .esp-bars i.on{background:var(--crit)}
+  .esp-mod{border:1px solid var(--line);border-radius:12px;background:var(--panel2);overflow:hidden}
+  .esp-mod-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.015)}
+  .esp-mod-h b{font-size:13.5px}
+  .esp-mod-sub{font-size:12px;color:var(--tx-mut)}
+  .esp-ent{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);min-width:0}
+  .esp-mod-h + .esp-ent{border-top:0}
+  .esp-ent > .esp-ic{color:var(--info)}
+  .esp-ent.unused{opacity:.5}
+  .esp-ent-n{display:flex;flex-direction:column;min-width:0;flex:1 1 auto}
+  .esp-ent-n b{font-size:13px;font-weight:600;overflow-wrap:anywhere} .esp-ent-n span{font-size:11.5px;color:var(--tx-mut)}
+  .esp-ent-v{font-size:12.5px;font-weight:600;white-space:nowrap}
+  .esp-ent-v.ok{color:var(--ok)} .esp-ent-v.warn{color:var(--warn)} .esp-ent-v.dim,.esp-ent-v.off{color:var(--tx-mut)} .esp-ent-v.busy{color:var(--info)}
+  .esp-pick{cursor:pointer} .esp-pick:hover{background:var(--panel)}
+  .esp-pick input{width:auto;margin:0;flex:0 0 auto;accent-color:var(--ok);transform:scale(1.15)}
+  .esp-gw-acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .esp-gw-acts .btn.cmd{padding:7px 12px;font-size:13px}
+  .esp-gap{flex:1 1 auto}
+  .esp-batt{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;white-space:nowrap}
+  .esp-batt-m{position:relative;width:24px;height:11px;border-radius:3px;border:1.5px solid currentColor;opacity:.9}
+  .esp-batt-m::after{content:'';position:absolute;right:-4px;top:2.5px;width:2px;height:4px;border-radius:0 1px 1px 0;background:currentColor}
+  .esp-batt-m i{position:absolute;left:1.5px;top:1.5px;bottom:1.5px;max-width:calc(100% - 3px);border-radius:1px;background:currentColor}
+  .esp-batt.ok{color:var(--ok)} .esp-batt.warn{color:var(--warn)} .esp-batt.crit{color:var(--crit)}
+  /* the wizard */
+  #zmodal .body.esp-wiz{gap:14px}
+  .esp-stepper{list-style:none;margin:0;padding:0;display:flex;gap:6px;counter-reset:s}
+  .esp-stepper li{flex:1 1 0;display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:999px;font-size:12.5px;color:var(--tx-mut);
+    background:var(--panel2);border:1px solid var(--line);min-width:0}
+  .esp-sdot{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;
+    background:var(--bg);border:1px solid var(--line);flex:0 0 auto}
+  .esp-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .esp-stepper li.now{color:var(--tx);border-color:var(--info);background:var(--info-bg)}
+  .esp-stepper li.now .esp-sdot{background:var(--info);border-color:var(--info);color:#0d1117}
+  .esp-stepper li.done{color:var(--ok)} .esp-stepper li.done .esp-sdot{background:var(--ok-bg);border-color:rgba(63,185,80,.5);color:var(--ok)}
+  .esp-wiz-hero{display:flex;gap:16px;align-items:center;padding:14px 16px;border-radius:14px;border:1px solid var(--line);
+    background:radial-gradient(120% 140% at 0% 0%,rgba(88,166,255,.12),transparent 60%),var(--panel2)}
+  .esp-hero-t{display:flex;flex-direction:column;gap:3px;min-width:0} .esp-hero-t b{font-size:15.5px} .esp-hero-t span{font-size:13px;color:var(--tx-dim)}
+  #zmodal .esp-addr{font-size:16px;padding:11px 13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .esp-lede{margin:0;font-size:13.5px;color:var(--tx-dim);line-height:1.55}
+  .esp-lede b{color:var(--tx)}
+  .esp-fp{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:14px;border-radius:14px;background:var(--bg);border:1px solid var(--line)}
+  .esp-fp-g{display:flex;align-items:baseline;justify-content:center;gap:7px;padding:9px 6px;border-radius:10px;background:var(--panel);border:1px solid var(--line)}
+  .esp-fp-g i{font-style:normal;font-size:10px;color:var(--tx-mut);min-width:14px;text-align:right}
+  .esp-fp-g b{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:clamp(17px,2.4vw,24px);letter-spacing:.08em;color:#fff}
+  .esp-fp-where{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--tx-mut)}
+  .esp-tick{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;font-weight:600}
+  .esp-tick:has(input:checked){border-color:rgba(63,185,80,.55);background:var(--ok-bg);color:var(--ok)}
+  #zmodal .esp-tick input{width:auto;margin:0;accent-color:var(--ok);transform:scale(1.25)}
+  .esp-code{display:flex;justify-content:center;align-items:center;gap:10px;padding:8px 0}
+  #zmodal .esp-digit{width:52px;height:64px;padding:0;text-align:center;font-size:30px;font-weight:700;border-radius:12px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--bg);border:1.5px solid var(--line);color:#fff}
+  #zmodal .esp-digit:focus{border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.25);outline:0}
+  .esp-code-sep{width:14px;height:3px;border-radius:2px;background:var(--line)}
+  .esp-safe{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--ok-bg);color:var(--ok);font-size:12.5px;line-height:1.45}
+  .esp-safe span{color:var(--tx-dim)}
+  .esp-found{display:flex;flex-direction:column;gap:10px}
+  .esp-found-h{display:flex;align-items:center;gap:9px;font-weight:600;color:var(--tx)} .esp-found-h .esp-ic{color:var(--info)}
+  .esp-detecting{display:flex;align-items:center;gap:12px;padding:22px;justify-content:center;color:var(--tx-dim)}
+  .esp-spin{width:20px;height:20px;border-radius:50%;border:2.5px solid var(--line);border-top-color:var(--info);animation:esp-spin .8s linear infinite}
+  @keyframes esp-spin{to{transform:rotate(360deg)}}
+  .esp-done{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:14px;background:var(--ok-bg);border:1px solid rgba(63,185,80,.4)}
+  .esp-done-ic{width:58px;height:58px;border-radius:50%;background:var(--ok);color:#0d1117}
+  .esp-done-t{display:flex;flex-direction:column;gap:3px} .esp-done-t b{font-size:17px} .esp-done-t span{color:var(--tx-dim)}
+  .esp-confirm{display:flex;gap:14px;align-items:center}
+  .esp-confirm-ic{width:56px;height:56px;border-radius:14px;flex:0 0 auto}
+  .esp-confirm-ic.warn{background:var(--warn-bg);color:var(--warn)} .esp-confirm-ic.ok{background:var(--ok-bg);color:var(--ok)}
+  .esp-confirm-t{display:flex;flex-direction:column;gap:4px} .esp-confirm-t b{font-size:15.5px} .esp-confirm-t span{font-size:13px;color:var(--tx-dim);line-height:1.5}
+  /* the Overview: the locks */
+  .esp-dash-h{display:flex;align-items:center;gap:9px;flex-wrap:wrap} .esp-dash-h > .esp-ic{color:var(--info)}
+  .esp-dash-gws{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+  .esp-gwpill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:999px;
+    border:1px solid var(--line);color:var(--tx-dim);background:var(--panel2)}
+  .esp-gwpill i{width:7px;height:7px;border-radius:50%;background:var(--tx-mut)}
+  .esp-gwpill.on i{background:var(--ok)} .esp-gwpill.off{color:var(--crit);border-color:rgba(248,81,73,.4)} .esp-gwpill.off i{background:var(--crit)}
+  .esp-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,270px),1fr));gap:10px}
+  .esp-tile{display:flex;flex-direction:column;gap:10px;padding:13px 14px;border-radius:14px;border:1px solid var(--line);background:var(--panel2);min-width:0;
+    transition:border-color .2s,background .2s}
+  .esp-tile.ok{border-color:rgba(63,185,80,.32)}
+  .esp-tile.warn{border-color:rgba(210,153,34,.55);background:linear-gradient(180deg,rgba(210,153,34,.08),transparent 55%),var(--panel2)}
+  .esp-tile.off{opacity:.65}
+  .esp-tile-top{display:flex;align-items:center;gap:11px}
+  .esp-tile-ic{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    background:var(--panel);color:var(--tx-dim);border:1px solid var(--line)}
+  .esp-tile-ic.ok{background:var(--ok-bg);color:var(--ok);border-color:rgba(63,185,80,.35)}
+  .esp-tile-ic.warn{background:var(--warn-bg);color:var(--warn);border-color:rgba(210,153,34,.45)}
+  .esp-tile-ic.busy{color:var(--info);border-color:var(--info);animation:esp-wave 1s infinite}
+  .esp-tile-n{display:flex;flex-direction:column;min-width:0;flex:1 1 auto} .esp-tile-n b{font-size:14.5px;overflow-wrap:anywhere}
+  .esp-tile-n span{font-size:11.5px;color:var(--tx-mut);overflow-wrap:anywhere}
+  .esp-tile-st{font-size:19px;font-weight:700;letter-spacing:.01em;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .esp-tile-st.ok{color:var(--ok)} .esp-tile-st.warn{color:var(--warn)} .esp-tile-st.dim,.esp-tile-st.off{color:var(--tx-mut)} .esp-tile-st.busy{color:var(--info)}
+  .esp-asked{font-size:11.5px;font-weight:600;color:var(--info)}
+  .esp-last{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-dim)}
+  .esp-last.ok svg{color:var(--ok)} .esp-last.bad{color:var(--crit)}
+  .esp-tile-acts{display:flex;gap:6px;flex-wrap:wrap}
+  .esp-tile-acts .btn.cmd{flex:1 1 0;justify-content:center;padding:8px 10px;font-size:13px;gap:6px;min-width:0}
+  .esp-tile-acts .esp-sensitive{border-color:rgba(210,153,34,.45)}
+  .esp-tile-acts .esp-act-lock{border-color:rgba(63,185,80,.45)}
+  .esp-tile-acts .esp-refresh{flex:0 0 auto;padding:8px 10px}
+  @media (max-width:720px){
+    .esp-empty{flex-direction:column;align-items:stretch;padding:16px}
+    .esp-empty-art{align-self:center}
+    .esp-stepper .esp-sw{display:none}
+    .esp-stepper li{justify-content:center;padding:6px}
+    .esp-fp{grid-template-columns:repeat(2,minmax(0,1fr))}
+    #zmodal .esp-digit{width:40px;height:54px;font-size:24px}
+    .esp-code{gap:6px}
+  }
   .ntf-card h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .ntf-card .ntf-top{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
   .ntf-card .ntf-lede{max-width:900px}
@@ -6346,6 +6739,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card metric" id="m-join-card"><div class="label">Permit join</div><div class="value" id="m-join">–</div><div class="sub" id="m-join-sub">&nbsp;</div></div>
     <div class="card metric" id="m-home-card" hidden><div class="label">At home</div><div class="value" id="m-home">–</div><div class="who-row" id="m-home-who"></div><div class="sub" id="m-home-sub">&nbsp;</div></div>
   </div>
+  <!-- (5.59.4) the locks and the other controls of the ESP32 gateways -->
+  <div class="card full esp-dash" id="esp-dash" hidden style="margin-bottom:14px"></div>
   <div class="btnrow" id="ov-add-row" hidden style="margin-bottom:10px;flex-wrap:wrap">
     <select id="ov-add-select"></select>
     <button class="btn cmd" id="ov-add-btn">Add to Overview</button>
@@ -6435,11 +6830,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <nav class="api-subs" id="sms-parts" aria-label="Parts of SMS">
       <button type="button" data-sub="log"><span class="ic" data-icon="sms"></span>Messages<span class="n" id="sms-n-log"></span></button>
       <button type="button" data-sub="write"><span class="ic" data-icon="edit"></span>Write a message</button>
+      <button type="button" data-sub="contacts"><span class="ic" data-icon="book"></span>Contacts<span class="n" id="sms-n-contacts"></span></button>
     </nav>
   </div>
   <div class="card full frame-fill frame-card" data-sub="write">
     <h2>Write a message</h2>
-    <p class="note">Pick who it goes to — anybody with a number on their card, or type one — and write it.
+    <p class="note">Pick who it goes to — a contact, a group, anybody with a number on their card, or type a number — and write it.
       <b>Ctrl+Space</b> offers the same <code>{…}</code> facts an alert can quote — and, under <i>Ready-made blocks</i>, a whole <code>{if …}{else}{end}</code> or <code>{for x in …}{end}</code> written out for you — and the preview underneath
       shows what will actually arrive.</p>
     <div id="sms-people" class="sms-people"></div>
@@ -6457,6 +6853,27 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <div id="sms-preview-body" class="sms-bubble out"></div>
       </div>
     </div>
+  </div>
+  <div class="card full frame-fill frame-card ct-card" id="ct-card" data-sub="contacts">
+    <div class="ct-top">
+      <h2>Contacts <span class="muted" id="ct-count"></span></h2>
+      <span class="spacer"></span>
+      <div class="ct-tools" id="ct-tools">
+        <button class="btn cmd small" id="ct-import" type="button" title="Read contacts from a .vcf (vCard) or .csv file - from a phone, Google, Outlook or iCloud. You see what it adds before anything is saved.">Import</button>
+        <button class="btn cmd small" id="ct-export-vcf" type="button" title="Every contact as a vCard 3.0 file, which phones, Google, Outlook and iCloud read">vCard</button>
+        <button class="btn cmd small" id="ct-export-csv" type="button" title="Every contact as a CSV with Google Contacts' columns">CSV</button>
+        <span class="ct-sep" aria-hidden="true"></span>
+        <button class="btn cmd small primary" id="ct-add" type="button" title="A new contact: a name, up to five numbers, a group and a note">New contact</button>
+      </div>
+    </div>
+    <div class="ct-bar" id="ct-bar">
+      <div class="ct-find-wrap"><span id="ct-find-ico"></span><input id="ct-find" type="search" class="ct-find" autocomplete="off"
+             placeholder="Find a name, a number, a group…" aria-label="Find a contact"></div>
+      <div class="ct-chips" id="ct-groups" role="group" aria-label="Which contacts"></div>
+    </div>
+    <div class="ct-scroll"><div id="ct-list" class="ct-grid"></div></div>
+    <div class="ct-drop" id="ct-drop" hidden>Drop the file to import it<small>.vcf or .csv, at most 2 MB — you see what it adds first</small></div>
+    <input type="file" id="ct-file" accept=".vcf,.vcard,.csv,text/vcard,text/x-vcard,text/csv" hidden>
   </div>
   <div class="card full listcard frame-fill" id="sms-log-card" data-sub="log">
     <h2>Messages</h2>
@@ -6741,6 +7158,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <span class="muted small" id="managed-note" style="align-self:center"></span>
       </div>
       <div id="managed-found" class="muted small" style="margin-top:10px"></div>
+    </div>
+    <!-- (5.59.4) the ESP32 gateways: paired here, their modules detected, what they carry used -->
+    <div class="card full esp-card" data-sec="dev-devices" id="esp-card">
+      <h2>ESP32 gateways <button class="btn cmd primary esp-h-add" id="esp-add" type="button" hidden>Add gateway</button></h2>
+      <p class="note">An ESP32 on the house’s Wi-Fi that carries <b>modules</b> - the first drives <b>Xiaomi Yeelock</b> locks over Bluetooth, several on one gateway. Paired here by comparing its certificate’s fingerprint and typing the 6-digit code it shows; then everything goes over HTTPS pinned to that certificate, each request and each answer signed with a key only ZIGMon and the gateway hold. <b>Detect</b> asks what its modules expose, and each thing becomes a device of the house: on the dashboard, in the history, in rules, scenes, buttons and on a Stream Deck.</p>
+      <div id="esp-host"></div>
     </div>
     <div class="card full" data-sec="dev-devices" data-old="devices" id="plug-control" hidden>
       <h2>Smart plugs</h2>
@@ -10502,6 +10925,7 @@ function renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig) {
   switch (name) {
     case 'overview':
       if (sigChanged('overview-cards', [cardsSig, OVERVIEW_LAYOUT_LOCAL])) { renderOverviewCustom(st); renderOverviewAddControl(st); }
+      if (sigChanged('esp-dash', [st.esp, mayOperate(), minute])) renderEspDash(st);   // (5.59.4) the locks
       renderPower(st);                      // it keeps its own signature
       if (sigChanged('money', [st.money])) renderMoney(st);
       renderEnergy(st); break;
@@ -11329,6 +11753,16 @@ function runsItsOwnSteps(doSel, target) {
 }
 
 function doOptionsFor(st, target, current) {
+  // (5.59.4) a thing of an ESP32 gateway: what it says it does, and nothing else
+  if (String(target || '').indexOf('esp:') === 0) {
+    var et = (st.switch_targets || []).filter(function (x) { return x.value === target; })[0];
+    var acts = ((et && et.esp) || {}).actions || [];
+    var eo = acts.filter(function (a) { return a !== 'set'; }).map(function (a) {
+      return [a, (ESP_ACT[a] ? ESP_ACT[a][0] : a) + ((((et || {}).esp || {}).confirm || []).indexOf(a) >= 0 ? ' (sensitive)' : '')];
+    });
+    if (acts.indexOf('set') >= 0) eo.unshift(['set:', 'set to \u2026']);
+    return eo.length ? eo : [['on', 'on']];
+  }
   // Somebody being home is not switched on and off; they arrive and they
   // leave. The daemon still hears 'on' and 'off', but nobody should have to
   // work out which is which.
@@ -14220,7 +14654,7 @@ function wifiRepaintLists() {
   if (STATE.status) renderWifiClients_tab(STATE.status);
 }
 // ---- the parts of SMS (5.47.4) ------------------------------------------------
-var SMS_SUBS = ['log', 'write'];
+var SMS_SUBS = ['log', 'write', 'contacts'];   // (5.59.4) and the contacts
 var SMS_SUB = (function () {
   try { var v = localStorage.getItem('zigmon.smsSub'); if (SMS_SUBS.indexOf(v) >= 0) return v; } catch (e) {}
   return 'log';
@@ -14241,6 +14675,8 @@ function showSmsSub(name, keepHash) {
   if (!keepHash && STATE.tab === 'sms') {
     try { history.replaceState(null, '', '#sms/' + name); } catch (e) {}
   }
+  if (name === 'contacts' && typeof ctPaint === 'function') ctPaint();     // (5.59.4)
+  if (name === 'write' && typeof ctLoad === 'function' && isAdmin() && CT.book === null) ctLoad();
 }
 function paintSmsParts(st) {
   var n = (((st || {}).sms) || {}).log_n;
@@ -26725,33 +27161,15 @@ function renderSmsTab(st, force) {
                                  SMSBOX.to, SMSBOX.free || '', isUnlocked()]);
   if (!force && chipsSig === SMSBOX.chipsSig && host.firstChild) { renderSmsLog(st); return; }
   SMSBOX.chipsSig = chipsSig;
-  host.innerHTML = '';
-  people.forEach(function (p) {
-    var on = SMSBOX.to.indexOf(p.id) >= 0;
-    var chip = el('label', 'sgroup-chip' + (on ? ' on' : ''));
-    var box = el('input'); box.type = 'checkbox'; box.checked = on;
-    box.onchange = function () {
-      SMSBOX.to = SMSBOX.to.filter(function (x) { return x !== p.id; });
-      if (box.checked) SMSBOX.to.push(p.id);
-      renderSmsTab(STATE.status, true);
-    };
-    chip.appendChild(box);
-    chip.appendChild(el('span', '', ICON.person + ' ' + p.name));
-    if (p.id) chip.appendChild(objMark(objRef('person', p.id), p.name));
-    chip.title = p.name + ' \u2014 ' + p.number + (p.home ? ' \u00b7 at home' : ' \u00b7 out');
-    host.appendChild(chip);
-  });
-  var free = el('input'); free.type = 'tel'; free.className = 'sms-free'; free.placeholder = '+420 777 123 456';
-  free.title = 'Or a number that belongs to nobody on the list. Several, separated by commas, are fine.';
-  free.value = SMSBOX.free || '';
-  free.oninput = function () { SMSBOX.free = free.value; };
-  host.appendChild(free);
-  if (!people.length) host.appendChild(el('span', 'muted small', 'Nobody has a number on their card yet \u2014 Settings \u2192 Presence.'));
+  // (5.59.4) the recipients as chips: the contacts, their groups, the people with a number on
+  // their card and typed numbers - see rcPaint. SMSBOX.to and .free are still how the rest of
+  // the page asks for somebody (Answer), and become chips here
+  RC.people = people;
+  rcTakeLegacy();
+  rcPaint();
+  if (isAdmin() && CT.book === null && !CT.loading) ctLoad();
   smsPreview();
   renderSmsLog(st, !!force);
-}
-function smsRecipients() {
-  return SMSBOX.to.concat(String(SMSBOX.free || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean));
 }
 // What the text would really say, asked of the daemon - the same service the
 // alert, the SMS command and the one-tap previews use. It used to be filled
@@ -26833,9 +27251,16 @@ function renderSmsLog(st, force) {
       var unsure = !going && (m.ok === null || m.ok === undefined);
       var line = el('div', 'sms-line ' + m.dir + (m.ok || going ? '' : (unsure ? ' unsure' : ' bad')));
       var who = el('div', 'sms-who');            // the name over the time, not a table
-      var whoName = el('span', 'sms-name', (m.person ? ICON.person + ' ' + m.person : m.number || '?'));
+      // (5.59.4) a number in the contacts: the contact's name, the number beside it
+      var known = !m.person && m.contact && m.contact.name;
+      var whoName = el('span', 'sms-name', (m.person ? ICON.person + ' ' + m.person : (known ? null : m.number || '?')));
+      if (known) {
+        whoName.appendChild(ctAvatar(m.contact.name, 'sm'));
+        whoName.appendChild(document.createTextNode(m.contact.name));
+      }
       if (m.id) whoName.appendChild(objMark('smslog:' + m.id, 'this message'));
       who.appendChild(whoName);
+      if (known && m.number) who.appendChild(el('span', 'sms-num', ctFmt(m.number)));
       // "6 min ago" is how long, not when: for a text somebody is trying to
       // account for - the one that came at ten past four - the clock time is
       // the thing they are looking for.
@@ -26853,7 +27278,7 @@ function renderSmsLog(st, force) {
             + 'when the webhook is off. It may have waited up to that long.');
         who.appendChild(road);
       }
-      if (m.person && m.number) who.title = m.number;
+      if ((m.person || known) && m.number) who.title = m.number;
       line.appendChild(who);
       var bubble = el('div', 'sms-bubble ' + m.dir, m.text);
       if (going) bubble.title = 'Handed to the gateway; it has not said yet that it went.';
@@ -26868,7 +27293,7 @@ function renderSmsLog(st, force) {
       var again = cmdButton('', 'reset', 'small iconbtn'); again.classList.remove('needs-unlock');
       again.title = m.dir === 'in' ? 'Answer this one' : 'Send it again';
       again.onclick = function () {
-        SMSBOX.free = m.number; SMSBOX.to = [];
+        SMSBOX.free = m.number; SMSBOX.to = []; RC.chips = [];
         if (m.dir === 'out') $('sms-text').value = m.text;
         renderSmsTab(STATE.status, true);
         showSmsSub('write');                  // (5.47.4) the form is a part of its own now
@@ -26937,7 +27362,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var to = smsRecipients();
     if (!to.length) { toast('Nobody to send it to yet.', false); return; }
     if (!box.value.trim()) { toast('Nothing to say yet.', false); return; }
-    withPin('Send this message', 'To ' + esc(to.join(', ')) + '.', function (pin) {
+    withPin('Send this message', 'To ' + esc(rcWords() || to.join(', ')) + '.', function (pin) {
       return post('sms-send', {pin: pin, to: to, text: box.value}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'could not send');
         box.value = ''; smsPreview(); renderSmsLog(STATE.status);
@@ -26945,6 +27370,968 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
   };
+});
+
+// ---- (5.59.4) the contacts: kept in ZIGMon, an administrator's ------------------------------
+// A card for each, found by a name, a number or a group; the editor in a drawer at the side;
+// a file of contacts read with a preview of what it adds, brings up to date and skips; and on
+// Write a message, the recipients as chips with the contacts, the groups and the people on the
+// cards offered as you type.
+var CT = {book: null, groups: [], loading: null, filter: 'all', find: '', most: 2000};
+var CT_STAR = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.5l-5.1 2.7 1-5.6-4.1-4 5.7-.8z" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+var CT_STAR_O = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.5l-5.1 2.7 1-5.6-4.1-4 5.7-.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+var CT_LABELS = ['mobile', 'home', 'work', 'work mobile', 'main', 'other'];
+function ctHue(name) {
+  var h = 7, s = String(name || '').toLowerCase();
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function ctInitials(name) {
+  var w = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '?';
+  var first = Array.from(w[0])[0] || '';
+  var last = w.length > 1 ? (Array.from(w[w.length - 1])[0] || '') : '';
+  return (first + last).toUpperCase();
+}
+function ctAvatar(name, cls) {
+  var a = el('span', 'ct-av' + (cls ? ' ' + cls : ''), ctInitials(name));
+  a.style.setProperty('--h', String(ctHue(name)));
+  a.setAttribute('aria-hidden', 'true');
+  return a;
+}
+function ctFmt(n) {
+  n = String(n || '');
+  var m = /^\+(\d{3})(\d{3})(\d{3})(\d{3})$/.exec(n);
+  if (m) return '+' + m[1] + ' ' + m[2] + ' ' + m[3] + ' ' + m[4];
+  m = /^(\d{3})(\d{3})(\d{3})$/.exec(n);
+  if (m) return m[1] + ' ' + m[2] + ' ' + m[3];
+  return n;
+}
+function ctDigits(s) { return String(s || '').replace(/[^0-9]/g, ''); }
+function ctFold(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function ctSameNum(a, b) {
+  var x = ctDigits(a), y = ctDigits(b);
+  if (/^00/.test(String(a || ''))) x = x.slice(2);
+  if (/^00/.test(String(b || ''))) y = y.slice(2);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  var wa = /^(\+|00)/.test(String(a || '')), wb = /^(\+|00)/.test(String(b || ''));
+  if (wa && wb) return false;
+  return x.length >= 9 && y.length >= 9 && x.slice(-9) === y.slice(-9);
+}
+function ctByNumber(n) {
+  var book = CT.book || [];
+  for (var i = 0; i < book.length; i++) {
+    for (var j = 0; j < (book[i].numbers || []).length; j++) if (ctSameNum(book[i].numbers[j].number, n)) return book[i];
+  }
+  return null;
+}
+function ctSorted(rows) {
+  return rows.slice().sort(function (a, b) { return a.name.localeCompare(b.name, 'cs', {sensitivity: 'base'}); });
+}
+function ctLoad(force) {
+  if (!isAdmin()) { CT.book = null; return Promise.resolve(null); }
+  if (CT.book && !force) return Promise.resolve(CT.book);
+  if (CT.loading) return CT.loading;
+  CT.loading = api('contacts').then(function (r) {
+    CT.loading = null; ctTake(r); return CT.book;
+  }, function (e) {
+    CT.loading = null; CT.failed = String((e && e.message) || e); ctPaintAll(); return null;
+  });
+  return CT.loading;
+}
+function ctTake(r) {
+  if (r && Array.isArray(r.contacts)) {
+    CT.book = r.contacts; CT.groups = r.groups || []; CT.failed = '';
+    if (r.most) CT.most = r.most;
+  }
+  ctPaintAll();
+}
+function ctPaintAll() {
+  ctPaint();
+  rcPaint();
+  if ($('sms-n-contacts')) $('sms-n-contacts').textContent = CT.book && CT.book.length ? String(CT.book.length) : '';
+}
+function ctGroupCount(g) {
+  var k = ctFold(g);
+  return (CT.book || []).filter(function (c) { return ctFold(c.group) === k; }).length;
+}
+function ctMatches(c, q) {
+  if (!q) return true;
+  var f = ctFold(q), d = ctDigits(q);
+  if (ctFold(c.name).indexOf(f) >= 0 || ctFold(c.group).indexOf(f) >= 0 || ctFold(c.note).indexOf(f) >= 0) return true;
+  if (d.length >= 3) return (c.numbers || []).some(function (n) { return ctDigits(n.number).indexOf(d) >= 0; });
+  return false;
+}
+function ctPaint() {
+  var host = $('ct-list');
+  if (!host) return;
+  var tools = $('ct-tools'), bar = $('ct-bar');
+  if (!isAdmin()) {
+    CT.book = null;
+    if (tools) tools.hidden = true;
+    if (bar) bar.hidden = true;
+    $('ct-count').textContent = '';
+    host.innerHTML = '';
+    var locked = el('div', 'ct-empty');
+    locked.appendChild(el('b', '', 'The contacts are an administrator\u2019s'));
+    locked.appendChild(el('span', '', 'Names and numbers of people: sign in as an administrator to see and change them.'));
+    host.appendChild(locked);
+    return;
+  }
+  if (tools) tools.hidden = false;
+  if (bar) bar.hidden = false;
+  if (CT.book === null) {
+    if (!CT.loading) ctLoad();
+    host.innerHTML = '';
+    host.appendChild(el('div', 'ct-empty', CT.failed ? CT.failed : 'Loading the contacts\u2026'));
+    return;
+  }
+  var book = CT.book;
+  $('ct-count').textContent = book.length ? book.length + (book.length === 1 ? ' contact' : ' contacts') : '';
+  // the filter chips: everybody, the favourites, each group
+  var chips = $('ct-groups');
+  chips.innerHTML = '';
+  var favN = book.filter(function (c) { return c.favourite; }).length;
+  if (CT.filter === 'fav' && !favN) CT.filter = 'all';
+  if (/^g:/.test(CT.filter) && !CT.groups.some(function (g) { return 'g:' + g === CT.filter; })) CT.filter = 'all';
+  var chip = function (key, words, n, cls, icon) {
+    var b = el('button', 'ct-chip' + (cls ? ' ' + cls : '') + (CT.filter === key ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.filter = key;
+    if (icon) b.insertAdjacentHTML('beforeend', icon);
+    b.appendChild(el('span', '', words));
+    b.appendChild(el('span', 'n', String(n)));
+    b.setAttribute('aria-pressed', CT.filter === key ? 'true' : 'false');
+    b.onclick = function () { CT.filter = key; ctPaint(); };
+    chips.appendChild(b);
+  };
+  chip('all', 'Everybody', book.length);
+  if (favN) chip('fav', 'Favourites', favN, 'star', CT_STAR);
+  CT.groups.forEach(function (g) { chip('g:' + g, g, ctGroupCount(g)); });
+  var rows = book.filter(function (c) {
+    if (CT.filter === 'fav' && !c.favourite) return false;
+    if (/^g:/.test(CT.filter) && ctFold(c.group) !== ctFold(CT.filter.slice(2))) return false;
+    return ctMatches(c, CT.find);
+  });
+  host.innerHTML = '';
+  if (!rows.length) {
+    var empty = el('div', 'ct-empty');
+    if (!book.length) {
+      empty.appendChild(el('b', '', 'No contacts yet'));
+      empty.appendChild(el('span', '', 'Add the people you write to, or bring them in from a phone, Google or Outlook: '
+        + 'a .vcf or .csv file \u2014 drop it here.'));
+      var br = el('div', 'btnrow');
+      var add = cmdButton('New contact', 'add', 'small primary'); add.onclick = function () { ctDrawer(null); };
+      var imp = cmdButton('Import a file', 'upload', 'small'); imp.onclick = ctPickFile;
+      br.appendChild(add); br.appendChild(imp);
+      empty.appendChild(br);
+    } else {
+      empty.appendChild(el('b', '', 'Nobody matches'));
+      empty.appendChild(el('span', '', 'Nothing in the names, the numbers, the groups or the notes has that in it.'));
+    }
+    host.appendChild(empty);
+    return;
+  }
+  // a letter over each run of names once there are enough to look through
+  var letter = null, letters = rows.length >= 24;
+  ctSorted(rows).forEach(function (c) {
+    var l = (Array.from(ctFold(c.name).trim())[0] || '#').toUpperCase();
+    if (!/[A-Z]/.test(l)) l = '#';
+    if (letters && l !== letter) { letter = l; host.appendChild(el('div', 'ct-letter', l)); }
+    host.appendChild(ctCard(c));
+  });
+}
+function ctCard(c) {
+  var card = el('div', 'ct-one');
+  card.tabIndex = 0;
+  card.dataset.id = c.id;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', c.name + ' \u2014 open to change');
+  card.appendChild(ctAvatar(c.name));
+  var body = el('div', 'ct-body');
+  body.appendChild(el('div', 'ct-name', c.name));
+  var first = (c.numbers || [])[0];
+  if (first) {
+    var num = el('div', 'ct-num');
+    num.appendChild(el('span', '', ctFmt(first.number)));
+    if (first.label) num.appendChild(el('span', 'lbl', first.label));
+    if (c.numbers.length > 1) num.appendChild(el('span', 'ct-more', '+' + (c.numbers.length - 1) + ' more'));
+    body.appendChild(num);
+  }
+  if (c.group || c.note) {
+    var meta = el('div', 'ct-meta');
+    if (c.group) {
+      var tag = el('span', 'ct-tag');
+      tag.style.setProperty('--h', String(ctHue(c.group)));
+      tag.appendChild(el('i'));
+      tag.appendChild(el('span', '', c.group));
+      meta.appendChild(tag);
+    }
+    if (c.note) meta.appendChild(el('span', 'ct-note', c.note.split('\n')[0]));
+    body.appendChild(meta);
+  }
+  card.appendChild(body);
+  var acts = el('div', 'ct-acts');
+  var write = el('button', 'ct-ib ct-write');
+  write.type = 'button';
+  write.title = 'Write to ' + c.name;
+  write.setAttribute('aria-label', write.title);
+  write.innerHTML = iconMarkup('sms', 16);
+  write.onclick = function (e) {
+    e.stopPropagation();
+    rcAddContact(c, 0);
+    showSmsSub('write');
+    setTimeout(function () { if ($('sms-text')) $('sms-text').focus(); }, 30);
+  };
+  var star = el('button', 'ct-ib star' + (c.favourite ? ' on' : ''));
+  star.type = 'button';
+  star.title = c.favourite ? 'A favourite \u2014 press to take the star away' : 'Make a favourite: first among the quick picks';
+  star.setAttribute('aria-label', star.title);
+  star.setAttribute('aria-pressed', c.favourite ? 'true' : 'false');
+  star.innerHTML = c.favourite ? CT_STAR : CT_STAR_O;
+  star.onclick = function (e) {
+    e.stopPropagation();
+    var want = !c.favourite;
+    c.favourite = want;
+    ctPaintAll();
+    post('contacts', {action: 'save', contact: Object.assign({}, c, {favourite: want})}).then(ctTake, function (err) {
+      c.favourite = !want; ctPaintAll(); zoops(err);
+    });
+  };
+  acts.appendChild(write);
+  acts.appendChild(star);
+  card.appendChild(acts);
+  card.onclick = function () { ctDrawer(c); };
+  card.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ctDrawer(c); } };
+  return card;
+}
+// -- the editor, in a drawer at the side --------------------------------------------------
+var CTD = {node: null, shade: null, key: null};
+function ctDrawerClose(now) {
+  var d = CTD.node, s = CTD.shade;
+  if (CTD.key) document.removeEventListener('keydown', CTD.key);
+  CTD.node = CTD.shade = CTD.key = null;
+  if (!d) return;
+  if (now) { d.remove(); s.remove(); return; }
+  d.classList.remove('open'); s.classList.remove('open');
+  setTimeout(function () { d.remove(); s.remove(); }, 230);
+}
+function ctDrawer(c) {
+  ctDrawerClose(true);
+  var isNew = !c;
+  var was = c || null;
+  c = c ? JSON.parse(JSON.stringify(c)) : {name: '', numbers: [{label: 'mobile', number: ''}], group: '', note: '', favourite: false};
+  if (!c.numbers || !c.numbers.length) c.numbers = [{label: 'mobile', number: ''}];
+  var shade = el('div', 'ct-shade');
+  var d = el('aside', 'ct-drawer');
+  d.id = 'ct-drawer';
+  d.setAttribute('role', 'dialog');
+  d.setAttribute('aria-modal', 'true');
+  d.setAttribute('aria-labelledby', 'ct-d-title');
+  var head = el('div', 'ct-dhead');
+  var av = ctAvatar(c.name || '?', 'lg');
+  head.appendChild(av);
+  var tt = el('div', 'ct-dtitle');
+  var h3 = el('h3', '', isNew ? 'New contact' : c.name);
+  h3.id = 'ct-d-title';
+  var sub = el('div', 'muted', '');
+  tt.appendChild(h3); tt.appendChild(sub);
+  head.appendChild(tt);
+  var x = el('button', 'ct-ib', '\u00d7');
+  x.type = 'button'; x.title = 'Close'; x.setAttribute('aria-label', 'Close'); x.style.fontSize = '22px';
+  x.onclick = function () { ctDrawerClose(); };
+  head.appendChild(x);
+  d.appendChild(head);
+  var body = el('div', 'ct-dbody');
+  var field = function (words, input, count) {
+    var f = el('div', 'ct-field');
+    var lab = el(input ? 'label' : 'div', input ? '' : 'lab', words);
+    if (input) { input.id = input.id || ('ct-e-' + words.toLowerCase().replace(/\W+/g, '')); lab.htmlFor = input.id; }
+    if (count) lab.appendChild(count);
+    f.appendChild(lab);
+    if (input) f.appendChild(input);
+    body.appendChild(f);
+    return f;
+  };
+  var name = el('input'); name.type = 'text'; name.id = 'ct-e-name'; name.maxLength = 80; name.value = c.name;
+  name.placeholder = 'Jana Nov\u00e1kov\u00e1'; name.autocomplete = 'off';
+  field('Name', name);
+  var numCount = el('span', 'cnt muted');
+  var numsField = field('Numbers', null, numCount);
+  var nums = el('div', 'ct-nums');
+  numsField.appendChild(nums);
+  var addNum = cmdButton('Add a number', 'add', 'small ct-addnum');
+  addNum.classList.remove('needs-unlock');
+  numsField.appendChild(addNum);
+  var dl = el('datalist'); dl.id = 'ct-labels';
+  CT_LABELS.forEach(function (l) { var o = el('option'); o.value = l; dl.appendChild(o); });
+  numsField.appendChild(dl);
+  var paintNums = function () {
+    nums.innerHTML = '';
+    c.numbers.forEach(function (n, i) {
+      var row = el('div', 'ct-nrow');
+      var lbl = el('input', 'ct-lbl'); lbl.type = 'text'; lbl.maxLength = 20; lbl.value = n.label || '';
+      lbl.setAttribute('list', 'ct-labels'); lbl.placeholder = 'label'; lbl.setAttribute('aria-label', 'Label of number ' + (i + 1));
+      lbl.oninput = function () { n.label = lbl.value; };
+      var tel = el('input', 'ct-tel'); tel.type = 'tel'; tel.value = n.number ? ctFmt(n.number) : '';
+      tel.placeholder = '+420 777 000 000'; tel.setAttribute('aria-label', 'Number ' + (i + 1)); tel.autocomplete = 'off';
+      tel.oninput = function () { n.number = tel.value; tel.classList.remove('bad'); };
+      var rm = el('button', 'ct-ib', '\u00d7');
+      rm.type = 'button'; rm.title = 'Take this number away'; rm.setAttribute('aria-label', rm.title); rm.style.fontSize = '18px';
+      rm.disabled = c.numbers.length < 2;
+      rm.style.visibility = c.numbers.length < 2 ? 'hidden' : '';
+      rm.onclick = function () { c.numbers.splice(i, 1); paintNums(); };
+      row.appendChild(lbl); row.appendChild(tel); row.appendChild(rm);
+      nums.appendChild(row);
+    });
+    numCount.textContent = c.numbers.length + ' of 5';
+    addNum.disabled = c.numbers.length >= 5;
+  };
+  addNum.onclick = function () {
+    if (c.numbers.length >= 5) return;
+    c.numbers.push({label: c.numbers.length ? 'home' : 'mobile', number: ''});
+    paintNums();
+    var all = nums.querySelectorAll('.ct-tel');
+    if (all.length) all[all.length - 1].focus();
+  };
+  paintNums();
+  var group = el('input'); group.type = 'text'; group.id = 'ct-e-group'; group.maxLength = 40; group.value = c.group || '';
+  group.placeholder = 'Family, Work, Neighbours\u2026'; group.setAttribute('list', 'ct-groups-dl'); group.autocomplete = 'off';
+  var gf = field('Group', group);
+  var gdl = el('datalist'); gdl.id = 'ct-groups-dl';
+  CT.groups.forEach(function (g) { var o = el('option'); o.value = g; gdl.appendChild(o); });
+  gf.appendChild(gdl);
+  if (CT.groups.length) {
+    var gq = el('div', 'ct-chips');
+    CT.groups.slice(0, 12).forEach(function (g) {
+      var b = el('button', 'ct-chip' + (ctFold(g) === ctFold(group.value) ? ' on' : ''), g);
+      b.type = 'button';
+      b.onclick = function () {
+        group.value = ctFold(g) === ctFold(group.value) ? '' : g;
+        Array.prototype.forEach.call(gq.children, function (x) { x.classList.toggle('on', ctFold(x.textContent) === ctFold(group.value)); });
+        paintHead();
+      };
+      gq.appendChild(b);
+    });
+    gf.appendChild(gq);
+  }
+  var noteCount = el('span', 'cnt muted');
+  var note = el('textarea'); note.id = 'ct-e-note'; note.maxLength = 200; note.rows = 3; note.value = c.note || '';
+  note.placeholder = 'Anything worth remembering';
+  field('Note', note, noteCount);
+  var paintNote = function () { noteCount.textContent = note.value.length + ' / 200'; };
+  note.oninput = paintNote; paintNote();
+  var fav = el('label', 'ct-favrow' + (c.favourite ? ' on' : ''));
+  var favBox = el('input'); favBox.type = 'checkbox'; favBox.checked = !!c.favourite; favBox.id = 'ct-e-fav';
+  var star = el('span', 'ct-star'); star.innerHTML = c.favourite ? CT_STAR : CT_STAR_O;
+  var ft = el('span', 't');
+  ft.appendChild(el('b', '', 'Favourite'));
+  ft.appendChild(el('span', '', 'One tap away under Write a message, and first in its suggestions'));
+  fav.appendChild(star); fav.appendChild(ft); fav.appendChild(favBox);
+  favBox.onchange = function () {
+    fav.classList.toggle('on', favBox.checked);
+    star.innerHTML = favBox.checked ? CT_STAR : CT_STAR_O;
+  };
+  body.appendChild(fav);
+  var said = el('p', 'ct-said');
+  said.setAttribute('role', 'alert');
+  body.appendChild(said);
+  d.appendChild(body);
+  var foot = el('div', 'ct-dfoot');
+  if (!isNew) {
+    var del = cmdButton('Delete', 'trash', 'small danger');
+    del.classList.remove('needs-unlock');
+    del.id = 'ct-e-delete';
+    del.onclick = function () {
+      zconfirm('Delete ' + was.name + '?', 'The contact and its numbers go from ZIGMon. The messages already sent and '
+        + 'received stay in the list.', 'Delete the contact', function () {
+        post('contacts', {action: 'delete', id: was.id}).then(function (r) {
+          ctTake(r); ctDrawerClose(); toast('Deleted ' + was.name, true);
+        }, function (e) { said.textContent = String((e && e.message) || e); });
+      });
+    };
+    foot.appendChild(del);
+  }
+  foot.appendChild(el('span', 'spacer'));
+  var cancel = cmdButton('Cancel', 'close', 'small');
+  cancel.classList.remove('needs-unlock');
+  cancel.onclick = function () { ctDrawerClose(); };
+  var save = cmdButton(isNew ? 'Add the contact' : 'Save', 'check', 'small primary');
+  save.classList.remove('needs-unlock');
+  save.id = 'ct-e-save';
+  foot.appendChild(cancel);
+  foot.appendChild(save);
+  d.appendChild(foot);
+  var paintHead = function () {
+    var nm = name.value.trim();
+    av.textContent = ctInitials(nm || '?');
+    av.style.setProperty('--h', String(ctHue(nm)));
+    h3.textContent = nm || (isNew ? 'New contact' : '\u2014');
+    var filled = c.numbers.filter(function (n) { return String(n.number || '').trim(); }).length;
+    sub.textContent = (filled ? filled + (filled === 1 ? ' number' : ' numbers') : 'No number yet')
+      + (group.value.trim() ? ' \u00b7 ' + group.value.trim() : '');
+  };
+  name.addEventListener('input', paintHead);
+  group.addEventListener('input', paintHead);
+  nums.addEventListener('input', paintHead);
+  paintHead();
+  var doSave = function () {
+    said.textContent = '';
+    var out = {name: name.value.trim(), group: group.value.trim(), note: note.value.trim(), favourite: favBox.checked,
+      numbers: c.numbers.map(function (n) { return {label: String(n.label || '').trim(), number: String(n.number || '').trim()}; })
+        .filter(function (n) { return n.number; })};
+    if (!isNew) out.id = was.id;
+    if (!out.name) { said.textContent = 'A contact needs a name.'; name.classList.add('bad'); name.focus(); return; }
+    if (!out.numbers.length) {
+      said.textContent = 'A contact needs at least one number.';
+      var t = nums.querySelector('.ct-tel'); if (t) { t.classList.add('bad'); t.focus(); }
+      return;
+    }
+    save.disabled = true;
+    post('contacts', {action: 'save', contact: out}).then(function (r) {
+      ctTake(r); ctDrawerClose(); toast((isNew ? 'Added ' : 'Saved ') + out.name, true);
+    }, function (e) {
+      save.disabled = false;
+      said.textContent = String((e && e.message) || e);
+      if (/phone number/.test(said.textContent)) {
+        Array.prototype.forEach.call(nums.querySelectorAll('.ct-tel'), function (t) {
+          if (said.textContent.indexOf(t.value.trim().slice(0, 30)) === 0) t.classList.add('bad');
+        });
+      }
+      if (/name|called/.test(said.textContent)) name.classList.add('bad');
+    });
+  };
+  save.onclick = doSave;
+  name.addEventListener('input', function () { name.classList.remove('bad'); });
+  d.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.target.tagName === 'INPUT')) { e.preventDefault(); doSave(); }
+  });
+  CTD.key = function (e) {
+    if (e.key !== 'Escape' || ($('zmodal') && !$('zmodal').hidden)) return;
+    if (Array.prototype.some.call(document.querySelectorAll('.backdrop'), function (b) { return !b.hidden; })) return;
+    ctDrawerClose();
+  };
+  document.addEventListener('keydown', CTD.key);
+  shade.onclick = function () { ctDrawerClose(); };
+  document.body.appendChild(shade);
+  document.body.appendChild(d);
+  CTD.node = d; CTD.shade = shade;
+  requestAnimationFrame(function () { shade.classList.add('open'); d.classList.add('open'); });
+  setTimeout(function () { try { (isNew ? name : name).focus(); } catch (e) {} }, 60);
+}
+// -- import, with a preview, and export ---------------------------------------------------
+function ctPickFile() { var f = $('ct-file'); if (f) { f.value = ''; f.click(); } }
+function ctReadFile(file) {
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { toast('That file is larger than 2 MB \u2014 export fewer contacts at a time.', false); return; }
+  var read = file.arrayBuffer ? file.arrayBuffer() : new Promise(function (ok, no) {
+    var r = new FileReader(); r.onload = function () { ok(r.result); }; r.onerror = no; r.readAsArrayBuffer(file);
+  });
+  read.then(function (buf) {
+    var text;
+    // a phone writes UTF-8; an older Outlook writes the Windows code page of Czech
+    try { text = new TextDecoder('utf-8', {fatal: true}).decode(buf); }
+    catch (e) { text = new TextDecoder('windows-1250').decode(buf); }
+    var fmt = /\.csv$/i.test(file.name) ? 'csv' : (/\.(vcf|vcard)$/i.test(file.name) ? 'vcf'
+      : (/BEGIN:VCARD/i.test(text.slice(0, 4096)) ? 'vcf' : 'csv'));
+    ctImportPreview({name: file.name || 'contacts', size: file.size, text: text, fmt: fmt, mode: 'merge'});
+  }, function (e) { zoops(e); });
+}
+function ctImportPreview(job) {
+  return post('contacts', {action: 'import', format: job.fmt, text: job.text, mode: job.mode, dry: true}).then(function (r) {
+    job.r = r; ctImportShow(job);
+  }, function (e) { zoops(e); });
+}
+function ctImportShow(job) {
+  var r = job.r, replace = job.mode === 'replace';
+  var doing = (r.added || 0) + (r.updated || 0) + (replace ? (r.removed || 0) : 0);
+  var words = !doing ? 'Nothing to import'
+    : (replace ? 'Replace with these ' + ((r.added || 0) + (r.updated || 0) + (r.unchanged || 0))
+      : 'Import ' + doing + (doing === 1 ? ' contact' : ' contacts'));
+  zmodal('Import contacts', function (body) {
+    body.classList.add('ct-imp');
+    var head = el('div', 'ct-imp-head');
+    var file = el('div', 'ct-imp-file');
+    var ico = el('span', 'ico'); ico.innerHTML = iconMarkup('book', 18);
+    file.appendChild(ico);
+    var ft = el('div');
+    ft.style.minWidth = '0';
+    ft.appendChild(el('b', '', job.name));
+    ft.appendChild(el('span', '', (job.fmt === 'vcf' ? 'vCard' : 'CSV') + ' \u00b7 ' + r.read + (job.fmt === 'vcf'
+      ? (r.read === 1 ? ' card' : ' cards') : (r.read === 1 ? ' row' : ' rows')) + ' read \u00b7 '
+      + (job.size < 1024 ? job.size + ' B' : Math.round(job.size / 1024) + ' kB')));
+    file.appendChild(ft);
+    head.appendChild(file);
+    var seg = el('div', 'ct-seg');
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Merge or replace');
+    [['merge', 'Merge'], ['replace', 'Replace']].forEach(function (m) {
+      var b = el('button', (job.mode === m[0] ? 'on' : '') + (m[0] === 'replace' ? ' danger' : ''), m[1]);
+      b.type = 'button';
+      b.dataset.mode = m[0];
+      b.title = m[0] === 'merge' ? 'Add the new ones and bring the ones already here up to date; nobody is removed'
+        : 'The file becomes the whole address book: whoever is not in it is removed';
+      b.setAttribute('aria-pressed', job.mode === m[0] ? 'true' : 'false');
+      b.onclick = function () { if (job.mode !== m[0]) { job.mode = m[0]; ctImportPreview(job); } };
+      seg.appendChild(b);
+    });
+    head.appendChild(seg);
+    body.appendChild(head);
+    if (replace && r.removed) {
+      body.appendChild(el('p', 'ct-imp-warn', 'Replace makes this file the whole address book: ' + r.removed
+        + (r.removed === 1 ? ' contact that is not in it is removed.' : ' contacts that are not in it are removed.')));
+    }
+    var sum = el('div', 'ct-imp-sum');
+    var pill = function (cls, n, w) {
+      var p = el('span', 'ct-pill ' + cls); p.appendChild(el('b', '', String(n))); p.appendChild(el('span', '', w)); sum.appendChild(p);
+    };
+    pill('add', r.added || 0, 'to add');
+    pill('update', r.updated || 0, 'to update');
+    if (r.unchanged) pill('same', r.unchanged, 'already here');
+    if (r.skipped_n) pill('skip', r.skipped_n, 'skipped');
+    if (replace && r.removed) pill('removed', r.removed, 'to remove');
+    body.appendChild(sum);
+    var table = el('div', 'ct-imp-table');
+    var hr = el('div', 'ct-imp-row ct-imp-h');
+    ['', 'Name', 'Numbers', 'Group'].forEach(function (w) { hr.appendChild(el('span', '', w)); });
+    table.appendChild(hr);
+    var plan = (r.plan || []).slice();
+    var order = {add: 0, update: 1, skip: 2, same: 3};
+    plan.sort(function (a, b) { return (order[a.action] - order[b.action]) || ((a.line || 0) - (b.line || 0)); });
+    var badge = {add: 'new', update: 'update', same: 'same', skip: 'skip'};
+    plan.slice(0, 1000).forEach(function (p) {
+      var row = el('div', 'ct-imp-row ' + p.action);
+      var b = el('span'); b.appendChild(el('span', 'ct-badge ' + p.action, badge[p.action] || p.action));
+      row.appendChild(b);
+      var who = el('span', 'who');
+      who.appendChild(ctAvatar(p.name || '?', 'sm'));
+      who.appendChild(el('span', '', p.name || '(no name) \u00b7 line ' + p.line));
+      row.appendChild(who);
+      row.appendChild(el('span', 'nums', (p.numbers || []).map(ctFmt).join(', ') || '\u2014'));
+      row.appendChild(el('span', 'grp muted', p.group || ''));
+      if (p.why) row.appendChild(el('span', 'why', 'Line ' + p.line + ': ' + p.why));
+      table.appendChild(row);
+    });
+    if (plan.length > 1000) table.appendChild(el('div', 'ct-imp-row', '\u2026 and ' + (plan.length - 1000) + ' more'));
+    (r.skipped || []).filter(function (s) { return !plan.some(function (p) { return p.line === s.line && p.action === 'skip'; }); })
+      .forEach(function (s) {
+        var row = el('div', 'ct-imp-row skip');
+        var b = el('span'); b.appendChild(el('span', 'ct-badge skip', 'skip')); row.appendChild(b);
+        row.appendChild(el('span', 'why', 'Line ' + s.line + ': ' + s.why));
+        table.appendChild(row);
+      });
+    if (!plan.length && !(r.skipped || []).length) table.appendChild(el('div', 'ct-imp-row', 'Nothing in this file.'));
+    body.appendChild(table);
+  }, [{words: 'Cancel', close: true},
+      {words: words, cls: (replace ? 'danger' : 'primary') + (doing ? '' : ' ct-none'), icon: 'download', go: function (btn) {
+        if (!doing) return;
+        btn.disabled = true;
+        post('contacts', {action: 'import', format: job.fmt, text: job.text, mode: job.mode}).then(function (x) {
+          closeZModal();
+          ctTake(x);
+          toast('Contacts: ' + x.added + ' added, ' + x.updated + ' updated' + (x.skipped_n ? ', ' + x.skipped_n + ' skipped' : '')
+            + (x.removed ? ', ' + x.removed + ' removed' : ''), true);
+        }, function (e) { btn.disabled = false; zmodalSaid(e); });
+      }}], 'medium');
+  var go = document.querySelector('#zmodal-foot .ct-none');
+  if (go) go.disabled = true;
+}
+function ctExport(fmt) {
+  var a = el('a');
+  a.href = '?api=contacts-export&format=' + (fmt === 'csv' ? 'csv' : 'vcf');
+  a.download = 'contacts.' + (fmt === 'csv' ? 'csv' : 'vcf');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+// -- Write a message: the recipients as chips ---------------------------------------------
+var RC = {chips: [], people: [], items: [], sel: -1, pick: null, chosen: -1};
+function rcAdd(ch) {
+  if (RC.chips.some(function (x) {
+    return x.value === ch.value || (ch.number && x.number && ctSameNum(x.number, ch.number));
+  })) { rcPaint(); return false; }
+  RC.chips.push(ch);
+  RC.chosen = -1;
+  rcPaint();
+  return true;
+}
+function rcAddContact(c, i) {
+  var n = (c.numbers || [])[i || 0];
+  if (!n) return false;
+  return rcAdd({kind: 'contact', value: i ? n.number : 'contact:' + c.id, name: c.name, number: n.number, label: n.label,
+    cid: c.id});
+}
+function rcAddNumber(raw) {
+  var s = String(raw || '').trim();
+  if (ctDigits(s).length < 3) return false;
+  var c = ctByNumber(s);
+  return rcAdd({kind: 'number', value: s, name: c ? c.name : '', number: s, cid: c ? c.id : ''});
+}
+function rcTakeLegacy() {
+  // the person chips and the typed numbers of before, and what Answer puts there
+  (SMSBOX.to || []).forEach(function (id) {
+    var p = (RC.people || []).filter(function (x) { return x.id === id; })[0];
+    if (p) rcAdd({kind: 'person', value: p.id, name: p.name, number: p.number});
+  });
+  String(SMSBOX.free || '').split(/[,;\n]/).forEach(function (x) { if (x.trim()) rcAddNumber(x); });
+  SMSBOX.to = []; SMSBOX.free = '';
+}
+function smsRecipients() {
+  rcTakeLegacy();
+  var typed = $('rc-in') ? $('rc-in').value.trim() : '';
+  if (typed && ctDigits(typed).length >= 6 && /^[+0-9 ()\/.\-]+$/.test(typed)) { rcAddNumber(typed); $('rc-in').value = ''; }
+  return RC.chips.map(function (c) { return c.value; });
+}
+function rcWords() {
+  return RC.chips.map(function (c) {
+    if (c.kind === 'group') return c.name + ' (group)';
+    return c.name ? c.name + ' (' + ctFmt(c.number) + ')' : ctFmt(c.number);
+  }).join(', ');
+}
+function rcChip(ch, i) {
+  var chip = el('span', 'rc-chip ' + ch.kind + (RC.chosen === i ? ' sel' : ''));
+  chip.dataset.value = ch.value;
+  if (ch.kind === 'group') {
+    var g = ctAvatar(ch.name, 'sm grp');
+    chip.appendChild(g);
+    chip.appendChild(el('span', 'nm', ch.name));
+    var n = ctGroupCount(ch.name);
+    chip.appendChild(el('span', 'no', n + (n === 1 ? ' contact' : ' contacts')));
+    chip.title = 'Everybody in ' + ch.name;
+  } else if (ch.name) {
+    chip.appendChild(ctAvatar(ch.name, 'sm'));
+    chip.appendChild(el('span', 'nm', ch.name));
+    chip.appendChild(el('span', 'no', ctFmt(ch.number)));
+    chip.title = ch.name + ' \u2014 ' + ctFmt(ch.number) + (ch.label ? ' (' + ch.label + ')' : '');
+  } else {
+    chip.appendChild(el('span', 'nm', ctFmt(ch.number)));
+    chip.title = 'A number of its own';
+  }
+  var c = ch.cid ? (CT.book || []).filter(function (x) { return x.id === ch.cid; })[0] : null;
+  if (c && (c.numbers || []).length > 1) {
+    chip.title += ' \u2014 click for another of the numbers';
+    chip.onclick = function (e) { if (e.target.closest('.x')) return; rcOpenPick(c, i); };
+  }
+  var x = el('button', 'x', '\u00d7');
+  x.type = 'button';
+  x.title = 'Take away';
+  x.setAttribute('aria-label', 'Take ' + (ch.name || ch.number) + ' away');
+  x.onclick = function (e) { e.stopPropagation(); RC.chips.splice(i, 1); RC.chosen = -1; rcPaint(); $('rc-in').focus(); };
+  chip.appendChild(x);
+  return chip;
+}
+function rcPaint() {
+  var host = $('sms-people');
+  if (!host) return;
+  if (!$('rc-in')) {
+    host.innerHTML = '';
+    host.classList.add('rc-host');
+    var wrap = el('div', 'rc-wrap');
+    var field = el('div', 'rc-field'); field.id = 'rc-field';
+    field.appendChild(el('span', 'rc-to', 'To'));
+    var input = el('input', 'rc-in'); input.id = 'rc-in'; input.type = 'text'; input.autocomplete = 'off';
+    input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', 'rc-pop'); input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-label', 'Who it goes to: a name, a group or a number');
+    input.spellcheck = false;
+    field.appendChild(input);
+    var pop = el('div', 'rc-pop'); pop.id = 'rc-pop'; pop.setAttribute('role', 'listbox'); pop.hidden = true;
+    wrap.appendChild(field); wrap.appendChild(pop);
+    var quick = el('div', 'rc-quick'); quick.id = 'rc-quick';
+    wrap.appendChild(quick);
+    host.appendChild(wrap);
+    field.onmousedown = function (e) { if (e.target === field) { e.preventDefault(); input.focus(); } };
+    input.onfocus = function () { field.classList.add('focus'); if (!RC.pick) rcSuggest(); };
+    input.onblur = function () {
+      field.classList.remove('focus');
+      setTimeout(function () {
+        if (document.activeElement === input) return;
+        rcClose();
+        var t = input.value.trim();
+        if (t && ctDigits(t).length >= 6 && /^[+0-9 ()\/.\-]+$/.test(t)) { rcAddNumber(t); input.value = ''; }
+      }, 180);
+    };
+    input.oninput = function () {
+      RC.pick = null; RC.chosen = -1;
+      var v = input.value;
+      if (/[,;\n]/.test(v)) {
+        var parts = v.split(/[,;\n]/), rest = parts.pop();
+        parts.forEach(function (p) { if (ctDigits(p).length >= 3) rcAddNumber(p); });
+        input.value = rest;
+      }
+      rcSuggest();
+    };
+    input.onkeydown = rcKey;
+  }
+  var fieldNow = $('rc-field'), inp = $('rc-in');
+  Array.prototype.forEach.call(fieldNow.querySelectorAll('.rc-chip'), function (x) { x.remove(); });
+  RC.chips.forEach(function (ch, i) { fieldNow.insertBefore(rcChip(ch, i), inp); });
+  inp.placeholder = RC.chips.length ? 'Add another\u2026' : 'A name, a group or a number \u2014 +420 777 000 000';
+  // the quick picks: the favourites, then the people with a number on their card
+  var quickNow = $('rc-quick');
+  quickNow.innerHTML = '';
+  var favs = ctSorted((CT.book || []).filter(function (c) { return c.favourite && (c.numbers || []).length; })).slice(0, 12);
+  var ppl = (RC.people || []).filter(function (p) { return p.number; });
+  if (!favs.length && !ppl.length) {
+    if (!(CT.book || []).length) quickNow.appendChild(el('span', 'muted small', 'Nobody has a number on their card yet \u2014 Settings \u2192 Presence'
+      + (isAdmin() ? '; or add contacts under SMS \u2192 Contacts.' : '.')));
+    return;
+  }
+  var h = el('span', 'h');
+  h.innerHTML = CT_STAR.replace('width="16" height="16"', 'width="12" height="12"');
+  h.appendChild(document.createTextNode('Quick'));
+  quickNow.appendChild(h);
+  favs.forEach(function (c) {
+    var on = RC.chips.some(function (x) { return x.cid === c.id; });
+    var b = el('button', 'rc-q' + (on ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.cid = c.id;
+    b.appendChild(ctAvatar(c.name, 'sm'));
+    b.appendChild(el('span', '', c.name));
+    b.title = c.name + ' \u2014 ' + ctFmt(c.numbers[0].number);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () {
+      if (on) RC.chips = RC.chips.filter(function (x) { return x.cid !== c.id; });
+      else if (c.numbers.length > 1) { $('rc-in').focus(); rcOpenPick(c, null); return; }
+      else rcAddContact(c, 0);
+      rcPaint();
+    };
+    quickNow.appendChild(b);
+  });
+  ppl.forEach(function (p) {
+    var on = RC.chips.some(function (x) { return x.kind === 'person' && x.value === p.id; });
+    var b = el('button', 'rc-q ppl' + (on ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.person = p.id;
+    b.appendChild(el('span', '', ICON.person + ' ' + p.name));
+    b.title = p.name + ' \u2014 ' + p.number + (p.home ? ' \u00b7 at home' : ' \u00b7 out');
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () {
+      if (on) RC.chips = RC.chips.filter(function (x) { return !(x.kind === 'person' && x.value === p.id); });
+      else rcAdd({kind: 'person', value: p.id, name: p.name, number: p.number});
+      rcPaint();
+    };
+    quickNow.appendChild(b);
+  });
+}
+function rcClose() {
+  var pop = $('rc-pop');
+  if (pop) pop.hidden = true;
+  if ($('rc-in')) $('rc-in').setAttribute('aria-expanded', 'false');
+  RC.items = []; RC.sel = -1; RC.pick = null;
+}
+function rcOpenPick(c, chipIndex) {
+  RC.pick = {c: c, chip: chipIndex};
+  RC.items = c.numbers.map(function (n, i) { return {kind: 'pick', c: c, i: i, n: n}; });
+  var current = chipIndex !== null && chipIndex !== undefined ? RC.chips[chipIndex] : null;
+  RC.sel = 0;
+  if (current) c.numbers.forEach(function (n, i) { if (ctSameNum(n.number, current.number)) RC.sel = i; });
+  rcPop('Which of ' + c.name + '\u2019s numbers?');
+  if ($('rc-in')) $('rc-in').focus();
+}
+function rcSuggest() {
+  var input = $('rc-in');
+  if (!input) return;
+  var q = input.value.trim(), f = ctFold(q), dg = ctDigits(q);
+  var chosen = function (pred) { return RC.chips.some(pred); };
+  var items = [];
+  var book = CT.book || [];
+  var looksNumber = dg.length >= 3 && /^[+0-9 ()\/.\-]+$/.test(q);
+  if (!q) {
+    ctSorted(book.filter(function (c) { return c.favourite; })).slice(0, 6).forEach(function (c) {
+      if (!chosen(function (x) { return x.cid === c.id; })) items.push({kind: 'contact', c: c, head: 'Favourites'});
+    });
+    CT.groups.slice(0, 6).forEach(function (g) {
+      if (!chosen(function (x) { return x.kind === 'group' && ctFold(x.name) === ctFold(g); })) items.push({kind: 'group', g: g, head: 'Groups'});
+    });
+  } else {
+    var hits = book.filter(function (c) {
+      if (chosen(function (x) { return x.cid === c.id; })) return false;
+      if (ctFold(c.name).indexOf(f) >= 0 || (f.length >= 2 && ctFold(c.group).indexOf(f) === 0)) return true;
+      return dg.length >= 3 && (c.numbers || []).some(function (n) { return ctDigits(n.number).indexOf(dg) >= 0; });
+    });
+    var rank = function (c) {
+      var nm = ctFold(c.name);
+      return (nm.indexOf(f) === 0 ? 0 : (new RegExp('(^|\\s)' + f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(nm) ? 1 : 2))
+        - (c.favourite ? 0.5 : 0);
+    };
+    hits.sort(function (a, b) { return rank(a) - rank(b) || a.name.localeCompare(b.name, 'cs'); });
+    var groups = CT.groups.filter(function (g) {
+      return ctFold(g).indexOf(f) >= 0 && !chosen(function (x) { return x.kind === 'group' && ctFold(x.name) === ctFold(g); });
+    });
+    var people = (RC.people || []).filter(function (p) {
+      if (chosen(function (x) { return x.kind === 'person' && x.value === p.id; })) return false;
+      return ctFold(p.name).indexOf(f) >= 0 || (dg.length >= 3 && ctDigits(p.number).indexOf(dg) >= 0);
+    });
+    if (looksNumber && dg.length >= 6 && !hits.some(function (c) { return (c.numbers || []).some(function (n) { return ctSameNum(n.number, q); }); }))
+      items.push({kind: 'number', q: q, head: 'A number'});
+    hits.slice(0, 8).forEach(function (c) { items.push({kind: 'contact', c: c, head: 'Contacts'}); });
+    groups.slice(0, 4).forEach(function (g) { items.push({kind: 'group', g: g, head: 'Groups'}); });
+    people.slice(0, 4).forEach(function (p) { items.push({kind: 'person', p: p, head: 'People on the cards'}); });
+    if (looksNumber && dg.length < 6) items.push({kind: 'number', q: q, head: 'A number', short: true});
+  }
+  RC.items = items;
+  RC.sel = items.length ? 0 : -1;
+  rcPop(null, q);
+}
+function rcMark(text, q) {
+  var span = el('b');
+  var i = q ? String(text).toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (i < 0) { span.textContent = text; return span; }
+  span.appendChild(document.createTextNode(text.slice(0, i)));
+  span.appendChild(el('mark', '', text.slice(i, i + q.length)));
+  span.appendChild(document.createTextNode(text.slice(i + q.length)));
+  return span;
+}
+function rcPop(title, q) {
+  var pop = $('rc-pop'), input = $('rc-in');
+  if (!pop) return;
+  pop.innerHTML = '';
+  if (!RC.items.length) { pop.hidden = true; input.setAttribute('aria-expanded', 'false'); return; }
+  var head = null;
+  if (title) pop.appendChild(el('div', 'rc-ph', title));
+  RC.items.forEach(function (it, i) {
+    if (!title && it.head !== head) { head = it.head; pop.appendChild(el('div', 'rc-ph', head)); }
+    var o = el('div', 'rc-opt' + (i === RC.sel ? ' on' : ''));
+    o.id = 'rc-opt-' + i;
+    o.setAttribute('role', 'option');
+    o.setAttribute('aria-selected', i === RC.sel ? 'true' : 'false');
+    var t = el('span', 't');
+    if (it.kind === 'contact') {
+      o.appendChild(ctAvatar(it.c.name, 'sm'));
+      t.appendChild(rcMark(it.c.name, q));
+      var n0 = it.c.numbers[0];
+      t.appendChild(el('span', 'mono', ctFmt(n0.number) + (it.c.numbers.length > 1 ? '  +' + (it.c.numbers.length - 1) + ' more' : '')
+        + (it.c.group ? '  \u00b7  ' + it.c.group : '')));
+      o.appendChild(t);
+      if (it.c.favourite) { var s = el('span', 'ct-star'); s.style.color = '#e3b341'; s.innerHTML = CT_STAR; o.appendChild(s); }
+    } else if (it.kind === 'group') {
+      o.appendChild(ctAvatar(it.g, 'sm grp'));
+      t.appendChild(rcMark(it.g, q));
+      var gn = ctGroupCount(it.g);
+      t.appendChild(el('span', '', 'Everybody in the group \u00b7 ' + gn + (gn === 1 ? ' contact' : ' contacts')));
+      o.appendChild(t);
+      o.appendChild(el('span', 'k', 'group'));
+    } else if (it.kind === 'person') {
+      var ic = el('span', 'ico', ICON.person); o.appendChild(ic);
+      t.appendChild(rcMark(it.p.name, q));
+      t.appendChild(el('span', 'mono', it.p.number + (it.p.home ? '  \u00b7  at home' : '')));
+      o.appendChild(t);
+    } else if (it.kind === 'pick') {
+      o.appendChild(ctAvatar(it.c.name, 'sm'));
+      t.appendChild(el('b', '', ctFmt(it.n.number)));
+      t.appendChild(el('span', '', it.n.label || 'number ' + (it.i + 1)));
+      o.appendChild(t);
+      if (it.i === 0) o.appendChild(el('span', 'k', 'first'));
+    } else {
+      var ic2 = el('span', 'ico', '#'); o.appendChild(ic2);
+      t.appendChild(el('b', '', 'Send to ' + it.q));
+      t.appendChild(el('span', '', it.short ? 'That is short for a phone number \u2014 add it anyway' : 'A number of its own'));
+      o.appendChild(t);
+    }
+    o.onmousedown = function (e) { e.preventDefault(); RC.sel = i; rcChoose(); };
+    o.onmousemove = function () { if (RC.sel !== i) { RC.sel = i; rcMarkSel(); } };
+    pop.appendChild(o);
+  });
+  pop.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  rcMarkSel();
+}
+function rcMarkSel() {
+  var pop = $('rc-pop');
+  Array.prototype.forEach.call(pop.querySelectorAll('.rc-opt'), function (o) {
+    var on = o.id === 'rc-opt-' + RC.sel;
+    o.classList.toggle('on', on);
+    o.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on && o.scrollIntoView) o.scrollIntoView({block: 'nearest'});
+  });
+  if ($('rc-in')) $('rc-in').setAttribute('aria-activedescendant', RC.sel >= 0 ? 'rc-opt-' + RC.sel : '');
+}
+function rcChoose() {
+  var it = RC.items[RC.sel], input = $('rc-in');
+  if (!it) return;
+  if (it.kind === 'contact') {
+    if (it.c.numbers.length > 1) { input.value = ''; rcOpenPick(it.c, null); return; }
+    rcAddContact(it.c, 0);
+  } else if (it.kind === 'pick') {
+    var pick = RC.pick || {};
+    var n = it.c.numbers[it.i];
+    var ch = {kind: 'contact', value: it.i ? n.number : 'contact:' + it.c.id, name: it.c.name, number: n.number, label: n.label,
+      cid: it.c.id};
+    if (pick.chip !== null && pick.chip !== undefined && RC.chips[pick.chip]) { RC.chips[pick.chip] = ch; rcPaint(); }
+    else rcAdd(ch);
+  } else if (it.kind === 'group') {
+    rcAdd({kind: 'group', value: 'group:' + it.g, name: it.g});
+  } else if (it.kind === 'person') {
+    rcAdd({kind: 'person', value: it.p.id, name: it.p.name, number: it.p.number});
+  } else {
+    rcAddNumber(it.q);
+  }
+  input.value = '';
+  rcClose();
+  input.focus();
+}
+function rcKey(e) {
+  var input = $('rc-in'), open = !$('rc-pop').hidden && RC.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!open) { rcSuggest(); return; }
+    RC.sel = (RC.sel + (e.key === 'ArrowDown' ? 1 : -1) + RC.items.length) % RC.items.length;
+    rcMarkSel();
+    return;
+  }
+  if ((e.key === 'Enter' || e.key === 'Tab') && open && RC.sel >= 0 && (input.value.trim() || RC.pick || e.key === 'Enter')) {
+    e.preventDefault();
+    rcChoose();
+    return;
+  }
+  if (e.key === 'Enter' && input.value.trim()) {
+    e.preventDefault();
+    if (rcAddNumber(input.value)) input.value = '';
+    return;
+  }
+  if (e.key === 'Escape' && open) { e.preventDefault(); e.stopPropagation(); rcClose(); return; }
+  if (e.key === 'Backspace' && !input.value && RC.chips.length) {
+    e.preventDefault();
+    if (RC.chosen === RC.chips.length - 1) { RC.chips.pop(); RC.chosen = -1; }
+    else RC.chosen = RC.chips.length - 1;
+    rcPaint();
+    return;
+  }
+  if (RC.chosen >= 0) { RC.chosen = -1; rcPaint(); }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  var card = $('ct-card');
+  if (!card) return;
+  setButtonIcon($('ct-add'), 'add', 'New contact');
+  setButtonIcon($('ct-import'), 'upload', 'Import');
+  setButtonIcon($('ct-export-vcf'), 'download', 'vCard');
+  setButtonIcon($('ct-export-csv'), 'download', 'CSV');
+  $('ct-find-ico').innerHTML = iconMarkup('search', 15);
+  $('ct-add').onclick = function () { ctDrawer(null); };
+  $('ct-import').onclick = ctPickFile;
+  $('ct-export-vcf').onclick = function () { ctExport('vcf'); };
+  $('ct-export-csv').onclick = function () { ctExport('csv'); };
+  $('ct-file').onchange = function () { ctReadFile(this.files && this.files[0]); };
+  $('ct-find').oninput = function () { CT.find = this.value; ctPaint(); };
+  var depth = 0;
+  var showDrop = function (on) { $('ct-drop').hidden = !on; };
+  card.addEventListener('dragenter', function (e) {
+    if (!isAdmin() || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+    e.preventDefault(); depth += 1; showDrop(true);
+  });
+  card.addEventListener('dragover', function (e) {
+    if (!isAdmin() || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  });
+  card.addEventListener('dragleave', function () { depth = Math.max(0, depth - 1); if (!depth) showDrop(false); });
+  card.addEventListener('drop', function (e) {
+    depth = 0; showDrop(false);
+    if (!isAdmin() || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    ctReadFile(e.dataTransfer.files[0]);
+  });
 });
 
 // what the diagnosis found, in the app's own dialog
@@ -38283,12 +39670,15 @@ var DK_CAPS = {
   automations: ['⚡', 'Automations', 'Rules, schedules and groups switched on and off.', 'rule, schedule and group'],
   messages: ['🔔', 'Messages', 'The reports and messages the house sends.', 'report and message'],
   system: ['⚙️', 'System', 'A backup now, hush the alerts, ask everything again… - each held to confirm by default.', 'system action'],
-  status: ['🩺', 'ZIGMon’s health', 'Standing alerts, blocked addresses, the server in front, devices unwell, the gateway.', '']
+  status: ['🩺', 'ZIGMon’s health', 'Standing alerts, blocked addresses, the server in front, devices unwell, the gateway.', ''],
+  /* (5.59.4) the locks of the ESP32 gateways: off until granted, a long press by default -
+     and always for what a lock names as sensitive (open, unlock), whatever is chosen here */
+  locks: ['🔐', 'Locks', 'The locks of the ESP32 gateways: open, unlock, lock. Open and unlock are always held to confirm.', 'lock']
 };
-var DK_ORDER = ['view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system', 'status'];
+var DK_ORDER = ['view', 'switch', 'dim', 'climate', 'cover', 'locks', 'scenes', 'automations', 'messages', 'system', 'status'];
 var DK_KIND_ICON = {socket: ICON.plug, light: ICON.light, 'switch': ICON.zb, dimmer: '🔆', thermostat: ICON.valve,
                     cover: '🪟', scene: ICON.scene, sequence: ICON.seq, group: ICON.agroup, rule: '⚡', schedule: '⏰',
-                    message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺'};
+                    message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺', lock: '🔐'};
 var DK_PRESETS = [
   ['look', 'Look only', ['view', 'status']],
   ['lights', 'Lights & sockets', ['view', 'status', 'switch', 'dim']],
@@ -38681,7 +40071,7 @@ function dkCapsEdit(opts) {
   var caps = JSON.parse(JSON.stringify(base));
   DK_ORDER.forEach(function (c) {
     caps[c] = Object.assign(c === 'status' ? {on: false} : {on: false, all: false, targets: []}, caps[c] || {});
-    if (c !== 'status' && c !== 'view' && caps[c].hold === undefined) caps[c].hold = c === 'system';
+    if (c !== 'status' && c !== 'view' && caps[c].hold === undefined) caps[c].hold = c === 'system' || c === 'locks';
   });
   var summary = el('div', 'dk-summary');
   summary.id = 'dk-summary';
@@ -39341,6 +40731,646 @@ function ntfGuessType(rule) {
   if ((rule.op === 'eq' || rule.op === 'ne') && typeof rule.value === 'string') return 'text';
   return 'number';
 }
+/* ==========================================================================
+   (5.59.4) ESP32 gateways (esp32/PROTOCOL.md): an ESP32 on the Wi-Fi, paired by comparing its
+   certificate's fingerprint and typing the 6-digit code it shows, its modules detected and
+   what they carry (locks, switches, sensors...) made devices of the house. Settings - Devices
+   keeps the gateways; the Overview has the locks with Open / Unlock / Lock. Nothing here ever
+   holds a device key: the daemon says "set" and its last two characters.
+   ========================================================================== */
+var ESP = {d: null, sig: '', wiz: null};
+var ESP_SVG = {
+  chip: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9.5 3.5v3M12 3.5v3M14.5 3.5v3M9.5 17.5v3M12 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 12h3M3.5 14.5h3M17.5 9.5h3M17.5 12h3M17.5 14.5h3"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7"/><path d="M12 14.6v2.2"/>',
+  unlock: '<rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V7.8a4 4 0 0 1 7.7-1.6"/><path d="M12 14.6v2.2"/>',
+  open: '<path d="M3.5 20.5h17"/><path d="M6 20.5V4.6a1 1 0 0 1 .8-1l8.4-1.4a1 1 0 0 1 1.2 1v17.3"/><path d="M16.4 4.5h1.6a1 1 0 0 1 1 1v15"/><circle cx="13.2" cy="12.2" r=".9" fill="currentColor"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.6-4.4L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.6 4.4L20 16"/><path d="M20 20.5V16h-4.5"/>',
+  sensor: '<path d="M12 3.5a2.5 2.5 0 0 0-2.5 2.5v8.2a4.5 4.5 0 1 0 5 0V6A2.5 2.5 0 0 0 12 3.5z"/><path d="M12 10v6.5"/>',
+  contact: '<rect x="4" y="5" width="6" height="14" rx="1.5"/><rect x="14" y="5" width="6" height="14" rx="1.5"/><path d="M10 12h4" stroke-dasharray="1.5 1.5"/>',
+  'switch': '<rect x="3.5" y="7.5" width="17" height="9" rx="4.5"/><circle cx="15.5" cy="12" r="2.6"/>',
+  button: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6"/>',
+  cover: '<path d="M4 4.5h16M5 4.5v15M19 4.5v15"/><path d="M5 8.5h14M5 12h14M5 15.5h14"/>',
+  number: '<path d="M4 18 L9 7 L14 18"/><path d="M6 14h6"/><path d="M17 8v10M14.5 10.5 17 8l2.5 2.5"/>',
+  select: '<path d="M5 6.5h9M5 12h14M5 17.5h11"/><circle cx="19" cy="6.5" r="1.4"/>',
+  text: '<path d="M5 6h14M12 6v13"/>',
+  wifi: '<path d="M2.5 9a14 14 0 0 1 19 0"/><path d="M5.5 12.5a9.5 9.5 0 0 1 13 0"/><path d="M8.6 16a5 5 0 0 1 6.8 0"/><circle cx="12" cy="19.2" r="1" fill="currentColor"/>',
+  shield: '<path d="M12 2.8l7.5 2.8v5.6c0 4.8-3.2 8.1-7.5 9.9-4.3-1.8-7.5-5.1-7.5-9.9V5.6z"/><path d="M8.8 12.2l2.2 2.2 4.4-4.6"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  battery: '<rect x="3" y="7.5" width="16" height="9" rx="2"/><path d="M21 10.5v3"/>'
+};
+var ESP_TYPE = {lock: ['Lock', 'lock'], 'switch': ['Switch', 'switch'], sensor: ['Sensor', 'sensor'],
+                binary_sensor: ['Contact', 'contact'], button: ['Button', 'button'], cover: ['Blind', 'cover'],
+                number: ['Number', 'number'], select: ['Choice', 'select'], text: ['Text', 'text'],
+                unknown: ['Read only', 'sensor']};
+var ESP_ACT = {open: ['Open', 'open', 'unlocks it and lets it lock again by itself'],
+               unlock: ['Unlock', 'unlock', 'leaves it unlocked until it is locked again'],
+               lock: ['Lock', 'lock', 'locks it'], refresh: ['Refresh', 'refresh', 'asks it where it stands'],
+               press: ['Press', 'button', 'presses it'], on: ['On', 'switch', 'switches it on'],
+               off: ['Off', 'switch', 'switches it off'], toggle: ['Toggle', 'switch', 'switches it over'],
+               close: ['Close', 'cover', 'closes it'], stop: ['Stop', 'cover', 'stops it'], set: ['Set', 'number', 'sets it']};
+var ESP_MOD = {yeelock: 'Xiaomi Yeelock locks over Bluetooth - several on one gateway'};
+function espSvg(k, size) {
+  return '<svg viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18)
+    + '" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + (ESP_SVG[k] || ESP_SVG.chip) + '</svg>';
+}
+function espIcon(k, size, cls) { var s = el('span', 'esp-ic' + (cls ? ' ' + cls : '')); s.innerHTML = espSvg(k, size); return s; }
+function espBtn(label, icon, cls) {
+  var b = el('button', 'btn cmd esp-btn' + (cls ? ' ' + cls : ''));
+  b.type = 'button';
+  b.innerHTML = espSvg(icon, 16) + '<span>' + esc(label) + '</span>';
+  return b;
+}
+/* the signal as four bars, and its dBm */
+function espRssi(dbm) {
+  var w = el('span', 'esp-rssi');
+  var n = !isNum(dbm) ? 0 : dbm >= -55 ? 4 : dbm >= -67 ? 3 : dbm >= -75 ? 2 : 1;
+  w.classList.add(n >= 3 ? 'good' : n === 2 ? 'fair' : 'poor');
+  var bars = el('span', 'esp-bars');
+  for (var i = 1; i <= 4; i++) bars.appendChild(el('i', i <= n ? 'on' : ''));
+  w.appendChild(bars);
+  w.appendChild(el('span', '', isNum(dbm) ? dbm + ' dBm' : '–'));
+  w.title = 'Wi-Fi signal at the gateway';
+  return w;
+}
+function espBattery(pct) {
+  var w = el('span', 'esp-batt');
+  if (!isNum(pct)) { w.hidden = true; return w; }
+  w.classList.add(pct < 10 ? 'crit' : pct < 25 ? 'warn' : 'ok');
+  var m = el('span', 'esp-batt-m');
+  var f = el('i'); f.style.width = Math.max(4, Math.min(100, pct)) + '%';
+  m.appendChild(f);
+  w.appendChild(m);
+  w.appendChild(el('span', '', Math.round(pct) + ' %'));
+  w.title = 'Battery';
+  return w;
+}
+/* what an entity is now, in a word, and its colour */
+function espState(e) {
+  if (e.gw_online === false) return {word: 'Gateway offline', cls: 'off', icon: e.type === 'lock' ? 'lock' : (ESP_TYPE[e.type] || ESP_TYPE.unknown)[1]};
+  if (!e.available) return {word: 'Out of reach', cls: 'off', icon: e.type === 'lock' ? 'lock' : (ESP_TYPE[e.type] || ESP_TYPE.unknown)[1]};
+  if (e.busy) return {word: 'Working…', cls: 'busy', icon: e.type === 'lock' ? 'lock' : (ESP_TYPE[e.type] || ESP_TYPE.unknown)[1]};
+  var v = e.value;
+  if (e.type === 'lock') {
+    if (v === 'locked') return {word: 'Locked', cls: 'ok', icon: 'lock'};
+    if (v === 'unlocked') return {word: 'Unlocked', cls: 'warn', icon: 'unlock'};
+    return {word: 'Not known yet', cls: 'dim', icon: 'lock'};
+  }
+  var icon = (ESP_TYPE[e.type] || ESP_TYPE.unknown)[1];
+  if (v === null || v === undefined || v === '') return {word: '–', cls: 'dim', icon: icon};
+  if (typeof v === 'boolean') return {word: v ? 'On' : 'Off', cls: v ? 'ok' : 'dim', icon: icon};
+  if (isNum(v)) return {word: fmt(v) + (e.unit ? ' ' + e.unit : ''), cls: '', icon: icon};
+  var s = String(v);
+  return {word: s.charAt(0).toUpperCase() + s.slice(1), cls: /^on$/i.test(s) ? 'ok' : '', icon: icon};
+}
+function espLast(last) {
+  if (!last || !last.action) return null;
+  var meta = ESP_ACT[last.action] || [last.action];
+  var line = el('div', 'esp-last ' + (last.ok ? 'ok' : 'bad'));
+  line.innerHTML = espSvg(last.ok ? 'check' : 'shield', 13);
+  var words = last.ok ? ({open: 'Opened', unlock: 'Unlocked', lock: 'Locked', refresh: 'Asked'}[last.action] || meta[0])
+                      : 'Could not ' + meta[0].toLowerCase() + (last.msg ? ' - ' + last.msg : '');
+  line.appendChild(el('span', '', words + (last.at ? ' · ' + ago(last.at) : '')));
+  return line;
+}
+
+/* ---- the dashboard: the locks and what else the gateways switch ---------------------- */
+function espDo(e, action, b) {
+  var meta = ESP_ACT[action] || [action, 'chip', ''];
+  var go = function () {
+    withPin(meta[0] + ' ' + e.name, '', function () {
+      zbusy(b, true);
+      return post('esp-command', {id: e.id, action: action, confirmed: true}).then(function (r) {
+        zbusy(b, false);
+        return r.message || (e.name + ': ' + action);
+      }, function (x) { zbusy(b, false); throw x; });
+    });
+  };
+  if ((e.confirm || []).indexOf(action) >= 0) {
+    zmodal(meta[0] + ' ' + e.name + '?', function (body) {
+      var w = el('div', 'esp-confirm');
+      w.appendChild(espIcon(meta[1], 34, 'esp-confirm-ic ' + (action === 'lock' ? 'ok' : 'warn')));
+      var t = el('div', 'esp-confirm-t');
+      t.appendChild(el('b', '', meta[0] + ' ' + e.name));
+      t.appendChild(el('span', '', 'This ' + (meta[2] || 'does it') + '. It is on ' + e.gw_name
+        + ' and is written into the events with your name.'));
+      w.appendChild(t);
+      body.appendChild(w);
+    }, [{words: 'No, leave it', close: true}, {words: meta[0], cls: 'primary', icon: 'check', close: true, go: go}], 'narrow');
+    return;
+  }
+  go();
+}
+function espTile(e) {
+  var s = espState(e);
+  var tile = el('div', 'esp-tile esp-' + (e.type === 'lock' ? 'lock' : 'ctl') + ' ' + s.cls);
+  var top = el('div', 'esp-tile-top');
+  var ic = el('span', 'esp-tile-ic ' + s.cls);
+  ic.innerHTML = espSvg(s.icon, e.type === 'lock' ? 26 : 22);
+  top.appendChild(ic);
+  var n = el('div', 'esp-tile-n');
+  n.appendChild(el('b', '', e.name));
+  n.appendChild(el('span', '', e.gw_name + ' · ' + (ESP_TYPE[e.type] || ESP_TYPE.unknown)[0].toLowerCase()));
+  top.appendChild(n);
+  top.appendChild(espBattery((e.values || {}).battery));
+  tile.appendChild(top);
+  var st = el('div', 'esp-tile-st ' + s.cls, s.word);
+  var waiting = Object.keys(e.asked || {});
+  if (waiting.length && !e.busy) st.appendChild(el('span', 'esp-asked', 'asked: ' + waiting.join(', ')));
+  tile.appendChild(st);
+  var last = espLast(e.last);
+  if (last) tile.appendChild(last);
+  var acts = el('div', 'esp-tile-acts');
+  var may = mayOperate();
+  var main = (e.actions || []).filter(function (a) { return a !== 'refresh' && a !== 'set'; });
+  main.forEach(function (a) {
+    var meta = ESP_ACT[a] || [a.charAt(0).toUpperCase() + a.slice(1), 'chip'];
+    var b = espBtn(meta[0], meta[1], 'esp-act-' + a + ((e.confirm || []).indexOf(a) >= 0 ? ' esp-sensitive' : ''));
+    b.disabled = !e.available || e.busy;
+    if (!may) b.title = 'Sign in as an operator to use it';
+    b.onclick = function () { espDo(e, a, b); };
+    acts.appendChild(b);
+  });
+  if ((e.actions || []).indexOf('refresh') >= 0) {
+    var r = el('button', 'btn iconbtn esp-refresh');
+    r.type = 'button'; r.title = 'Ask it where it stands (and its battery)';
+    r.innerHTML = espSvg('refresh', 16);
+    r.disabled = !e.available || e.busy;
+    r.onclick = function () { espDo(e, 'refresh', r); };
+    acts.appendChild(r);
+  }
+  if (main.length || (e.actions || []).indexOf('refresh') >= 0) tile.appendChild(acts);
+  return tile;
+}
+function renderEspDash(st) {
+  var host = $('esp-dash');
+  if (!host) return;
+  var es = ((st.esp || {}).entities || []);
+  var locks = es.filter(function (e) { return e.type === 'lock'; });
+  var others = es.filter(function (e) { return e.type !== 'lock' && (e.actions || []).length; });
+  host.hidden = !locks.length && !others.length;
+  if (host.hidden) return;
+  host.innerHTML = '';
+  var h = el('h2', 'esp-dash-h');
+  h.appendChild(espIcon('lock', 18));
+  h.appendChild(el('span', '', locks.length && others.length ? 'Locks and gateway controls' : locks.length ? 'Locks' : 'Gateway controls'));
+  var gws = el('span', 'esp-dash-gws');
+  ((st.esp || {}).gateways || []).filter(function (g) { return g.entities; }).forEach(function (g) {
+    var p = el('span', 'esp-gwpill ' + (g.online ? 'on' : g.enabled ? 'off' : 'dis'));
+    p.appendChild(el('i'));
+    p.appendChild(el('span', '', g.name + (g.online ? '' : g.enabled ? ' · offline' : ' · off')));
+    gws.appendChild(p);
+  });
+  h.appendChild(gws);
+  host.appendChild(h);
+  var grid = el('div', 'esp-tiles');
+  locks.concat(others).forEach(function (e) { grid.appendChild(espTile(e)); });
+  host.appendChild(grid);
+}
+
+/* ---- Settings - Devices - ESP32 gateways ---------------------------------------------- */
+function loadEsp(quiet) {
+  var host = $('esp-host');
+  if (!host) return;
+  rootTimer('dev-devices', function () { loadEsp(true); }, 6000);
+  if (!isUnlocked()) {
+    $('esp-add').hidden = true;
+    rootLocked(host, 'An administrator’s to see: a paired gateway can open the locks it carries.', loadEsp);
+    return;
+  }
+  rootUnlockedHost(host);
+  api('esp-admin').then(function (d) { ESP.d = d; drawEsp(); }).catch(function (e) { if (!quiet) zoops(e); });
+}
+function espAsk(body, b) {
+  zbusy(b, true);
+  return post('esp-admin', body).then(function (x) {
+    zbusy(b, false);
+    if (x && x.gateways) { ESP.d = Object.assign({}, ESP.d || {}, {gateways: x.gateways}); drawEsp(); }
+    return x;
+  }, function (e) { zbusy(b, false); throw e; });
+}
+function espGwStatus(g) {
+  if (!g.enabled) return ['dis', 'Switched off'];
+  if (g.cert_bad) return ['crit', 'Certificate changed'];
+  if (g.online === true) return ['on', 'Online'];
+  if (g.online === false) return ['off', 'Offline'];
+  return ['wait', 'Connecting…'];
+}
+function drawEsp() {
+  var host = $('esp-host');
+  if (!host || !ESP.d) return;
+  var gws = ESP.d.gateways || [];
+  $('esp-add').hidden = !gws.length;
+  var sig = JSON.stringify([gws.map(function (g) { return [g, Math.floor(Date.now() / 60000)]; })]);
+  if (sig === ESP.sig && host.children.length) return;
+  ESP.sig = sig;
+  host.innerHTML = '';
+  if (!gws.length) {
+    var empty = el('div', 'esp-empty');
+    var art = el('div', 'esp-empty-art');
+    art.innerHTML = espSvg('chip', 44) + '<span class="esp-waves">' + espSvg('wifi', 26) + '</span>' + espSvg('lock', 34);
+    empty.appendChild(art);
+    var t = el('div', 'esp-empty-t');
+    t.appendChild(el('b', '', 'No gateway paired yet'));
+    var steps = el('ol', 'esp-steps');
+    ['Join the ESP32 gateway to the Wi-Fi (its own page, or wifi set on its serial console).',
+     'On its page, ZIGMon → Pair with ZIGMon: it shows a 6-digit code for 10 minutes.',
+     'Add gateway here: its address, the fingerprint compared, the code - and ZIGMon finds what it carries.'
+    ].forEach(function (s) { steps.appendChild(el('li', '', s)); });
+    t.appendChild(steps);
+    var add = espBtn('Add gateway', 'chip', 'primary');
+    add.onclick = function () { espWizard({step: 1}); };
+    t.appendChild(add);
+    empty.appendChild(t);
+    host.appendChild(empty);
+    return;
+  }
+  var list = el('div', 'esp-gws');
+  gws.forEach(function (g) { list.appendChild(espGwCard(g)); });
+  host.appendChild(list);
+}
+function espGwCard(g) {
+  var stt = espGwStatus(g);
+  var card = el('div', 'esp-gw ' + stt[0]);
+  var h = el('div', 'esp-gw-h');
+  var art = el('span', 'esp-gw-art');
+  art.innerHTML = espSvg('chip', 28);
+  h.appendChild(art);
+  var n = el('div', 'esp-gw-n');
+  n.appendChild(el('b', '', g.name));
+  n.appendChild(el('span', 'esp-mono', g.address + (g.hello && g.hello.mac_tail ? ' · …' + g.hello.mac_tail : '')));
+  h.appendChild(n);
+  var pill = el('span', 'esp-status ' + stt[0]);
+  pill.appendChild(el('i'));
+  pill.appendChild(el('span', '', stt[1]));
+  if (g.since) pill.title = 'since ' + stamp(g.since);
+  h.appendChild(pill);
+  card.appendChild(h);
+  if (g.cert_bad) {
+    var warn = el('div', 'esp-certbad');
+    warn.innerHTML = espSvg('shield', 26);
+    var wt = el('div', '');
+    wt.appendChild(el('b', '', 'It shows another certificate than the one paired with'));
+    wt.appendChild(el('span', '', 'Nothing is sent to it. Was it reset to its factory settings, or flashed again? Then pair it again. '
+      + 'If you do not know why, something may be standing between ZIGMon and the gateway.'));
+    warn.appendChild(wt);
+    var again = espBtn('Pair again', 'chip', 'danger');
+    again.onclick = function () { espWizard({step: 1, address: g.address, again: g.name}); };
+    warn.appendChild(again);
+    card.appendChild(warn);
+  } else if (g.enabled && g.online === false && g.error) {
+    card.appendChild(el('div', 'esp-err', g.error));
+  }
+  var facts = el('div', 'esp-facts');
+  var fact = function (k, v, cls) {
+    var f = el('div', 'esp-fact' + (cls ? ' ' + cls : ''));
+    f.appendChild(el('span', 'k', k));
+    var vv = el('span', 'v');
+    if (v && v.nodeType) vv.appendChild(v); else vv.textContent = v === undefined || v === null || v === '' ? '–' : String(v);
+    f.appendChild(vv);
+    facts.appendChild(f);
+  };
+  var hello = g.hello || {};
+  fact('Firmware', (hello.fw || '–') + (hello.model ? ' · ' + hello.model : ''));
+  fact('Wi-Fi', espRssi(hello.rssi));
+  fact('Modules', (g.modules || []).length ? (g.modules || []).map(function (m) { return m.name; }).join(', ') : 'not detected yet');
+  fact('In use', g.used + ' of ' + g.entities);
+  fact('Paired', g.paired_at ? stamp(g.paired_at) + (g.paired_by ? ' by ' + g.paired_by : '') : '–');
+  fact('Key', g.key_set ? 'set ••' + g.key_hint : 'none', g.key_set ? 'ok' : 'warn');
+  card.appendChild(facts);
+  (g.modules || []).forEach(function (m) {
+    var mod = el('div', 'esp-mod');
+    var mh = el('div', 'esp-mod-h');
+    mh.appendChild(el('b', '', m.name));
+    if (m.version) mh.appendChild(el('span', 'esp-tag', 'v' + m.version));
+    mh.appendChild(el('span', 'esp-mod-sub', ESP_MOD[m.id] || ''));
+    mod.appendChild(mh);
+    (m.entities || []).forEach(function (e) {
+      var row = el('div', 'esp-ent' + (e.used ? '' : ' unused'));
+      var tp = ESP_TYPE[e.type] || ESP_TYPE.unknown;
+      row.appendChild(espIcon(tp[1], 16));
+      var en = el('span', 'esp-ent-n');
+      en.appendChild(el('b', '', e.shown || e.name));
+      en.appendChild(el('span', '', tp[0] + (e.used ? '' : ' · not used')));
+      row.appendChild(en);
+      var sv = e.state ? espState({type: e.type, value: e.state.value, busy: e.state.busy, available: e.state.available,
+                                   gw_online: g.enabled && g.online !== false && !g.cert_bad, unit: e.unit}) : null;
+      row.appendChild(el('span', 'esp-ent-v ' + (sv ? sv.cls : 'dim'), sv ? sv.word : '–'));
+      if (e.state && e.state.attrs && isNum(e.state.attrs.battery)) row.appendChild(espBattery(e.state.attrs.battery));
+      mod.appendChild(row);
+    });
+    card.appendChild(mod);
+  });
+  var acts = el('div', 'esp-gw-acts');
+  var det = espBtn('Detect again', 'refresh');
+  det.disabled = !g.enabled || g.cert_bad;
+  det.onclick = function () { espDetect(g, false); };
+  acts.appendChild(det);
+  var ren = espBtn('Rename', 'text');
+  ren.onclick = function () { espRename(g); };
+  acts.appendChild(ren);
+  var dis = espBtn(g.enabled ? 'Switch off' : 'Switch on', 'switch');
+  dis.onclick = function () {
+    espAsk({action: g.enabled ? 'disable' : 'enable', id: g.id}, dis).then(function (r) { toast(r.message, true); }, zoops);
+  };
+  acts.appendChild(dis);
+  acts.appendChild(el('span', 'esp-gap'));
+  var un = espBtn('Unpair', 'unlock', 'danger');
+  un.onclick = function () { espUnpair(g); };
+  acts.appendChild(un);
+  card.appendChild(acts);
+  return card;
+}
+function espRename(g) {
+  var name = zText(g.name, 'Hall, Garage, Bedroom drawer…');
+  name.maxLength = 40;
+  var gen;
+  zmodal('Rename ' + g.name, function (body) {
+    body.appendChild(zField('Name', name, 'What the gateway is called here - on the cards, in the events and on the devices it carries.'));
+  }, [{words: 'Cancel', close: true}, {words: 'Save', cls: 'primary', icon: 'save', go: function (b) {
+    espAsk({action: 'rename', id: g.id, name: name.value.trim()}, b).then(function (r) { closeZModal(); toast(r.message, true); },
+      function (e) { zmodalSaid(e, gen); });
+  }}], 'narrow');
+  gen = ZM.gen;
+}
+function espUnpair(g) {
+  zconfirm('Unpair ' + g.name + '?', 'The gateway is told to forget ZIGMon’s key, and ZIGMon forgets the gateway: its '
+    + g.used + ' device(s) leave the dashboard (their history stays). Rules, scenes and buttons that name them do nothing '
+    + 'until it is paired again.', 'Unpair', function () {
+    espAsk({action: 'unpair', id: g.id}, null).then(function (r) { toast(r.message, true); }, function (e) {
+      if (/Forget it/.test(e.message || '')) {
+        zconfirm('Forget ' + g.name + ' here only?', String(e.message) + '. Forgotten here, the gateway keeps the key until '
+          + 'it is unpaired on its own page (ZIGMon → Unpair) or reset.', 'Forget it here', function () {
+          espAsk({action: 'delete', id: g.id}, null).then(function (r) { toast(r.message, true); }, zoops);
+        });
+      } else zoops(e);
+    });
+  });
+}
+
+/* ---- the wizard: address, fingerprint, code, detect, done ------------------------------ */
+var ESP_STEPS = ['Address', 'Fingerprint', 'Code', 'Detect', 'Done'];
+function espStepper(at) {
+  var s = el('ol', 'esp-stepper');
+  ESP_STEPS.forEach(function (w, i) {
+    var li = el('li', i + 1 < at ? 'done' : i + 1 === at ? 'now' : '');
+    var dot = el('span', 'esp-sdot');
+    if (i + 1 < at) dot.innerHTML = espSvg('check', 13); else dot.textContent = String(i + 1);
+    li.appendChild(dot);
+    li.appendChild(el('span', 'esp-sw', w));
+    s.appendChild(li);
+  });
+  return s;
+}
+function espWizard(w) {
+  ESP.wiz = w = Object.assign(ESP.wiz && w.step !== 1 ? ESP.wiz : {}, w);
+  var title = (w.again ? 'Pair ' + w.again + ' again' : 'Add an ESP32 gateway') + ' · ' + w.step + ' of 5';
+  var gen;
+  if (w.step === 1) {
+    var addr = zText(w.address || '', '192.168.1.40 or zigmon-gw-a1b2c3.local', 'esp-addr');
+    zmodal(title, function (body) {
+      body.classList.add('esp-wiz');
+      body.appendChild(espStepper(1));
+      var hero = el('div', 'esp-wiz-hero');
+      hero.innerHTML = '<span class="esp-hero-art">' + espSvg('chip', 40) + '<span class="esp-waves">' + espSvg('wifi', 22)
+        + '</span>' + espSvg('shield', 30) + '</span>';
+      var ht = el('div', 'esp-hero-t');
+      ht.appendChild(el('b', '', 'Where is the gateway?'));
+      ht.appendChild(el('span', '', 'ZIGMon speaks to it over HTTPS on the house’s Wi-Fi, every request signed with a key of its own.'));
+      hero.appendChild(ht);
+      body.appendChild(hero);
+      body.appendChild(zField('Its address', addr, 'Shown on the gateway’s Overview page, or by status on its serial console. Port 443 unless you give another (:8443).'));
+      var ol = el('ol', 'esp-steps');
+      ['On the gateway’s page open ZIGMon → Pair with ZIGMon - it shows a 6-digit code for 10 minutes.',
+       'Keep that page open: the next step compares its certificate’s fingerprint with the one ZIGMon sees.'
+      ].forEach(function (x) { ol.appendChild(el('li', '', x)); });
+      body.appendChild(ol);
+      addr.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); $('zmodal-foot').querySelector('.primary').click(); } };
+    }, [{words: 'Cancel', close: true}, {words: 'Next', cls: 'primary', icon: 'next', go: function (b) {
+      espAsk({action: 'probe', address: addr.value.trim()}, b).then(function (r) {
+        espWizard({step: 2, address: r.address, fp: r.fingerprint, groups: r.groups, known: r.known, confirmed: false});
+      }, function (e) { zmodalSaid(e, gen); });
+    }}], 'medium');
+    gen = ZM.gen;
+    return;
+  }
+  if (w.step === 2) {
+    var tickBox = el('input');
+    tickBox.type = 'checkbox';
+    var next;
+    zmodal(title, function (body) {
+      body.classList.add('esp-wiz');
+      body.appendChild(espStepper(2));
+      var lede = el('p', 'esp-lede');
+      lede.innerHTML = 'Compare these with the fingerprint on the gateway’s <b>System</b> page (or <code>fingerprint</code> on its serial console). '
+        + 'They must be the same, <b>every group</b>: that is how you know it is your gateway, and nobody stands between.';
+      body.appendChild(lede);
+      var fp = el('div', 'esp-fp');
+      (w.groups || []).forEach(function (g4, i) {
+        var c = el('span', 'esp-fp-g');
+        c.appendChild(el('i', '', String(i + 1)));
+        c.appendChild(el('b', '', g4.toUpperCase()));
+        fp.appendChild(c);
+      });
+      body.appendChild(fp);
+      var where = el('div', 'esp-fp-where');
+      where.appendChild(el('span', 'esp-mono', w.address));
+      where.appendChild(el('span', '', 'SHA-256 of its certificate'));
+      body.appendChild(where);
+      if (w.known) body.appendChild(el('p', 'note warn esp-known', 'ZIGMon already knows this certificate as ' + w.known.name
+        + ': going on pairs it again with a new key.'));
+      var lab = el('label', 'esp-tick');
+      lab.appendChild(tickBox);
+      lab.appendChild(el('span', '', 'The gateway shows the same 64 characters'));
+      body.appendChild(lab);
+    }, [{words: 'Back', icon: 'prev', go: function () { espWizard({step: 1, address: w.address}); }},
+        {spacer: true},
+        {words: 'Cancel', close: true},
+        {words: 'They match', cls: 'primary', icon: 'next', go: function () {
+          if (!tickBox.checked) { zmodalSaid(new Error('tick that the gateway shows the same fingerprint first'), gen); return; }
+          espWizard({step: 3, confirmed: true});
+        }}], 'medium');
+    gen = ZM.gen;
+    next = $('zmodal-foot').querySelector('.primary');
+    next.disabled = true;
+    tickBox.onchange = function () { next.disabled = !tickBox.checked; };
+    return;
+  }
+  if (w.step === 3) {
+    var digits = [];
+    var name = zText(w.name || '', 'Hall, Garage, Bedroom…');
+    name.maxLength = 40;
+    var codeOf = function () { return digits.map(function (x) { return x.value; }).join(''); };
+    zmodal(title, function (body) {
+      body.classList.add('esp-wiz');
+      body.appendChild(espStepper(3));
+      body.appendChild(el('p', 'esp-lede', 'The 6 digits the gateway shows under ZIGMon → Pair with ZIGMon. A code is used once, '
+        + 'right or wrong; after five wrong ones the gateway refuses pairing for 15 minutes.'));
+      var row = el('div', 'esp-code');
+      for (var i = 0; i < 6; i++) {
+        (function (i) {
+          var d = el('input', 'esp-digit');
+          d.type = 'text'; d.inputMode = 'numeric'; d.maxLength = 1; d.autocomplete = 'one-time-code';
+          d.setAttribute('aria-label', 'digit ' + (i + 1));
+          d.oninput = function () {
+            var v = d.value.replace(/\D/g, '');
+            if (v.length > 1) {                               // a paste: spread it out
+              v.split('').slice(0, 6 - i).forEach(function (c, k) { digits[i + k].value = c; });
+              (digits[Math.min(5, i + v.length)] || d).focus();
+              return;
+            }
+            d.value = v;
+            if (v && digits[i + 1]) digits[i + 1].focus();
+          };
+          d.onkeydown = function (e) {
+            if (e.key === 'Backspace' && !d.value && digits[i - 1]) digits[i - 1].focus();
+            if (e.key === 'Enter') { e.preventDefault(); $('zmodal-foot').querySelector('.primary').click(); }
+          };
+          d.onpaste = function (e) {
+            var t = ((e.clipboardData || window.clipboardData).getData('text') || '').replace(/\D/g, '');
+            if (!t) return;
+            e.preventDefault();
+            t.split('').slice(0, 6).forEach(function (c, k) { if (digits[k]) digits[k].value = c; });
+            (digits[Math.min(5, t.length)] || d).focus();
+          };
+          digits.push(d);
+          row.appendChild(d);
+          if (i === 2) row.appendChild(el('span', 'esp-code-sep'));
+        })(i);
+      }
+      body.appendChild(row);
+      body.appendChild(zField('Its name here (optional)', name, 'Else the name the gateway gives itself.'));
+      var safe = el('div', 'esp-safe');
+      safe.innerHTML = espSvg('shield', 16);
+      safe.appendChild(el('span', '', 'The code never leaves ZIGMon: only a proof of it goes to the gateway, with a new 256-bit key over '
+        + 'HTTPS pinned to the fingerprint you compared.'));
+      body.appendChild(safe);
+    }, [{words: 'Back', icon: 'prev', go: function () { espWizard({step: 2}); }},
+        {spacer: true},
+        {words: 'Cancel', close: true},
+        {words: 'Pair', cls: 'primary', icon: 'key', go: function (b) {
+          var code = codeOf();
+          if (!/^\d{6}$/.test(code)) { zmodalSaid(new Error('the code is 6 digits'), gen); return; }
+          espAsk({action: 'pair', address: w.address, code: code, fingerprint: w.fp, confirmed: true, name: name.value.trim()}, b)
+            .then(function (r) { espWizard({step: 4, id: r.id, name: r.name, fw: r.fw}); }, function (e) {
+              digits.forEach(function (x) { x.value = ''; });
+              if (digits[0]) digits[0].focus();
+              zmodalSaid(e, gen);
+            });
+        }}], 'medium');
+    gen = ZM.gen;
+    setTimeout(function () { if (digits[0]) digits[0].focus(); }, 30);
+    return;
+  }
+  if (w.step === 4) { espDetect({id: w.id, name: w.name}, true); return; }
+  if (w.step === 5) {
+    zmodal(title, function (body) {
+      body.classList.add('esp-wiz');
+      body.appendChild(espStepper(6));
+      var done = el('div', 'esp-done');
+      done.appendChild(espIcon('check', 34, 'esp-done-ic'));
+      var t = el('div', 'esp-done-t');
+      t.appendChild(el('b', '', w.name + ' is paired'));
+      t.appendChild(el('span', '', w.used + ' thing' + (w.used === 1 ? '' : 's') + ' in use' + (w.locks ? ', ' + w.locks + ' of them lock'
+        + (w.locks === 1 ? '' : 's') : '') + '.'));
+      done.appendChild(t);
+      body.appendChild(done);
+      var ul = el('ul', 'esp-steps esp-next');
+      [w.locks ? 'The locks are on the Overview, with Open, Unlock and Lock - Open and Unlock ask you to confirm.' : 'What it carries is on the Sensors tab and in Devices.',
+       'Each one can be used in rules, scenes, schedules and buttons, like any other device.',
+       'On a Stream Deck the locks come under Locks: off until you grant them, and a long press to confirm.',
+       'Detect again, here, whenever a lock is added on the gateway - a restart of the gateway is noticed by itself.'
+      ].forEach(function (x) { ul.appendChild(el('li', '', x)); });
+      body.appendChild(ul);
+    }, [{words: 'Show the Overview', icon: 'next', close: true, go: function () { showTab('overview'); }},
+        {words: 'Done', cls: 'primary', icon: 'check', close: true}], 'medium');
+  }
+}
+/* Detect: what the gateway carries, every entity a tick - used by default */
+function espDetect(g, inWizard) {
+  var title = inWizard ? 'Add an ESP32 gateway · 4 of 5' : 'Detect what ' + g.name + ' carries';
+  var holder = el('div', 'esp-found');
+  var ticks = {};
+  var gen;
+  var draw = function (r) {
+    holder.innerHTML = '';
+    var mods = r.modules || [];
+    var head = el('div', 'esp-found-h');
+    head.appendChild(espIcon('chip', 20));
+    var n = 0;
+    mods.forEach(function (m) { n += (m.entities || []).length; });
+    head.appendChild(el('span', '', mods.length + ' module' + (mods.length === 1 ? '' : 's') + ', ' + n + ' thing' + (n === 1 ? '' : 's')
+      + ' found on ' + g.name));
+    holder.appendChild(head);
+    if (!n) holder.appendChild(el('p', 'note', 'Nothing yet: add a lock on the gateway’s own page (Modules → Yeelock → Add lock), then Detect again.'));
+    mods.forEach(function (m) {
+      var mod = el('div', 'esp-mod esp-mod-pick');
+      var mh = el('div', 'esp-mod-h');
+      mh.appendChild(el('b', '', m.name));
+      if (m.version) mh.appendChild(el('span', 'esp-tag', 'v' + m.version));
+      mh.appendChild(el('span', 'esp-mod-sub', ESP_MOD[m.id] || ''));
+      mod.appendChild(mh);
+      (m.entities || []).forEach(function (e) {
+        var lab = el('label', 'esp-ent esp-pick');
+        var cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = ticks[e.id] !== undefined ? ticks[e.id] : (r.use || {})[e.id] !== false;
+        ticks[e.id] = cb.checked;
+        cb.onchange = function () { ticks[e.id] = cb.checked; };
+        lab.appendChild(cb);
+        var tp = ESP_TYPE[e.type] || ESP_TYPE.unknown;
+        lab.appendChild(espIcon(tp[1], 18));
+        var en = el('span', 'esp-ent-n');
+        en.appendChild(el('b', '', e.name));
+        var what = tp[0] + (e.actions && e.actions.length ? ' · ' + e.actions.join(', ') : ' · read only');
+        en.appendChild(el('span', '', what));
+        lab.appendChild(en);
+        if ((e.confirm || []).length) {
+          var c = el('span', 'esp-tag warn', 'confirm: ' + e.confirm.join(', '));
+          c.title = 'The gateway asks for these to be confirmed: a dialog on the dashboard, a long press on a Stream Deck';
+          lab.appendChild(c);
+        }
+        if ((e.attrs || []).length) lab.appendChild(el('span', 'esp-tag', e.attrs.map(function (a) { return a.label; }).join(', ')));
+        mod.appendChild(lab);
+      });
+      holder.appendChild(mod);
+    });
+  };
+  var run = function (b) {
+    holder.innerHTML = '';
+    var sp = el('div', 'esp-detecting');
+    sp.appendChild(el('span', 'esp-spin'));
+    sp.appendChild(el('span', '', 'Asking ' + g.name + ' what it carries…'));
+    holder.appendChild(sp);
+    return espAsk({action: 'detect', id: g.id}, b).then(function (r) { ESP.found = r; draw(r); return r; }, function (e) {
+      holder.innerHTML = '';
+      holder.appendChild(el('p', 'note bad', String(e.message || e)));
+    });
+  };
+  zmodal(title, function (body) {
+    body.classList.add('esp-wiz');
+    if (inWizard) body.appendChild(espStepper(4));
+    body.appendChild(el('p', 'esp-lede', 'Every module the gateway has, and what each exposes. Tick what this house is to use: each becomes a device '
+      + 'of its own - on the dashboard, in the history, in rules, scenes and buttons. What is left unticked stays on the gateway.'));
+    body.appendChild(holder);
+  }, [{words: 'Detect again', icon: 'refresh', go: function (b) { run(b); }},
+      {spacer: true},
+      {words: inWizard ? 'Later' : 'Cancel', close: true},
+      {words: 'Use these', cls: 'primary', icon: 'check', go: function (b) {
+        espAsk({action: 'use', id: g.id, use: ticks}, b).then(function (r) {
+          var locks = 0;
+          ((ESP.found || {}).modules || []).forEach(function (m) {
+            (m.entities || []).forEach(function (e) { if (e.type === 'lock' && ticks[e.id]) locks += 1; });
+          });
+          tick(true);
+          if (inWizard) espWizard({step: 5, used: r.used, locks: locks, name: g.name});
+          else { closeZModal(); toast(g.name + ': ' + r.used + ' in use', true); }
+        }, function (e) { zmodalSaid(e, gen); });
+      }}], 'medium');
+  gen = ZM.gen;
+  run(null);
+}
+if ($('esp-add')) { setButtonIcon($('esp-add'), 'add', 'Add gateway'); $('esp-add').onclick = function () { espWizard({step: 1}); }; }
 function rootPaneShown(sec) {
   if (sec === 'sec-firewall') {
     $('fw-save').onclick = fwSave;
@@ -39357,6 +41387,7 @@ function rootPaneShown(sec) {
   if (sec === 'dev-backups') loadSbk(); else sbkPoll(false);
   if (sec === 'msg-desktop') loadNtf();
   if (sec === 'msg-deck') loadDeck();
+  if (sec === 'dev-devices') loadEsp();     // (5.59.4) the ESP32 gateways
   if (sec === 'sys-backup') { fullWire(); loadFull(); loadRb(); }
   if (sec === 'sys-network') loadNet();
   if (sec === 'sys-proxy') drawProxy();

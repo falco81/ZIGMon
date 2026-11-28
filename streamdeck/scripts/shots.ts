@@ -2,7 +2,7 @@
  * Screenshots of what the plugin draws, for looking at (not part of the build):
  * a Stream Deck XL page, a Stream Deck + with its touch strip, the special states, and every
  * property inspector at 350 px - all from the real code, driven against the fake ZIGMon.
- *   node out/scripts/shots.js <output dir>
+ *   node out/scripts/shots.js <output dir>   (and, since 1.3, new-actions-sheet.png: scripts/sheet.ts)
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -18,6 +18,7 @@ import { FakeProtector } from "../src/core/secrets.js";
 import { esc, fit } from "../src/core/svg.js";
 import { ActionView, type ActionKind } from "../src/core/views.js";
 import { FakeZigmon, MemoryStore, MockSurface, until } from "../test/fake-zigmon.js";
+import { newActionsSheet } from "./sheet.js";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -278,6 +279,8 @@ async function main(): Promise<void> {
     hub.stop();
     await fake.stop();
   }
+  // (1.3) the ten new actions on a sheet of their own
+  console.log("new actions: " + (await newActionsSheet(out)));
   console.log("screenshots in " + out);
 }
 

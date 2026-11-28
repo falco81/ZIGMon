@@ -145,6 +145,43 @@
                                    Text="Alerts are always on top. With this on they also take the keyboard, so Esc dismisses them." />
                     </StackPanel>
                 </Border>
+
+                <!-- (1.4.0) SMS and the Stream Deck: this computer's own switches -->
+                <Border Style="{StaticResource Section}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Glyph}" FontSize="16" Foreground="{StaticResource InfoBrush}" Text="&#xE8BD;" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Margin="10,0,0,0" Text="Messages (SMS)" />
+                        </StackPanel>
+                        <Border x:Name="SmsAllowed" Margin="0,12,0,0" CornerRadius="8" Padding="11,8" BorderThickness="1"
+                                Background="{StaticResource Panel2Brush}" BorderBrush="{StaticResource LineBrush}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="SmsAllowedGlyph" Style="{StaticResource Glyph}" FontSize="13" VerticalAlignment="Top" Margin="0,1,0,0"
+                                           Foreground="{StaticResource TextDimBrush}" Text="&#xE946;" />
+                                <TextBlock x:Name="SmsAllowedText" Grid.Column="1" Margin="9,0,0,0" FontSize="12.5" TextWrapping="Wrap"
+                                           Foreground="{StaticResource TextDimBrush}" />
+                            </Grid>
+                        </Border>
+
+                        <CheckBox x:Name="SmsPopupsOn" Style="{StaticResource Switch}" Margin="0,16,0,0" Click="OnSmsPopups"
+                                  Content="Show a pop-up when an SMS comes in" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="44,2,0,0"
+                                   Text="With Reply, Copy and Dismiss, on the monitor chosen above. Not while alerts are paused; Messages lists them all the same." />
+
+                        <CheckBox x:Name="SmsSoundOn" Style="{StaticResource Switch}" Margin="0,14,0,0" Click="OnSmsSound"
+                                  Content="Play a sound for an SMS" />
+                        <WrapPanel x:Name="SmsSoundChoices" Margin="44,8,0,0" />
+
+                        <CheckBox x:Name="DeckOn" Style="{StaticResource Switch}" Margin="0,14,0,0" Click="OnDeck"
+                                  Content="Answer the Stream Deck's SMS keys" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="44,2,0,0"
+                                   Text="A key on a Stream Deck linked to this computer in ZIGMon can show the latest SMS here, or open a new message to the people it names. Off: this computer ignores them." />
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 

@@ -220,7 +220,8 @@ if r.get('error') and ('Executable doesn' in r['error'] or 'Cannot find module' 
     finish()
 check(not r.get('error'), 'the page: %s' % r.get('error'))
 
-check(r.get('smsPills') == ['log', 'write'], 'the SMS pills: %r' % r.get('smsPills'))
+check(r.get('smsPills') == ['log', 'write', 'contacts'],      # (5.59.4) and the contacts
+      'the SMS pills: %r' % r.get('smsPills'))
 check(r.get('smsFirst') == ['log'], 'SMS does not open on its messages alone: %r' % r.get('smsFirst'))
 check(r.get('smsWrite') == ['write'] and r.get('smsHash') == '#sms/write', 'Write a message: %r %r'
       % (r.get('smsWrite'), r.get('smsHash')))

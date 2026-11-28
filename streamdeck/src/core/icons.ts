@@ -83,6 +83,16 @@ export const ICONS: Readonly<Record<string, string>> = {
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   sensor: '<circle cx="12" cy="12" r="2.2"/><path d="M8 8a5.6 5.6 0 0 0 0 8M16 8a5.6 5.6 0 0 1 0 8M5 5a9.9 9.9 0 0 0 0 14M19 5a9.9 9.9 0 0 1 0 14"/>',
+  // (1.3) the new actions
+  stopwatch: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V9.5"/><path d="M9.5 2.5h5"/><path d="M12 2.5V6"/><path d="M18.2 6.3l1.6-1.6"/>',
+  suitcase: '<rect x="3.5" y="7.5" width="17" height="12" rx="2.2"/><path d="M9 7.5V5.6A1.6 1.6 0 0 1 10.6 4h2.8A1.6 1.6 0 0 1 15 5.6v1.9"/><path d="M3.5 12.5h17"/><path d="M10.5 11v3h3v-3"/>',
+  mesh: '<circle cx="12" cy="4.8" r="2"/><circle cx="4.8" cy="18" r="2"/><circle cx="19.2" cy="18" r="2"/><circle cx="12" cy="13" r="1.7"/><path d="M12 6.8v4.5M10.6 14l-4 2.8M13.4 14l4 2.8M6.8 18h10.4"/>',
+  bellOff: '<path d="M8.6 5.3A6 6 0 0 1 18 11v4.2"/><path d="M6 10.5V16l-2 2h13.5"/><path d="M10 20a2 2 0 0 0 4 0"/><path d="M3 3l18 18"/>',
+  send: '<path d="M21 3 10.5 13.5"/><path d="M21 3l-6.4 18-4.1-7.5L3 9.4z"/>',
+  windowOpen: '<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M4 3l8.5 3.2v15.6L4 21"/><path d="M10 13.5v1.5"/>',
+  batteryLow: '<rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10.5v3"/><path d="M6.5 10v4"/>',
+  sofa: '<path d="M5 11V8.2A2.2 2.2 0 0 1 7.2 6h9.6A2.2 2.2 0 0 1 19 8.2V11"/><path d="M3.8 11.2A1.6 1.6 0 0 1 5.4 12.8v1.7h13.2v-1.7a1.6 1.6 0 0 1 3.2 0V18H2.2v-5.2a1.6 1.6 0 0 1 1.6-1.6z"/><path d="M5 18v2M19 18v2"/>',
+  inbox: '<path d="M3.5 13.5 6 5h12l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19z"/><path d="M3.5 13.5h5l1.2 2.2h4.6l1.2-2.2h5"/>',
 };
 
 /** The dashboard's icon names (and a few others ZIGMon may send) mapped onto ours. */

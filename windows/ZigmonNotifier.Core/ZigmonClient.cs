@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -109,6 +111,76 @@ public sealed class ZigmonClient : INotifierApi, IUpdateSource, IDisposable
         return body;
     }
 
+    // ---- SMS and contacts (5.59.4) ---------------------------------------------------------
+
+    /// <summary>The longest message the app sends; ZIGMon's own limits apply on top.</summary>
+    public const int MaxSmsText = SmsCounter.MaxText;
+
+    /// <summary>GET /api/notifier/sms?limit=N: the latest SMS, in and out, newest first (needs sms.read).</summary>
+    public async Task<IReadOnlyList<SmsMessage>> GetSmsAsync(int limit, CancellationToken cancellationToken)
+    {
+        int n = Math.Clamp(limit, 1, ProtocolParser.MaxSms);
+        using var doc = await GetAsync(Address.Endpoint("sms", "limit=" + FormatInvariant.I(n)), RequestTimeout, cancellationToken).ConfigureAwait(false);
+        return ProtocolParser.SmsList(doc.RootElement);
+    }
+
+    /// <summary>GET /api/notifier/contacts: ZIGMon's contacts, read-only (needs sms.contacts).</summary>
+    public async Task<ContactBook> GetContactsAsync(CancellationToken cancellationToken)
+    {
+        using var doc = await GetAsync(Address.Endpoint("contacts"), RequestTimeout, cancellationToken).ConfigureAwait(false);
+        return ProtocolParser.Contacts(doc.RootElement);
+    }
+
+    /// <summary>
+    /// POST /api/notifier/sms/send {"to":[...],"text":"...","reply_to":"..."} (needs sms.send).
+    /// ZIGMon's refusals (its SMS limits, the queue, a number it will not take) come back as a
+    /// result that is not Ok, in ZIGMon's own words; only a broken connection or a wrong key throws.
+    /// Neither the text nor the numbers are ever logged or put in an exception.
+    /// </summary>
+    public async Task<SmsSendResult> SendSmsAsync(IReadOnlyList<string> to, string text, string? replyTo, CancellationToken cancellationToken)
+    {
+        var wire = (to ?? Array.Empty<string>()).Where(Recipients.IsWire).Distinct(StringComparer.Ordinal).ToList();
+        if (wire.Count == 0) return new SmsSendResult(false, 0, 0, "Add at least one recipient.");
+        if (wire.Count > Recipients.MaxRecipients) return new SmsSendResult(false, 0, 0, "At most " + Recipients.MaxRecipients + " recipients at once.");
+        string t = (text ?? "").Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
+        if (t.Length == 0) return new SmsSendResult(false, 0, 0, "Write something first.");
+        if (t.Length > MaxSmsText) return new SmsSendResult(false, 0, 0, "The message is too long (at most " + MaxSmsText + " characters).");
+        string reply = SafeText.Identifier(replyTo, 64);
+
+        var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms))
+        {
+            w.WriteStartObject();
+            w.WriteStartArray("to");
+            foreach (var x in wire) w.WriteStringValue(x);
+            w.WriteEndArray();
+            w.WriteString("text", t);
+            if (reply.Length > 0) w.WriteString("reply_to", reply);
+            w.WriteEndObject();
+        }
+        byte[] body;
+        try
+        {
+            body = await FetchAsync(Address.Endpoint("sms-send"), RequestTimeout, "application/json", MaxErrorBytes, cancellationToken,
+                HttpMethod.Post, ms.ToArray(), refusalIsAnAnswer: true).ConfigureAwait(false);
+        }
+        catch (SmsRefused r)
+        {
+            return new SmsSendResult(false, 0, 0, r.Words);
+        }
+        if (body.Length == 0) return new SmsSendResult(false, 0, 0, "ZIGMon answered with nothing.");
+        using var doc = ProtocolParser.ParseDocument(body);
+        var result = ProtocolParser.SendResult(doc.RootElement);
+        return result with { Message = _key.Scrub(result.Message) };
+    }
+
+    /// <summary>A send ZIGMon turned down, with its words (already scrubbed of the key).</summary>
+    private sealed class SmsRefused : Exception
+    {
+        public string Words { get; }
+        public SmsRefused(string words) : base("refused") => Words = words;
+    }
+
     private async Task<JsonDocument> GetAsync(Uri uri, TimeSpan timeout, CancellationToken cancellationToken)
     {
         byte[] body = await FetchAsync(uri, timeout, "application/json", MaxResponseBytes, cancellationToken).ConfigureAwait(false);
@@ -125,11 +197,17 @@ public sealed class ZigmonClient : INotifierApi, IUpdateSource, IDisposable
     }
 
     /// <summary>One GET: the 2xx body (at most <paramref name="limit"/> bytes), or the error it was, in words.</summary>
-    private async Task<byte[]> FetchAsync(Uri uri, TimeSpan timeout, string accept, int limit, CancellationToken cancellationToken)
+    private async Task<byte[]> FetchAsync(Uri uri, TimeSpan timeout, string accept, int limit, CancellationToken cancellationToken,
+        HttpMethod? method = null, byte[]? jsonBody = null, bool refusalIsAnAnswer = false)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        using var request = new HttpRequestMessage(method ?? HttpMethod.Get, uri);
+        if (jsonBody is not null)
+        {
+            request.Content = new ByteArrayContent(jsonBody);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+        }
         request.Headers.TryAddWithoutValidation(AppInfo.KeyHeader, _key.Reveal());
         request.Headers.TryAddWithoutValidation("User-Agent", AppInfo.UserAgent);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
@@ -206,6 +284,9 @@ public sealed class ZigmonClient : INotifierApi, IUpdateSource, IDisposable
                     // an error page that is not JSON: the status says enough
                 }
             }
+            // a send turned down (ZIGMon's SMS limits, a busy queue, no gateway): its words as they are
+            if (refusalIsAnAnswer && code is not (401 or 404 or 405) && serverWords is not null)
+                throw new SmsRefused(serverWords);
             throw StatusError(code, serverWords, response);
         }
     }

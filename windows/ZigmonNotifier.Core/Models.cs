@@ -19,6 +19,9 @@ public sealed record HelloInfo(
 
     /// <summary>The app version this ZIGMon offers (hello.app.version), when it offers one.</summary>
     public string? AppVersion { get; init; }
+
+    /// <summary>What the key may do with SMS (hello.sms, ZIGMon 5.59.4); <see cref="SmsPermissions.None"/> from an older ZIGMon.</summary>
+    public SmsPermissions Sms { get; init; } = SmsPermissions.None;
 }
 
 /// <summary>One sensor the key may see.</summary>
@@ -41,7 +44,13 @@ public sealed record SensorsSnapshot(string Boot, long Seq, IReadOnlyList<Sensor
 /// <summary>A trigger event (an edge) of one sensor.</summary>
 public sealed record TriggerEvent(
     long Seq, DateTimeOffset At, string Device, string Name, string? Room, string Kind,
-    string Key, bool? Active, string What);
+    string Key, bool? Active, string What)
+{
+    /// <summary>For kind "sms": the message that came in.</summary>
+    public SmsMessage? Sms { get; init; }
+    /// <summary>For kind "deck" (key "sms"): what the Stream Deck asks this app to show.</summary>
+    public DeckAsk? Deck { get; init; }
+}
 
 public sealed record WaitResult(string Boot, long Seq, bool Reset, IReadOnlyList<TriggerEvent> Events);
 
@@ -62,6 +71,10 @@ public static class SensorKinds
     /// <summary>A test alert sent from ZIGMon's dashboard (Settings - Desktop app - Test alert, 5.59.2).</summary>
     public const string Test = "test";
     public const string Other = "other";
+    /// <summary>An SMS that came in (5.59.4): not a sensor, never an alert - the app's SMS card.</summary>
+    public const string Sms = "sms";
+    /// <summary>A Stream Deck key asking this app for something (5.59.4): not a sensor either.</summary>
+    public const string Deck = "deck";
 
     public static readonly IReadOnlyList<string> All =
         new[] { Motion, Contact, Leak, Smoke, Gas, Co, Tamper, Vibration, Button, Rule, Test };

@@ -4121,6 +4121,8 @@ def valid_action(do):
     do = str(do or '').strip()
     if do.lower() in BINDING_ACTIONS or do.lower() in PLUG_EXTRA_ACTIONS:
         return do.lower()
+    if do.lower() in ESP_ACTION_WORDS:          # (5.59.4) an ESP32 gateway's entity: its own action
+        return do.lower()
     if do.lower().startswith('set:') and 1 <= len(do[4:].strip()) <= 40:
         return 'set:' + do[4:].strip()
     for word in ('for:', 'off-for:'):
@@ -4195,7 +4197,8 @@ EVENTS_ADMIN_ONLY = ('security', 'audit')
 OPERATOR_ROADS = frozenset((
     '/api/plug/switch', '/api/scene/run', '/api/sequence/advance', '/api/sequence/reset',
     '/api/target/set', '/api/hold/release', '/api/alerts/clear', '/api/rule/dryrun',
-    '/api/what-if', '/api/plug/diagnose', '/api/energy/monthly'))
+    '/api/what-if', '/api/plug/diagnose', '/api/energy/monthly',
+    '/api/esp/command'))     # (5.59.4) a lock or a switch of an ESP32 gateway, from the dashboard
 # What somebody who still has to change their first password may do.
 MUST_CHANGE_ROADS = ('/api/auth/password', '/api/auth/logout', '/api/auth/whoami')
 ACCOUNT_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$')
@@ -10088,7 +10091,1654 @@ BATTERY_LOOK_DAYS = 365
 MDNS_ANSWER_FROM = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', 'fe80::/10', 'fc00::/7')
 
 
-class Daemon(object):
+# ---------------------------------------------------------------------------
+# (5.59.4) ESP32 gateways: esp32/PROTOCOL.md, protocol v1
+# ---------------------------------------------------------------------------
+# An ESP32 on the home Wi-Fi, paired with ZIGMon, whose modules (the first:
+# Yeelock locks over BLE) expose ENTITIES. ZIGMon learns them by "describe" and
+# makes each a device of its own, esp:<gateway id>:<entity id>, read and
+# controlled by its TYPE alone (lock, switch, sensor, binary_sensor, button,
+# cover, number, select, text): nothing here knows what a Yeelock is beyond a
+# word and an icon on the page.
+#
+# How it is guarded:
+#   * HTTPS only, the gateway's self-signed certificate PINNED by its SHA-256
+#     when it is paired (the CA is not asked; a different certificate is
+#     refused before a byte is sent, and the page offers to pair again);
+#   * every request signed with the device key (HMAC-SHA256 over the method,
+#     the path with its query, the time, a fresh nonce and the body's hash),
+#     every answer signed back over our nonce - an answer not signed with the
+#     key, or signed for another request, is thrown away;
+#   * the device key is ZIGMon's own, 32 random bytes made at pairing and
+#     handed over with a proof of the 6-digit code shown on the gateway; it is
+#     never written into the log, an event or an answer of the API ("set", and
+#     its last two characters, is all anyone is shown).
+ESP_V = 1
+ESP_BASE = '/zigmon/v1'
+ESP_TYPES = ('lock', 'switch', 'sensor', 'binary_sensor', 'button', 'cover', 'number', 'select', 'text')
+ESP_ID_RE = re.compile(r'^[0-9a-f]{12}$')
+ESP_ENTITY_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+ESP_ACTION_RE = re.compile(r'^[a-z][a-z0-9_]{0,23}$')
+ESP_ATTR_RE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+ESP_FP_RE = re.compile(r'^[0-9a-f]{64}$')
+ESP_CODE_RE = re.compile(r'^[0-9]{6}$')
+ESP_BODY_MOST = 256 * 1024
+# the words valid_action takes beside its own: what the protocol's types do, and every action a
+# paired gateway has described (each checked against ESP_ACTION_RE as it is learned)
+ESP_ACTION_WORDS = set(('open', 'unlock', 'lock', 'refresh', 'press', 'close', 'stop'))
+# what a payload key of an entity may not be: the keys the rest of ZIGMon reads a meaning into
+ESP_RESERVED_KEYS = frozenset(('action', 'last_seen', 'linkquality', 'update', 'update_available', 'elapsed'))
+ESP_DONE = {'open': 'opened', 'unlock': 'unlocked', 'lock': 'locked', 'refresh': 'refreshed', 'press': 'pressed',
+            'on': 'switched on', 'off': 'switched off', 'toggle': 'toggled', 'close': 'closed', 'stop': 'stopped',
+            'battery': 'read the battery of'}
+
+
+class EspError(Exception):
+    """A gateway that could not be spoken to, in words: kind is net, tls, cert (not the pinned
+    certificate), sig (an answer not signed with the key), auth (the key refused), http, bad."""
+
+    def __init__(self, kind, words, status=None):
+        Exception.__init__(self, words)
+        self.kind, self.words, self.status = kind, words, status
+
+
+def esp_words(text, most=120):
+    """What a gateway says, as it may be shown: one line, no control characters, cut short."""
+    text = re.sub(r'[\x00-\x1f\x7f]+', ' ', str(text if text is not None else ''))
+    return re.sub(r'\s+', ' ', text).strip()[:most]
+
+
+def esp_hash(body):
+    return hashlib.sha256(body or b'').hexdigest()
+
+
+def esp_sign(key, method, path, ts, nonce, body):
+    """The request signature (PROTOCOL.md section 2) - key is the device key's 32 bytes."""
+    msg = '%s\n%s\n%s\n%s\n%s' % (method, path, ts, nonce, esp_hash(body))
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_answer_sig(key, nonce, status, body):
+    """X-Gw-Sig: the answer's signature over our nonce, its status code and its body."""
+    msg = 'resp\n%s\n%d\n%s' % (nonce, int(status), esp_hash(body))
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_pair_proof(code, fingerprint, nonce):
+    """The proof of the 6-digit code: HMAC-SHA256 keyed with its digits as ASCII."""
+    msg = 'zigmon-pair-v1\n%s\n%s' % (fingerprint, nonce)
+    return hmac.new(str(code).encode('ascii'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_address(text):
+    """(host, port, canonical) of what was typed - "192.168.1.40", "zigmon-gw-a1b2c3.local",
+    "[fd00::5]:8443", even "https://..../" - or ValueError in words."""
+    text = str(text or '').strip()
+    text = re.sub(r'^https://', '', text, flags=re.I)
+    if re.match(r'^[a-z][a-z0-9+.-]*://', text, re.I):
+        raise ValueError('the gateway speaks HTTPS only: give its address, like 192.168.1.40')
+    text = text.split('/', 1)[0]
+    if not text or len(text) > 260:
+        raise ValueError('the address of the gateway is needed, like 192.168.1.40 or zigmon-gw-a1b2c3.local')
+    m = re.match(r'^\[([0-9A-Fa-f:.%]{2,64})\](?::(\d{1,5}))?$', text)
+    if m:
+        host, port = m.group(1), m.group(2)
+        try:
+            ipaddress.ip_address(host.split('%', 1)[0])
+        except ValueError:
+            raise ValueError('%s is not an IPv6 address' % esp_words(host, 60))
+    else:
+        m = re.match(r'^([A-Za-z0-9.-]{1,253})(?::(\d{1,5}))?$', text)
+        if not m:
+            raise ValueError('%s is not an address: a name or an IP, with :port if it is not 443' % esp_words(text, 60))
+        host, port = m.group(1).rstrip('.').lower(), m.group(2)
+        labels = host.split('.')
+        if not host or any(not l or len(l) > 63 or l.startswith('-') or l.endswith('-') for l in labels):
+            raise ValueError('%s is not a host name' % esp_words(host, 60))
+    port = int(port) if port else 443
+    if not 0 < port < 65536:
+        raise ValueError('the port is a number from 1 to 65535')
+    shown = ('[%s]' % host) if ':' in host else host
+    return host, port, shown if port == 443 else '%s:%d' % (shown, port)
+
+
+class _EspHTTPS(http.client.HTTPSConnection):
+    """HTTPS to one gateway: its certificate is not checked against any CA - it is self-signed -
+    but its SHA-256 must be the one pinned, or the connection ends before a request is sent."""
+
+    def __init__(self, host, port, pin, timeout):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        except (AttributeError, ValueError):
+            pass
+        http.client.HTTPSConnection.__init__(self, host, port, timeout=timeout, context=ctx)
+        self._pin = pin
+        self.seen = None
+
+    def connect(self):
+        http.client.HTTPSConnection.connect(self)
+        der = self.sock.getpeercert(binary_form=True) or b''
+        self.seen = hashlib.sha256(der).hexdigest()
+        if self._pin is not None and not hmac.compare_digest(self.seen, str(self._pin)):
+            try:
+                self.sock.close()
+            finally:
+                self.sock = None
+            raise EspError('cert', 'its certificate is not the one paired with - refused (pair it again '
+                                   'only if you know why it changed)')
+
+
+def esp_https(host, port, method, path, body=b'', headers=None, pin=None, timeout=10.0):
+    """(status, headers in lower case, body) of one request - or EspError."""
+    conn = _EspHTTPS(host, port, pin, timeout)
+    try:
+        conn.request(method, path, body=body or None, headers=dict(headers or {}))
+        r = conn.getresponse()
+        raw = r.read(ESP_BODY_MOST + 1)
+        if len(raw) > ESP_BODY_MOST:
+            raise EspError('bad', 'the gateway answered with more than %d kB' % (ESP_BODY_MOST // 1024))
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, raw
+    except EspError:
+        raise
+    except ssl.SSLError as e:
+        raise EspError('tls', 'TLS failed (%s)' % esp_words(getattr(e, 'reason', None) or e, 80))
+    except (socket.timeout, TimeoutError):
+        raise EspError('net', 'no answer within %d s' % int(timeout))
+    except ConnectionRefusedError:
+        raise EspError('net', 'nothing listens on %s port %d' % (host, port))
+    except (http.client.HTTPException, ValueError) as e:
+        raise EspError('net', 'a broken answer (%s)' % esp_words(type(e).__name__, 40))
+    except OSError as e:
+        raise EspError('net', 'not reachable (%s)' % esp_words(getattr(e, 'strerror', None) or e, 80))
+    finally:
+        conn.close()
+
+
+def esp_fingerprint(host, port, timeout=8.0):
+    """The SHA-256 of the certificate the gateway shows, as 64 lower-case hex - pinned nothing."""
+    conn = _EspHTTPS(host, port, None, timeout)
+    try:
+        conn.connect()
+        return conn.seen
+    except EspError:
+        raise
+    except ssl.SSLError as e:
+        raise EspError('tls', 'TLS failed (%s)' % esp_words(getattr(e, 'reason', None) or e, 80))
+    except (socket.timeout, TimeoutError):
+        raise EspError('net', 'no answer within %d s' % int(timeout))
+    except ConnectionRefusedError:
+        raise EspError('net', 'nothing listens on %s port %d - is it the gateway, on HTTPS?' % (host, port))
+    except OSError as e:
+        raise EspError('net', 'not reachable (%s)' % esp_words(getattr(e, 'strerror', None) or e, 80))
+    finally:
+        conn.close()
+
+
+def esp_signed(host, port, pin, key_hex, method, path, obj=None, timeout=10.0):
+    """One signed request, its answer's signature checked: (status, the answer's JSON object)."""
+    raw = b'' if obj is None else json.dumps(obj, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    key = bytes.fromhex(key_hex)
+    ts, nonce = str(int(time.time())), secrets.token_hex(16)
+    headers = {'X-Zigmon-Ts': ts, 'X-Zigmon-Nonce': nonce, 'X-Zigmon-Sig': esp_sign(key, method, path, ts, nonce, raw),
+               'Accept': 'application/json'}
+    if raw:
+        headers['Content-Type'] = 'application/json'
+    status, heads, body = esp_https(host, port, method, path, raw, headers, pin=pin, timeout=timeout)
+    got = str(heads.get('x-gw-sig') or '').strip().lower()
+    signed = bool(got) and hmac.compare_digest(esp_answer_sig(key, nonce, status, body), got)
+    if not signed:
+        if 200 <= status < 300:
+            raise EspError('sig', 'its answer was not signed with the device key - refused', status)
+        if status in (401, 403):
+            raise EspError('auth', 'it refused the signature (HTTP %d) - is it still paired with this ZIGMon?'
+                           % status, status)
+        raise EspError('http', 'it answered HTTP %d' % status, status)
+    try:
+        data = json.loads(body.decode('utf-8')) if body else {}
+    except (ValueError, UnicodeDecodeError):
+        raise EspError('bad', 'its answer is not JSON', status)
+    if not isinstance(data, dict):
+        raise EspError('bad', 'its answer is not a JSON object', status)
+    if status >= 300:
+        raise EspError('http', esp_words(data.get('error')) or 'it answered HTTP %d' % status, status)
+    return status, data
+
+
+def esp_clean_entity(module, raw):
+    """One ENTITY as the gateway described it, checked field by field - or None."""
+    if not isinstance(raw, dict):
+        return None
+    eid = str(raw.get('id') or '')
+    if not ESP_ENTITY_RE.match(eid):
+        return None
+    kind = str(raw.get('type') or '')
+    kind = kind if kind in ESP_TYPES else 'unknown'
+    actions = []
+    for a in raw.get('actions') or []:
+        a = str(a or '')
+        if ESP_ACTION_RE.match(a) and a not in actions:
+            actions.append(a)
+    actions = actions[:12] if kind != 'unknown' else []           # an unknown type is shown read-only
+    attrs = []
+    for a in (raw.get('attrs') or [])[:16]:
+        if not isinstance(a, dict):
+            continue
+        key = str(a.get('key') or '')
+        if not ESP_ATTR_RE.match(key) or key in ESP_RESERVED_KEYS or key in ('state', 'value', 'busy'):
+            continue
+        one = {'key': key, 'label': esp_words(a.get('label') or key.replace('_', ' ').capitalize(), 40),
+               'type': a.get('type') if a.get('type') in ('number', 'string', 'bool', 'enum') else 'string',
+               'unit': esp_words(a.get('unit') or '', 8)}
+        for lim in ('min', 'max'):
+            v = a.get(lim)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                one[lim] = v
+        attrs.append(one)
+    options = [esp_words(o, 40) for o in (raw.get('options') or [])[:40]
+               if isinstance(o, (str, int, float)) and not isinstance(o, bool)]
+    out = {'id': eid, 'module': module, 'type': kind, 'name': esp_words(raw.get('name') or eid, 60) or eid,
+           'actions': actions, 'attrs': attrs,
+           'confirm': [a for a in (raw.get('confirm') or []) if a in actions]}
+    if options:
+        out['options'] = options
+    unit = esp_words(raw.get('unit') or '', 8)
+    if unit:
+        out['unit'] = unit
+    for lim in ('min', 'max', 'step'):
+        v = raw.get(lim)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            out[lim] = v
+    return out
+
+
+def esp_clean_state(raw):
+    """One STATE, checked: what is not of the shape the contract gives is left out."""
+    raw = raw if isinstance(raw, dict) else {}
+    value = raw.get('value')
+    if isinstance(value, str):
+        value = esp_words(value, 60)
+    elif isinstance(value, float) and not math.isfinite(value):
+        value = None
+    elif not isinstance(value, (bool, int, float)):
+        value = None
+    attrs = {}
+    for k, v in ((raw.get('attrs') or {}) if isinstance(raw.get('attrs'), dict) else {}).items():
+        if not ESP_ATTR_RE.match(str(k)) or k in ESP_RESERVED_KEYS or len(attrs) >= 16:
+            continue
+        if isinstance(v, str):
+            attrs[k] = esp_words(v, 60)
+        elif isinstance(v, (bool, int)) or (isinstance(v, float) and math.isfinite(v)):
+            attrs[k] = v
+    last = None
+    lr = raw.get('last')
+    if isinstance(lr, dict) and lr.get('action'):
+        at = lr.get('at')
+        last = {'action': esp_words(lr.get('action'), 24), 'ok': lr.get('ok') is True,
+                'at': int(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None,
+                'msg': esp_words(lr.get('msg') or '', 80)}
+    return {'available': raw.get('available') is not False, 'value': value, 'busy': raw.get('busy') is True,
+            'attrs': attrs, 'last': last}
+
+
+class EspGateways(object):
+    """The ESP32 gateways, mixed into the Daemon: kept in meta esp_gateways, one thread each."""
+    ESP_WAIT_S = 25                 # the long poll the gateway holds (the contract's most)
+    ESP_TIMEOUT_S = 10.0            # an ordinary request
+    ESP_BACKOFF_S = (2.0, 60.0)     # after a failure: from, to (doubled each time)
+    ESP_CERT_BACKOFF_S = 300.0      # a certificate that is not the pinned one: asked again only this often
+    ESP_HELLO_S = 300               # hello (its signal, its uptime) asked again this often
+    ESP_RESULT_S = 45               # a command's result awaited this long, then "no answer"
+    ESP_MOST = 16
+
+    # -- what is kept --
+    def _esp_init(self):
+        if self.__dict__.get('_esp_lock') is None:
+            self.__dict__['_esp_lock'] = threading.RLock()
+            self._esp_rt = {}            # gateway id -> what the thread knows, in memory only
+            self._esp_gen = 0
+
+    def esp_rows(self):
+        try:
+            rows = json.loads(self.store.get_meta('esp_gateways') or '[]')
+        except ValueError:
+            rows = []
+        return [dict(r) for r in rows if isinstance(r, dict) and ESP_ID_RE.match(str(r.get('id') or ''))] \
+            if isinstance(rows, list) else []
+
+    def esp_row(self, gwid):
+        return next((r for r in self.esp_rows() if r['id'] == gwid), None)
+
+    def _esp_put(self, rows):
+        self.store.set_meta('esp_gateways', json.dumps(rows))
+
+    def _esp_change(self, gwid, **fields):
+        self._esp_init()
+        with self._esp_lock:
+            rows = self.esp_rows()
+            for r in rows:
+                if r['id'] == gwid:
+                    r.update(fields)
+                    self._esp_put(rows)
+                    return r
+        return None
+
+    def _esp_rt_of(self, gwid):
+        self._esp_init()
+        with self._esp_lock:
+            return self._esp_rt.setdefault(gwid, {'online': None, 'error': '', 'kind': '', 'states': {}, 'hello': {},
+                                                  'pending': {}, 'gen': 0, 'last_ok': 0, 'since': 0})
+
+    @staticmethod
+    def esp_entities(row):
+        out = []
+        for m in ((row or {}).get('described') or {}).get('modules') or []:
+            out.extend(m.get('entities') or [])
+        return out
+
+    def esp_used(self, row):
+        use = (row or {}).get('use') or {}
+        return [e for e in self.esp_entities(row) if use.get(e['id'], True)]
+
+    @staticmethod
+    def esp_device_id(gwid, eid=None):
+        return 'esp:%s' % gwid if eid is None else 'esp:%s:%s' % (gwid, eid)
+
+    @staticmethod
+    def esp_split(spec):
+        """(gateway id, entity id) of esp:<gw>:<entity>, or None."""
+        m = re.match(r'^esp:([0-9a-f]{12}):([A-Za-z0-9_.-]{1,64})$', str(spec or ''))
+        return (m.group(1), m.group(2)) if m else None
+
+    def _esp_learn_words(self, rows=None):
+        for r in rows if rows is not None else self.esp_rows():
+            for e in self.esp_entities(r):
+                for a in e.get('actions') or []:
+                    if ESP_ACTION_RE.match(a) and a not in BINDING_ACTIONS:
+                        ESP_ACTION_WORDS.add(a)
+
+    def _esp_call(self, row, method, path, obj=None, timeout=None):
+        host, port, _ = esp_address(row['address'])
+        return esp_signed(host, port, row['fingerprint'], row['key'], method, ESP_BASE + path, obj,
+                          timeout or self.ESP_TIMEOUT_S)
+
+    def _esp_name_of(self, row, ent):
+        dev = self.store.device(self.esp_device_id(row['id'], ent['id'])) or {}
+        return dev.get('alias') or ent.get('name') or ent['id']
+
+    # -- the views --
+    def esp_admin_view(self):
+        """Every gateway for Settings: never the key - "set" and its last two characters."""
+        out = []
+        for r in self.esp_rows():
+            rt = self._esp_rt_of(r['id'])
+            key = str(r.get('key') or '')
+            states = rt.get('states') or {}
+            modules = []
+            for m in (r.get('described') or {}).get('modules') or []:
+                modules.append({'id': m.get('id'), 'name': m.get('name'), 'version': m.get('version'),
+                                'entities': [dict(e, used=(r.get('use') or {}).get(e['id'], True),
+                                                  device=self.esp_device_id(r['id'], e['id']),
+                                                  shown=self._esp_name_of(r, e),
+                                                  state=states.get(e['id']))
+                                             for e in m.get('entities') or []]})
+            hello = dict(r.get('hello') or {}, **(rt.get('hello') or {}))
+            out.append({'id': r['id'], 'name': r.get('name') or r['id'], 'address': r.get('address'),
+                        'fingerprint': r.get('fingerprint'), 'key_set': bool(key), 'key_hint': key[-2:] if key else '',
+                        'paired_at': r.get('paired_at'), 'paired_by': r.get('paired_by') or '',
+                        'enabled': r.get('enabled', True) is not False, 'described_at': (r.get('described') or {}).get('at'),
+                        'modules': modules, 'entities': len(self.esp_entities(r)), 'used': len(self.esp_used(r)),
+                        'hello': {k: hello.get(k) for k in ('fw', 'model', 'mac_tail', 'rssi', 'uptime', 'time_set', 'name')
+                                  if k in hello},
+                        'online': rt.get('online'), 'error': rt.get('error') or '', 'cert_bad': rt.get('kind') == 'cert',
+                        'since': rt.get('since') or None, 'last_ok': rt.get('last_ok') or None, 'boot': r.get('boot') or ''})
+        return {'ok': True, 'gateways': out, 'most': self.ESP_MOST, 'types': list(ESP_TYPES)}
+
+    def esp_dashboard(self):
+        """The gateways and the entities in use, for every page: no key, no fingerprint, no address."""
+        gws, ents = [], []
+        for r in self.esp_rows():
+            rt = self._esp_rt_of(r['id'])
+            hello = dict(r.get('hello') or {}, **(rt.get('hello') or {}))
+            used = self.esp_used(r) if r.get('enabled', True) is not False else []
+            on = bool(rt.get('online')) and r.get('enabled', True) is not False
+            gws.append({'id': r['id'], 'name': r.get('name') or r['id'], 'online': on,
+                        'enabled': r.get('enabled', True) is not False,
+                        'fw': hello.get('fw'), 'rssi': hello.get('rssi'), 'entities': len(used),
+                        'modules': [m.get('name') or m.get('id') for m in (r.get('described') or {}).get('modules') or []]})
+            for e in used:
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                ents.append({'id': self.esp_device_id(r['id'], e['id']), 'gw': r['id'], 'gw_name': r.get('name') or r['id'],
+                             'entity': e['id'], 'module': e.get('module'), 'type': e['type'],
+                             'name': self._esp_name_of(r, e), 'actions': e.get('actions') or [],
+                             'confirm': e.get('confirm') or [], 'attrs': e.get('attrs') or [],
+                             'options': e.get('options'), 'unit': e.get('unit'),
+                             'value': st.get('value'), 'busy': bool(st.get('busy')),
+                             'available': on and st.get('available', True) is not False, 'gw_online': on,
+                             'values': st.get('attrs') or {}, 'last': st.get('last'),
+                             'asked': {a: p['at'] for a, p in ((rt.get('pending') or {}).get(e['id']) or {}).items()}})
+        return {'gateways': gws, 'entities': ents}
+
+    def esp_targets(self):
+        """Every entity that does something, as the editors offer targets (switch_targets)."""
+        out = []
+        for r in self.esp_rows():
+            if r.get('enabled', True) is False:
+                continue
+            rt = self._esp_rt_of(r['id'])
+            for e in self.esp_used(r):
+                if not e.get('actions'):
+                    continue
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                kind = 'number' if e['type'] == 'number' else 'enum' if e['type'] == 'select' and e.get('options') \
+                    else 'switch'
+                out.append({'value': self.esp_device_id(r['id'], e['id']), 'id': self.esp_device_id(r['id'], e['id']),
+                            'key': 'state', 'name': self._esp_name_of(r, e), 'kind': kind,
+                            'online': bool(rt.get('online')), 'state': st.get('value'), 'unit': e.get('unit'),
+                            'values': e.get('options'), 'min': e.get('min'), 'max': e.get('max'),
+                            'esp': {'type': e['type'], 'actions': e['actions'], 'confirm': e.get('confirm') or []}})
+        return out
+
+    # -- pairing --
+    def esp_probe(self, address):
+        host, port, shown = esp_address(address)
+        fp = esp_fingerprint(host, port)
+        known = next((r for r in self.esp_rows() if r.get('fingerprint') == fp), None)
+        return {'ok': True, 'address': shown, 'fingerprint': fp,
+                'groups': [fp[i:i + 4] for i in range(0, 64, 4)],
+                'known': {'id': known['id'], 'name': known.get('name')} if known else None}
+
+    def esp_pair(self, address, code, fingerprint, confirmed, by='', name=''):
+        """Pair: the certificate the person compared with the gateway's is the one shown now, the
+        code's proof and a new device key go over HTTPS pinned to it, and a signed hello must
+        then come back signed with that key - only then is anything kept."""
+        self._esp_init()
+        host, port, shown = esp_address(address)
+        code = re.sub(r'\s+', '', str(code or ''))
+        if not ESP_CODE_RE.match(code):
+            raise ValueError('the code is the 6 digits the gateway shows')
+        fingerprint = re.sub(r'[\s:]', '', str(fingerprint or '')).lower()
+        if confirmed is not True or not ESP_FP_RE.match(fingerprint):
+            raise ValueError('compare the fingerprint with the one the gateway shows, and confirm it first')
+        if len(self.esp_rows()) >= self.ESP_MOST and not any(r.get('fingerprint') == fingerprint for r in self.esp_rows()):
+            raise ValueError('at most %d gateways' % self.ESP_MOST)
+        seen = esp_fingerprint(host, port)
+        if not hmac.compare_digest(seen, fingerprint):
+            self.store.add_event('security', 'ESP32 gateway at %s: its certificate is not the one confirmed - '
+                                 'pairing refused' % shown, 'warn')
+            raise EspError('cert', 'the gateway now shows a different certificate from the one you confirmed - '
+                                   'nothing was sent. Compare again.')
+        nonce = secrets.token_hex(16)
+        key = secrets.token_hex(32)
+        me = 'ZIGMon on %s' % (socket.gethostname().split('.')[0] or 'zigmon')
+        body = json.dumps({'v': ESP_V, 'nonce': nonce, 'proof': esp_pair_proof(code, fingerprint, nonce),
+                           'zigmon': me, 'key': key}, separators=(',', ':')).encode('utf-8')
+        status, _h, raw = esp_https(host, port, 'POST', ESP_BASE + '/pair', body,
+                                    {'Content-Type': 'application/json', 'Accept': 'application/json'},
+                                    pin=fingerprint, timeout=self.ESP_TIMEOUT_S)
+        try:
+            data = json.loads(raw.decode('utf-8')) if raw else {}
+        except (ValueError, UnicodeDecodeError):
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        if status != 200 or data.get('ok') is not True:
+            said = esp_words(data.get('error'), 100)
+            if status in (423, 429) or 'lock' in said.lower():
+                words = 'pairing is locked on the gateway after too many wrong codes - wait, then make a new code there'
+            elif status in (400, 401, 403):
+                words = 'the gateway did not take the code - make a new one there (each code is used once) and try again'
+            else:
+                words = 'the gateway refused the pairing (HTTP %d)' % status
+            self.store.add_event('security', 'ESP32 gateway at %s: pairing refused (%s)' % (shown, said or 'HTTP %d' % status),
+                                 'warn')
+            raise EspError('auth', words + ('' if not said else ' - it says: %s' % said), status)
+        gwid = str(data.get('id') or '').lower()
+        if not ESP_ID_RE.match(gwid):
+            raise EspError('bad', 'the gateway answered without its id')
+        row = {'id': gwid, 'address': shown, 'fingerprint': fingerprint, 'key': key}
+        # the key must work both ways before it is kept: our signature taken, its answer signed
+        _s, hello = esp_signed(host, port, fingerprint, key, 'GET', ESP_BASE + '/hello', None, self.ESP_TIMEOUT_S)
+        if str(hello.get('id') or '').lower() not in ('', gwid):
+            raise EspError('bad', 'the gateway says it is %s, after pairing as %s' % (esp_words(hello.get('id'), 20), gwid))
+        with self._esp_lock:
+            rows = self.esp_rows()
+            old = next((r for r in rows if r['id'] == gwid), None)
+            label = esp_words(name, 40) or (old or {}).get('name') or esp_words(data.get('name') or hello.get('name'), 40) \
+                or 'ESP32 gateway %s' % gwid[-6:]
+            new = dict(old or {}, id=gwid, name=label, address=shown, fingerprint=fingerprint, key=key,
+                       paired_at=int(time.time()), paired_by=esp_words(by, 60), enabled=True,
+                       hello=self._esp_hello_clean(hello, data))
+            new.setdefault('use', {})
+            new.setdefault('described', None)
+            rows = [r for r in rows if r['id'] != gwid] + [new]
+            self._esp_put(rows)
+        self.store.add_event('security', 'ESP32 gateway %s (%s) paired%s%s' % (
+            label, shown, ' again' if old else '', (' by %s' % esp_words(by, 60)) if by else ''), 'info')
+        log('ESP32 gateway %s paired at %s (certificate %s…)' % (label, shown, fingerprint[:12]))
+        self.esp_restart(gwid)
+        return {'ok': True, 'id': gwid, 'name': label, 'again': bool(old), 'fw': esp_words(data.get('fw'), 20)}
+
+    @staticmethod
+    def _esp_hello_clean(hello, extra=None):
+        h = dict(extra or {}, **(hello or {}))
+        out = {}
+        for k in ('fw', 'model', 'mac_tail', 'name'):
+            if h.get(k) is not None:
+                out[k] = esp_words(h.get(k), 40)
+        for k in ('rssi', 'uptime'):
+            v = h.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                out[k] = int(v)
+        if 'time_set' in h:
+            out['time_set'] = h.get('time_set') is True
+        out['at'] = int(time.time())
+        return out
+
+    # -- detecting what it has --
+    def esp_detect(self, gwid, quiet=False, by=''):
+        """describe: its modules and their entities, each made (or kept) a device of ZIGMon's."""
+        row = self.esp_row(gwid)
+        if row is None:
+            raise ValueError('no such gateway')
+        _s, d = self._esp_call(row, 'GET', '/describe')
+        modules = []
+        seen = set()
+        for m in (d.get('modules') or [])[:16]:
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get('id') or '')
+            if not ESP_ENTITY_RE.match(mid):
+                continue
+            ents = []
+            for raw in (m.get('entities') or [])[:64]:
+                e = esp_clean_entity(mid, raw)
+                if e is None or e['id'] in seen:
+                    continue
+                seen.add(e['id'])
+                ents.append(e)
+            modules.append({'id': mid, 'name': esp_words(m.get('name') or mid, 40), 'version': esp_words(m.get('version'), 20),
+                            'entities': ents})
+        with self._esp_lock:
+            rows = self.esp_rows()
+            row = next((r for r in rows if r['id'] == gwid), None)
+            if row is None:
+                raise ValueError('the gateway was taken away meanwhile')
+            before = {e['id']: e for e in self.esp_entities(row)}
+            row['described'] = {'at': int(time.time()), 'modules': modules}
+            use = dict(row.get('use') or {})
+            for eid in list(use):
+                if eid not in seen:
+                    use.pop(eid, None)
+            row['use'] = use
+            self._esp_put(rows)
+        self._esp_learn_words([row])
+        self._esp_sync_devices(row)
+        new = [e for e in self.esp_entities(row) if e['id'] not in before]
+        gone = [e for eid, e in before.items() if eid not in seen]
+        if not quiet or new or gone:
+            bits = ['%d module(s), %d entit%s' % (len(modules), len(seen), 'y' if len(seen) == 1 else 'ies')]
+            if new and before:
+                bits.append('new: ' + ', '.join(e['name'] for e in new[:6]))
+            if gone:
+                bits.append('gone: ' + ', '.join(e['name'] for e in gone[:6]))
+            self.store.add_event('device', 'ESP32 gateway %s: %s%s' % (row.get('name'), '; '.join(bits),
+                                                                    (' (%s)' % esp_words(by, 60)) if by else ''),
+                                 'info', self.esp_device_id(gwid))
+        try:
+            self._esp_full_state(row)
+        except EspError as e:
+            log('ESP32 gateway %s: its state after describing: %s' % (row.get('name'), e.words), 'debug')
+        self.bump()
+        return {'ok': True, 'id': gwid, 'modules': modules, 'use': row['use'],
+                'entities': len(seen), 'new': [e['id'] for e in new], 'gone': [e['id'] for e in gone]}
+
+    def esp_use(self, gwid, use, by=''):
+        """Which entities are used: those left out are not devices of the house (their history kept)."""
+        if not isinstance(use, dict):
+            raise ValueError('use is an object: entity id -> true or false')
+        with self._esp_lock:
+            rows = self.esp_rows()
+            row = next((r for r in rows if r['id'] == gwid), None)
+            if row is None:
+                raise ValueError('no such gateway')
+            known = {e['id'] for e in self.esp_entities(row)}
+            kept = dict(row.get('use') or {})
+            for eid, on in use.items():
+                if eid in known and isinstance(on, bool):
+                    kept[eid] = on
+            row['use'] = kept
+            self._esp_put(rows)
+        self._esp_sync_devices(row)
+        try:
+            self._esp_full_state(row)
+        except EspError:
+            pass
+        n = len(self.esp_used(row))
+        self.store.add_event('device', 'ESP32 gateway %s: %d of %d entities used%s' % (
+            row.get('name'), n, len(known), (' (%s)' % esp_words(by, 60)) if by else ''), 'info', self.esp_device_id(gwid))
+        self.bump()
+        return {'ok': True, 'used': n}
+
+    def _esp_sync_devices(self, row):
+        """The gateway and every entity in use, devices of the house; what is not used any more, not."""
+        gwid = row['id']
+        self.store.upsert_device({'id': self.esp_device_id(gwid), 'name': row.get('name') or gwid, 'source': 'esp',
+                                  'kind': 'ESP32 gateway', 'vendor': 'ESP32', 'model': (row.get('hello') or {}).get('model')
+                                  or 'ESP32', 'last_seen': int(time.time())})
+        used = {e['id'] for e in self.esp_used(row)} if row.get('enabled', True) is not False else set()
+        for e in self.esp_entities(row):
+            dev_id = self.esp_device_id(gwid, e['id'])
+            if e['id'] not in used:
+                if self.store.device(dev_id):
+                    self.store.mark_removed(dev_id)
+                self.live.pop(dev_id, None)
+                continue
+            exposes = {'state': {'label': {'lock': 'Lock', 'switch': 'State', 'cover': 'Position',
+                                           'binary_sensor': 'State', 'select': 'Choice', 'text': 'Text',
+                                           'button': 'Last press', 'number': 'Value'}.get(e['type'], 'State'),
+                                 'unit': e.get('unit') or ''}}
+            if e.get('options'):
+                exposes['state']['values'] = list(e['options'])
+            for a in e.get('attrs') or []:
+                exposes[a['key']] = {'label': a['label'], 'unit': a.get('unit') or ''}
+            exposes['busy'] = {'label': 'Busy'}
+            exposes['last_result'] = {'label': 'Last result'}
+            self.store.upsert_device({'id': dev_id, 'name': e['name'], 'source': 'esp',
+                                      'kind': e['type'].replace('_', ' ').capitalize(),
+                                      'vendor': row.get('name') or 'ESP32 gateway',
+                                      'model': next((m.get('name') for m in (row.get('described') or {}).get('modules') or []
+                                                     if m.get('id') == e.get('module')), None) or e.get('module'),
+                                      'description': 'on the ESP32 gateway %s' % (row.get('name') or gwid),
+                                      'exposes': exposes})
+
+    # -- the state flowing in --
+    def _esp_full_state(self, row):
+        _s, st = self._esp_call(row, 'GET', '/state')
+        ents = st.get('entities') if isinstance(st.get('entities'), dict) else {}
+        for eid, raw in list(ents.items())[:128]:
+            self._esp_apply(row, str(eid), raw)
+        seq = st.get('seq')
+        return int(seq) if isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0 else 0
+
+    def _esp_apply(self, row, eid, raw, what=None):
+        """One entity's STATE into the house: its device's payload (history, rules, the pages) and
+        what is in memory for the dashboard; a command's result said as an event."""
+        gwid = row['id']
+        ent = next((e for e in self.esp_used(row) if e['id'] == eid), None)
+        if ent is None or row.get('enabled', True) is False:
+            return
+        st = esp_clean_state(raw)
+        rt = self._esp_rt_of(gwid)
+        known = eid in rt['states']        # the first sight since a start is not news of a command
+        before = (rt['states'].get(eid) or {})
+        rt['states'][eid] = st
+        dev_id = self.esp_device_id(gwid, eid)
+        name = self._esp_name_of(row, ent)
+        payload = {'state': st['value'], 'busy': st['busy']}
+        for k, v in st['attrs'].items():
+            payload[k] = v
+        if st['last']:
+            payload['last_result'] = '%s %s' % (st['last']['action'], 'ok' if st['last']['ok'] else 'failed')
+        if not st['available']:
+            # out of its reach (a lock out of BLE range): said once, its readings left as they were
+            if (self.live.get(dev_id) or {}).get('availability') != 'offline':
+                self.set_availability(dev_id, 'offline', name)
+        else:
+            self.record(dev_id, name, payload)
+        last, was = st['last'], before.get('last')
+        if last and last != was and known:
+            self._esp_result(row, ent, name, last)
+
+    def _esp_result(self, row, ent, name, last):
+        rt = self._esp_rt_of(row['id'])
+        mine = rt['pending'].get(ent['id']) or {}
+        asked = mine.pop(last['action'], None)
+        origin = (asked or {}).get('origin')
+        if asked is None and not last.get('ok'):
+            origin = 'the gateway itself'
+        if asked is None and last.get('ok'):
+            return                  # done on the gateway's own page or its CLI, or said once already
+        dev_id = self.esp_device_id(row['id'], ent['id'])
+        how = self._esp_by(origin)
+        if last.get('ok'):
+            self.store.add_event('control', '%s: %s %s' % (name, ESP_DONE.get(last['action'], 'did ' + last['action']), how),
+                                 'info', dev_id)
+        else:
+            self.store.add_event('control', '%s: could not %s%s %s' % (
+                name, last['action'], (' (%s)' % last['msg']) if last.get('msg') else '', how), 'warn', dev_id)
+
+    @staticmethod
+    def _esp_by(origin):
+        origin = esp_words(origin or '', 80)
+        if not origin:
+            return ''
+        return ('from ' + origin) if origin.startswith('the ') else ('by ' + origin)
+
+    # -- commands --
+    def esp_command(self, gwid, eid, do, origin='the dashboard', args=None):
+        """One command: (ok, words). do is the entity's action, or set:<value> (action set)."""
+        row = self.esp_row(gwid)
+        if row is None:
+            return False, 'no such gateway'
+        if row.get('enabled', True) is False:
+            return False, '%s is switched off in ZIGMon' % (row.get('name') or gwid)
+        ent = next((e for e in self.esp_used(row) if e['id'] == eid), None)
+        if ent is None:
+            return False, 'no such thing on %s' % (row.get('name') or gwid)
+        name = self._esp_name_of(row, ent)
+        do = str(do or '').strip()
+        args = dict(args) if isinstance(args, dict) else {}
+        action = do.lower()
+        if action.startswith('set:'):
+            value = do[4:].strip()
+            num = numeric(value)
+            args['value'] = num if num is not None and ent['type'] == 'number' else value
+            action = 'set'
+        elif action == 'pulse' and 'press' in ent['actions']:
+            action = 'press'
+        if action not in ent['actions']:
+            return False, '%s takes %s' % (name, ', '.join(ent['actions']) or 'nothing - it is only read')
+        rt = self._esp_rt_of(gwid)
+        try:
+            status, data = self._esp_call(row, 'POST', '/command', {'entity': eid, 'action': action, 'args': args})
+        except EspError as e:
+            if e.status == 409:
+                words = '%s is busy - try again in a moment' % name
+            elif e.status == 404:
+                words = '%s does not know %s any more - Detect it again' % (row.get('name') or gwid, name)
+            else:
+                words = '%s: %s' % (row.get('name') or gwid, e.words)
+            self.store.add_event('control', '%s: %s was not sent %s (%s)' % (name, action, self._esp_by(origin), e.words[:100]),
+                                 'warn', self.esp_device_id(gwid, eid))
+            return False, words
+        rt['pending'].setdefault(eid, {})[action] = {'at': time.time(), 'origin': origin,
+                                                     'job': esp_words(data.get('job'), 24)}
+        log('%s: %s asked %s' % (name, action, self._esp_by(origin)), 'debug')
+        t = threading.Timer(self.ESP_RESULT_S, self._esp_no_result, args=(gwid, eid, action))
+        t.daemon = True
+        t.start()
+        self.bump()
+        return True, '%s: %s asked' % (name, action)
+
+    def _esp_no_result(self, gwid, eid, action):
+        rt = self._esp_rt_of(gwid)
+        mine = rt['pending'].get(eid) or {}
+        asked = mine.get(action)
+        if not asked or time.time() - asked['at'] < self.ESP_RESULT_S - 1:
+            return
+        mine.pop(action, None)
+        row = self.esp_row(gwid)
+        ent = next((e for e in self.esp_used(row or {}) if e['id'] == eid), None) if row else None
+        if ent is None:
+            return
+        self.store.add_event('control', '%s: no result for %s %s within %d s' % (
+            self._esp_name_of(row, ent), action, self._esp_by(asked.get('origin')), self.ESP_RESULT_S), 'warn',
+            self.esp_device_id(gwid, eid))
+        self.bump()
+
+    # -- the threads --
+    def esp_start(self):
+        self._esp_init()
+        rows = self.esp_rows()
+        self._esp_learn_words(rows)
+        for r in rows:
+            try:
+                self._esp_sync_devices(r)
+            except Exception as e:                       # noqa: BLE001
+                log('ESP32 gateway %s: %s' % (r.get('name'), e), 'warn')
+            if r.get('enabled', True) is not False:
+                self.esp_restart(r['id'])
+
+    def esp_restart(self, gwid):
+        """The gateway's thread started afresh (the old one ends at its next turn)."""
+        self._esp_init()
+        with self._esp_lock:
+            self._esp_gen += 1
+            rt = self._esp_rt_of(gwid)
+            rt['gen'] = self._esp_gen
+            gen = rt['gen']
+            wake = rt.get('wake')
+            if wake is not None:
+                wake.set()
+            rt['wake'] = threading.Event()
+        row = self.esp_row(gwid)
+        if row is None or row.get('enabled', True) is False:
+            return
+        threading.Thread(target=self._esp_loop, args=(gwid, gen), name='esp-%s' % gwid[-6:], daemon=True).start()
+
+    def _esp_current(self, gwid, gen):
+        rt = self._esp_rt_of(gwid)
+        return rt.get('gen') == gen and not self._stop.is_set()
+
+    def _esp_mark(self, row, online, error='', kind=''):
+        rt = self._esp_rt_of(row['id'])
+        was, was_kind = rt.get('online'), rt.get('kind')
+        rt['error'], rt['kind'] = error, kind
+        if was == online:
+            if not online and kind == 'cert' and was_kind != 'cert':
+                # offline already, and now another certificate where it was: that is news of its own
+                self.store.add_event('security', 'ESP32 gateway %s: %s' % (row.get('name') or row['id'], error), 'crit',
+                                     self.esp_device_id(row['id']))
+                log('ESP32 gateway %s: %s' % (row.get('name') or row['id'], error), 'warn')
+                self.bump()
+            return
+        rt['online'] = online
+        rt['since'] = int(time.time())
+        gw_dev = self.esp_device_id(row['id'])
+        name = row.get('name') or row['id']
+        state = 'online' if online else 'offline'
+        for e in self.esp_used(row):
+            dev_id = self.esp_device_id(row['id'], e['id'])
+            entry = self.live.setdefault(dev_id, {'payload': {}, 'ts': None, 'availability': None})
+            if online and not ((rt['states'].get(e['id']) or {}).get('available', True)):
+                continue
+            entry['availability'] = state
+            try:
+                self.store.store_snapshot(dev_id, entry.get('ts') or int(time.time()), {}, state)
+            except Exception:                            # noqa: BLE001
+                pass
+        if was is None and online:
+            self.live.setdefault(gw_dev, {'payload': {}, 'ts': None, 'availability': None})['availability'] = 'online'
+        elif self.store.device(gw_dev):
+            self.set_availability(gw_dev, state, name)
+        if not online:
+            self.store.add_event('device', 'ESP32 gateway %s is offline: %s' % (name, error or 'no answer'),
+                                 'crit' if kind == 'cert' else 'warn', gw_dev)
+            log('ESP32 gateway %s is offline: %s' % (name, error), 'warn')
+        elif was is False:
+            self.store.add_event('device', 'ESP32 gateway %s is back' % name, 'info', gw_dev)
+            log('ESP32 gateway %s is back' % name)
+        self.bump()
+
+    def _esp_loop(self, gwid, gen):
+        after = None
+        hello_at = 0.0
+        backoff = 0.0
+        rt = self._esp_rt_of(gwid)
+        while self._esp_current(gwid, gen):
+            row = self.esp_row(gwid)
+            if row is None or row.get('enabled', True) is False:
+                return
+            try:
+                if after is None or time.time() - hello_at > self.ESP_HELLO_S:
+                    _s, hello = self._esp_call(row, 'GET', '/hello')
+                    rt['hello'] = self._esp_hello_clean(hello)
+                    hello_at = time.time()
+                    self._esp_mark(row, True)
+                    self._esp_gw_record(row, rt['hello'])
+                    if after is None:
+                        after = self._esp_full_state(row)
+                if not self._esp_current(gwid, gen):
+                    return
+                _s, ev = self._esp_call(row, 'GET', '/events?after=%d&wait=%d' % (after, self.ESP_WAIT_S),
+                                        timeout=self.ESP_WAIT_S + self.ESP_TIMEOUT_S)
+                if not self._esp_current(gwid, gen):
+                    return
+                boot = esp_words(ev.get('boot'), 16)
+                kept = row.get('boot') or ''
+                self._esp_mark(row, True)
+                rt['last_ok'] = int(time.time())
+                backoff = 0.0
+                if boot and boot != kept:
+                    self._esp_change(gwid, boot=boot)
+                    if kept:
+                        # it started again: what it has may have changed - described again, all its state read again
+                        log('ESP32 gateway %s restarted (boot %s): describing it again' % (row.get('name'), boot))
+                        self.store.add_event('device', 'ESP32 gateway %s restarted - its modules read again'
+                                             % row.get('name'), 'info', self.esp_device_id(gwid))
+                        self.esp_detect(gwid, quiet=True)
+                        after = None
+                        continue
+                seq = ev.get('seq')
+                for one in (ev.get('events') or [])[:200]:
+                    if isinstance(one, dict) and isinstance(one.get('entity'), str):
+                        self._esp_apply(row, one['entity'], one.get('state'), one.get('what'))
+                if isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0:
+                    after = None if seq < after else seq
+            except EspError as e:
+                if not self._esp_current(gwid, gen):
+                    return
+                after = None
+                row = self.esp_row(gwid) or row
+                self._esp_mark(row, False, e.words, e.kind)
+                if e.kind == 'cert':
+                    wait = self.ESP_CERT_BACKOFF_S
+                else:
+                    lo, hi = self.ESP_BACKOFF_S
+                    backoff = min(hi, max(lo, backoff * 2))
+                    wait = backoff
+                rt['wake'].wait(wait)
+            except Exception as e:                       # noqa: BLE001 - the thread stays
+                if not self._esp_current(gwid, gen):
+                    return
+                after = None
+                log('ESP32 gateway %s: %s%s' % (gwid, type(e).__name__, fault_where(e)), 'warn')
+                rt['wake'].wait(self.ESP_BACKOFF_S[1])
+
+    def _esp_gw_record(self, row, hello):
+        """The gateway itself, a device of the house: its signal and its uptime as readings."""
+        vals = {k: hello[k] for k in ('rssi', 'uptime') if isinstance(hello.get(k), int)}
+        if 'fw' in hello:
+            vals['firmware'] = hello['fw']
+        vals['entities'] = len(self.esp_used(row))
+        if self.store.device(self.esp_device_id(row['id'])) is None:
+            self._esp_sync_devices(row)
+        self.record(self.esp_device_id(row['id']), row.get('name') or row['id'], vals)
+
+    # -- Settings: the administrator's --
+    def esp_admin_post(self, body, by):
+        act = str(body.get('action') or '').strip().lower()
+        gwid = str(body.get('id') or '').strip().lower()
+        if act == 'probe':
+            return self.esp_probe(body.get('address'))
+        if act == 'pair':
+            return self.esp_pair(body.get('address'), body.get('code'), body.get('fingerprint'),
+                                 body.get('confirmed'), by=by, name=body.get('name') or '')
+        row = self.esp_row(gwid) if ESP_ID_RE.match(gwid) else None
+        if row is None:
+            raise ValueError('no such gateway')
+        name = row.get('name') or gwid
+        if act == 'detect':
+            out = self.esp_detect(gwid, by=by)
+            if isinstance(body.get('use'), dict):
+                self.esp_use(gwid, body['use'], by)
+                out['use'] = (self.esp_row(gwid) or {}).get('use') or {}
+            return out
+        if act == 'use':
+            return self.esp_use(gwid, body.get('use'), by)
+        if act == 'rename':
+            label = esp_words(body.get('name'), 40)
+            if not label:
+                raise ValueError('a name is needed')
+            self._esp_change(gwid, name=label)
+            self._esp_sync_devices(self.esp_row(gwid))
+            self.store.add_event('device', 'ESP32 gateway %s is now called %s (%s)' % (name, label, by or 'the dashboard'),
+                                 'info', self.esp_device_id(gwid))
+            self.bump()
+            return {'ok': True, 'message': 'renamed to %s' % label}
+        if act in ('enable', 'disable'):
+            on = act == 'enable'
+            self._esp_change(gwid, enabled=on)
+            row = self.esp_row(gwid)
+            self._esp_sync_devices(row)
+            rt = self._esp_rt_of(gwid)
+            if on:
+                rt['online'] = None
+                self.esp_restart(gwid)
+            else:
+                with self._esp_lock:
+                    rt['gen'] = -1
+                    if rt.get('wake'):
+                        rt['wake'].set()
+                rt['online'], rt['error'] = None, ''
+            self.store.add_event('device', 'ESP32 gateway %s %s (%s)' % (name, 'switched on' if on else 'switched off',
+                                                                         by or 'the dashboard'), 'info', self.esp_device_id(gwid))
+            self.bump()
+            return {'ok': True, 'message': '%s %s' % (name, 'switched on' if on else 'switched off')}
+        if act == 'unpair':
+            said = ''
+            try:
+                self._esp_call(row, 'POST', '/unpair', {})
+            except EspError as e:
+                if body.get('force') is not True:
+                    raise ValueError('%s could not be told (%s) - Forget it to take it away here only' % (name, e.words))
+                said = ' (it could not be told: %s)' % e.words
+            self._esp_forget(row, 'unpaired%s' % said, by)
+            return {'ok': True, 'message': '%s unpaired%s' % (name, said)}
+        if act == 'delete':
+            self._esp_forget(row, 'forgotten here (the gateway still holds its key until it is unpaired there)', by)
+            return {'ok': True, 'message': '%s forgotten' % name}
+        if act == 'reconnect':
+            self._esp_rt_of(gwid)['online'] = None
+            self.esp_restart(gwid)
+            return {'ok': True, 'message': 'asking %s again' % name}
+        raise ValueError('action is one of probe, pair, detect, use, rename, enable, disable, unpair, delete')
+
+    def _esp_forget(self, row, why, by):
+        gwid = row['id']
+        with self._esp_lock:
+            rows = [r for r in self.esp_rows() if r['id'] != gwid]
+            self._esp_put(rows)
+            rt = self._esp_rt_of(gwid)
+            rt['gen'] = -1
+            if rt.get('wake'):
+                rt['wake'].set()
+            self._esp_rt.pop(gwid, None)
+        for e in self.esp_entities(row):
+            dev_id = self.esp_device_id(gwid, e['id'])
+            if self.store.device(dev_id):
+                self.store.mark_removed(dev_id)
+            self.live.pop(dev_id, None)
+        if self.store.device(self.esp_device_id(gwid)):
+            self.store.mark_removed(self.esp_device_id(gwid))
+        self.live.pop(self.esp_device_id(gwid), None)
+        self.store.add_event('security', 'ESP32 gateway %s %s (%s)' % (row.get('name') or gwid, why, by or 'the dashboard'),
+                             'info')
+        self.bump()
+
+    def esp_dashboard_command(self, body, who):
+        """POST /api/esp/command: {id: esp:<gw>:<entity>, action, args?, confirmed?} from the page."""
+        got = self.esp_split(body.get('id') or body.get('target'))
+        if got is None:
+            raise ValueError('id is esp:<gateway>:<entity>')
+        row = self.esp_row(got[0])
+        ent = next((e for e in self.esp_used(row or {}) if e['id'] == got[1]), None) if row else None
+        if ent is None:
+            return 404, {'ok': False, 'error': 'there is no such thing to control'}
+        action = str(body.get('action') or '').strip()
+        if action.lower() in (ent.get('confirm') or []) and body.get('confirmed') is not True:
+            return 409, {'ok': False, 'error': '%s asks to be confirmed' % action, 'confirm': True}
+        ok, words = self.esp_command(got[0], got[1], action, 'the dashboard (%s)' % (who or 'somebody'),
+                                     body.get('args') if isinstance(body.get('args'), dict) else None)
+        return (202 if ok else 502), {'ok': ok, 'message' if ok else 'error': words}
+
+    # -- the Stream Deck --
+    def _deck_esp_items(self, rooms):
+        """(5.59.4) Every entity in use, an item: a lock under "locks" (off until granted, held by
+        default, and its sensitive actions always held), what switches under "switch", a blind
+        under "cover", what is only read under "view"."""
+        out = []
+        for r in self.esp_rows():
+            if r.get('enabled', True) is False:
+                continue
+            rt = self._esp_rt_of(r['id'])
+            for e in self.esp_used(r):
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                dev_id = self.esp_device_id(r['id'], e['id'])
+                online = bool(rt.get('online')) and st.get('available', True) is not False
+                attrs_v = dict(st.get('attrs') or {})
+                battery = attrs_v.get('battery')
+                battery = int(round(battery)) if isinstance(battery, (int, float)) and not isinstance(battery, bool) else None
+                num_attrs = [{'key': a['key'], 'label': a['label'], 'type': 'number', 'unit': a.get('unit') or None,
+                              'min': a.get('min'), 'max': a.get('max'), 'step': 1, 'readonly': True}
+                             for a in e.get('attrs') or [] if a.get('type') == 'number']
+                value = st.get('value')
+                acts = list(e.get('actions') or [])
+                kind, cap, icon, on, attrs = e['type'], 'view', 'sensor', None, []
+                if e['type'] == 'lock':
+                    cap, icon = 'locks', 'lock'
+                    on = None if value not in ('locked', 'unlocked') else value == 'unlocked'
+                elif e['type'] == 'switch':
+                    cap, icon = 'switch', 'switch'
+                    acts = [a for a in ('toggle', 'on', 'off') if a in acts] + [a for a in acts if a not in ('toggle', 'on', 'off')]
+                    on = None if value is None else str(value).lower() in ('on', 'true', '1')
+                elif e['type'] == 'button':
+                    cap, icon = 'switch', 'button'
+                elif e['type'] == 'cover':
+                    cap, icon = 'cover', 'blinds'
+                elif e['type'] == 'number' and 'set' in acts:
+                    cap, icon = 'switch', 'dial'
+                    attrs = [{'key': 'value', 'label': e['name'], 'type': 'number', 'unit': e.get('unit') or None,
+                              'min': e.get('min'), 'max': e.get('max'), 'step': e.get('step') or 1}]
+                elif e['type'] == 'select' and 'set' in acts and e.get('options'):
+                    cap, icon = 'switch', 'list'
+                    attrs = [{'key': 'value', 'label': e['name'], 'type': 'enum', 'values': list(e['options'])}]
+                else:
+                    acts = []
+                    icon = 'contact' if e['type'] == 'binary_sensor' else 'sensor'
+                    on = value if isinstance(value, bool) else None
+                vtext = None
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    vtext = self._ntf_vtext(value, e.get('unit') or '')
+                elif isinstance(value, str) and value:
+                    vtext = value
+                if st.get('busy'):
+                    vtext = 'busy…'
+                extra = dict(attrs_v)
+                if st.get('last'):
+                    extra['last_action'] = st['last'].get('action')
+                    extra['last_ok'] = st['last'].get('ok')
+                    extra['last_at'] = st['last'].get('at')
+                extra['value'] = value
+                out.append({'id': dev_id, 'name': self._esp_name_of(r, e), 'room': rooms.get(dev_id), 'kind': kind,
+                            'icon': icon, 'cap': cap, 'actions': acts, 'attrs': attrs + num_attrs,
+                            'state': {'on': on, 'value': value if not isinstance(value, str) else None,
+                                      'value_text': vtext, 'attrs': extra, 'online': online, 'battery': battery,
+                                      'at': (self.live.get(dev_id) or {}).get('ts')},
+                            '_target': dev_id, '_esp': True, '_confirm': list(e.get('confirm') or [])})
+        return out
+
+    def _deck_esp_command(self, item, action, body):
+        """(do, words, target) of a gateway's item: its action as it is; set as the executor's set:."""
+        if action in ('set', 'step'):
+            return None
+        verb = {'open': 'opened', 'unlock': 'unlocked', 'lock': 'locked'}.get(action, self.DECK_SAID.get(action, action))
+        return action, '%s %s' % (verb, item['name']), item['_target']
+
+
+# ---- contacts (5.59.4): the address book kept in ZIGMon ----------------------------------------
+# Kept as meta `contacts`, an administrator's (windows/PROTOCOL-SMS.md, section 1). What is read
+# from a file somebody hands in is read as data and nothing else: no eval, at most 2 MB, at most
+# CONTACTS_IMPORT_ROWS cards or rows, and a line that makes no sense is skipped with its line
+# number rather than stopping the rest. Names and numbers never go into the log.
+CONTACTS_MOST = 2000
+CONTACT_NUMBERS_MOST = 5
+CONTACTS_IMPORT_BYTES = 2 * 1024 * 1024
+CONTACTS_IMPORT_ROWS = 5000
+CONTACTS_LOCK = threading.Lock()
+CONTACT_ID = re.compile(r'^c_[0-9a-f]{6,12}$')
+_CONTACT_CTRL = re.compile('[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]')
+# what a file calls a group that is not one: Google's "everybody" and its star
+_CONTACT_NOT_GROUPS = ('mycontacts', 'my contacts', 'starred', 'favorites', 'favourites', 'oblíbené')
+
+
+def contact_text(value, most, lines=False):
+    """One line of text (or, for a note, lines): control and direction marks out, spaces folded."""
+    s = str(value if value is not None else '').replace('\r\n', '\n').replace('\r', '\n')
+    s = _CONTACT_CTRL.sub(' ', s)
+    if lines:
+        s = '\n'.join(re.sub(r'[ \t]+', ' ', x).strip() for x in s.split('\n'))
+        s = re.sub(r'\n{3,}', '\n\n', s).strip()
+    else:
+        s = re.sub(r'\s+', ' ', s).strip()
+    return s[:most]
+
+
+def contact_number(raw):
+    """A number as ZIGMon keeps it: what sms_number_for_gateway makes of it, and 00 written as +.
+    '' when it is not a phone number (6-15 digits)."""
+    s = str(raw or '').strip()
+    if s[:4].lower() == 'tel:':
+        s = s[4:]
+    s = s.split(';')[0]                                # tel:+420...;ext=12
+    s = re.split(r'(?i)\s*(?:ext\.?|x|#|p|w)\s*\d*\s*$', s)[0] if re.search(r'\d', s) else s
+    if not re.search(r'\d', s) or re.search(r'[A-Za-z]', s):
+        return ''
+    n = Daemon.sms_number_for_gateway(s)
+    if not n:
+        return ''
+    n = n[0] + n[1:].replace('+', '')
+    if n.startswith('00'):
+        n = '+' + n[2:]
+    return n if re.match(r'^\+?\d{6,15}$', n) else ''
+
+
+def contact_label(value):
+    return contact_text(value, 20)
+
+
+def contact_clean(raw, strict=True):
+    """A contact as kept: (contact, None), or (None, why). strict (a save from the page) refuses
+    what is too long; an import cuts it to size, since a phone's own field is often longer."""
+    if not isinstance(raw, dict):
+        return None, 'a contact is an object'
+    name_in = contact_text(raw.get('name'), 10000)
+    if not name_in:
+        return None, 'no name'
+    if strict and len(name_in) > 80:
+        return None, 'a name is at most 80 characters'
+    numbers, seen = [], []
+    given = raw.get('numbers')
+    if not isinstance(given, list):
+        given = [given] if given else []
+    for one in given[:50]:
+        if isinstance(one, dict):
+            label, value = one.get('label'), one.get('number')
+        else:
+            label, value = '', one
+        typed = str(value or '').strip()
+        if not typed:
+            continue
+        number = contact_number(typed)
+        if not number:
+            if strict:
+                return None, '%s does not look like a phone number' % typed[:30]
+            continue
+        label = contact_text(label, 10000)
+        if strict and len(label) > 20:
+            return None, 'a label is at most 20 characters'
+        if any(Daemon._same_number(number, n) for n in seen):
+            continue
+        seen.append(number)
+        numbers.append({'label': label[:20], 'number': number})
+    if not numbers:
+        return None, 'no phone number'
+    if len(numbers) > CONTACT_NUMBERS_MOST:
+        if strict:
+            return None, 'at most %d numbers' % CONTACT_NUMBERS_MOST
+        numbers = numbers[:CONTACT_NUMBERS_MOST]
+    group = contact_text(raw.get('group'), 10000)
+    note = contact_text(raw.get('note'), 10000, lines=True)
+    if strict and len(group) > 40:
+        return None, 'a group is at most 40 characters'
+    if strict and len(note) > 200:
+        return None, 'a note is at most 200 characters'
+    return {'id': str(raw.get('id') or ''), 'name': name_in[:80], 'numbers': numbers, 'group': group[:40],
+            'note': note[:200], 'favourite': raw.get('favourite') in (True, 1, '1', 'true', 'yes')}, None
+
+
+def _contact_groups_of(words):
+    """(group, favourite) from a list of categories: the first that is a group, and a star."""
+    group, star = '', False
+    for w in words:
+        w = contact_text(w, 200).lstrip('*').strip()
+        if not w:
+            continue
+        low = w.casefold()
+        if low in ('starred', 'favorites', 'favourites', 'oblíbené'):
+            star = True
+        elif low not in _CONTACT_NOT_GROUPS and not group:
+            group = w
+    return group, star
+
+
+# -- vCard 2.1, 3.0 and 4.0 -------------------------------------------------------------------
+def _vcf_lines(text):
+    """The logical lines of a vCard file, each with the line it starts on: folded lines (a space
+    or a tab at the start) put back together, and a quoted-printable value that ends in = joined
+    with the next line, as 2.1 writes them. Pieces are joined once, at the end of each line, so
+    a photo folded into thirty thousand lines costs no more than reading it."""
+    out = []
+    parts, start, qp = None, 0, False
+    for i, line in enumerate(text.split('\n'), 1):
+        if parts is not None and qp and parts[-1].endswith('='):
+            parts[-1] = parts[-1][:-1]
+            parts.append(line)
+            continue
+        if parts is not None and line[:1] in (' ', '\t'):
+            parts.append(line[1:])
+            continue
+        if parts is not None:
+            out.append((start, ''.join(parts)))
+        parts, start = [line], i
+        head = line.split(':', 1)[0].upper() if ':' in line else ''
+        qp = 'QUOTED-PRINTABLE' in head
+    if parts is not None:
+        out.append((start, ''.join(parts)))
+    return out
+
+
+def _vcf_split(value, sep):
+    """Split on sep where it is not escaped with a backslash."""
+    out, cur, i = [], [], 0
+    while i < len(value):
+        ch = value[i]
+        if ch == '\\' and i + 1 < len(value):
+            cur.append(value[i:i + 2])
+            i += 2
+            continue
+        if ch == sep:
+            out.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append(''.join(cur))
+    return out
+
+
+def _vcf_unescape(value):
+    return re.sub(r'\\(.)', lambda m: '\n' if m.group(1) in 'nN' else m.group(1), value)
+
+
+def _vcf_property(line):
+    """(group, NAME, {PARAM: [values]}, value) of one logical line, or None."""
+    quoted, cut = False, -1
+    for i, ch in enumerate(line[:4000]):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ':' and not quoted:
+            cut = i
+            break
+    if cut <= 0:
+        return None
+    head, value = line[:cut], line[cut + 1:]
+    pieces, cur, quoted = [], [], False
+    for ch in head:
+        if ch == '"':
+            quoted = not quoted
+        if ch == ';' and not quoted:
+            pieces.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    pieces.append(''.join(cur))
+    name = pieces[0].strip()
+    group = ''
+    if '.' in name:
+        group, name = name.rsplit('.', 1)
+    if not re.match(r'^[A-Za-z0-9-]{1,60}$', name):
+        return None
+    params = {}
+    for p in pieces[1:]:
+        if '=' in p:
+            k, v = p.split('=', 1)
+        else:
+            k, v = 'TYPE', p
+        k = k.strip().upper()
+        vals = [x.strip().strip('"') for x in v.split(',') if x.strip().strip('"')]
+        if k == 'TYPE':
+            for x in vals:
+                up = x.upper()
+                if up in ('QUOTED-PRINTABLE', 'BASE64', 'B', '8BIT', '7BIT'):
+                    params.setdefault('ENCODING', []).append(up)
+                else:
+                    params.setdefault('TYPE', []).append(x)
+        else:
+            params.setdefault(k, []).extend(vals)
+    return group.upper(), name.upper(), params, value
+
+
+def _vcf_value(params, value):
+    """The text of a value: quoted-printable decoded in its CHARSET, or None for one that is not
+    text at all (a photo in BASE64)."""
+    enc = [x.upper() for x in params.get('ENCODING', [])]
+    if 'BASE64' in enc or 'B' in enc:
+        return None
+    if 'QUOTED-PRINTABLE' in enc:
+        raw = re.sub(rb'=([0-9A-Fa-f]{2})', lambda m: bytes([int(m.group(1), 16)]),
+                     value.encode('utf-8', 'replace'))
+        charset = (params.get('CHARSET') or ['utf-8'])[0].strip() or 'utf-8'
+        try:
+            value = raw.decode(charset, 'replace')
+        except (LookupError, ValueError):
+            value = raw.decode('utf-8', 'replace')
+    return value
+
+
+def _tel_label(types):
+    t = [x.lower() for x in types]
+    if 'fax' in t:
+        return 'fax'
+    work = 'work' in t
+    if 'cell' in t or 'mobile' in t or 'iphone' in t:
+        return 'work mobile' if work else 'mobile'
+    for k, word in (('work', 'work'), ('home', 'home'), ('main', 'main'), ('pager', 'pager'), ('car', 'car'),
+                    ('other', 'other')):
+        if k in t:
+            return word
+    return ''
+
+
+def _apple_label(value):
+    m = re.match(r'^_\$!<(.*)>!\$_$', value.strip())
+    word = (m.group(1) if m else value).strip()
+    return {'mobile': 'mobile', 'home': 'home', 'work': 'work', 'main': 'main', 'other': 'other',
+            'iphone': 'iPhone'}.get(word.lower(), word)
+
+
+def _vcf_card(props):
+    """One card's properties into a row as the importer takes it."""
+    fn = n = org = note = ''
+    cats, tels, labels, star = [], [], {}, False
+    for group, name, params, value in props:
+        if name == 'X-ABLABEL' and group:
+            labels[group] = _apple_label(_vcf_unescape(value))
+    for group, name, params, value in props:
+        text = _vcf_value(params, value)
+        if text is None:
+            continue
+        if name == 'FN' and not fn:
+            fn = _vcf_unescape(text)
+        elif name == 'N' and not n:
+            bits = [_vcf_unescape(x).strip() for x in _vcf_split(text, ';')] + [''] * 5
+            family, given, middle = bits[0], bits[1], bits[2]
+            n = ' '.join(x for x in (bits[3], given, middle, family, bits[4]) if x)
+        elif name == 'ORG' and not org:
+            org = _vcf_unescape(_vcf_split(text, ';')[0])
+        elif name == 'TEL':
+            types = []
+            for x in params.get('TYPE', []):
+                types.extend(y for y in x.split(',') if y)
+            label = labels.get(group) if group and labels.get(group) else _tel_label(types)
+            tels.append({'label': label, 'number': _vcf_unescape(text)})
+        elif name == 'CATEGORIES':
+            cats.extend(_vcf_unescape(x) for x in _vcf_split(text, ','))
+        elif name == 'NOTE' and not note:
+            note = _vcf_unescape(text)
+        elif name in ('X-ZIGMON-FAVOURITE', 'X-FAVORITE', 'X-FAVOURITE', 'X-STARRED'):
+            star = star or text.strip().lower() in ('1', 'true', 'yes')
+    group, starred = _contact_groups_of(cats)
+    return {'name': fn.strip() or n.strip() or org.strip(), 'numbers': tels, 'group': group, 'note': note,
+            'favourite': star or starred}
+
+
+def contacts_parse_vcf(text):
+    """([rows], [skipped]) of a vCard file. Each row has the line its card starts on."""
+    text = str(text or '').lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n').replace('\x00', '')
+    rows, skipped = [], []
+    card, depth = None, 0
+    for line_no, line in _vcf_lines(text):
+        word = line.strip().upper()
+        if word == 'BEGIN:VCARD':
+            if card is not None:
+                depth += 1                       # a card inside a card (2.1's AGENT): not one of ours
+                continue
+            if len(rows) >= CONTACTS_IMPORT_ROWS:
+                skipped.append({'line': line_no, 'why': 'more than %d cards in one file - the rest were not read'
+                                % CONTACTS_IMPORT_ROWS})
+                break
+            card = {'line': line_no, 'props': []}
+            continue
+        if word == 'END:VCARD':
+            if card is None:
+                continue
+            if depth:
+                depth -= 1
+                continue
+            row = _vcf_card(card['props'])
+            row['line'] = card['line']
+            rows.append(row)
+            card = None
+            continue
+        if card is None or depth or not word:
+            continue
+        if len(card['props']) >= 300:
+            continue
+        prop = _vcf_property(line)
+        if prop is not None:
+            card['props'].append(prop)
+    if card is not None:
+        row = _vcf_card(card['props'])           # a file cut short: what there is of the last card
+        row['line'] = card['line']
+        rows.append(row)
+    if not rows and not skipped:
+        skipped.append({'line': 1, 'why': 'no BEGIN:VCARD in this file - is it a vCard?'})
+    return rows, skipped
+
+
+# -- CSV from Google Contacts and Outlook ------------------------------------------------------
+_CSV_NAME = ('name', 'full name', 'display name', 'celé jméno', 'zobrazované jméno', 'jméno a příjmení')
+_CSV_GIVEN = ('given name', 'first name', 'křestní jméno', 'jméno')
+_CSV_MIDDLE = ('additional name', 'middle name', 'prostřední jméno', 'další jméno')
+_CSV_FAMILY = ('family name', 'last name', 'příjmení')
+_CSV_ORG = ('organization 1 - name', 'organization name', 'company', 'společnost', 'firma')
+_CSV_GROUP = ('group membership', 'labels', 'categories', 'kategorie', 'group', 'skupina')
+_CSV_NOTE = ('notes', 'note', 'poznámky', 'poznámka')
+_CSV_STAR = ('favourite', 'favorite', 'starred', 'oblíbený', 'oblíbené')
+_CSV_PHONES = {'mobile phone': 'mobile', 'mobilní telefon': 'mobile', 'mobile': 'mobile', 'mobil': 'mobile',
+               'home phone': 'home', 'home phone 2': 'home', 'telefon domů': 'home', 'telefon domů 2': 'home',
+               'business phone': 'work', 'business phone 2': 'work', 'company main phone': 'work',
+               'telefon do zaměstnání': 'work', 'telefon do zaměstnání 2': 'work', 'other phone': 'other',
+               'jiný telefon': 'other', 'primary phone': 'main', 'hlavní telefon': 'main', 'car phone': 'car',
+               'telefon do auta': 'car', 'pager': 'pager', 'phone': '', 'phone number': '', 'number': '',
+               'telephone': '', 'telefon': '', 'číslo': '', 'telefonní číslo': ''}
+
+
+def _csv_delimiter(first):
+    counts = {',': 0, ';': 0, '\t': 0}
+    quoted = False
+    for ch in first:
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch in counts:
+            counts[ch] += 1
+    best = max(counts, key=lambda k: counts[k])
+    return best if counts[best] else ','
+
+
+def contacts_parse_csv(text):
+    """([rows], [skipped]) of a CSV of contacts: Google's (old and new headers) or Outlook's, with
+    , or ; or tabs between the cells, with or without a BOM. Each row has its line number."""
+    import csv
+    import io
+    text = str(text or '').lstrip('\ufeff').replace('\x00', '')
+    rows, skipped = [], []
+    first = text.split('\n', 1)[0]
+    reader = csv.reader(io.StringIO(text, newline=''), delimiter=_csv_delimiter(first), strict=False)
+    try:
+        header = next(reader)
+    except StopIteration:
+        return [], [{'line': 1, 'why': 'the file is empty'}]
+    except csv.Error as e:
+        return [], [{'line': 1, 'why': 'the first line could not be read (%s)' % str(e)[:80]}]
+    cols = [contact_text(h, 80).strip('"').strip().casefold() for h in header]
+
+    def where(names):
+        return next((i for i, h in enumerate(cols) if h in names), None)
+    i_name, i_given, i_middle, i_family = where(_CSV_NAME), where(_CSV_GIVEN), where(_CSV_MIDDLE), where(_CSV_FAMILY)
+    i_org, i_group, i_note, i_star = where(_CSV_ORG), where(_CSV_GROUP), where(_CSV_NOTE), where(_CSV_STAR)
+    phones = []                                   # (label column or None, label word, value column)
+    google = {}
+    for i, h in enumerate(cols):
+        m = re.match(r'^phone (\d{1,2}) - (type|label|value)$', h)
+        if m:
+            google.setdefault(int(m.group(1)), {})[m.group(2)] = i
+        elif h in _CSV_PHONES:
+            phones.append((None, _CSV_PHONES[h], i))
+    for k in sorted(google):
+        if 'value' in google[k]:
+            phones.append((google[k].get('type', google[k].get('label')), '', google[k]['value']))
+    if not phones:
+        return [], [{'line': 1, 'why': 'no column of phone numbers in the first line (Phone 1 - Value, '
+                                        'Mobile Phone, ...)'}]
+    if i_name is None and i_given is None and i_family is None and i_org is None:
+        return [], [{'line': 1, 'why': 'no column of names in the first line (Name, First Name, ...)'}]
+    line_no = 1
+    while True:
+        try:
+            cells = next(reader)
+        except StopIteration:
+            break
+        except csv.Error as e:
+            skipped.append({'line': reader.line_num, 'why': 'the file could not be read past here (%s)'
+                            % str(e)[:80]})
+            break
+        at, line_no = line_no + 1, reader.line_num
+        if not any(c.strip() for c in cells):
+            continue
+        if len(rows) >= CONTACTS_IMPORT_ROWS:
+            skipped.append({'line': at, 'why': 'more than %d rows in one file - the rest were not read'
+                            % CONTACTS_IMPORT_ROWS})
+            break
+
+        def cell(i):
+            return cells[i].strip() if i is not None and i < len(cells) else ''
+        name = ' '.join(x for x in (cell(i_given), cell(i_middle), cell(i_family)) if x)
+        name = cell(i_name) or name or cell(i_org)
+        numbers = []
+        for i_label, word, i_value in phones:
+            label = cell(i_label).lstrip('*').strip() if i_label is not None else word
+            if label.lower() in ('mobile', 'home', 'work', 'work mobile', 'other', 'main', 'pager', 'car', 'fax'):
+                label = label.lower()                  # Google writes Mobile; a label of one's own stays as written
+            for value in cell(i_value).split(':::'):
+                if value.strip():
+                    numbers.append({'label': label, 'number': value.strip()})
+        group, star = _contact_groups_of(re.split(r':::|;', cell(i_group)) if i_group is not None else [])
+        star = star or cell(i_star).lower() in ('1', 'true', 'yes', 'ano', 'x', '*')
+        rows.append({'line': at, 'name': name, 'numbers': numbers, 'group': group, 'note': cell(i_note),
+                     'favourite': star})
+    return rows, skipped
+
+
+# -- export ---------------------------------------------------------------------------------
+def _vcf_escape(value):
+    return (str(value).replace('\\', '\\\\').replace('\n', '\\n').replace(',', '\\,').replace(';', '\\;'))
+
+
+def _vcf_fold(line):
+    """A line of at most 75 octets, the rest on lines that start with a space - never in the
+    middle of a letter."""
+    out, cur, size = [], [], 0
+    for ch in line:
+        n = len(ch.encode('utf-8'))
+        if size + n > (75 if not out else 74):
+            out.append(''.join(cur))
+            cur, size = [], 0
+        cur.append(ch)
+        size += n
+    out.append(''.join(cur))
+    return '\r\n '.join(out)
+
+
+_LABEL_TYPES = {'mobile': 'CELL', 'cell': 'CELL', 'home': 'HOME', 'work': 'WORK', 'work mobile': 'WORK,CELL',
+                'fax': 'FAX', 'pager': 'PAGER', 'main': 'MAIN', 'other': 'VOICE', '': 'VOICE', 'car': 'CAR',
+                'iphone': 'IPHONE'}
+
+
+def contacts_vcf(book):
+    """The contacts as vCard 3.0, which every phone and Google, Outlook and iCloud read."""
+    lines = []
+    for c in book:
+        name = c.get('name') or ''
+        given, _, family = name.rpartition(' ')
+        if not given:
+            given, family = family, ''
+        lines += ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + _vcf_escape(name),
+                  'N:%s;%s;;;' % (_vcf_escape(family), _vcf_escape(given))]
+        item = 0
+        for one in c.get('numbers') or []:
+            label = str(one.get('label') or '')
+            kind = _LABEL_TYPES.get(label.lower())
+            if kind is not None:
+                lines.append('TEL;TYPE=%s:%s' % (kind, one.get('number') or ''))
+            else:                                # a label of its own: as iPhone writes it
+                item += 1
+                lines.append('item%d.TEL:%s' % (item, one.get('number') or ''))
+                lines.append('item%d.X-ABLabel:%s' % (item, _vcf_escape(label)))
+        if c.get('group'):
+            lines.append('CATEGORIES:' + _vcf_escape(c['group']))
+        if c.get('note'):
+            lines.append('NOTE:' + _vcf_escape(c['note']))
+        if c.get('favourite'):
+            lines.append('X-ZIGMON-FAVOURITE:TRUE')
+        lines.append('END:VCARD')
+    return ''.join(_vcf_fold(x) + '\r\n' for x in lines)
+
+
+def _csv_safe(value):
+    """A cell a spreadsheet will not take for a formula. A number stays as it is."""
+    s = str(value or '')
+    if s[:1] in ('=', '+', '-', '@', '\t', '\r') and not re.match(r'^\+?[0-9 ]+$', s):
+        return "'" + s
+    return s
+
+
+def contacts_csv(book):
+    """The contacts as Google Contacts' CSV (the headers Google itself writes), with a BOM so a
+    spreadsheet reads the letters right. A favourite is "* starred", as Google marks one."""
+    import csv
+    import io
+    most = max([len(c.get('numbers') or []) for c in book] + [1])
+    head = ['Name', 'Given Name', 'Family Name', 'Group Membership']
+    for k in range(1, most + 1):
+        head += ['Phone %d - Type' % k, 'Phone %d - Value' % k]
+    head.append('Notes')
+    buf = io.StringIO(newline='')
+    w = csv.writer(buf, lineterminator='\r\n')
+    w.writerow(head)
+    for c in book:
+        name = c.get('name') or ''
+        given, _, family = name.rpartition(' ')
+        if not given:
+            given, family = family, ''
+        groups = ['* myContacts'] + ([c['group']] if c.get('group') else []) + (['* starred'] if c.get('favourite') else [])
+        row = [_csv_safe(name), _csv_safe(given), _csv_safe(family), _csv_safe(' ::: '.join(groups))]
+        nums = c.get('numbers') or []
+        for k in range(most):
+            if k < len(nums):
+                label = str(nums[k].get('label') or '')
+                row += [_csv_safe(label[:1].upper() + label[1:]), nums[k].get('number') or '']
+            else:
+                row += ['', '']
+        row.append(_csv_safe(c.get('note') or ''))
+        w.writerow(row)
+    return '\ufeff' + buf.getvalue()
+
+
+class Daemon(EspGateways):
     def __init__(self, storage=None):
         open_log()
         # every line from here on is written by a thread of its own, so that
@@ -12874,13 +14524,15 @@ class Daemon(object):
     DECK_RATE_S, DECK_RATE_MIN = 10, 300
     DECK_REVOKED_KEPT = 50
     DECK_CAPS = ('view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system',
-                 'status')
+                 'status', 'locks')
     DECK_CAP_WORDS = {'view': 'see states and readings', 'switch': 'switch sockets, lights and relays',
                       'dim': 'dim lights and set their colour', 'climate': 'set the heating and thermostats',
                       'cover': 'move the blinds', 'scenes': 'run scenes, sequences and groups',
                       'automations': 'switch rules, schedules and groups on and off',
                       'messages': 'send the reports and messages', 'system': 'run the system actions',
-                      'status': 'see ZIGMon’s own health'}
+                      'status': 'see ZIGMon’s own health',
+                      # (5.59.4) the locks of the ESP32 gateways: off until granted, held by default
+                      'locks': 'open, unlock and lock the locks'}
     DECK_TYPES = {0: ('Stream Deck', 'Stream Deck'), 1: ('Stream Deck Mini', 'Mini'), 2: ('Stream Deck XL', 'XL'),
                   3: ('Stream Deck Mobile', 'Mobile'), 4: ('Corsair G-Keys', 'G-Keys'), 5: ('Stream Deck Pedal', 'Pedal'),
                   6: ('Corsair Voyager', 'Voyager'), 7: ('Stream Deck +', '+'), 8: ('SCUF controller', 'SCUF'),
@@ -13019,7 +14671,7 @@ class Daemon(object):
             elif c == 'view':
                 out[c] = {'on': True, 'all': True, 'targets': []}
             else:
-                out[c] = {'on': False, 'all': False, 'targets': [], 'hold': c == 'system'}
+                out[c] = {'on': False, 'all': False, 'targets': [], 'hold': c in ('system', 'locks')}
         return out
 
     def _deck_clean_caps(self, given, was=None):
@@ -13971,7 +15623,7 @@ class Daemon(object):
             return kept[1]
         rooms = self._ntf_rooms()
         out = []
-        for part in (self._deck_house_items, self._deck_zb_items, self._deck_reading_items):
+        for part in (self._deck_house_items, self._deck_zb_items, self._deck_reading_items, self._deck_esp_items):
             try:
                 out.extend(part(rooms))
             except Exception as e:                           # noqa: BLE001
@@ -14062,8 +15714,8 @@ class Daemon(object):
         out = {'id': item['id'], 'name': item['name'], 'room': item['room'], 'kind': item['kind'],
                'icon': item['icon'], 'cap': item['cap'], 'actions': list(item['actions']),
                'attrs': [dict(a) for a in item['attrs']], 'allowed': allowed,
-               'hold': bool(((caps or {}).get(item['cap']) or {}).get('hold')) if item['cap'] not in ('view', 'status')
-               else False,
+               'hold': (bool(((caps or {}).get(item['cap']) or {}).get('hold')) or bool(item.get('_confirm')))
+               if item['cap'] not in ('view', 'status') else False,
                'state': self.deck_state_view(item['id'], item['state'], visible_ids)}
         if extended:
             # (5.59.4) told only to a plugin that asks for the summaries: a switch takes "timer" too,
@@ -14484,7 +16136,9 @@ class Daemon(object):
             if not (action in ('open', 'close') and 'set' in item['actions'] and item['kind'] == 'cover') \
                     and not (action == 'timer' and self.deck_timer_ok(item)):
                 return 400, {'ok': False, 'error': '%s takes %s' % (item['name'], ', '.join(item['actions']))}
-        if (caps.get(item['cap']) or {}).get('hold'):
+        # (5.59.4) what a gateway's entity names as sensitive (a lock's open, unlock) is held
+        # whatever its capability says
+        if (caps.get(item['cap']) or {}).get('hold') or action in (item.get('_confirm') or ()):
             held = body.get('held_ms')
             if not (isinstance(held, (int, float)) and not isinstance(held, bool) and held >= self.DECK_HOLD_MS):
                 return 409, {'ok': False, 'error': 'Hold the key to confirm', 'hold': True}
@@ -14669,6 +16323,10 @@ class Daemon(object):
         """(do, words, target) for the executor - or (None, why, None)."""
         name = item['name']
         target = item['_target']
+        if item.get('_esp'):
+            got = self._deck_esp_command(item, action, body)      # (5.59.4)
+            if got is not None:
+                return got
         if action == 'timer':
             # (5.59.4) on now, off after the minutes: "on for N" of the executor - kept with the
             # house's other timers, taken up again after a restart (the overdue go off at once)
@@ -18147,6 +19805,265 @@ class Daemon(object):
             if str(who) in (person['id'], person['name']) and person.get('phone'):
                 return person['phone']
         return None
+
+    # ---- contacts (5.59.4): the address book (windows/PROTOCOL-SMS.md, section 1) -----------
+    def contacts(self):
+        """The contacts as kept, each a copy: {id, name, numbers [{label, number}], group, note,
+        favourite}. Also what the desktop app and the Stream Deck code read."""
+        return [dict(c, numbers=[dict(n) for n in c.get('numbers') or [] if isinstance(n, dict)])
+                for c in self.store.meta_json('contacts')]
+
+    def contact_groups(self):
+        """The groups in use, each once whatever its case, in alphabetical order."""
+        seen = {}
+        for c in self.contacts():
+            g = str(c.get('group') or '')
+            if g and g.casefold() not in seen:
+                seen[g.casefold()] = g
+        return sorted(seen.values(), key=lambda g: g.casefold())
+
+    def _contacts_keep(self, book):
+        self.store.set_meta('contacts', json.dumps(book, ensure_ascii=False, separators=(',', ':')))
+        self.bump()
+
+    @staticmethod
+    def _contact_new_id(*books):
+        have = {c.get('id') for book in books for c in book}
+        while True:
+            one = 'c_' + secrets.token_hex(4)
+            if one not in have:
+                return one
+
+    def contact_by_number(self, number):
+        """The contact a number belongs to, or None - the same phone however it is written, as
+        _same_number has it, looked up in an index made again only when the book changes."""
+        raw = self.store.get_meta('contacts')
+        idx = getattr(self, '_contacts_index', None)
+        if idx is None or idx[0] is not raw:
+            whole, nat9, any9 = {}, {}, {}
+            for c in self.store.meta_json('contacts'):
+                for one in c.get('numbers') or []:
+                    n = str(one.get('number') or '')
+                    digits = re.sub(r'[^0-9]', '', n)
+                    if n.startswith('00'):
+                        digits = digits[2:]
+                    if not digits:
+                        continue
+                    whole.setdefault(digits, c)
+                    if not (n.startswith('+') or n.startswith('00')) and len(digits) >= 9:
+                        nat9.setdefault(digits[-9:], c)
+                    if len(digits) >= 9:
+                        any9.setdefault(digits[-9:], c)
+            idx = (raw, whole, nat9, any9)
+            self._contacts_index = idx
+        _, whole, nat9, any9 = idx
+        n = str(number or '').strip()
+        digits = re.sub(r'[^0-9]', '', n)
+        if n.startswith('00'):
+            digits = digits[2:]
+        if not digits:
+            return None
+        if whole.get(digits):
+            return whole[digits]
+        if len(digits) < 9:
+            return None
+        # a number with its country matches another only whole, or one written without
+        return (nat9 if (n.startswith('+') or n.startswith('00')) else any9).get(digits[-9:])
+
+    def contacts_expand(self, to_list, unknown=None):
+        """[(number, contact or None)] of a list of numbers, contact:<id> and group:<name>: a
+        contact's first number, every contact of a group, a number as it is (with the contact it
+        belongs to). The same phone twice is there once. What names nothing goes into unknown,
+        when a list is given."""
+        book = self.contacts()
+        by_id = {c['id']: c for c in book}
+        out = []
+
+        def add(number, contact):
+            if number and not any(self._same_number(number, n) for n, _ in out):
+                out.append((number, contact))
+        for entry in list(to_list or [])[:500]:
+            s = str(entry if entry is not None else '').strip()
+            low = s.lower()
+            if low.startswith('contact:'):
+                c = by_id.get(s[8:].strip())
+                if c and c.get('numbers'):
+                    add(c['numbers'][0]['number'], c)
+                elif unknown is not None:
+                    unknown.append(s)
+            elif low.startswith('group:'):
+                g = s[6:].strip().casefold()
+                members = [c for c in book if g and str(c.get('group') or '').casefold() == g and c.get('numbers')]
+                if not members and unknown is not None:
+                    unknown.append(s)
+                for c in members:
+                    add(c['numbers'][0]['number'], c)
+            else:
+                number = contact_number(s)
+                if number:
+                    add(number, self.contact_by_number(number))
+                elif unknown is not None and s:
+                    unknown.append(s)
+        return out
+
+    def contact_save(self, raw, by=''):
+        """Make a contact (no id) or change one (its id). Names are unique, ignoring case."""
+        c, why = contact_clean(raw, strict=True)
+        if c is None:
+            raise ValueError(why)
+        given = str((raw or {}).get('id') or '').strip()
+        with CONTACTS_LOCK:
+            book = self.contacts()
+            if given and (not CONTACT_ID.match(given) or not any(x['id'] == given for x in book)):
+                raise KeyError('there is no such contact')
+            if any(x['name'].casefold() == c['name'].casefold() and x['id'] != given for x in book):
+                raise ValueError('there is already a contact called %s' % c['name'])
+            if given:
+                c['id'] = given
+                book = [c if x['id'] == given else x for x in book]
+            else:
+                if len(book) >= CONTACTS_MOST:
+                    raise ValueError('the address book is full (%d contacts)' % CONTACTS_MOST)
+                c['id'] = self._contact_new_id(book)
+                book.append(c)
+            self._contacts_keep(book)
+        self.store.add_event('control', 'a contact %s' % ('changed' if given else 'added'))
+        return c
+
+    def contact_delete(self, cid, by=''):
+        with CONTACTS_LOCK:
+            book = self.contacts()
+            kept = [x for x in book if x['id'] != str(cid or '')]
+            if len(kept) == len(book):
+                raise KeyError('there is no such contact')
+            self._contacts_keep(kept)
+        self.store.add_event('control', 'a contact removed')
+
+    @staticmethod
+    def _contact_merge(old, new):
+        """A contact already kept and the same name in a file: its numbers and the new ones (at
+        most five), the file's group and note where it has them, a star when either has one.
+        (merged, changed)."""
+        out = dict(old, numbers=[dict(n) for n in old.get('numbers') or []])
+        for one in new['numbers']:
+            same = next((n for n in out['numbers'] if Daemon._same_number(n['number'], one['number'])), None)
+            if same is None:
+                if len(out['numbers']) < CONTACT_NUMBERS_MOST:
+                    out['numbers'].append(dict(one))
+            elif not same.get('label') and one.get('label'):
+                same['label'] = one['label']
+        if new.get('group'):
+            out['group'] = new['group']
+        if new.get('note'):
+            out['note'] = new['note']
+        out['favourite'] = bool(old.get('favourite') or new.get('favourite'))
+        return out, out != old
+
+    def contacts_import(self, fmt, text, mode='merge', dry=False, by=''):
+        """Read a vCard or CSV file into the contacts: merge (add the new, bring the known up to
+        date) or replace (the file is the whole book; a name kept keeps its id, so a
+        contact:<id> still finds it). dry says what would happen and changes nothing."""
+        fmt, mode = str(fmt or '').lower(), str(mode or 'merge').lower()
+        if fmt not in ('vcf', 'csv'):
+            raise ValueError('format is vcf or csv')
+        if mode not in ('merge', 'replace'):
+            raise ValueError('mode is merge or replace')
+        if not isinstance(text, str):
+            raise ValueError('text is the file, as text')
+        if len(text) > CONTACTS_IMPORT_BYTES or len(text.encode('utf-8', 'replace')) > CONTACTS_IMPORT_BYTES:
+            raise ValueError('the file is larger than 2 MB')
+        rows, skipped = (contacts_parse_vcf if fmt == 'vcf' else contacts_parse_csv)(text)
+        plan = []
+        with CONTACTS_LOCK:
+            before = self.contacts()
+            old_by_name = {c['name'].casefold(): c for c in before}
+            book = [] if mode == 'replace' else [dict(c) for c in before]
+            index = {c['name'].casefold(): i for i, c in enumerate(book)}
+            state = {}                                   # name -> add / update / same
+            for row in rows:
+                c, why = contact_clean(row, strict=False)
+                shown = {'line': row.get('line'), 'name': contact_text(row.get('name'), 80),
+                         'numbers': [contact_number(n.get('number')) or contact_text(n.get('number'), 30)
+                                     for n in (row.get('numbers') or []) if isinstance(n, dict)][:CONTACT_NUMBERS_MOST],
+                         'group': contact_text(row.get('group'), 40)}
+                if c is None:
+                    skipped.append({'line': row.get('line'), 'why': why})
+                    plan.append(dict(shown, action='skip', why=why))
+                    continue
+                key = c['name'].casefold()
+                shown.update(name=c['name'], numbers=[n['number'] for n in c['numbers']], group=c['group'])
+                if key in index:
+                    merged, changed = self._contact_merge(book[index[key]], c)
+                    book[index[key]] = merged
+                    if key not in state:
+                        state[key] = 'update' if changed else 'same'
+                    elif changed and state[key] == 'same':
+                        state[key] = 'update'
+                    plan.append(dict(shown, action='add' if state[key] == 'add' else ('update' if changed else 'same')))
+                    continue
+                if len(book) >= CONTACTS_MOST:
+                    why = 'the address book is full (%d contacts)' % CONTACTS_MOST
+                    skipped.append({'line': row.get('line'), 'why': why})
+                    plan.append(dict(shown, action='skip', why=why))
+                    continue
+                kept = old_by_name.get(key)
+                if kept is not None:                     # replace: the same name keeps its id
+                    c['id'] = kept['id']
+                    state[key] = 'same' if c == kept else 'update'
+                else:
+                    c['id'] = self._contact_new_id(book, before)
+                    state[key] = 'add'
+                index[key] = len(book)
+                book.append(c)
+                plan.append(dict(shown, action=state[key]))
+            added = sum(1 for v in state.values() if v == 'add')
+            updated = sum(1 for v in state.values() if v == 'update')
+            same = sum(1 for v in state.values() if v == 'same')
+            removed = len([c for c in before if c['name'].casefold() not in state]) if mode == 'replace' else 0
+            if not dry:
+                if mode == 'replace' and before:
+                    # one step back, should the wrong file have been picked
+                    self.store.set_meta('contacts_before_replace',
+                                        json.dumps(before, ensure_ascii=False, separators=(',', ':')))
+                self._contacts_keep(book)
+        if not dry:
+            self.store.add_event('control', 'contacts imported: %d added, %d updated%s%s' % (
+                added, updated, (', %d skipped' % len(skipped)) if skipped else '',
+                (', %d removed' % removed) if removed else ''))
+        out = {'added': added, 'updated': updated, 'unchanged': same, 'removed': removed,
+               'skipped': skipped[:500], 'skipped_n': len(skipped), 'dry': bool(dry), 'mode': mode,
+               'read': len(rows)}
+        if dry:
+            out['plan'] = plan
+        return out
+
+    def contacts_export(self, fmt):
+        """(bytes, file name, type) of the contacts: vCard 3.0 or Google's CSV."""
+        fmt = str(fmt or 'vcf').lower()
+        book = sorted(self.contacts(), key=lambda c: c['name'].casefold())
+        if fmt == 'csv':
+            return contacts_csv(book).encode('utf-8'), 'contacts.csv', 'text/csv; charset=utf-8'
+        if fmt not in ('vcf', 'vcard'):
+            raise ValueError('format is vcf or csv')
+        return contacts_vcf(book).encode('utf-8'), 'contacts.vcf', 'text/vcard; charset=utf-8'
+
+    def contacts_post(self, body, by=''):
+        """POST /api/contacts: save, delete or import."""
+        act = str(body.get('action') or '')
+        if act == 'save':
+            if not isinstance(body.get('contact'), dict):
+                raise ValueError('contact is an object')
+            return {'contact': self.contact_save(body['contact'], by), 'message': 'saved'}
+        if act == 'delete':
+            self.contact_delete(body.get('id'), by)
+            return {'message': 'the contact is removed'}
+        if act == 'import':
+            out = self.contacts_import(body.get('format'), body.get('text'), body.get('mode') or 'merge',
+                                       dry=body.get('dry') is True, by=by)
+            out['message'] = ('%d to add, %d to update' if out['dry'] else '%d added, %d updated') % (
+                out['added'], out['updated'])
+            return out
+        raise ValueError('action is save, delete or import')
 
     def sms_allowed(self, number):
         number = re.sub(r'[^0-9+]', '', str(number or ''))
@@ -38058,6 +39975,12 @@ class Daemon(object):
             return spec if self.sequence_by_id(spec[9:]) else None
         if spec.startswith('seq:'):
             return spec if self.sequence_by_id(spec[4:]) else None
+        if spec.startswith('esp:'):
+            # (5.59.4) an entity of an ESP32 gateway: esp:<gateway>:<entity>, one that does something
+            got = self.esp_split(spec)
+            row = self.esp_row(got[0]) if got else None
+            ent = next((e for e in self.esp_used(row) if e['id'] == got[1]), None) if row else None
+            return spec if ent is not None and ent.get('actions') else None
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             if len(pieces) < 3:
@@ -38382,6 +40305,11 @@ class Daemon(object):
         if spec.startswith('script:'):
             x = next((y for y in self.scripts() if str(y.get('id')) == spec[7:]), None)
             return ('the script "%s"' % x['name']) if x else 'a script that is gone'
+        if spec.startswith('esp:'):
+            got = self.esp_split(spec)                       # (5.59.4)
+            row = self.esp_row(got[0]) if got else None
+            ent = next((e for e in self.esp_entities(row) if e['id'] == got[1]), None) if row else None
+            return self._esp_name_of(row, ent) if ent else 'a gateway\u2019s thing that is gone'
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             dev = self.store.device(':'.join(pieces[1:-1]))
@@ -38456,6 +40384,9 @@ class Daemon(object):
             return [('seqreset', spec[9:])]
         if spec.startswith('seq:'):
             return [('seq', spec[4:])]
+        if spec.startswith('esp:'):
+            got = self.esp_split(spec)                       # (5.59.4)
+            return [('esp', got[0], got[1])] if got else []
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             return [('zb', ':'.join(pieces[1:-1]), pieces[-1])]
@@ -38623,6 +40554,11 @@ class Daemon(object):
                     self.set_binding_group_enabled(ident, act, origin)
             threading.Thread(target=switched, name='switchable', daemon=True).start()
             return
+        if target[0] == 'esp':
+            # (5.59.4) an ESP32 gateway's entity: its action, signed, over HTTPS pinned to it
+            threading.Thread(target=self.esp_command, args=(target[1], target[2], do, origin),
+                             name='esp-command', daemon=True).start()
+            return
         if target[0] == 'plug':
             threading.Thread(target=self._run_binding, args=(target[1], do, origin, pulse_ms, stagger),
                              name='binding', daemon=True).start()
@@ -38643,8 +40579,8 @@ class Daemon(object):
         """One name per thing that can be switched, whichever way it was named."""
         if target[0] == 'plug':
             return 'plug:' + str(getattr(target[1], 'name', target[1]))
-        if target[0] == 'zb':
-            return 'zb:%s:%s' % (target[1], target[2])
+        if target[0] in ('zb', 'esp'):
+            return '%s:%s:%s' % (target[0], target[1], target[2])
         return '%s:%s' % (target[0], target[1] if len(target) > 1 else '')
 
     CLOCK_STEP_S = 1.0
@@ -47513,7 +49449,9 @@ class Daemon(object):
             reasons.append('battery low flag')
         stale_warn = int(CONFIG.get('stale_warn_min') or 0) * 60
         stale_crit = int(CONFIG.get('stale_crit_min') or 0) * 60
-        if dev['source'] == 'plug':
+        if dev['source'] in ('plug', 'esp'):
+            # (5.59.4) an ESP32 gateway's entity says something only when it changes: whether
+            # it is there is its gateway's long poll, said as its availability
             stale_warn, stale_crit = 0, 0
         elif dev['source'] == 'gateway' or dev.get('kind') == 'Coordinator':
             # The coordinator is the radio, not a device that reports: it
@@ -47744,7 +49682,9 @@ class Daemon(object):
             'rule_ops': RULE_OPS,
             # what is on trial, so the editors can mark it: {section: {id: file}}
             'trial_ids': self.trial_marks(),
-            'switch_targets': self.zigbee_targets() + self.heating_targets(),
+            'switch_targets': self.zigbee_targets() + self.heating_targets() + self.esp_targets(),
+            # (5.59.4) the ESP32 gateways and what they carry: no key, address or fingerprint
+            'esp': self.esp_dashboard(),
             'presence': self.presence_state(),
             # a message may be sent to a number rather than a name: hidden
             # here like every other number (see mask_phone)
@@ -49009,6 +50949,10 @@ class Daemon(object):
         threading.Thread(target=self.timer_loop, name='timers', daemon=True).start()
         threading.Thread(target=self.rule_worker, name='rules', daemon=True).start()
         threading.Thread(target=self.rule_worker, args=(True,), name='rules-presence', daemon=True).start()
+        try:
+            self.esp_start()                    # (5.59.4) a thread for each ESP32 gateway
+        except Exception as e:                  # noqa: BLE001
+            log('the ESP32 gateways: %s' % e, 'warn')
         if self.plugs or self.sensors:
             self._plug_thread = threading.Thread(target=self.plug_loop, name='plugs', daemon=True)
             self._plug_thread.start()
@@ -50463,7 +52407,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                      '/api/notifier/attrs',
                      # (5.59) the Stream Deck installations, their requests and permissions,
                      # and the plugin itself for an administrator to take to a computer
-                     '/api/deck/admin', '/api/deck/plugin')
+                     '/api/deck/admin', '/api/deck/plugin',
+                     # (5.59.4) the ESP32 gateways: their addresses, certificates and pairing
+                     '/api/esp',
+                     # (5.59.4) the contacts: names and numbers of people, an administrator's
+                     '/api/contacts', '/api/contacts/export')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -50817,7 +52765,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         # a settings import or a backup piece may be big; everything else is tiny
         limit = 6 * 1024 * 1024 if self.path.split('?')[0] in (
             '/api/db/backup/upload', '/api/import', '/api/trial', '/api/upgrade/upload',
-            '/api/fullbackup/upload', '/api/tls') else 65536
+            '/api/fullbackup/upload', '/api/tls', '/api/contacts') else 65536
         if length > limit:
             raise ValueError('body too large')
         raw = self.rfile.read(length)
@@ -51462,7 +53410,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                                         'topics': d.sms_system_topics()})
             if path == '/api/sms/log':
                 limit = max(1, min(500, int(q.get('limit', 200))))
-                return self._send(200, {'ok': True, 'messages': d.sms_log(limit),
+                messages = d.sms_log(limit)
+                for m in messages:
+                    # (5.59.4) the contact a number belongs to, beside it
+                    c = d.contact_by_number(m.get('number')) if m.get('number') else None
+                    m['contact'] = {'id': c['id'], 'name': c['name']} if c else None
+                return self._send(200, {'ok': True, 'messages': messages,
                                         'people': [{'id': p['id'], 'name': p['name'], 'phone': p.get('phone') or ''}
                                                    for p in d.people()]})
             if path == '/api/action-groups':
@@ -51954,6 +53907,35 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
                     return self._error(403, 'view locked \u2014 this one is for an administrator')
                 return self._send(200, d.deck_admin_view())
+            if path == '/api/esp':
+                # (5.59.4) the ESP32 gateways for Settings: an administrator's (ALWAYS_LOCKED), asked
+                # again here. Never a device key - "set" and its last two characters
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send(200, d.esp_admin_view())
+            if path in ('/api/contacts', '/api/contacts/export'):
+                # (5.59.4) the contacts: an administrator's (ALWAYS_LOCKED), asked again here so
+                # a road moved out of that list never opens
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                if path == '/api/contacts':
+                    return self._send(200, {'ok': True, 'contacts': d.contacts(), 'groups': d.contact_groups(),
+                                            'most': CONTACTS_MOST, 'numbers_most': CONTACT_NUMBERS_MOST})
+                try:
+                    data, name, kind = d.contacts_export(q.get('format') or 'vcf')
+                except ValueError as e:
+                    return self._error(400, str(e))
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', kind)
+                    self.send_header('Content-Disposition', 'attachment; filename="%s"' % name)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if path == '/api/deck/plugin':
                 # (5.59) the plugin itself, as a download for the page: an administrator's
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
@@ -52472,10 +54454,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 wanted = body.get('to')
                 if not isinstance(wanted, list):
                     wanted = [str(body.get('number') or '')]
+                # (5.59.4) and contact:<id> / group:<name> from the contacts, expanded to their
+                # numbers with the same phone sent to once. Without one of those, exactly as before
+                book = [w for w in wanted if re.match(r'(?i)^\s*(contact|group):', str(w))]
+                unknown = []
+                if book:
+                    if not (REQUEST_CALLER.cli or d.may(body.get('session') or '', 'admin')):
+                        return self._error(403, 'only an administrator sends to the contacts')
+                    numbers = []
+                    for who in wanted:
+                        if who in book:
+                            got = [n for n, _ in d.contacts_expand([who], unknown)]
+                        else:
+                            got = [d.phone_of(str(who).strip()) or str(who).strip()]
+                        numbers += [n for n in got if not any(d._same_number(n, x) for x in numbers)]
+                else:
+                    numbers = [d.phone_of(str(who).strip()) or str(who).strip() for who in wanted]
                 text = d.fill_message(str(body.get('text') or ''), d.message_facts('sent by hand'))
-                sent, failed = [], []
-                for who in wanted:
-                    number = d.phone_of(str(who).strip()) or str(who).strip()
+                sent, failed = [], list(unknown)
+                for number in numbers:
                     ok, detail = d.sms_send(number, text, why='by hand')
                     (sent if ok else failed).append(number)
                 return self._send(200, {'ok': bool(sent), 'sent': sent, 'failed': failed, 'text': text,
@@ -53751,6 +55748,40 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except (ValueError, sqlite3.Error) as e:
                     return self._error(400, str(e)[:600])
                 return self._send(200, out)
+            if path == '/api/esp':
+                # (5.59.4) the ESP32 gateways: probe, pair, detect, use, rename, switch on and off,
+                # unpair, forget - an administrator's, the sign-in and the role both asked
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator pairs and changes the ESP32 gateways')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.esp_admin_post(body, by)
+                except EspError as e:
+                    return self._error(502 if e.kind in ('net', 'tls') else 409, e.words[:300])
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                view = d.esp_admin_view()
+                out = dict(out, ok=out.get('ok', True), gateways=view['gateways'])
+                return self._send(200, out)
+            if path == '/api/esp/command':
+                # (5.59.4) a gateway's lock, switch or button from the dashboard: an operator's
+                # (OPERATOR_ROADS); what the entity names as sensitive must come confirmed
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                me = d.session_get(body.get('session')) or {}
+                who = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False) else '')
+                try:
+                    code, out = d.esp_dashboard_command(body, who)
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                return self._send(code, out)
             if path == '/api/deck/admin':
                 # (5.59) the Stream Deck integration: an administrator's, every action - the
                 # sign-in and the role both asked. A token goes only to the plugin, once
@@ -53768,6 +55799,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e)[:300])
                 out.update(ok=True, **{k: v for k, v in d.deck_admin_view().items() if k != 'ok'})
+                return self._send(200, out)
+            if path == '/api/contacts':
+                # (5.59.4) the contacts: an administrator's, every action - the sign-in and the
+                # role both asked. Nothing of a contact goes into the log, only how many
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator changes the contacts')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.contacts_post(body, by)
+                except KeyError as e:
+                    return self._error(404, str(e.args[0] if e.args else 'there is no such contact'))
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                out.update(ok=True, contacts=d.contacts(), groups=d.contact_groups())
                 return self._send(200, out)
             if path == '/api/notifier/keys':
                 # the desktop notifier's keys (5.57): an administrator's, every action -

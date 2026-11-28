@@ -93,6 +93,37 @@
                     </Grid>
                 </Button>
 
+                <!-- (1.4.0) SMS, only when ZIGMon allows this computer -->
+                <StackPanel x:Name="SmsSection" Visibility="Collapsed">
+                    <Border Style="{StaticResource Rule}" />
+                    <Button x:Name="ComposeRow" Style="{StaticResource MenuRow}" Click="OnCompose"
+                            ToolTip="A new SMS through ZIGMon, to your contacts or any number">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE70F;" />
+                            <TextBlock Grid.Column="1" Text="Write an SMS&#x2026;" VerticalAlignment="Center" />
+                        </Grid>
+                    </Button>
+                    <Button x:Name="MessagesRow" Style="{StaticResource MenuRow}" Click="OnMessages">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource RowGlyph}" Text="&#xE8BD;" />
+                            <TextBlock Grid.Column="1" Text="Messages&#x2026;" VerticalAlignment="Center" />
+                            <Border x:Name="UnreadBadge" Grid.Column="2" CornerRadius="9" Padding="7,0,7,1" Margin="10,0,0,0"
+                                    Background="{StaticResource InfoBrush}" Visibility="Collapsed" VerticalAlignment="Center">
+                                <TextBlock x:Name="UnreadText" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource BgBrush}" />
+                            </Border>
+                        </Grid>
+                    </Button>
+                </StackPanel>
+
                 <Border Style="{StaticResource Rule}" />
 
                 <Button x:Name="PauseRow" Style="{StaticResource MenuRow}" Click="OnPauseRow">

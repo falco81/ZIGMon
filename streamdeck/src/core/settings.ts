@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { cleanHex } from "./colour.js";
+import { cleanRecipient } from "./kinds.js";
 import { normalizePin, type Pins } from "./tls.js";
 
 /**
@@ -41,7 +42,7 @@ export function newInstallId(): string {
 
 /** What each action keeps in its own settings (written by its property inspector). */
 export interface ActionSettings {
-  [k: string]: string | number | boolean | null | undefined;
+  [k: string]: string | number | boolean | null | undefined | string[];
   item?: string;
   /** Control: what a press does (toggle/on/off/run/open/close/stop). Blinds: push. Thermostat: push. */
   press?: string;
@@ -84,12 +85,35 @@ export interface ActionSettings {
   /** (1.2) "By hand", as ZIGMon's buttons have it: a press that leaves it on takes it over - rules and
    * schedules leave it alone - and one that leaves it off gives it back. */
   byHand?: boolean;
+  /** (1.3) Timer (and a Control key's Timer press): on for this many minutes, 1-720. */
+  minutes?: number;
+  /** (1.3) Away / Home: the switches turned off too when going Away, each by its own capability. */
+  awayOff?: string[];
+  /** (1.3) SMS: what the key is - the latest SMS, a new one, or the SMS status. */
+  smsMode?: string;
+  /** (1.3) SMS, Write new: whom to (numbers, group:<name>, contact:<id>), at most 20. */
+  smsTo?: string[];
+  /** (1.3) SMS status: how long a held press hushes the alerts, 15-240 minutes. */
+  muteMinutes?: number;
 }
+
+/** (1.3) The SMS key's modes, and the item each one is. */
+export const SMS_MODES = ["last", "compose", "status"] as const;
+/** (1.3) The Timer's ready choices of minutes (any whole number 1-720 may be typed). */
+export const TIMER_MINUTES = [5, 10, 15, 30, 60, 120] as const;
+export const TIMER_MOST = 720;
+/** (1.3) The hush a held SMS status key sets. */
+export const MUTE_MINUTES = [15, 30, 60, 120, 240] as const;
+export const AWAY_MOST = 20;
+export const SMS_TO_MOST = 20;
+
 
 /** The modes of a heated room, as the dashboard names them; a press may set one outright. */
 export const ROOM_MODES = ["plan", "comfort", "eco", "night", "max", "off", "manual"] as const;
 const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "cycle", "mode", "preset", "boost", "openclose", "details",
-  ...ROOM_MODES.map((m) => "set:" + m)];
+  ...ROOM_MODES.map((m) => "set:" + m),
+  // (1.3) a Control key on a switch: on for `minutes`, a press again cancels it
+  "timer"];
 export const THEME_IDS = ["classic", "minimal", "bigvalue", "fill", "neon", "ring", "split", "glass", "label", "dot", "light", "contrast",
   "huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono",
   "diagonal", "hex", "stripe", "switch", "lcd", "dial", "ticket", "bubble", "frame", "shadow", "line", "tube", "stamp", "pastel", "carbon", "grid", "tab", "rise", "spot", "button"] as const;
@@ -145,5 +169,19 @@ export function normalizeAction(raw: unknown): ActionSettings {
   for (const k of SHOW) if (typeof o[k] === "boolean") s[k] = o[k] as boolean;
   const span = finiteOrNull(o.span);
   if (span !== null && (SPANS as readonly number[]).includes(span)) s.span = span;
+  // (1.3) the new actions' own choices
+  const min = finiteOrNull(o.minutes);
+  if (min !== null && Number.isInteger(min) && min >= 1 && min <= TIMER_MOST) s.minutes = min;
+  if (Array.isArray(o.awayOff)) {
+    const ids = [...new Set(o.awayOff.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 160 && !/[\u0000-\u001f\u007f]/.test(x)))];
+    if (ids.length) s.awayOff = ids.slice(0, AWAY_MOST);
+  }
+  if (typeof o.smsMode === "string" && (SMS_MODES as readonly string[]).includes(o.smsMode)) s.smsMode = o.smsMode;
+  if (Array.isArray(o.smsTo)) {
+    const to = [...new Set(o.smsTo.map(cleanRecipient).filter((x): x is string => x !== null))];
+    if (to.length) s.smsTo = to.slice(0, SMS_TO_MOST);
+  }
+  const mute = finiteOrNull(o.muteMinutes);
+  if (mute !== null && (MUTE_MINUTES as readonly number[]).includes(mute)) s.muteMinutes = mute;
   return s;
 }
