@@ -90,7 +90,7 @@ function tile(iconName: string, accent: string, active: boolean, x = 14, y = 14,
 }
 
 /** A small badge at the top right: battery, offline, lock, hold. */
-function badges(o: { online?: boolean; battery?: number | null; hold?: boolean; allowed?: boolean }, showBattery = true): string {
+function badges(o: { online?: boolean; battery?: number | null; hold?: boolean; allowed?: boolean; taken?: boolean }, showBattery = true): string {
   let x = 128;
   let out = "";
   const put = (name: string, colour: string) => {
@@ -101,6 +101,7 @@ function badges(o: { online?: boolean; battery?: number | null; hold?: boolean; 
   if (o.online === false) put("wifiOff", P.crit);
   if (showBattery && o.battery !== undefined && o.battery !== null && o.battery <= 20) put("battery", o.battery <= 10 ? P.crit : P.warn);
   if (o.hold) put("hand", P.dim);
+  if (o.taken) put("person", P.warn);
   return out;
 }
 
@@ -142,6 +143,8 @@ export interface ControlModel {
   battery: number | null;
   hold: boolean;
   allowed: boolean;
+  /** (1.2) Taken over by hand. */
+  taken?: boolean;
 }
 
 export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: string; glow?: string } {
@@ -151,7 +154,7 @@ export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: strin
   const active = m.on === true && m.online;
   const word = !m.online ? "Offline" : m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—";
   const value = i.detail && m.on !== null && m.valueText && m.online ? m.valueText : "";
-  let body = (i.icon ? tile(look.icon, look.accent, active) : "") + badges({ online: m.online, battery: m.battery, hold: m.hold, allowed: m.allowed }, i.battery);
+  let body = (i.icon ? tile(look.icon, look.accent, active) : "") + badges({ online: m.online, battery: m.battery, hold: m.hold, allowed: m.allowed, taken: m.taken }, i.battery);
   // the state: a pill with a dot, then the value if there is one
   if (i.state || value) {
     const both = !!value && i.state;

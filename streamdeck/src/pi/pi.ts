@@ -668,6 +668,7 @@ function optionsCard(): HTMLElement | null {
       break;
   }
   if (KIND !== "reading" && KIND !== "status") card.append(holdSwitch(it));
+  if (KIND === "control" && it && it.cap === "switch") card.append(byHandSwitch());
   if (card.childElementCount <= 1) return null;
   return card;
 }
@@ -785,6 +786,18 @@ function holdSwitch(it: PiItem | undefined): HTMLElement {
     forced ? ic("lock", "sm") : h("span", "k"),
   ]);
   if (!forced) s.addEventListener("click", () => saveSettings({ hold: !on || undefined }));
+  return s;
+}
+
+/** (1.2) "By hand", as ZIGMon's buttons have it: the rules leave alone what this key switched on. */
+function byHandSwitch(): HTMLElement {
+  const on = settings.byHand === true;
+  const s = h("div", "switch hold byhand" + (on ? " on" : ""), [
+    h("span", "hl", [h("span", "hand", [ic("person")]), h("span", "", [h("b", "", ["By hand"]), h("span", "muted small", [
+      "Switched on from this key, rules and schedules leave it alone; switched off from it, they take over again"])])]),
+    h("span", "k"),
+  ]);
+  s.addEventListener("click", () => saveSettings({ byHand: !on || undefined }));
   return s;
 }
 

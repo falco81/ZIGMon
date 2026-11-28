@@ -66,6 +66,8 @@ export interface Face {
   allowed: boolean;
   hold: boolean;
   battery: number | null;
+  /** (1.2) Taken over by hand: rules and schedules leave it alone. */
+  taken?: boolean;
 }
 
 export interface LookOpts {
@@ -108,6 +110,7 @@ function badges(f: Face, info: Info, ink: Ink, y = 13, backdrop = false): string
   if (!f.online) put("wifiOff", ink.crit);
   if (info.battery && f.battery !== null && f.battery <= 20) put("battery", f.battery <= 10 ? ink.crit : ink.warn);
   if (f.hold) put("hand", backdrop ? ink.text : ink.dim);
+  if (f.taken) put("person", ink.warn);
   return out;
 }
 

@@ -50,6 +50,8 @@ export interface ItemState {
   online: boolean;
   battery: number | null;
   at: number | null;
+  /** (1.2, ZIGMon 5.59.3) Taken over by hand - by a button or a key set to "By hand": rules leave it be. */
+  held?: boolean;
 }
 
 export interface Item {
@@ -288,6 +290,7 @@ export function parseState(v: unknown): ItemState {
     online: o.online !== false,
     battery: battery === null ? null : Math.max(0, Math.min(100, Math.round(battery))),
     at: num(o.at),
+    held: o.held === true,
   };
 }
 

@@ -101,6 +101,9 @@ export function formatNumber(v: number, decimals: number): string {
   return decimals >= 0 ? v.toFixed(decimals) : String(Math.round(v * 100) / 100);
 }
 
+/** (1.2) How long after the last "Next mode" press the mode it reached is sent. */
+export const CYCLE_SETTLE_MS = 1200;
+
 export class ActionView implements HubView {
   settings: ActionSettings;
   private press: HoldPress | null = null;
@@ -121,6 +124,10 @@ export class ActionView implements HubView {
   private forced: "on" | "off" | null = null;
   /** A look other than Classic was drawn on this dial's strip: Classic must put its colours back. */
   private styledStrip = false;
+  /** (1.2) "Next mode" pressed round: the mode stepped to so far, shown at once and sent only once
+   * the presses stop - going round to Max no longer switches the room through Off on the way. */
+  private cycle: { attr: string; value: string; id: string } | null = null;
+  private cycleTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     readonly kind: ActionKind,
@@ -161,6 +168,8 @@ export class ActionView implements HubView {
     if (this.toastTimer) clearTimeout(this.toastTimer);
     if (this.flashTimer) clearTimeout(this.flashTimer);
     if (this.detailsTimer) clearTimeout(this.detailsTimer);
+    if (this.cycleTimer) clearTimeout(this.cycleTimer);
+    this.cycle = null;
   }
 
   /** (1.1) The series this key draws, for the hub to ask ZIGMon for. */
@@ -181,7 +190,11 @@ export class ActionView implements HubView {
   }
 
   private get st(): ItemState | undefined {
-    return this.hub.state(this.settings.item);
+    const st = this.hub.state(this.settings.item);
+    const c = this.cycle;
+    if (!st || !c || c.id !== this.settings.item) return st;
+    // the mode stepped to, until it is sent and ZIGMon says where the room is
+    return { ...st, attrs: { ...st.attrs, [c.attr]: c.value, by_hand: false } };
   }
 
   /** Hold to confirm: when ZIGMon asks for it, or when this key's own switch says so. */
@@ -362,6 +375,7 @@ export class ActionView implements HubView {
     const m: ControlModel = {
       name: this.label(it), room: it.room, showRoom: this.showRoom(), kind: it.kind, icon: it.icon,
       on: st.on, valueText: st.valueText, online: st.online, battery: st.battery, hold: this.needsHold(it), allowed: it.allowed,
+      taken: st.held === true,
     };
     if (this.forced) {
       m.on = this.forced === "on";
@@ -565,6 +579,7 @@ export class ActionView implements HubView {
     const base = {
       kind: this.kind as string, room: it.room, unit: "", stateColour: null as string | null, detail: "", mode: "", level: null as number | null,
       series: [] as number[], target: null as number | null, battery: st.battery, allowed: it.allowed, hold: this.needsHold(it),
+      taken: st.held === true,
     };
     const acc = this.accentOverride();
     switch (this.kind) {
@@ -854,6 +869,22 @@ export class ActionView implements HubView {
     const it = this.guard();
     if (!it) return;
     const cmd = what();
+    if (cmd && this.cycles(it) && cmd.attr && typeof cmd.value === "string") {
+      // (1.2) stepped to at once, sent once the presses stop
+      this.cycle = { attr: cmd.attr, value: cmd.value, id: it.id };
+      if (this.cycleTimer) clearTimeout(this.cycleTimer);
+      this.cycleTimer = setTimeout(() => {
+        this.cycleTimer = null;
+        const c = this.cycle;
+        if (!c || this.disposed) return;
+        void this.run({ id: c.id, action: "set", attr: c.attr, value: c.value }).finally(() => {
+          if (this.cycle === c) this.cycle = null;
+          this.draw();
+        });
+      }, CYCLE_SETTLE_MS);
+      this.draw();
+      return;
+    }
     if (!cmd) {
       this.showToast("Nothing to do", "this item has no such action", "warn");
       return;
@@ -877,6 +908,13 @@ export class ActionView implements HubView {
       },
     });
     this.press.down();
+  }
+
+  /** (1.2) A thermostat key that goes round its modes or presets - not one that sets one outright,
+   * and not one held to confirm (each confirmed press is meant, and is sent). */
+  private cycles(it: Item): boolean {
+    const p = this.settings.press ?? "mode";
+    return this.kind === "thermostat" && (p === "mode" || p === "preset") && !this.needsHold(it);
   }
 
   private pressEnd(): void {
@@ -909,7 +947,10 @@ export class ActionView implements HubView {
     switch (this.kind) {
       case "control": {
         const a = this.pressAction();
-        return a && a !== "set" && a !== "step" ? { id: it.id, action: a } : null;
+        if (!a || a === "set" || a === "step") return null;
+        // (1.2) "By hand": only a switch, and only a press that switches it, takes anything over
+        return this.settings.byHand === true && it.cap === "switch" && (a === "toggle" || a === "on" || a === "off")
+          ? { id: it.id, action: a, by_hand: true } : { id: it.id, action: a };
       }
       case "scene":
         return it.actions.includes("run") ? { id: it.id, action: "run" } : it.actions.includes("on") ? { id: it.id, action: "on" } : null;

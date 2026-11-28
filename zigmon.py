@@ -436,9 +436,10 @@ DEFAULTS = {
     'tls_faces_bar': 6,           # ...and this many fingerprints in a minute, from one address
     'proxy_watch': 0,             # 1 = read it and weigh what is in it
     'proxy_every': '2',           # minutes between readings
-    'notifier_keys_most': '20',   # (5.59.1) desktop app keys at most: 20, 50, 100, or 0 = no limit
+    'notifier_keys_most': '20',   # (5.59.1) desktop app keys at most: 10, 20, 50, 100, or 0 = no limit
     # (for Stream Deck 1.1) how many computers may be paired with ZIGMon for Stream Deck; '0' = no limit
-    'deck_installs_most': '10',
+    # (5.59.3) the same choices as the desktop app's, and the same 20 as it comes
+    'deck_installs_most': '20',
     # The same list carried to a router, so the packets stop before they
     # arrive. Only the one address list named here is ever touched.
     'mikrotik_host': '',          # the router's address, empty = not in use
@@ -11744,6 +11745,8 @@ class Daemon(object):
     # hash is kept. Each edge goes into a ring in memory, numbered per start of the daemon
     # (boot), and a condition wakes whoever waits.
     NOTIFIER_MOST = 20
+    # (5.59.3) how many computers the desktop app and the Stream Deck may have: one set of choices for both
+    APP_MOST_CHOICES = ('10', '20', '50', '100', '0')
     NOTIFIER_RING = 500
     NOTIFIER_BATCH = 50
     NOTIFIER_WAIT_S = 25.0
@@ -12423,7 +12426,7 @@ class Daemon(object):
     def notifier_most(self):
         """(5.59.1) How many keys may be made: the setting, 0 for no limit."""
         v = str(CONFIG.get('notifier_keys_most') or '').strip()
-        return int(v) if v in ('0', '20', '50', '100') else self.NOTIFIER_MOST
+        return int(v) if v in self.APP_MOST_CHOICES else self.NOTIFIER_MOST
 
     def notifier_waiters_most(self):
         """Polls that may wait at once: never fewer than before, two for each key beyond."""
@@ -12857,7 +12860,7 @@ class Daemon(object):
     # by itself. What it may do is granted capability by capability (every thing of a kind,
     # or only the ones chosen, a long press to confirm where asked), and whatever it does goes
     # through the same executor a one-tap link does, with "Stream Deck '<name>'" as its origin.
-    DECK_INSTALLS_MOST = 10
+    DECK_INSTALLS_MOST = 20
     DECK_DECKS_MOST = 8
     DECK_PAIRS_MOST = 5
     DECK_PAIR_S = 15 * 60
@@ -12915,9 +12918,9 @@ class Daemon(object):
     # -- what is kept --
     def deck_installs_most(self):
         """(for Stream Deck 1.1) How many Stream Deck installations may be paired: Settings' deck_installs_most,
-        0 = no limit. Anything else than its choices counts as the 10 it comes with."""
-        raw = str(CONFIG.get('deck_installs_most') if CONFIG.get('deck_installs_most') is not None else '10').strip()
-        return int(raw) if raw in ('0', '10', '20', '50', '100') else self.DECK_INSTALLS_MOST
+        0 = no limit. Anything else than its choices counts as the 20 it comes with."""
+        raw = str(CONFIG.get('deck_installs_most') if CONFIG.get('deck_installs_most') is not None else '20').strip()
+        return int(raw) if raw in self.APP_MOST_CHOICES else self.DECK_INSTALLS_MOST
 
     def deck_installs_full(self, installs, install=None):
         most = self.deck_installs_most()
@@ -13569,6 +13572,21 @@ class Daemon(object):
                 other = by_id.get(a.get('via') or '')
                 if other is not None and a['key'] not in st_attrs:
                     st_attrs[a['key']] = other['state']['attrs'].get(a['key'], other['state'].get('value'))
+        # (5.59.3) taken over by hand - from a button, or a key set to "By hand": rules leave it be
+        try:
+            holds = self.manual_holds()
+        except Exception:                                    # noqa: BLE001
+            holds = {}
+        for it in items:
+            if it.get('cap') != 'switch' or not it.get('_target'):
+                continue
+            held = False
+            if holds:
+                try:
+                    held = any(self.hold_key(t) in holds for t in self._binding_targets(it['_target']))
+                except Exception:                            # noqa: BLE001
+                    held = False
+            it['state']['held'] = held
         self._deck_items_kept = (key, items)
         return items
 
@@ -13943,8 +13961,14 @@ class Daemon(object):
         if not fired:
             return 404, {'ok': False, 'error': '%s is switched off or gone' % item['name']}
         asked = time.time()
+        # (5.59.3) "By hand" on the key, as a button's: a press that leaves it on takes it over -
+        # rules and schedules leave it alone - and one that leaves it off gives it back
+        by_hand = body.get('by_hand') is True and action in ('toggle', 'on', 'off')
         for one in fired:
             self._fire_target(one, do, origin)
+            if by_hand and one[0] in ('plug', 'zb'):
+                threading.Thread(target=self._settle_member, args=(one, do, origin),
+                                 name='hold', daemon=True).start()
         said = words
         self.store.add_event('control', "Stream Deck '%s' (%s) %s" % (
             inst.get('name') or '', self.deck_type_name(mine.get('type'), short=True), said), 'info')
@@ -15091,8 +15115,8 @@ class Daemon(object):
                     raise ValueError('rbackup_every is daily or weekly')
                 if key == 'rbackup_verify' and value not in ('off', 'after', 'weekly'):
                     raise ValueError('rbackup_verify is off, after or weekly')
-                if key == 'notifier_keys_most' and value not in ('20', '50', '100', '0'):
-                    raise ValueError('notifier_keys_most is 20, 50, 100 or 0 (no limit)')
+                if key in ('notifier_keys_most', 'deck_installs_most') and value not in ('10', '20', '50', '100', '0'):
+                    raise ValueError('%s is 10, 20, 50, 100 or 0 (no limit)' % key)
                 if key == 'rbackup_password':
                     # what root locks the copy with wants eight at least; the
                     # whole of it is the only way into every backup sent
@@ -15373,10 +15397,10 @@ class Daemon(object):
                               ('hmac-sha1', 'hmac-sha1'), ('hmac-md5', 'hmac-md5')],
         'proxy_auth': [('key', 'with a key this daemon holds'),
                        ('password', 'with a password')],
-        'notifier_keys_most': [('20', 'up to 20 computers'), ('50', 'up to 50 computers'),
+        'notifier_keys_most': [('10', 'up to 10 computers'), ('20', 'up to 20 computers'), ('50', 'up to 50 computers'),
                                ('100', 'up to 100 computers'), ('0', 'no limit')],
-        'deck_installs_most': [('10', 'ten computers'), ('20', 'twenty'), ('50', 'fifty'), ('100', 'a hundred'),
-                               ('0', 'no limit')],
+        'deck_installs_most': [('10', 'up to 10 computers'), ('20', 'up to 20 computers'), ('50', 'up to 50 computers'),
+                               ('100', 'up to 100 computers'), ('0', 'no limit')],
         'proxy_every': [('0.5', 'every half a minute'), ('1', 'read it every minute'), ('2', 'every two minutes'),
                         ('5', 'every five minutes'), ('15', 'every quarter of an hour')],
         'mikrotik_auth': [('key', 'with a key this daemon holds'),
@@ -44085,6 +44109,19 @@ class Daemon(object):
         except ValueError:
             return 0.0, False
 
+    def _valve_wake(self, key):
+        """(5.59.3) A head whose number is right but which is in its "off" mode or pinned shut
+        does not heat whatever its number says. Off and then Max within a few minutes - a
+        Stream Deck's "next mode" pressed round to it - kept a bedroom's head off at 35 °C,
+        since only the number was looked at. Taken off its own programme again; at most once
+        in five minutes, which valve_take_over keeps to itself (a battery device)."""
+        parts = str(key).split(':')
+        head = ':'.join(parts[1:-1]) if len(parts) > 2 else key
+        said = (self.live.get(head) or {}).get('payload') or {}
+        if (str(said.get('system_mode') or '').lower() == 'off'
+                or str(said.get('force') or '').lower() in ('close', 'closed')):
+            self.valve_take_over(head)
+
     def heating_apply(self):
         """Push each room's wish to its valves, and only when it has changed:
         a head is a sleeping device, and re-sending the same number every
@@ -44140,6 +44177,8 @@ class Daemon(object):
                         # room is meant to be shut: that is a hand on the
                         # head. Not knowing counts as not off, so a house that
                         # has just started still puts it back.
+                    else:
+                        self._valve_wake(key)
                     current = valve.get('setpoint')
                     if not isinstance(current, (int, float)):
                         continue                 # already asked for this
@@ -44201,6 +44240,8 @@ class Daemon(object):
                     self._heat_last.pop(key, None)   # fall through and send it
                 current = valve.get('setpoint')
                 if last is None and isinstance(current, (int, float)) and abs(float(current) - value) < 0.05:
+                    if room['why'] not in ('off', 'a window is open'):
+                        self._valve_wake(key)
                     self._heat_last[key] = value
                     self._heat_told.pop(key, None)   # it is where we want it; start counting afresh
                     continue                     # the head is already holding it
@@ -44224,6 +44265,9 @@ class Daemon(object):
                             # opened): asked again next round, not taken as done
                             log('heating: %s' % message, 'warn')
                             continue
+                        # (5.59.3) shut by us: what was asked to open it before no longer stands, so the
+                        # next room that wants heat asks again at once rather than in five minutes
+                        self._valve_mode.pop(device_id, None)
                     self._heat_last[key] = value      # the number stands, the mode does the shutting
                     continue
                 self.valve_take_over(device_id)   # its own programme must not fight ours

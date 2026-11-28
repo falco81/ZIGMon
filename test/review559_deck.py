@@ -301,7 +301,7 @@ try:
     check(code == 403 and not d.deck_enabled(), 'nobody switches it on: %s %r' % (code, out))
     code, out = call('/api/deck/admin', session=S)
     check(code == 200 and out.get('enabled') is False and out.get('installs') == [] and out.get('pairs') == []
-          and out.get('plugin') is None and out.get('most') == {'installs': 10, 'decks': 8, 'pairs': 5},
+          and out.get('plugin') is None and out.get('most') == {'installs': 20, 'decks': 8, 'pairs': 5},
           'the admin view: %s %r' % (code, {k: v for k, v in out.items() if k != 'items'}))
     code, out = call('/api/deck/admin', {'action': 'enable'}, session=S)
     check(code == 200 and out.get('enabled') is True and d.deck_enabled(), 'the admin switches it on: %s %r' % (code, out))
@@ -466,7 +466,8 @@ try:
           'the catalogue: %s %r' % (code, {k: v for k, v in out.items() if k != 'items'}))
     for it in items.values():
         check(set(it) == {'id', 'name', 'room', 'kind', 'icon', 'cap', 'actions', 'attrs', 'allowed', 'hold', 'state'}
-              and set(it['state']) == {'on', 'value', 'value_text', 'attrs', 'online', 'battery', 'at'}
+              and set(it['state']) - {'held'} == {'on', 'value', 'value_text', 'attrs', 'online', 'battery', 'at'}
+              and ('held' in it['state']) == (it['cap'] == 'switch')
               and it['kind'] in ('socket', 'light', 'switch', 'dimmer', 'thermostat', 'cover', 'scene', 'sequence',
                                  'group', 'rule', 'schedule', 'message', 'system', 'sensor', 'reading', 'status')
               and it['cap'] in zigmon.Daemon.DECK_CAPS, 'the shape of %s: %r' % (it['id'], it))
@@ -591,7 +592,8 @@ try:
         code, out = deck('do', dict(body, deck=XL['id'], id=iid))
         time.sleep(0.3)
         check(code == 200 and out.get('ok') is True and isinstance(out.get('said'), str)
-              and set(out['state']) == {'on', 'value', 'value_text', 'attrs', 'online', 'battery', 'at'},
+              and set(out['state']) - {'held'} == {'on', 'value', 'value_text', 'attrs', 'online', 'battery', 'at'}
+              and (('held' in out['state']) == (cap == 'switch')),
               '%s only this: %s %r' % (cap, code, out))
         if want:
             check(any(r[:len(want)] == want and r[-1] == "Stream Deck 'OFFICE-PC'" for r in RAN),
@@ -612,6 +614,39 @@ try:
           'the words of the commands: %r' % [e for e in events() if e.startswith('Stream Deck')][-12:])
     check(any("owner changed what the Stream Deck installation 'OFFICE-PC' may do (view, system (hold), status)" in e
               for e in events()), 'no event of the permissions: %r' % [e for e in events() if 'may do' in e][-3:])
+    # (5.59.3) "By hand" on the key, as a button's: on takes it over, off gives it back; the state says so
+    print('by hand')
+    caps(switch={'on': True, 'all': True})
+    d.release_target()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'on'})
+    time.sleep(0.5)
+    check(code == 200 and not d.manual_holds(), 'a press without by hand took it over: %r' % d.manual_holds())
+    code, out = deck('do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'on', 'by_hand': True})
+    for _ in range(40):
+        if 'Lampa' in d.manual_holds():
+            break
+        time.sleep(0.05)
+    check(code == 200 and 'Lampa' in d.manual_holds()
+          and "Stream Deck 'OFFICE-PC'" in str(d.manual_holds().get('Lampa', {}).get('by')),
+          'by hand on did not take it over: %s %r' % (code, d.manual_holds()))
+    d._deck_items_kept = None
+    code, out = deck('state?ids=Lampa')
+    lamp_st = (out.get('items') or {}).get('Lampa') or {}
+    check(lamp_st.get('held') is True, 'the state does not say taken over: %r' % out)
+    code, out = deck('do', {'deck': XL['id'], 'id': 'Lampa', 'action': 'off', 'by_hand': True})
+    for _ in range(40):
+        if 'Lampa' not in d.manual_holds():
+            break
+        time.sleep(0.05)
+    check('Lampa' not in d.manual_holds(), 'by hand off did not give it back: %r' % d.manual_holds())
+    d._deck_items_kept = None
+    check(next(it for it in d.deck_items() if it['id'] == 'Lampa')['state'].get('held') is False, 'still held')
+    caps(switch={'on': True, 'all': True}, climate={'on': True, 'all': True})
+    code, out = deck('do', {'deck': XL['id'], 'id': 'zb:%s:current_heating_setpoint' % THERMO, 'action': 'set',
+                            'value': 21, 'by_hand': True})
+    time.sleep(0.3)
+    check(code == 200 and not d.manual_holds(), 'by hand on a setpoint took something over: %s %r %r'
+          % (code, out, d.manual_holds()))
     # view and status are only looked at
     caps(switch={'on': True, 'all': True})
     for iid in ('read:%s:temperature' % TEMP, 'status:alerts'):
@@ -798,9 +833,13 @@ try:
 
     # (for Stream Deck 1.1) how many installations: Settings' deck_installs_most, 0 = no limit
     print('how many installations')
-    check(zigmon.CONFIG.get('deck_installs_most') == '10' and zigmon.ApiHandler is not None
+    # (5.59.3) 20 as it comes, the desktop app's choices and words
+    check(zigmon.CONFIG.get('deck_installs_most') == '20' and d.deck_installs_most() == 20 and zigmon.ApiHandler is not None
+          and zigmon.Daemon.TUNABLE_CHOICES['deck_installs_most'] == zigmon.Daemon.TUNABLE_CHOICES['notifier_keys_most']
+          and zigmon.Daemon.TUNABLE_CHOICES['deck_installs_most'][0] == ('10', 'up to 10 computers')
           and [c[0] for c in zigmon.Daemon.TUNABLE_CHOICES['deck_installs_most']] == ['10', '20', '50', '100', '0'],
           'the setting: %r' % zigmon.Daemon.TUNABLE_CHOICES.get('deck_installs_most'))
+    zigmon.CONFIG['deck_installs_most'] = '10'
     kept = d.deck_installs()
     fake_rows = [dict(kept[0], id='%032x' % (900 + i), name='PC-%d' % i) for i in range(10 - len(kept))]
     d._deck_put(kept + fake_rows)
@@ -820,7 +859,7 @@ try:
     check(code == 200 and (out2.get('most') or {}).get('installs') == 0 and d.deck_waiters_most() == min(1000, 8 * (len(kept) + 150)),
           'no limit: %s %r %r %r' % (code, out, out2.get('most'), d.deck_waiters_most()))
     zigmon.CONFIG['deck_installs_most'] = 'lots'
-    check(d.deck_installs_most() == 10, 'a value not among the choices counts as ten')
+    check(d.deck_installs_most() == 20, 'a value not among the choices counts as twenty')
     zigmon.CONFIG['deck_installs_most'] = '10'
     d._deck_put(kept)
     # one installation holds at most eight waits at once, however many may wait in all

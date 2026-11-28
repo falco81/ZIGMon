@@ -28,6 +28,8 @@ export interface Command {
   value?: number | string | boolean;
   delta?: number;
   held_ms?: number;
+  /** (1.2) "By hand", as a button's: a press that leaves it on takes it over from the rules. */
+  by_hand?: boolean;
 }
 
 export const CLIENT_NAME = "ZIGMon-StreamDeck/" + PLUGIN_VERSION;

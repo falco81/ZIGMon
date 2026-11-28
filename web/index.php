@@ -23139,7 +23139,7 @@ var SETTINGS_LAYOUT = [
   ['Stream Deck', [
     ['deck_installs_most', 'How many computers may be paired',
      'How many installations of ZIGMon for Stream Deck - one per Windows account on a computer - may be '
-     + 'paired with this ZIGMon at once. Ten is what it comes as; a pairing request past the limit is '
+     + 'paired with this ZIGMon at once. Twenty is what it comes as, the same as the desktop app; a pairing request past the limit is '
      + 'refused until one is revoked. No limit takes away the count, not the checks: every computer is '
      + 'still paired by a code, approved here, and given only what it is granted.'],
   ]],

@@ -328,11 +328,12 @@ describe("a heated room", () => {
     const dial = new ActionView("thermostat", stubHub([roomItem({ target: 22 })], sent), new MockSurface("Encoder", "D"), { item: "heat:room:r2" });
     cleanups.push(() => dial.dispose());
     dial.rotate(-2);
-    await until(() => sent.length >= 3, 2000, "three commands");
+    // (1.2) going round is sent once the presses stop, so it comes last
+    await until(() => sent.length >= 3, 3000, "three commands");
     assert.deepEqual(sent[0], { deck: "D", id: "heat:room:r2", action: "set", attr: "mode", value: "comfort" });
-    assert.deepEqual(sent[1], { deck: "D", id: "heat:room:r2", action: "set", attr: "mode", value: "manual" }, "after Off comes By hand");
-    assert.equal(sent[2]!.attr, "target");
-    assert.equal(sent[2]!.delta, -1);
+    assert.deepEqual(sent[2], { deck: "D", id: "heat:room:r2", action: "set", attr: "mode", value: "manual" }, "after Off comes By hand");
+    assert.equal(sent[1]!.attr, "target");
+    assert.equal(sent[1]!.delta, -1);
   });
 
   it("a press can show the details for a moment instead", async () => {

@@ -77,6 +77,9 @@ export interface ActionSettings {
   showTarget?: boolean;
   /** (1.1) Hold the key / dial 1.5 s before it acts, even where ZIGMon does not ask for it. */
   hold?: boolean;
+  /** (1.2) "By hand", as ZIGMon's buttons have it: a press that leaves it on takes it over - rules and
+   * schedules leave it alone - and one that leaves it off gives it back. */
+  byHand?: boolean;
 }
 
 /** The modes of a heated room, as the dashboard names them; a press may set one outright. */
@@ -88,7 +91,7 @@ export const ACCENT_IDS = ["blue", "green", "amber", "red", "purple", "orange", 
 export const NAME_FITS = ["cut", "fit", "wrap"] as const;
 export const SPANS = [3600, 6 * 3600, 24 * 3600, 7 * 86400] as const;
 export const LABEL_MOST = 40;
-const SHOW = ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget", "hold"] as const;
+const SHOW = ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget", "hold", "byHand"] as const;
 
 /** A label as the user typed it: no control or direction characters, spaces folded, at most LABEL_MOST characters. */
 export function cleanLabel(v: unknown): string {

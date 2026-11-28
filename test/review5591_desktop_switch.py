@@ -206,8 +206,9 @@ try:
     print('how many keys')
     check(zigmon.CONFIG.get('notifier_keys_most') == '20', 'not 20 as it comes')
     check('notifier_keys_most' in zigmon.Daemon.TUNABLE, 'not a setting')
-    check([c[0] for c in zigmon.Daemon.TUNABLE_CHOICES['notifier_keys_most']] == ['20', '50', '100', '0'],
-          'the choices are not 20, 50, 100, no limit')
+    # (5.59.3) the same choices as the Stream Deck's, ten among them
+    check([c[0] for c in zigmon.Daemon.TUNABLE_CHOICES['notifier_keys_most']] == ['10', '20', '50', '100', '0'],
+          'the choices are not 10, 20, 50, 100, no limit')
     for i in range(19):
         call('/api/notifier/keys', {'action': 'create', 'name': 'PC %d' % i}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'One too many'}, session=S)
@@ -224,6 +225,11 @@ try:
     check(d.notifier_waiters_most() == 52, 'the waiting polls do not grow with the keys: %d' % d.notifier_waiters_most())
     code, out = call('/api/config', {'notifier_keys_most': '50'}, session=S)
     check(code == 200 and d.notifier_most() == 50, 'fifty not taken')
+    code, out = call('/api/config', {'notifier_keys_most': '10'}, session=S)
+    check(code == 200 and d.notifier_most() == 10, 'ten not taken: %s %r' % (code, out))
+    code, out = call('/api/config', {'deck_installs_most': '7'}, session=S)
+    check(code == 400, 'a Stream Deck limit of 7 was taken: %s %r' % (code, out))
+    code, out = call('/api/config', {'notifier_keys_most': '50'}, session=S)
 
     print('the page')
     page = (HERE / 'web' / 'index.php').read_text()

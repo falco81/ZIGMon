@@ -147,6 +147,7 @@ follow(d)
 check(calibrations(d) == [(HEAD, 'local_temperature_calibration', 'set:=-2')],
       'head 27.5, room 25.6, offset 0 should be -2.0: %r' % d.sent)
 check(not [s for s in d.sent if s[0] == HEAD2], 'a head without an offset was written to: %r' % d.sent)
+d.store.flush(10)
 events = [e for e in d.store.events(50, text='kept Head-Loznice') if 'matched to Temp-Loznice' in (e.get('detail') or '')]
 check(events and 'offset 0 → -2 °C (room 25.6, head 27.5)' in events[0]['detail'],
       'the event: %r' % [e.get('detail') for e in events])
