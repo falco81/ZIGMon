@@ -192,6 +192,81 @@ internal static class Native
         SetWindowLongPtr(h, GWL_EXSTYLE, new IntPtr(ex));
     }
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr processId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool attach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hwnd, int cmd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+
+    private const int SW_RESTORE = 9, SW_SHOW = 5;
+    private const byte VK_MENU = 0x12;
+    private const uint KEYEVENTF_KEYUP = 0x2;
+
+    /// <summary>
+    /// Brings a window to the front and gives it the keyboard, past Windows' foreground lock
+    /// (a Stream Deck press is not this app's input, so a plain SetForegroundWindow only
+    /// flashes the taskbar button): the input of the window in front is joined for a moment,
+    /// so this thread may take it over; if Windows still says no, an Alt tap (which counts
+    /// as fresh input) and once more. Returns whether the window is now in front.
+    /// </summary>
+    public static bool ForceForeground(Window w)
+    {
+        IntPtr h = new WindowInteropHelper(w).Handle;
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+            else ShowWindow(h, SW_SHOW);
+            IntPtr front = GetForegroundWindow();
+            if (front == h) return true;
+            uint mine = GetCurrentThreadId();
+            uint theirs = front == IntPtr.Zero ? 0 : GetWindowThreadProcessId(front, IntPtr.Zero);
+            bool joined = theirs != 0 && theirs != mine && AttachThreadInput(mine, theirs, true);
+            try
+            {
+                BringWindowToTop(h);
+                SetForegroundWindow(h);
+            }
+            finally
+            {
+                if (joined) AttachThreadInput(mine, theirs, false);
+            }
+            if (GetForegroundWindow() != h)
+            {
+                keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                SetForegroundWindow(h);
+            }
+            return GetForegroundWindow() == h;
+        }
+        catch (Exception)
+        {
+            return false; // the window is still shown, on top; the taskbar button flashes
+        }
+    }
+
     /// <summary>A dark title bar in ZIGMon's colours (Windows 10 20H1+ dark mode; Windows 11 colours and round corners).</summary>
     public static void DarkTitleBar(Window w)
     {

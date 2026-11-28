@@ -340,26 +340,26 @@ describe("updates", () => {
   const keys: ReleaseKey[] = [{ name: "test", key: rawKey(raw) }];
   const pkg = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from("zip body")]);
   const sha = createHash("sha256").update(pkg).digest("hex");
-  const manifest = (o: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.3.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11", ...o }) + "\n");
-  const offer = (m: Buffer, sig = sign(null, m, privateKey), o: Record<string, unknown> = {}) => ({ available: true, version: "1.3.0", size: pkg.length, sha256: sha, manifest: m, sig, ...o });
+  const manifest = (o: Record<string, unknown> = {}) => Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.4.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11", ...o }) + "\n");
+  const offer = (m: Buffer, sig = sign(null, m, privateKey), o: Record<string, unknown> = {}) => ({ available: true, version: "1.4.0", size: pkg.length, sha256: sha, manifest: m, sig, ...o });
 
   it("accepts a signed, matching, newer release and its package", () => {
     const v = verifyOffer(offer(manifest()), keys);
-    assert.equal(v.manifest.version, "1.3.0");
+    assert.equal(v.manifest.version, "1.4.0");
     assert.equal(v.keyName, "test");
     checkPackage(pkg, v);
-    assert.equal(packageFileName("1.3.0"), "ZIGMon-1.3.0.streamDeckPlugin");
+    assert.equal(packageFileName("1.4.0"), "ZIGMon-1.4.0.streamDeckPlugin");
     assert.throws(() => packageFileName("..\\x"), UpdateError);
   });
 
   it("refuses a tampered manifest, a foreign key, mismatches, old versions, a wrong package", () => {
     const m = manifest();
-    const tampered = Buffer.from(m.toString().replace("1.3.0", "1.3.1"));
+    const tampered = Buffer.from(m.toString().replace("1.4.0", "1.4.1"));
     assert.throws(() => verifyOffer(offer(tampered, sign(null, m, privateKey)), keys), /not signed/);
     const other = generateKeyPairSync("ed25519").privateKey;
     assert.throws(() => verifyOffer(offer(m, sign(null, m, other)), keys), /not signed/);
     assert.throws(() => verifyOffer(offer(m, undefined, { sha256: "0".repeat(64) }), keys), /checksum is not the one advertised/);
-    assert.throws(() => verifyOffer(offer(m, undefined, { version: "1.4.0" }), keys), /version is not the one advertised/);
+    assert.throws(() => verifyOffer(offer(m, undefined, { version: "1.5.0" }), keys), /version is not the one advertised/);
     assert.throws(() => verifyOffer(offer(m, undefined, { size: 3 }), keys), /size/);
     assert.throws(() => verifyOffer(offer(manifest({ product: "Other" })), keys), /another product/);
     assert.throws(() => verifyOffer(offer(manifest({ version: "1.0.0" }), undefined, { version: "1.0.0" }), keys), /not newer/);
@@ -371,7 +371,7 @@ describe("updates", () => {
     bad[6] = 0;
     assert.throws(() => checkPackage(bad, v), /checksum/);
     assert.throws(() => checkPackage(pkg.subarray(1), v), /size/);
-    assert.ok(isNewer("1.2.1") && !isNewer("1.0") && !isNewer("x"));
+    assert.ok(isNewer("1.3.1") && !isNewer("1.0") && !isNewer("x"));
   });
 
   it("the embedded release keys are the ones in deploy/release-keys", async () => {

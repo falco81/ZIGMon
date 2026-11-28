@@ -30,7 +30,10 @@ public sealed class ServerAddress : IEquatable<ServerAddress>
     /// <summary>{base}/index.php?api=notifier&amp;do=...</summary>
     public Uri Endpoint(string what, string? extraQuery = null)
     {
-        if (what is not ("hello" or "sensors" or "wait" or "update" or "download")) throw new ArgumentOutOfRangeException(nameof(what));
+        // (5.59.4) sms, contacts and sms-send: the relay hands them to /api/notifier/sms,
+        // /api/notifier/contacts and /api/notifier/sms/send
+        if (what is not ("hello" or "sensors" or "wait" or "update" or "download" or "sms" or "contacts" or "sms-send"))
+            throw new ArgumentOutOfRangeException(nameof(what));
         string q = "api=notifier&do=" + what + (string.IsNullOrEmpty(extraQuery) ? "" : "&" + extraQuery);
         return new Uri(Base + "/index.php?" + q, UriKind.Absolute);
     }

@@ -30,6 +30,15 @@ export interface Command {
   held_ms?: number;
   /** (1.2) "By hand", as a button's: a press that leaves it on takes it over from the rules. */
   by_hand?: boolean;
+  /** (1.3, ZIGMon 5.59.4) `timer`: on now, off after this many minutes (1-720); `mute`: hushed this long (15-240). */
+  minutes?: number;
+  /** (1.3) `sms:compose`: whom the desktop app's new message is to - numbers, `group:<name>`, `contact:<id>` (at most 20). */
+  to?: string[];
+}
+
+/** (1.3) Asked of ZIGMon 5.59.4 and later only (its hello says "extended"): the summaries, `act`, `members`, `timer`. */
+export interface Ask {
+  extended?: boolean;
 }
 
 export const CLIENT_NAME = "ZIGMon-StreamDeck/" + PLUGIN_VERSION;
@@ -130,21 +139,34 @@ export class ZigmonClient {
     return parseHello((await this.call("hello", { creds, query: deckQuery(decks) })).json);
   }
 
-  async catalog(creds: Credentials, decks: DeckInfo[]): Promise<Catalog> {
+  /**
+   * (1.3) Extended, the question goes as a POST body with "extended": true - the PHP relay forwards
+   * a body whole but drops query parameters it does not know - and everything else rides in it too.
+   */
+  async catalog(creds: Credentials, decks: DeckInfo[], ask: Ask = {}): Promise<Catalog> {
+    if (ask.extended) return parseCatalog((await this.call("catalog", { creds, body: { extended: true, ...deckQuery(decks) }, timeoutMs: 25_000 })).json);
     return parseCatalog((await this.call("catalog", { creds, query: deckQuery(decks), timeoutMs: 25_000 })).json);
   }
 
-  async state(creds: Credentials, ids: string[], decks: DeckInfo[] = []): Promise<StateAnswer> {
+  async state(creds: Credentials, ids: string[], decks: DeckInfo[] = [], ask: Ask = {}): Promise<StateAnswer> {
+    if (ask.extended) return parseStateAnswer((await this.call("state", { creds, body: { extended: true, ids: ids.join(","), ...deckQuery(decks) } })).json);
     return parseStateAnswer((await this.call("state", { creds, query: { ids: ids.join(","), ...deckQuery(decks) } })).json);
   }
 
   /** (for Stream Deck 1.1) The states with their recent history: ZIGMon thins it to `points` over `span` seconds. */
-  async history(creds: Credentials, ids: string[], span: number, points: number, decks: DeckInfo[] = []): Promise<StateAnswer> {
-    const body = { ids: ids.join(","), history: { span: Math.round(span), points: Math.round(points) } };
+  async history(creds: Credentials, ids: string[], span: number, points: number, decks: DeckInfo[] = [], ask: Ask = {}): Promise<StateAnswer> {
+    const history = { span: Math.round(span), points: Math.round(points) };
+    if (ask.extended) return parseStateAnswer((await this.call("state", { creds, body: { extended: true, ids: ids.join(","), history, ...deckQuery(decks) } })).json);
+    const body = { ids: ids.join(","), history };
     return parseStateAnswer((await this.call("state", { creds, query: deckQuery(decks), body })).json);
   }
 
-  async wait(creds: Credentials, after: number, boot: string, ids: string[], decks: DeckInfo[], signal?: AbortSignal): Promise<WaitAnswer> {
+  async wait(creds: Credentials, after: number, boot: string, ids: string[], decks: DeckInfo[], signal?: AbortSignal, ask: Ask = {}): Promise<WaitAnswer> {
+    if (ask.extended) {
+      const body: Record<string, unknown> = { extended: true, after, boot, ...deckQuery(decks) };
+      if (ids.length) body.ids = ids.join(",");
+      return parseWait((await this.call("wait", { creds, body, timeoutMs: 45_000, signal })).json);
+    }
     const query: Record<string, string> = { after: String(after), boot, ...deckQuery(decks) };
     if (ids.length) query.ids = ids.join(",");
     return parseWait((await this.call("wait", { creds, query, timeoutMs: 45_000, signal })).json);

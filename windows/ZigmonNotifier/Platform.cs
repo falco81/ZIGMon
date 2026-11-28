@@ -256,6 +256,24 @@ internal static class Ui
         if (_icon is not null) w.Icon = _icon;
     }
 
+    /// <summary>Puts plain text on the clipboard (which another program may hold for a moment: a few tries).</summary>
+    public static bool CopyText(string text)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            try
+            {
+                System.Windows.Clipboard.SetDataObject(text ?? "", true);
+                return true;
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                System.Threading.Thread.Sleep(40);
+            }
+        }
+        return false;
+    }
+
     public static Geometry Geometry(string path)
     {
         if (GeometryCache.TryGetValue(path, out var g)) return g;

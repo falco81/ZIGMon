@@ -367,7 +367,7 @@ public class AlertSettingsTests
         // the box itself puts Padding round its text; a Margin of Padding on PART_ContentHost as well
         // put the caret far from the start of every field (1.1.0)
         var hosts = Xaml("Theme.xaml").Descendants().Where(e => (string?)e.Attribute(XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml")) == "PART_ContentHost").ToList();
-        Assert.Equal(2, hosts.Count);
+        Assert.True(hosts.Count >= 2); // Field and SecretField, and (1.4.0) AreaField and BareField
         foreach (var h in hosts) Assert.Null(h.Attribute("Margin"));
     }
 

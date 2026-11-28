@@ -89,6 +89,52 @@ export const LAYOUTS: Record<string, Layout> = {
       t("sub", [12, 66, 122, 20], 13, 600, P.purple, 2),
     ],
   },
+  // (1.3, ZIGMon 5.59.4) the new actions' own strips
+  power: {
+    $schema: SCHEMA, id: "zigmon-power", controller: "Encoder",
+    items: [
+      bg(),
+      px("art", [0, 0, 200, 100], 1),
+      px("icon", [12, 10, 22, 22], 2),
+      t("name", [40, 10, 104, 22], 13, 600, P.dim, 3),
+      t("span", [146, 10, 44, 22], 12, 700, P.warn, 3, "right"),
+      t("value", [12, 32, 176, 32], 28, 700, P.text, 3),
+      t("sub", [12, 64, 176, 14], 12, 600, P.dim, 3),
+    ],
+  },
+  summary: {
+    $schema: SCHEMA, id: "zigmon-summary", controller: "Encoder",
+    items: [
+      bg(),
+      px("icon", [12, 12, 40, 40], 2),
+      t("name", [60, 8, 132, 18], 13, 600, P.dim, 2),
+      t("value", [60, 26, 132, 30], 24, 700, P.text, 2),
+      t("sub", [60, 56, 132, 16], 12, 600, P.dim, 2),
+      px("art", [12, 76, 176, 16], 2),
+    ],
+  },
+  timer: {
+    $schema: SCHEMA, id: "zigmon-timer", controller: "Encoder",
+    items: [
+      bg(),
+      px("art", [0, 0, 200, 100], 1),
+      t("name", [12, 8, 112, 18], 13, 600, P.dim, 2),
+      t("value", [12, 26, 112, 34], 28, 700, P.text, 2),
+      t("sub", [12, 62, 112, 16], 12, 600, P.dim, 2),
+      t("mode", [12, 78, 112, 16], 11, 600, P.dim, 2),
+    ],
+  },
+  room: {
+    $schema: SCHEMA, id: "zigmon-room", controller: "Encoder",
+    items: [
+      bg(),
+      t("top", [12, 4, 176, 18], 12, 600, P.dim, 2),
+      px("icon", [12, 28, 36, 36], 2),
+      t("name", [56, 26, 132, 18], 14, 650, P.text, 2),
+      t("value", [56, 44, 132, 24], 20, 700, P.text, 2),
+      px("art", [12, 76, 176, 16], 2),
+    ],
+  },
 };
 
 /** The manifest's Encoder.layout path of each action. */

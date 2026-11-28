@@ -11208,6 +11208,536 @@ class EspGateways(object):
         return action, '%s %s' % (verb, item['name']), item['_target']
 
 
+# ---- contacts (5.59.4): the address book kept in ZIGMon ----------------------------------------
+# Kept as meta `contacts`, an administrator's (windows/PROTOCOL-SMS.md, section 1). What is read
+# from a file somebody hands in is read as data and nothing else: no eval, at most 2 MB, at most
+# CONTACTS_IMPORT_ROWS cards or rows, and a line that makes no sense is skipped with its line
+# number rather than stopping the rest. Names and numbers never go into the log.
+CONTACTS_MOST = 2000
+CONTACT_NUMBERS_MOST = 5
+CONTACTS_IMPORT_BYTES = 2 * 1024 * 1024
+CONTACTS_IMPORT_ROWS = 5000
+CONTACTS_LOCK = threading.Lock()
+CONTACT_ID = re.compile(r'^c_[0-9a-f]{6,12}$')
+_CONTACT_CTRL = re.compile('[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]')
+# what a file calls a group that is not one: Google's "everybody" and its star
+_CONTACT_NOT_GROUPS = ('mycontacts', 'my contacts', 'starred', 'favorites', 'favourites', 'oblíbené')
+
+
+def contact_text(value, most, lines=False):
+    """One line of text (or, for a note, lines): control and direction marks out, spaces folded."""
+    s = str(value if value is not None else '').replace('\r\n', '\n').replace('\r', '\n')
+    s = _CONTACT_CTRL.sub(' ', s)
+    if lines:
+        s = '\n'.join(re.sub(r'[ \t]+', ' ', x).strip() for x in s.split('\n'))
+        s = re.sub(r'\n{3,}', '\n\n', s).strip()
+    else:
+        s = re.sub(r'\s+', ' ', s).strip()
+    return s[:most]
+
+
+def contact_number(raw):
+    """A number as ZIGMon keeps it: what sms_number_for_gateway makes of it, and 00 written as +.
+    '' when it is not a phone number (6-15 digits)."""
+    s = str(raw or '').strip()
+    if s[:4].lower() == 'tel:':
+        s = s[4:]
+    s = s.split(';')[0]                                # tel:+420...;ext=12
+    s = re.split(r'(?i)\s*(?:ext\.?|x|#|p|w)\s*\d*\s*$', s)[0] if re.search(r'\d', s) else s
+    if not re.search(r'\d', s) or re.search(r'[A-Za-z]', s):
+        return ''
+    n = Daemon.sms_number_for_gateway(s)
+    if not n:
+        return ''
+    n = n[0] + n[1:].replace('+', '')
+    if n.startswith('00'):
+        n = '+' + n[2:]
+    return n if re.match(r'^\+?\d{6,15}$', n) else ''
+
+
+def contact_label(value):
+    return contact_text(value, 20)
+
+
+def contact_clean(raw, strict=True):
+    """A contact as kept: (contact, None), or (None, why). strict (a save from the page) refuses
+    what is too long; an import cuts it to size, since a phone's own field is often longer."""
+    if not isinstance(raw, dict):
+        return None, 'a contact is an object'
+    name_in = contact_text(raw.get('name'), 10000)
+    if not name_in:
+        return None, 'no name'
+    if strict and len(name_in) > 80:
+        return None, 'a name is at most 80 characters'
+    numbers, seen = [], []
+    given = raw.get('numbers')
+    if not isinstance(given, list):
+        given = [given] if given else []
+    for one in given[:50]:
+        if isinstance(one, dict):
+            label, value = one.get('label'), one.get('number')
+        else:
+            label, value = '', one
+        typed = str(value or '').strip()
+        if not typed:
+            continue
+        number = contact_number(typed)
+        if not number:
+            if strict:
+                return None, '%s does not look like a phone number' % typed[:30]
+            continue
+        label = contact_text(label, 10000)
+        if strict and len(label) > 20:
+            return None, 'a label is at most 20 characters'
+        if any(Daemon._same_number(number, n) for n in seen):
+            continue
+        seen.append(number)
+        numbers.append({'label': label[:20], 'number': number})
+    if not numbers:
+        return None, 'no phone number'
+    if len(numbers) > CONTACT_NUMBERS_MOST:
+        if strict:
+            return None, 'at most %d numbers' % CONTACT_NUMBERS_MOST
+        numbers = numbers[:CONTACT_NUMBERS_MOST]
+    group = contact_text(raw.get('group'), 10000)
+    note = contact_text(raw.get('note'), 10000, lines=True)
+    if strict and len(group) > 40:
+        return None, 'a group is at most 40 characters'
+    if strict and len(note) > 200:
+        return None, 'a note is at most 200 characters'
+    return {'id': str(raw.get('id') or ''), 'name': name_in[:80], 'numbers': numbers, 'group': group[:40],
+            'note': note[:200], 'favourite': raw.get('favourite') in (True, 1, '1', 'true', 'yes')}, None
+
+
+def _contact_groups_of(words):
+    """(group, favourite) from a list of categories: the first that is a group, and a star."""
+    group, star = '', False
+    for w in words:
+        w = contact_text(w, 200).lstrip('*').strip()
+        if not w:
+            continue
+        low = w.casefold()
+        if low in ('starred', 'favorites', 'favourites', 'oblíbené'):
+            star = True
+        elif low not in _CONTACT_NOT_GROUPS and not group:
+            group = w
+    return group, star
+
+
+# -- vCard 2.1, 3.0 and 4.0 -------------------------------------------------------------------
+def _vcf_lines(text):
+    """The logical lines of a vCard file, each with the line it starts on: folded lines (a space
+    or a tab at the start) put back together, and a quoted-printable value that ends in = joined
+    with the next line, as 2.1 writes them. Pieces are joined once, at the end of each line, so
+    a photo folded into thirty thousand lines costs no more than reading it."""
+    out = []
+    parts, start, qp = None, 0, False
+    for i, line in enumerate(text.split('\n'), 1):
+        if parts is not None and qp and parts[-1].endswith('='):
+            parts[-1] = parts[-1][:-1]
+            parts.append(line)
+            continue
+        if parts is not None and line[:1] in (' ', '\t'):
+            parts.append(line[1:])
+            continue
+        if parts is not None:
+            out.append((start, ''.join(parts)))
+        parts, start = [line], i
+        head = line.split(':', 1)[0].upper() if ':' in line else ''
+        qp = 'QUOTED-PRINTABLE' in head
+    if parts is not None:
+        out.append((start, ''.join(parts)))
+    return out
+
+
+def _vcf_split(value, sep):
+    """Split on sep where it is not escaped with a backslash."""
+    out, cur, i = [], [], 0
+    while i < len(value):
+        ch = value[i]
+        if ch == '\\' and i + 1 < len(value):
+            cur.append(value[i:i + 2])
+            i += 2
+            continue
+        if ch == sep:
+            out.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append(''.join(cur))
+    return out
+
+
+def _vcf_unescape(value):
+    return re.sub(r'\\(.)', lambda m: '\n' if m.group(1) in 'nN' else m.group(1), value)
+
+
+def _vcf_property(line):
+    """(group, NAME, {PARAM: [values]}, value) of one logical line, or None."""
+    quoted, cut = False, -1
+    for i, ch in enumerate(line[:4000]):
+        if ch == '"':
+            quoted = not quoted
+        elif ch == ':' and not quoted:
+            cut = i
+            break
+    if cut <= 0:
+        return None
+    head, value = line[:cut], line[cut + 1:]
+    pieces, cur, quoted = [], [], False
+    for ch in head:
+        if ch == '"':
+            quoted = not quoted
+        if ch == ';' and not quoted:
+            pieces.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    pieces.append(''.join(cur))
+    name = pieces[0].strip()
+    group = ''
+    if '.' in name:
+        group, name = name.rsplit('.', 1)
+    if not re.match(r'^[A-Za-z0-9-]{1,60}$', name):
+        return None
+    params = {}
+    for p in pieces[1:]:
+        if '=' in p:
+            k, v = p.split('=', 1)
+        else:
+            k, v = 'TYPE', p
+        k = k.strip().upper()
+        vals = [x.strip().strip('"') for x in v.split(',') if x.strip().strip('"')]
+        if k == 'TYPE':
+            for x in vals:
+                up = x.upper()
+                if up in ('QUOTED-PRINTABLE', 'BASE64', 'B', '8BIT', '7BIT'):
+                    params.setdefault('ENCODING', []).append(up)
+                else:
+                    params.setdefault('TYPE', []).append(x)
+        else:
+            params.setdefault(k, []).extend(vals)
+    return group.upper(), name.upper(), params, value
+
+
+def _vcf_value(params, value):
+    """The text of a value: quoted-printable decoded in its CHARSET, or None for one that is not
+    text at all (a photo in BASE64)."""
+    enc = [x.upper() for x in params.get('ENCODING', [])]
+    if 'BASE64' in enc or 'B' in enc:
+        return None
+    if 'QUOTED-PRINTABLE' in enc:
+        raw = re.sub(rb'=([0-9A-Fa-f]{2})', lambda m: bytes([int(m.group(1), 16)]),
+                     value.encode('utf-8', 'replace'))
+        charset = (params.get('CHARSET') or ['utf-8'])[0].strip() or 'utf-8'
+        try:
+            value = raw.decode(charset, 'replace')
+        except (LookupError, ValueError):
+            value = raw.decode('utf-8', 'replace')
+    return value
+
+
+def _tel_label(types):
+    t = [x.lower() for x in types]
+    if 'fax' in t:
+        return 'fax'
+    work = 'work' in t
+    if 'cell' in t or 'mobile' in t or 'iphone' in t:
+        return 'work mobile' if work else 'mobile'
+    for k, word in (('work', 'work'), ('home', 'home'), ('main', 'main'), ('pager', 'pager'), ('car', 'car'),
+                    ('other', 'other')):
+        if k in t:
+            return word
+    return ''
+
+
+def _apple_label(value):
+    m = re.match(r'^_\$!<(.*)>!\$_$', value.strip())
+    word = (m.group(1) if m else value).strip()
+    return {'mobile': 'mobile', 'home': 'home', 'work': 'work', 'main': 'main', 'other': 'other',
+            'iphone': 'iPhone'}.get(word.lower(), word)
+
+
+def _vcf_card(props):
+    """One card's properties into a row as the importer takes it."""
+    fn = n = org = note = ''
+    cats, tels, labels, star = [], [], {}, False
+    for group, name, params, value in props:
+        if name == 'X-ABLABEL' and group:
+            labels[group] = _apple_label(_vcf_unescape(value))
+    for group, name, params, value in props:
+        text = _vcf_value(params, value)
+        if text is None:
+            continue
+        if name == 'FN' and not fn:
+            fn = _vcf_unescape(text)
+        elif name == 'N' and not n:
+            bits = [_vcf_unescape(x).strip() for x in _vcf_split(text, ';')] + [''] * 5
+            family, given, middle = bits[0], bits[1], bits[2]
+            n = ' '.join(x for x in (bits[3], given, middle, family, bits[4]) if x)
+        elif name == 'ORG' and not org:
+            org = _vcf_unescape(_vcf_split(text, ';')[0])
+        elif name == 'TEL':
+            types = []
+            for x in params.get('TYPE', []):
+                types.extend(y for y in x.split(',') if y)
+            label = labels.get(group) if group and labels.get(group) else _tel_label(types)
+            tels.append({'label': label, 'number': _vcf_unescape(text)})
+        elif name == 'CATEGORIES':
+            cats.extend(_vcf_unescape(x) for x in _vcf_split(text, ','))
+        elif name == 'NOTE' and not note:
+            note = _vcf_unescape(text)
+        elif name in ('X-ZIGMON-FAVOURITE', 'X-FAVORITE', 'X-FAVOURITE', 'X-STARRED'):
+            star = star or text.strip().lower() in ('1', 'true', 'yes')
+    group, starred = _contact_groups_of(cats)
+    return {'name': fn.strip() or n.strip() or org.strip(), 'numbers': tels, 'group': group, 'note': note,
+            'favourite': star or starred}
+
+
+def contacts_parse_vcf(text):
+    """([rows], [skipped]) of a vCard file. Each row has the line its card starts on."""
+    text = str(text or '').lstrip('\ufeff').replace('\r\n', '\n').replace('\r', '\n').replace('\x00', '')
+    rows, skipped = [], []
+    card, depth = None, 0
+    for line_no, line in _vcf_lines(text):
+        word = line.strip().upper()
+        if word == 'BEGIN:VCARD':
+            if card is not None:
+                depth += 1                       # a card inside a card (2.1's AGENT): not one of ours
+                continue
+            if len(rows) >= CONTACTS_IMPORT_ROWS:
+                skipped.append({'line': line_no, 'why': 'more than %d cards in one file - the rest were not read'
+                                % CONTACTS_IMPORT_ROWS})
+                break
+            card = {'line': line_no, 'props': []}
+            continue
+        if word == 'END:VCARD':
+            if card is None:
+                continue
+            if depth:
+                depth -= 1
+                continue
+            row = _vcf_card(card['props'])
+            row['line'] = card['line']
+            rows.append(row)
+            card = None
+            continue
+        if card is None or depth or not word:
+            continue
+        if len(card['props']) >= 300:
+            continue
+        prop = _vcf_property(line)
+        if prop is not None:
+            card['props'].append(prop)
+    if card is not None:
+        row = _vcf_card(card['props'])           # a file cut short: what there is of the last card
+        row['line'] = card['line']
+        rows.append(row)
+    if not rows and not skipped:
+        skipped.append({'line': 1, 'why': 'no BEGIN:VCARD in this file - is it a vCard?'})
+    return rows, skipped
+
+
+# -- CSV from Google Contacts and Outlook ------------------------------------------------------
+_CSV_NAME = ('name', 'full name', 'display name', 'celé jméno', 'zobrazované jméno', 'jméno a příjmení')
+_CSV_GIVEN = ('given name', 'first name', 'křestní jméno', 'jméno')
+_CSV_MIDDLE = ('additional name', 'middle name', 'prostřední jméno', 'další jméno')
+_CSV_FAMILY = ('family name', 'last name', 'příjmení')
+_CSV_ORG = ('organization 1 - name', 'organization name', 'company', 'společnost', 'firma')
+_CSV_GROUP = ('group membership', 'labels', 'categories', 'kategorie', 'group', 'skupina')
+_CSV_NOTE = ('notes', 'note', 'poznámky', 'poznámka')
+_CSV_STAR = ('favourite', 'favorite', 'starred', 'oblíbený', 'oblíbené')
+_CSV_PHONES = {'mobile phone': 'mobile', 'mobilní telefon': 'mobile', 'mobile': 'mobile', 'mobil': 'mobile',
+               'home phone': 'home', 'home phone 2': 'home', 'telefon domů': 'home', 'telefon domů 2': 'home',
+               'business phone': 'work', 'business phone 2': 'work', 'company main phone': 'work',
+               'telefon do zaměstnání': 'work', 'telefon do zaměstnání 2': 'work', 'other phone': 'other',
+               'jiný telefon': 'other', 'primary phone': 'main', 'hlavní telefon': 'main', 'car phone': 'car',
+               'telefon do auta': 'car', 'pager': 'pager', 'phone': '', 'phone number': '', 'number': '',
+               'telephone': '', 'telefon': '', 'číslo': '', 'telefonní číslo': ''}
+
+
+def _csv_delimiter(first):
+    counts = {',': 0, ';': 0, '\t': 0}
+    quoted = False
+    for ch in first:
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch in counts:
+            counts[ch] += 1
+    best = max(counts, key=lambda k: counts[k])
+    return best if counts[best] else ','
+
+
+def contacts_parse_csv(text):
+    """([rows], [skipped]) of a CSV of contacts: Google's (old and new headers) or Outlook's, with
+    , or ; or tabs between the cells, with or without a BOM. Each row has its line number."""
+    import csv
+    import io
+    text = str(text or '').lstrip('\ufeff').replace('\x00', '')
+    rows, skipped = [], []
+    first = text.split('\n', 1)[0]
+    reader = csv.reader(io.StringIO(text, newline=''), delimiter=_csv_delimiter(first), strict=False)
+    try:
+        header = next(reader)
+    except StopIteration:
+        return [], [{'line': 1, 'why': 'the file is empty'}]
+    except csv.Error as e:
+        return [], [{'line': 1, 'why': 'the first line could not be read (%s)' % str(e)[:80]}]
+    cols = [contact_text(h, 80).strip('"').strip().casefold() for h in header]
+
+    def where(names):
+        return next((i for i, h in enumerate(cols) if h in names), None)
+    i_name, i_given, i_middle, i_family = where(_CSV_NAME), where(_CSV_GIVEN), where(_CSV_MIDDLE), where(_CSV_FAMILY)
+    i_org, i_group, i_note, i_star = where(_CSV_ORG), where(_CSV_GROUP), where(_CSV_NOTE), where(_CSV_STAR)
+    phones = []                                   # (label column or None, label word, value column)
+    google = {}
+    for i, h in enumerate(cols):
+        m = re.match(r'^phone (\d{1,2}) - (type|label|value)$', h)
+        if m:
+            google.setdefault(int(m.group(1)), {})[m.group(2)] = i
+        elif h in _CSV_PHONES:
+            phones.append((None, _CSV_PHONES[h], i))
+    for k in sorted(google):
+        if 'value' in google[k]:
+            phones.append((google[k].get('type', google[k].get('label')), '', google[k]['value']))
+    if not phones:
+        return [], [{'line': 1, 'why': 'no column of phone numbers in the first line (Phone 1 - Value, '
+                                        'Mobile Phone, ...)'}]
+    if i_name is None and i_given is None and i_family is None and i_org is None:
+        return [], [{'line': 1, 'why': 'no column of names in the first line (Name, First Name, ...)'}]
+    line_no = 1
+    while True:
+        try:
+            cells = next(reader)
+        except StopIteration:
+            break
+        except csv.Error as e:
+            skipped.append({'line': reader.line_num, 'why': 'the file could not be read past here (%s)'
+                            % str(e)[:80]})
+            break
+        at, line_no = line_no + 1, reader.line_num
+        if not any(c.strip() for c in cells):
+            continue
+        if len(rows) >= CONTACTS_IMPORT_ROWS:
+            skipped.append({'line': at, 'why': 'more than %d rows in one file - the rest were not read'
+                            % CONTACTS_IMPORT_ROWS})
+            break
+
+        def cell(i):
+            return cells[i].strip() if i is not None and i < len(cells) else ''
+        name = ' '.join(x for x in (cell(i_given), cell(i_middle), cell(i_family)) if x)
+        name = cell(i_name) or name or cell(i_org)
+        numbers = []
+        for i_label, word, i_value in phones:
+            label = cell(i_label).lstrip('*').strip() if i_label is not None else word
+            if label.lower() in ('mobile', 'home', 'work', 'work mobile', 'other', 'main', 'pager', 'car', 'fax'):
+                label = label.lower()                  # Google writes Mobile; a label of one's own stays as written
+            for value in cell(i_value).split(':::'):
+                if value.strip():
+                    numbers.append({'label': label, 'number': value.strip()})
+        group, star = _contact_groups_of(re.split(r':::|;', cell(i_group)) if i_group is not None else [])
+        star = star or cell(i_star).lower() in ('1', 'true', 'yes', 'ano', 'x', '*')
+        rows.append({'line': at, 'name': name, 'numbers': numbers, 'group': group, 'note': cell(i_note),
+                     'favourite': star})
+    return rows, skipped
+
+
+# -- export ---------------------------------------------------------------------------------
+def _vcf_escape(value):
+    return (str(value).replace('\\', '\\\\').replace('\n', '\\n').replace(',', '\\,').replace(';', '\\;'))
+
+
+def _vcf_fold(line):
+    """A line of at most 75 octets, the rest on lines that start with a space - never in the
+    middle of a letter."""
+    out, cur, size = [], [], 0
+    for ch in line:
+        n = len(ch.encode('utf-8'))
+        if size + n > (75 if not out else 74):
+            out.append(''.join(cur))
+            cur, size = [], 0
+        cur.append(ch)
+        size += n
+    out.append(''.join(cur))
+    return '\r\n '.join(out)
+
+
+_LABEL_TYPES = {'mobile': 'CELL', 'cell': 'CELL', 'home': 'HOME', 'work': 'WORK', 'work mobile': 'WORK,CELL',
+                'fax': 'FAX', 'pager': 'PAGER', 'main': 'MAIN', 'other': 'VOICE', '': 'VOICE', 'car': 'CAR',
+                'iphone': 'IPHONE'}
+
+
+def contacts_vcf(book):
+    """The contacts as vCard 3.0, which every phone and Google, Outlook and iCloud read."""
+    lines = []
+    for c in book:
+        name = c.get('name') or ''
+        given, _, family = name.rpartition(' ')
+        if not given:
+            given, family = family, ''
+        lines += ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + _vcf_escape(name),
+                  'N:%s;%s;;;' % (_vcf_escape(family), _vcf_escape(given))]
+        item = 0
+        for one in c.get('numbers') or []:
+            label = str(one.get('label') or '')
+            kind = _LABEL_TYPES.get(label.lower())
+            if kind is not None:
+                lines.append('TEL;TYPE=%s:%s' % (kind, one.get('number') or ''))
+            else:                                # a label of its own: as iPhone writes it
+                item += 1
+                lines.append('item%d.TEL:%s' % (item, one.get('number') or ''))
+                lines.append('item%d.X-ABLabel:%s' % (item, _vcf_escape(label)))
+        if c.get('group'):
+            lines.append('CATEGORIES:' + _vcf_escape(c['group']))
+        if c.get('note'):
+            lines.append('NOTE:' + _vcf_escape(c['note']))
+        if c.get('favourite'):
+            lines.append('X-ZIGMON-FAVOURITE:TRUE')
+        lines.append('END:VCARD')
+    return ''.join(_vcf_fold(x) + '\r\n' for x in lines)
+
+
+def _csv_safe(value):
+    """A cell a spreadsheet will not take for a formula. A number stays as it is."""
+    s = str(value or '')
+    if s[:1] in ('=', '+', '-', '@', '\t', '\r') and not re.match(r'^\+?[0-9 ]+$', s):
+        return "'" + s
+    return s
+
+
+def contacts_csv(book):
+    """The contacts as Google Contacts' CSV (the headers Google itself writes), with a BOM so a
+    spreadsheet reads the letters right. A favourite is "* starred", as Google marks one."""
+    import csv
+    import io
+    most = max([len(c.get('numbers') or []) for c in book] + [1])
+    head = ['Name', 'Given Name', 'Family Name', 'Group Membership']
+    for k in range(1, most + 1):
+        head += ['Phone %d - Type' % k, 'Phone %d - Value' % k]
+    head.append('Notes')
+    buf = io.StringIO(newline='')
+    w = csv.writer(buf, lineterminator='\r\n')
+    w.writerow(head)
+    for c in book:
+        name = c.get('name') or ''
+        given, _, family = name.rpartition(' ')
+        if not given:
+            given, family = family, ''
+        groups = ['* myContacts'] + ([c['group']] if c.get('group') else []) + (['* starred'] if c.get('favourite') else [])
+        row = [_csv_safe(name), _csv_safe(given), _csv_safe(family), _csv_safe(' ::: '.join(groups))]
+        nums = c.get('numbers') or []
+        for k in range(most):
+            if k < len(nums):
+                label = str(nums[k].get('label') or '')
+                row += [_csv_safe(label[:1].upper() + label[1:]), nums[k].get('number') or '']
+            else:
+                row += ['', '']
+        row.append(_csv_safe(c.get('note') or ''))
+        w.writerow(row)
+    return '\ufeff' + buf.getvalue()
+
+
 class Daemon(EspGateways):
     def __init__(self, storage=None):
         open_log()
@@ -19275,6 +19805,265 @@ class Daemon(EspGateways):
             if str(who) in (person['id'], person['name']) and person.get('phone'):
                 return person['phone']
         return None
+
+    # ---- contacts (5.59.4): the address book (windows/PROTOCOL-SMS.md, section 1) -----------
+    def contacts(self):
+        """The contacts as kept, each a copy: {id, name, numbers [{label, number}], group, note,
+        favourite}. Also what the desktop app and the Stream Deck code read."""
+        return [dict(c, numbers=[dict(n) for n in c.get('numbers') or [] if isinstance(n, dict)])
+                for c in self.store.meta_json('contacts')]
+
+    def contact_groups(self):
+        """The groups in use, each once whatever its case, in alphabetical order."""
+        seen = {}
+        for c in self.contacts():
+            g = str(c.get('group') or '')
+            if g and g.casefold() not in seen:
+                seen[g.casefold()] = g
+        return sorted(seen.values(), key=lambda g: g.casefold())
+
+    def _contacts_keep(self, book):
+        self.store.set_meta('contacts', json.dumps(book, ensure_ascii=False, separators=(',', ':')))
+        self.bump()
+
+    @staticmethod
+    def _contact_new_id(*books):
+        have = {c.get('id') for book in books for c in book}
+        while True:
+            one = 'c_' + secrets.token_hex(4)
+            if one not in have:
+                return one
+
+    def contact_by_number(self, number):
+        """The contact a number belongs to, or None - the same phone however it is written, as
+        _same_number has it, looked up in an index made again only when the book changes."""
+        raw = self.store.get_meta('contacts')
+        idx = getattr(self, '_contacts_index', None)
+        if idx is None or idx[0] is not raw:
+            whole, nat9, any9 = {}, {}, {}
+            for c in self.store.meta_json('contacts'):
+                for one in c.get('numbers') or []:
+                    n = str(one.get('number') or '')
+                    digits = re.sub(r'[^0-9]', '', n)
+                    if n.startswith('00'):
+                        digits = digits[2:]
+                    if not digits:
+                        continue
+                    whole.setdefault(digits, c)
+                    if not (n.startswith('+') or n.startswith('00')) and len(digits) >= 9:
+                        nat9.setdefault(digits[-9:], c)
+                    if len(digits) >= 9:
+                        any9.setdefault(digits[-9:], c)
+            idx = (raw, whole, nat9, any9)
+            self._contacts_index = idx
+        _, whole, nat9, any9 = idx
+        n = str(number or '').strip()
+        digits = re.sub(r'[^0-9]', '', n)
+        if n.startswith('00'):
+            digits = digits[2:]
+        if not digits:
+            return None
+        if whole.get(digits):
+            return whole[digits]
+        if len(digits) < 9:
+            return None
+        # a number with its country matches another only whole, or one written without
+        return (nat9 if (n.startswith('+') or n.startswith('00')) else any9).get(digits[-9:])
+
+    def contacts_expand(self, to_list, unknown=None):
+        """[(number, contact or None)] of a list of numbers, contact:<id> and group:<name>: a
+        contact's first number, every contact of a group, a number as it is (with the contact it
+        belongs to). The same phone twice is there once. What names nothing goes into unknown,
+        when a list is given."""
+        book = self.contacts()
+        by_id = {c['id']: c for c in book}
+        out = []
+
+        def add(number, contact):
+            if number and not any(self._same_number(number, n) for n, _ in out):
+                out.append((number, contact))
+        for entry in list(to_list or [])[:500]:
+            s = str(entry if entry is not None else '').strip()
+            low = s.lower()
+            if low.startswith('contact:'):
+                c = by_id.get(s[8:].strip())
+                if c and c.get('numbers'):
+                    add(c['numbers'][0]['number'], c)
+                elif unknown is not None:
+                    unknown.append(s)
+            elif low.startswith('group:'):
+                g = s[6:].strip().casefold()
+                members = [c for c in book if g and str(c.get('group') or '').casefold() == g and c.get('numbers')]
+                if not members and unknown is not None:
+                    unknown.append(s)
+                for c in members:
+                    add(c['numbers'][0]['number'], c)
+            else:
+                number = contact_number(s)
+                if number:
+                    add(number, self.contact_by_number(number))
+                elif unknown is not None and s:
+                    unknown.append(s)
+        return out
+
+    def contact_save(self, raw, by=''):
+        """Make a contact (no id) or change one (its id). Names are unique, ignoring case."""
+        c, why = contact_clean(raw, strict=True)
+        if c is None:
+            raise ValueError(why)
+        given = str((raw or {}).get('id') or '').strip()
+        with CONTACTS_LOCK:
+            book = self.contacts()
+            if given and (not CONTACT_ID.match(given) or not any(x['id'] == given for x in book)):
+                raise KeyError('there is no such contact')
+            if any(x['name'].casefold() == c['name'].casefold() and x['id'] != given for x in book):
+                raise ValueError('there is already a contact called %s' % c['name'])
+            if given:
+                c['id'] = given
+                book = [c if x['id'] == given else x for x in book]
+            else:
+                if len(book) >= CONTACTS_MOST:
+                    raise ValueError('the address book is full (%d contacts)' % CONTACTS_MOST)
+                c['id'] = self._contact_new_id(book)
+                book.append(c)
+            self._contacts_keep(book)
+        self.store.add_event('control', 'a contact %s' % ('changed' if given else 'added'))
+        return c
+
+    def contact_delete(self, cid, by=''):
+        with CONTACTS_LOCK:
+            book = self.contacts()
+            kept = [x for x in book if x['id'] != str(cid or '')]
+            if len(kept) == len(book):
+                raise KeyError('there is no such contact')
+            self._contacts_keep(kept)
+        self.store.add_event('control', 'a contact removed')
+
+    @staticmethod
+    def _contact_merge(old, new):
+        """A contact already kept and the same name in a file: its numbers and the new ones (at
+        most five), the file's group and note where it has them, a star when either has one.
+        (merged, changed)."""
+        out = dict(old, numbers=[dict(n) for n in old.get('numbers') or []])
+        for one in new['numbers']:
+            same = next((n for n in out['numbers'] if Daemon._same_number(n['number'], one['number'])), None)
+            if same is None:
+                if len(out['numbers']) < CONTACT_NUMBERS_MOST:
+                    out['numbers'].append(dict(one))
+            elif not same.get('label') and one.get('label'):
+                same['label'] = one['label']
+        if new.get('group'):
+            out['group'] = new['group']
+        if new.get('note'):
+            out['note'] = new['note']
+        out['favourite'] = bool(old.get('favourite') or new.get('favourite'))
+        return out, out != old
+
+    def contacts_import(self, fmt, text, mode='merge', dry=False, by=''):
+        """Read a vCard or CSV file into the contacts: merge (add the new, bring the known up to
+        date) or replace (the file is the whole book; a name kept keeps its id, so a
+        contact:<id> still finds it). dry says what would happen and changes nothing."""
+        fmt, mode = str(fmt or '').lower(), str(mode or 'merge').lower()
+        if fmt not in ('vcf', 'csv'):
+            raise ValueError('format is vcf or csv')
+        if mode not in ('merge', 'replace'):
+            raise ValueError('mode is merge or replace')
+        if not isinstance(text, str):
+            raise ValueError('text is the file, as text')
+        if len(text) > CONTACTS_IMPORT_BYTES or len(text.encode('utf-8', 'replace')) > CONTACTS_IMPORT_BYTES:
+            raise ValueError('the file is larger than 2 MB')
+        rows, skipped = (contacts_parse_vcf if fmt == 'vcf' else contacts_parse_csv)(text)
+        plan = []
+        with CONTACTS_LOCK:
+            before = self.contacts()
+            old_by_name = {c['name'].casefold(): c for c in before}
+            book = [] if mode == 'replace' else [dict(c) for c in before]
+            index = {c['name'].casefold(): i for i, c in enumerate(book)}
+            state = {}                                   # name -> add / update / same
+            for row in rows:
+                c, why = contact_clean(row, strict=False)
+                shown = {'line': row.get('line'), 'name': contact_text(row.get('name'), 80),
+                         'numbers': [contact_number(n.get('number')) or contact_text(n.get('number'), 30)
+                                     for n in (row.get('numbers') or []) if isinstance(n, dict)][:CONTACT_NUMBERS_MOST],
+                         'group': contact_text(row.get('group'), 40)}
+                if c is None:
+                    skipped.append({'line': row.get('line'), 'why': why})
+                    plan.append(dict(shown, action='skip', why=why))
+                    continue
+                key = c['name'].casefold()
+                shown.update(name=c['name'], numbers=[n['number'] for n in c['numbers']], group=c['group'])
+                if key in index:
+                    merged, changed = self._contact_merge(book[index[key]], c)
+                    book[index[key]] = merged
+                    if key not in state:
+                        state[key] = 'update' if changed else 'same'
+                    elif changed and state[key] == 'same':
+                        state[key] = 'update'
+                    plan.append(dict(shown, action='add' if state[key] == 'add' else ('update' if changed else 'same')))
+                    continue
+                if len(book) >= CONTACTS_MOST:
+                    why = 'the address book is full (%d contacts)' % CONTACTS_MOST
+                    skipped.append({'line': row.get('line'), 'why': why})
+                    plan.append(dict(shown, action='skip', why=why))
+                    continue
+                kept = old_by_name.get(key)
+                if kept is not None:                     # replace: the same name keeps its id
+                    c['id'] = kept['id']
+                    state[key] = 'same' if c == kept else 'update'
+                else:
+                    c['id'] = self._contact_new_id(book, before)
+                    state[key] = 'add'
+                index[key] = len(book)
+                book.append(c)
+                plan.append(dict(shown, action=state[key]))
+            added = sum(1 for v in state.values() if v == 'add')
+            updated = sum(1 for v in state.values() if v == 'update')
+            same = sum(1 for v in state.values() if v == 'same')
+            removed = len([c for c in before if c['name'].casefold() not in state]) if mode == 'replace' else 0
+            if not dry:
+                if mode == 'replace' and before:
+                    # one step back, should the wrong file have been picked
+                    self.store.set_meta('contacts_before_replace',
+                                        json.dumps(before, ensure_ascii=False, separators=(',', ':')))
+                self._contacts_keep(book)
+        if not dry:
+            self.store.add_event('control', 'contacts imported: %d added, %d updated%s%s' % (
+                added, updated, (', %d skipped' % len(skipped)) if skipped else '',
+                (', %d removed' % removed) if removed else ''))
+        out = {'added': added, 'updated': updated, 'unchanged': same, 'removed': removed,
+               'skipped': skipped[:500], 'skipped_n': len(skipped), 'dry': bool(dry), 'mode': mode,
+               'read': len(rows)}
+        if dry:
+            out['plan'] = plan
+        return out
+
+    def contacts_export(self, fmt):
+        """(bytes, file name, type) of the contacts: vCard 3.0 or Google's CSV."""
+        fmt = str(fmt or 'vcf').lower()
+        book = sorted(self.contacts(), key=lambda c: c['name'].casefold())
+        if fmt == 'csv':
+            return contacts_csv(book).encode('utf-8'), 'contacts.csv', 'text/csv; charset=utf-8'
+        if fmt not in ('vcf', 'vcard'):
+            raise ValueError('format is vcf or csv')
+        return contacts_vcf(book).encode('utf-8'), 'contacts.vcf', 'text/vcard; charset=utf-8'
+
+    def contacts_post(self, body, by=''):
+        """POST /api/contacts: save, delete or import."""
+        act = str(body.get('action') or '')
+        if act == 'save':
+            if not isinstance(body.get('contact'), dict):
+                raise ValueError('contact is an object')
+            return {'contact': self.contact_save(body['contact'], by), 'message': 'saved'}
+        if act == 'delete':
+            self.contact_delete(body.get('id'), by)
+            return {'message': 'the contact is removed'}
+        if act == 'import':
+            out = self.contacts_import(body.get('format'), body.get('text'), body.get('mode') or 'merge',
+                                       dry=body.get('dry') is True, by=by)
+            out['message'] = ('%d to add, %d to update' if out['dry'] else '%d added, %d updated') % (
+                out['added'], out['updated'])
+            return out
+        raise ValueError('action is save, delete or import')
 
     def sms_allowed(self, number):
         number = re.sub(r'[^0-9+]', '', str(number or ''))
@@ -51620,7 +52409,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      # and the plugin itself for an administrator to take to a computer
                      '/api/deck/admin', '/api/deck/plugin',
                      # (5.59.4) the ESP32 gateways: their addresses, certificates and pairing
-                     '/api/esp')
+                     '/api/esp',
+                     # (5.59.4) the contacts: names and numbers of people, an administrator's
+                     '/api/contacts', '/api/contacts/export')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -51974,7 +52765,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         # a settings import or a backup piece may be big; everything else is tiny
         limit = 6 * 1024 * 1024 if self.path.split('?')[0] in (
             '/api/db/backup/upload', '/api/import', '/api/trial', '/api/upgrade/upload',
-            '/api/fullbackup/upload', '/api/tls') else 65536
+            '/api/fullbackup/upload', '/api/tls', '/api/contacts') else 65536
         if length > limit:
             raise ValueError('body too large')
         raw = self.rfile.read(length)
@@ -52619,7 +53410,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                                         'topics': d.sms_system_topics()})
             if path == '/api/sms/log':
                 limit = max(1, min(500, int(q.get('limit', 200))))
-                return self._send(200, {'ok': True, 'messages': d.sms_log(limit),
+                messages = d.sms_log(limit)
+                for m in messages:
+                    # (5.59.4) the contact a number belongs to, beside it
+                    c = d.contact_by_number(m.get('number')) if m.get('number') else None
+                    m['contact'] = {'id': c['id'], 'name': c['name']} if c else None
+                return self._send(200, {'ok': True, 'messages': messages,
                                         'people': [{'id': p['id'], 'name': p['name'], 'phone': p.get('phone') or ''}
                                                    for p in d.people()]})
             if path == '/api/action-groups':
@@ -53117,6 +53913,29 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
                     return self._error(403, 'view locked \u2014 this one is for an administrator')
                 return self._send(200, d.esp_admin_view())
+            if path in ('/api/contacts', '/api/contacts/export'):
+                # (5.59.4) the contacts: an administrator's (ALWAYS_LOCKED), asked again here so
+                # a road moved out of that list never opens
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                if path == '/api/contacts':
+                    return self._send(200, {'ok': True, 'contacts': d.contacts(), 'groups': d.contact_groups(),
+                                            'most': CONTACTS_MOST, 'numbers_most': CONTACT_NUMBERS_MOST})
+                try:
+                    data, name, kind = d.contacts_export(q.get('format') or 'vcf')
+                except ValueError as e:
+                    return self._error(400, str(e))
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', kind)
+                    self.send_header('Content-Disposition', 'attachment; filename="%s"' % name)
+                    self.send_header('Content-Length', str(len(data)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if path == '/api/deck/plugin':
                 # (5.59) the plugin itself, as a download for the page: an administrator's
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
@@ -53635,10 +54454,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 wanted = body.get('to')
                 if not isinstance(wanted, list):
                     wanted = [str(body.get('number') or '')]
+                # (5.59.4) and contact:<id> / group:<name> from the contacts, expanded to their
+                # numbers with the same phone sent to once. Without one of those, exactly as before
+                book = [w for w in wanted if re.match(r'(?i)^\s*(contact|group):', str(w))]
+                unknown = []
+                if book:
+                    if not (REQUEST_CALLER.cli or d.may(body.get('session') or '', 'admin')):
+                        return self._error(403, 'only an administrator sends to the contacts')
+                    numbers = []
+                    for who in wanted:
+                        if who in book:
+                            got = [n for n, _ in d.contacts_expand([who], unknown)]
+                        else:
+                            got = [d.phone_of(str(who).strip()) or str(who).strip()]
+                        numbers += [n for n in got if not any(d._same_number(n, x) for x in numbers)]
+                else:
+                    numbers = [d.phone_of(str(who).strip()) or str(who).strip() for who in wanted]
                 text = d.fill_message(str(body.get('text') or ''), d.message_facts('sent by hand'))
-                sent, failed = [], []
-                for who in wanted:
-                    number = d.phone_of(str(who).strip()) or str(who).strip()
+                sent, failed = [], list(unknown)
+                for number in numbers:
                     ok, detail = d.sms_send(number, text, why='by hand')
                     (sent if ok else failed).append(number)
                 return self._send(200, {'ok': bool(sent), 'sent': sent, 'failed': failed, 'text': text,
@@ -54965,6 +55799,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._error(400, str(e)[:300])
                 out.update(ok=True, **{k: v for k, v in d.deck_admin_view().items() if k != 'ok'})
+                return self._send(200, out)
+            if path == '/api/contacts':
+                # (5.59.4) the contacts: an administrator's, every action - the sign-in and the
+                # role both asked. Nothing of a contact goes into the log, only how many
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator changes the contacts')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.contacts_post(body, by)
+                except KeyError as e:
+                    return self._error(404, str(e.args[0] if e.args else 'there is no such contact'))
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                out.update(ok=True, contacts=d.contacts(), groups=d.contact_groups())
                 return self._send(200, out)
             if path == '/api/notifier/keys':
                 # the desktop notifier's keys (5.57): an administrator's, every action -

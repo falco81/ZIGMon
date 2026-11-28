@@ -54,10 +54,11 @@ export abstract class ZigmonAction extends SingletonAction<JsonObject> {
   /** The key whose property inspector is open (it gets a live preview). */
   private piFor: string | null = null;
 
-  private preview(id: string | null): () => { image: string; looks?: unknown } | null {
+  private preview(id: string | null): () => { image: string; looks?: unknown; facts?: unknown } | null {
     return () => {
       const v = id ? this.views.get(id) : undefined;
-      return v ? { image: v.previewImage(), looks: v.previewSet() ?? undefined } : null;
+      // (1.3) and what the new actions' items say beyond the key, for the inspector's "Now"
+      return v ? { image: v.previewImage(), looks: v.previewSet() ?? undefined, facts: v.facts() ?? undefined } : null;
     };
   }
 

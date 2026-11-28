@@ -698,6 +698,19 @@ if (isset($_GET['api'])) {
         zigmon_relay('/api/esp', 'GET', null, 15.0);
         exit;
     }
+    if ($what === 'contacts' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59.4) the contacts: names and numbers - an administrator's, behind the sign-in
+        // in the daemon
+        zigmon_relay('/api/contacts', 'GET', null, 15.0);
+        exit;
+    }
+    if ($what === 'contacts-export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+        // (5.59.4) the contacts as a file: vCard 3.0 or Google's CSV - an administrator's
+        $fmt = ((string) ($_GET['format'] ?? '')) === 'csv' ? 'csv' : 'vcf';
+        zigmon_relay_download('/api/contacts/export?format=' . $fmt, 30, zigmon_download_session(), [],
+                              'contacts.' . $fmt);
+        exit;
+    }
     if ($what === 'notifier-keys' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         // (5.57) the desktop notifier's keys: their names, sensors and last use - never a
         // key - an administrator's, behind the sign-in in the daemon
@@ -1236,7 +1249,7 @@ if (isset($_GET['api'])) {
                        'wifi-config', 'wifi-test', 'wifi-clients', 'people', 'presence-triggers', 'messages', 'alerts-clear', 'hold-release',
                        'wifi-detail', 'wifi-order', 'wifi-sshkey', 'target-set', 'person-token', 'object-set', 'object-call',
                        'rooms-save', 'wifi-forget', 'heating-save', 'monthly', 'heat-calibrate', 'groups-save', 'plug-mqtt-setup', 'plug-mqtt-test', 'snapshot-restore', 'snapshot-drop', 'sensor-groups', 'action-groups', 'sms-commands', 'sms-test', 'sms-send', 'sms-poll', 'sms-try', 'sms-forget', 'sms-raw', 'modem-status', 'modem-reset-data', 'sms-ussd', 'acl-mend', 'zigbee-configure', 'zigbee-forget', 'zigbee-reload', 'taps-save', 'taps-address', 'taps-keys', 'taps-duo-test', 'secrets', 'approvals-stop', 'blocked', 'blocked-router', 'blocked-fold', 'trial', 'mikrotik', 'scripts', 'proxy', 'feeds-fetch', 'feeds-accept', 'geo-fetch', 'address-look', 'address-intel', 'zigbee-baseline', 'what-if', 'plug-diagnose', 'outbox-drop', 'outbox-flush', 'firewall-do', 'tls-do', 'upgrade-do', 'notices-do', 'upgrade-upload', 'fullbackup-do', 'fullbackup-upload', 'net-do', 'ntp-do', 'power-do', 'change-do', 'rbackup-do', 'about-do', 'acme-do', 'osup-do', 'webproxy-do', 'acmepush-do', 'osroots-do', 'selinux-do', 'shellybackup-do', 'shelly-tls',
-                       'notifier-keys', 'deck-admin', 'esp-admin', 'esp-command', 'passkey-register', 'passkey-begin', 'passkeys-do'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+                       'notifier-keys', 'deck-admin', 'esp-admin', 'esp-command', 'passkey-register', 'passkey-begin', 'passkeys-do', 'contacts'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $in = json_decode((string) file_get_contents('php://input'), true);
         $paths = ['target-set' => '/api/target/set', 'person-token' => '/api/people/token', 'object-set' => '/api/object/set', 'object-call' => '/api/object/call',   /* target-set carries hold_s for a room */
                   'rooms-save' => '/api/rooms', 'heating-save' => '/api/heating',   /* away_from / away_to ride along */ 'monthly' => '/api/energy/monthly',
@@ -1298,6 +1311,7 @@ if (isset($_GET['api'])) {
                   'deck-admin' => '/api/deck/admin',          /* (5.59) Stream Deck: switch, approve, permissions, revoke */
                   'esp-admin' => '/api/esp',                  /* (5.59.4) ESP32 gateways: probe, pair, detect, rename, unpair */
                   'esp-command' => '/api/esp/command',        /* (5.59.4) a gateway's lock or switch, from the dashboard */
+                  'contacts' => '/api/contacts',              /* (5.59.4) the contacts: save, delete, import */
                   /* passkeys (5.43): making one (signed in), the options of a sign-in
                      (nobody signed in yet), renaming and removing one */
                   'passkey-register' => '/api/auth/passkey/register', 'passkey-begin' => '/api/auth/passkey/begin',
@@ -4176,6 +4190,216 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
      rather than a message that failed */
   .sms-line.unsure .sms-bubble{border-color:rgba(210,153,34,.5);background:rgba(210,153,34,.07)}
   .sms-who{display:flex;flex-direction:column;gap:2px;min-width:0}
+  /* ---- (5.59.4) the contacts: a card for each, the editor in a drawer, the recipients as chips ---- */
+  .ct-av{--h:210;flex:0 0 auto;width:40px;height:40px;border-radius:50%;display:inline-flex;align-items:center;
+    justify-content:center;font-weight:700;font-size:14.5px;letter-spacing:.02em;user-select:none;
+    color:hsl(var(--h),85%,80%);background:linear-gradient(145deg,hsla(var(--h),70%,58%,.34),hsla(var(--h),70%,45%,.16));
+    border:1px solid hsla(var(--h),70%,66%,.42);box-shadow:inset 0 1px 0 hsla(var(--h),80%,85%,.12)}
+  .ct-av.sm{width:22px;height:22px;font-size:10px;border-width:1px}
+  .ct-av.lg{width:64px;height:64px;font-size:22px}
+  .ct-av.grp{border-radius:8px}
+  .ct-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+  .ct-top h2{margin:0 !important;display:flex;align-items:baseline;gap:8px}
+  .ct-top h2 .muted{font-weight:500;font-size:13px}
+  .ct-tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ct-tools .btn.cmd.small{padding:5px 11px}
+  .ct-tools .ct-sep{width:1px;height:22px;background:var(--line);margin:0 2px}
+  .ct-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-find-wrap{position:relative;flex:1 1 260px;max-width:420px}
+  .ct-find-wrap svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--tx-mut);pointer-events:none}
+  .ct-find{width:100%;box-sizing:border-box;font:inherit;font-size:13.5px;background:var(--panel2);color:var(--tx);
+    border:1px solid var(--line);border-radius:999px;padding:7px 14px 7px 34px}
+  .ct-find:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .ct-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ct-chip{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;
+    gap:6px;background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);border-radius:999px;padding:4px 11px;
+    line-height:20px;transition:color .12s,border-color .12s,background .12s}
+  .ct-chip:hover{color:var(--tx);border-color:var(--tx-mut)}
+  .ct-chip.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
+  .ct-chip .n{color:var(--tx-mut);font-weight:600;font-size:11.5px}
+  .ct-chip.on .n{color:inherit;opacity:.75}
+  .ct-chip.star.on{color:#e3b341;border-color:rgba(227,179,65,.6);background:rgba(227,179,65,.10)}
+  .ct-scroll{position:relative;min-height:120px}
+  .ct-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+  .ct-letter{grid-column:1/-1;font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--tx-mut);
+    padding:8px 2px 0;border-bottom:1px solid rgba(38,44,55,.7);margin-bottom:2px}
+  .ct-letter:first-child{padding-top:0}
+  .ct-one{position:relative;display:flex;gap:12px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);
+    border-radius:12px;padding:12px 12px 11px;cursor:pointer;transition:border-color .12s,background .12s,transform .12s;min-width:0}
+  .ct-one:hover{border-color:rgba(88,166,255,.45);background:#1f2630}
+  .ct-one:focus-visible{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.18)}
+  .ct-one .ct-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .ct-one .ct-name{font-weight:650;color:var(--tx);font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    padding-right:56px}
+  .ct-one .ct-num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;
+    font-size:12.5px;color:var(--tx-dim);display:flex;align-items:center;gap:6px;min-width:0}
+  .ct-one .ct-num .lbl{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:10.5px;
+    letter-spacing:.06em;text-transform:uppercase;color:var(--tx-mut)}
+  .ct-one .ct-more{font-size:11.5px;color:var(--tx-mut)}
+  .ct-one .ct-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:3px}
+  .ct-tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--tx-dim);
+    background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:999px;padding:1px 8px;line-height:18px}
+  .ct-tag i{width:7px;height:7px;border-radius:50%;background:hsl(var(--h,210),65%,60%);display:inline-block}
+  .ct-note{font-size:12px;color:var(--tx-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .ct-acts{position:absolute;top:8px;right:8px;display:flex;gap:2px}
+  .ct-ib{appearance:none;background:none;border:1px solid transparent;color:var(--tx-mut);cursor:pointer;border-radius:8px;
+    width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;transition:color .12s,background .12s}
+  .ct-ib:hover{color:var(--info);background:rgba(88,166,255,.10)}
+  .ct-ib.star.on{color:#e3b341}
+  .ct-ib.star:hover{color:#e3b341;background:rgba(227,179,65,.10)}
+  .ct-ib svg{display:block}
+  .ct-empty{grid-column:1/-1;text-align:center;padding:42px 16px 36px;color:var(--tx-dim);border:1px dashed var(--line);
+    border-radius:14px;background:rgba(88,166,255,.025)}
+  .ct-empty b{display:block;color:var(--tx);font-size:15px;margin-bottom:6px}
+  .ct-empty .btnrow{justify-content:center;margin-top:14px}
+  .ct-drop{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    border:2px dashed var(--info);border-radius:14px;background:rgba(13,17,23,.88);color:var(--info);font-weight:650;font-size:15px;
+    pointer-events:none}
+  .ct-drop[hidden]{display:none}
+  .ct-drop small{color:var(--tx-dim);font-weight:500;font-size:12.5px}
+  #ct-card{position:relative}
+  /* the drawer */
+  .ct-shade{position:fixed;inset:0;z-index:90;background:rgba(3,6,11,.6);backdrop-filter:blur(1.5px);opacity:0;
+    transition:opacity .18s ease}
+  .ct-shade.open{opacity:1}
+  .ct-drawer{position:fixed;top:0;right:0;bottom:0;z-index:91;width:min(460px,100vw);background:var(--panel);
+    border-left:1px solid var(--line);box-shadow:-24px 0 60px rgba(0,0,0,.5);display:flex;flex-direction:column;
+    transform:translateX(102%);transition:transform .22s cubic-bezier(.2,.8,.2,1)}
+  .ct-drawer.open{transform:none}
+  .ct-dhead{display:flex;align-items:center;gap:14px;padding:18px 18px 16px;border-bottom:1px solid var(--line)}
+  .ct-dhead .ct-dtitle{flex:1 1 auto;min-width:0}
+  .ct-dhead h3{margin:0;font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-dhead .muted{font-size:12.5px}
+  .ct-dbody{flex:1 1 auto;overflow-y:auto;padding:16px 18px 18px;display:flex;flex-direction:column;gap:16px}
+  .ct-field{display:flex;flex-direction:column;gap:6px}
+  .ct-field > label,.ct-field > .lab{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);font-weight:600;
+    display:flex;align-items:center;gap:8px}
+  .ct-field > label .cnt,.ct-field > .lab .cnt{margin-left:auto;letter-spacing:0;text-transform:none;font-weight:500}
+  .ct-drawer input[type=text],.ct-drawer input[type=tel],.ct-drawer textarea{font:inherit;font-size:14px;background:var(--panel2);
+    color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:9px 12px;width:100%;box-sizing:border-box;min-width:0}
+  .ct-drawer input:focus,.ct-drawer textarea:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .ct-drawer textarea{resize:vertical;min-height:70px;line-height:1.45}
+  .ct-drawer input.bad{border-color:var(--crit);box-shadow:0 0 0 3px rgba(248,81,73,.14)}
+  .ct-nums{display:flex;flex-direction:column;gap:8px}
+  .ct-nrow{display:grid;grid-template-columns:112px minmax(0,1fr) 34px;gap:8px;align-items:center}
+  .ct-nrow input.ct-lbl{font-size:13px;color:var(--tx-dim)}
+  .ct-nrow input.ct-tel{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .ct-nrow .ct-ib{width:34px;height:34px}
+  .ct-nrow .ct-ib:hover{color:var(--crit);background:var(--crit-bg)}
+  .ct-addnum{align-self:flex-start}
+  .ct-favrow{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:12px;
+    background:var(--panel2);cursor:pointer;user-select:none}
+  .ct-favrow .ct-star{color:var(--tx-mut);display:inline-flex}
+  .ct-favrow.on{border-color:rgba(227,179,65,.55);background:rgba(227,179,65,.07)}
+  .ct-favrow.on .ct-star{color:#e3b341}
+  .ct-favrow .t{flex:1 1 auto;display:flex;flex-direction:column}
+  .ct-favrow .t b{font-weight:600;font-size:13.5px}
+  .ct-favrow .t span{font-size:12px;color:var(--tx-mut)}
+  .ct-favrow input{width:auto;accent-color:#e3b341}
+  .ct-said{color:var(--crit);font-size:13px;min-height:0;margin:0}
+  .ct-said:empty{display:none}
+  .ct-dfoot{display:flex;gap:8px;align-items:center;padding:12px 18px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);
+    flex-wrap:wrap}
+  .ct-dfoot .spacer{flex:1}
+  /* the import's preview */
+  .ct-imp-sum{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:650;
+    border:1px solid var(--line);background:var(--panel2);color:var(--tx-dim)}
+  .ct-pill b{font-size:15px;font-variant-numeric:tabular-nums}
+  .ct-pill.add{color:var(--ok);border-color:rgba(63,185,80,.4);background:var(--ok-bg)}
+  .ct-pill.update{color:var(--info);border-color:rgba(88,166,255,.4);background:var(--info-bg)}
+  .ct-pill.skip{color:var(--warn);border-color:rgba(210,153,34,.4);background:var(--warn-bg)}
+  .ct-pill.removed{color:var(--crit);border-color:rgba(248,81,73,.4);background:var(--crit-bg)}
+  .ct-imp-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+  .ct-imp-file{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 220px}
+  .ct-imp-file .ico{width:38px;height:38px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;
+    background:var(--info-bg);color:var(--info);border:1px solid rgba(88,166,255,.35);flex:0 0 auto}
+  .ct-imp-file b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-imp-file span{font-size:12px;color:var(--tx-mut)}
+  .ct-seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2)}
+  .ct-seg button{appearance:none;border:0;background:none;color:var(--tx-dim);font:inherit;font-size:13px;font-weight:600;
+    padding:7px 14px;cursor:pointer}
+  .ct-seg button + button{border-left:1px solid var(--line)}
+  .ct-seg button.on{background:var(--info-bg);color:var(--info)}
+  .ct-seg button.on.danger{background:var(--crit-bg);color:var(--crit)}
+  .ct-imp-warn{margin:0 0 12px;padding:9px 12px;border-radius:10px;border:1px solid rgba(248,81,73,.4);background:var(--crit-bg);
+    color:#ffb1ab;font-size:13px}
+  .ct-imp-table{border:1px solid var(--line);border-radius:12px;overflow:auto;max-height:52vh}
+  .ct-imp-row{display:grid;grid-template-columns:92px minmax(150px,1.2fr) minmax(150px,1fr) minmax(90px,.6fr);gap:10px;
+    align-items:center;padding:8px 12px;border-bottom:1px solid rgba(38,44,55,.6);font-size:13px}
+  .ct-imp-row:last-child{border-bottom:0}
+  .ct-imp-row.ct-imp-h{position:sticky;top:0;z-index:1;background:var(--panel);font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--tx-mut);font-weight:600}
+  .ct-imp-row .who{display:flex;align-items:center;gap:8px;min-width:0}
+  .ct-imp-row .who span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ct-imp-row .nums{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--tx-dim);
+    overflow-wrap:anywhere}
+  .ct-imp-row .why{grid-column:2/-1;font-size:12px;color:var(--warn);margin-top:-4px}
+  .ct-imp-row.skip{background:rgba(210,153,34,.035)}
+  .ct-imp-row.skip .who span{color:var(--tx-dim)}
+  .ct-badge{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;font-size:11px;font-weight:700;
+    letter-spacing:.04em;padding:1px 9px;line-height:18px;border:1px solid}
+  .ct-badge.add{color:var(--ok);border-color:rgba(63,185,80,.45);background:var(--ok-bg)}
+  .ct-badge.update{color:var(--info);border-color:rgba(88,166,255,.45);background:var(--info-bg)}
+  .ct-badge.same{color:var(--tx-mut);border-color:var(--line);background:none}
+  .ct-badge.skip{color:var(--warn);border-color:rgba(210,153,34,.45);background:var(--warn-bg)}
+  /* Write a message: the recipients as chips */
+  .rc-wrap{position:relative;margin-bottom:12px}
+  .rc-field{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:46px;padding:6px 8px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:12px;cursor:text;transition:border-color .12s,box-shadow .12s}
+  .rc-field.focus{border-color:var(--info);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .rc-field .rc-to{font-size:12px;font-weight:600;color:var(--tx-mut);padding:0 4px 0 4px;letter-spacing:.04em}
+  .rc-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:2px 4px 2px 3px;border-radius:999px;font-size:13px;
+    background:rgba(88,166,255,.12);border:1px solid rgba(88,166,255,.38);color:var(--tx);line-height:22px;cursor:pointer}
+  .rc-chip.group{background:rgba(163,113,247,.12);border-color:rgba(163,113,247,.42)}
+  .rc-chip.number{background:rgba(255,255,255,.05);border-color:var(--line);padding-left:10px}
+  .rc-chip.person{background:rgba(63,185,80,.10);border-color:rgba(63,185,80,.38)}
+  .rc-chip.sel{box-shadow:0 0 0 2px var(--info)}
+  .rc-chip .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26ch;font-weight:600}
+  .rc-chip .no{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--tx-dim)}
+  .rc-chip .x{appearance:none;border:0;background:none;color:var(--tx-mut);cursor:pointer;width:20px;height:20px;border-radius:50%;
+    display:inline-flex;align-items:center;justify-content:center;padding:0;font-size:15px;line-height:1}
+  .rc-chip .x:hover{color:var(--crit);background:var(--crit-bg)}
+  .rc-in{flex:1 1 160px;min-width:140px;border:0 !important;background:none !important;box-shadow:none !important;color:var(--tx);
+    font:inherit;font-size:14px;padding:5px 4px !important;outline:none}
+  .rc-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:120;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.55);padding:6px;max-height:320px;overflow-y:auto}
+  .rc-pop[hidden]{display:none}
+  .rc-ph{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);padding:6px 9px 4px;font-weight:600}
+  .rc-opt{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:9px;cursor:pointer;min-width:0}
+  .rc-opt.on{background:rgba(88,166,255,.14)}
+  .rc-opt .t{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+  .rc-opt .t b{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-opt .t span{font-size:12px;color:var(--tx-mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc-opt .t span.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .rc-opt mark{background:none;color:var(--info);font-weight:700}
+  .rc-opt .k{font-size:11px;color:var(--tx-mut);border:1px solid var(--line);border-radius:6px;padding:0 6px;flex:0 0 auto}
+  .rc-opt .ico{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.06);color:var(--tx-dim);flex:0 0 auto}
+  .rc-quick{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0 0}
+  .rc-quick .h{font-size:11px;font-weight:600;color:var(--tx-mut);letter-spacing:.04em;display:inline-flex;align-items:center;gap:4px;
+    margin-right:2px}
+  .rc-quick .h svg{color:#e3b341}
+  .rc-q{appearance:none;cursor:pointer;font:inherit;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;
+    background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);border-radius:999px;padding:2px 10px 2px 3px;
+    line-height:22px;transition:color .12s,border-color .12s}
+  .rc-q:hover{color:var(--tx);border-color:rgba(88,166,255,.5)}
+  .rc-q.on{color:var(--info);border-color:var(--info);background:rgba(88,166,255,.10)}
+  .rc-q.ppl{padding-left:10px}
+  .sms-name:has(> .ct-av){display:inline-flex;align-items:center;gap:7px}
+  .sms-num{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--tx-mut)}
+  @media (max-width:640px){
+    .ct-grid{grid-template-columns:1fr}
+    .ct-find-wrap{max-width:none;flex-basis:100%}
+    .ct-top .spacer,.ct-tools .ct-sep{display:none}
+    .ct-nrow{grid-template-columns:92px minmax(0,1fr) 34px}
+    .ct-imp-row{grid-template-columns:78px minmax(0,1fr);row-gap:3px}
+    .ct-imp-row .nums{grid-column:2}
+    .ct-imp-row .grp{grid-column:2;font-size:12px;color:var(--tx-mut)}
+    .ct-imp-row.ct-imp-h > :nth-child(n+3){display:none}
+    .ct-imp-row .why{grid-column:2}
+    .rc-chip .no{display:none}
+  }
   .sms-name{font-weight:600;color:var(--tx);overflow-wrap:anywhere}
   .sms-when{color:var(--tx-mut);font-size:11.5px}
   /* quiet: it is worth seeing when somebody asks why a message was slow, and
@@ -6606,11 +6830,12 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <nav class="api-subs" id="sms-parts" aria-label="Parts of SMS">
       <button type="button" data-sub="log"><span class="ic" data-icon="sms"></span>Messages<span class="n" id="sms-n-log"></span></button>
       <button type="button" data-sub="write"><span class="ic" data-icon="edit"></span>Write a message</button>
+      <button type="button" data-sub="contacts"><span class="ic" data-icon="book"></span>Contacts<span class="n" id="sms-n-contacts"></span></button>
     </nav>
   </div>
   <div class="card full frame-fill frame-card" data-sub="write">
     <h2>Write a message</h2>
-    <p class="note">Pick who it goes to — anybody with a number on their card, or type one — and write it.
+    <p class="note">Pick who it goes to — a contact, a group, anybody with a number on their card, or type a number — and write it.
       <b>Ctrl+Space</b> offers the same <code>{…}</code> facts an alert can quote — and, under <i>Ready-made blocks</i>, a whole <code>{if …}{else}{end}</code> or <code>{for x in …}{end}</code> written out for you — and the preview underneath
       shows what will actually arrive.</p>
     <div id="sms-people" class="sms-people"></div>
@@ -6628,6 +6853,27 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
         <div id="sms-preview-body" class="sms-bubble out"></div>
       </div>
     </div>
+  </div>
+  <div class="card full frame-fill frame-card ct-card" id="ct-card" data-sub="contacts">
+    <div class="ct-top">
+      <h2>Contacts <span class="muted" id="ct-count"></span></h2>
+      <span class="spacer"></span>
+      <div class="ct-tools" id="ct-tools">
+        <button class="btn cmd small" id="ct-import" type="button" title="Read contacts from a .vcf (vCard) or .csv file - from a phone, Google, Outlook or iCloud. You see what it adds before anything is saved.">Import</button>
+        <button class="btn cmd small" id="ct-export-vcf" type="button" title="Every contact as a vCard 3.0 file, which phones, Google, Outlook and iCloud read">vCard</button>
+        <button class="btn cmd small" id="ct-export-csv" type="button" title="Every contact as a CSV with Google Contacts' columns">CSV</button>
+        <span class="ct-sep" aria-hidden="true"></span>
+        <button class="btn cmd small primary" id="ct-add" type="button" title="A new contact: a name, up to five numbers, a group and a note">New contact</button>
+      </div>
+    </div>
+    <div class="ct-bar" id="ct-bar">
+      <div class="ct-find-wrap"><span id="ct-find-ico"></span><input id="ct-find" type="search" class="ct-find" autocomplete="off"
+             placeholder="Find a name, a number, a group…" aria-label="Find a contact"></div>
+      <div class="ct-chips" id="ct-groups" role="group" aria-label="Which contacts"></div>
+    </div>
+    <div class="ct-scroll"><div id="ct-list" class="ct-grid"></div></div>
+    <div class="ct-drop" id="ct-drop" hidden>Drop the file to import it<small>.vcf or .csv, at most 2 MB — you see what it adds first</small></div>
+    <input type="file" id="ct-file" accept=".vcf,.vcard,.csv,text/vcard,text/x-vcard,text/csv" hidden>
   </div>
   <div class="card full listcard frame-fill" id="sms-log-card" data-sub="log">
     <h2>Messages</h2>
@@ -14408,7 +14654,7 @@ function wifiRepaintLists() {
   if (STATE.status) renderWifiClients_tab(STATE.status);
 }
 // ---- the parts of SMS (5.47.4) ------------------------------------------------
-var SMS_SUBS = ['log', 'write'];
+var SMS_SUBS = ['log', 'write', 'contacts'];   // (5.59.4) and the contacts
 var SMS_SUB = (function () {
   try { var v = localStorage.getItem('zigmon.smsSub'); if (SMS_SUBS.indexOf(v) >= 0) return v; } catch (e) {}
   return 'log';
@@ -14429,6 +14675,8 @@ function showSmsSub(name, keepHash) {
   if (!keepHash && STATE.tab === 'sms') {
     try { history.replaceState(null, '', '#sms/' + name); } catch (e) {}
   }
+  if (name === 'contacts' && typeof ctPaint === 'function') ctPaint();     // (5.59.4)
+  if (name === 'write' && typeof ctLoad === 'function' && isAdmin() && CT.book === null) ctLoad();
 }
 function paintSmsParts(st) {
   var n = (((st || {}).sms) || {}).log_n;
@@ -26913,33 +27161,15 @@ function renderSmsTab(st, force) {
                                  SMSBOX.to, SMSBOX.free || '', isUnlocked()]);
   if (!force && chipsSig === SMSBOX.chipsSig && host.firstChild) { renderSmsLog(st); return; }
   SMSBOX.chipsSig = chipsSig;
-  host.innerHTML = '';
-  people.forEach(function (p) {
-    var on = SMSBOX.to.indexOf(p.id) >= 0;
-    var chip = el('label', 'sgroup-chip' + (on ? ' on' : ''));
-    var box = el('input'); box.type = 'checkbox'; box.checked = on;
-    box.onchange = function () {
-      SMSBOX.to = SMSBOX.to.filter(function (x) { return x !== p.id; });
-      if (box.checked) SMSBOX.to.push(p.id);
-      renderSmsTab(STATE.status, true);
-    };
-    chip.appendChild(box);
-    chip.appendChild(el('span', '', ICON.person + ' ' + p.name));
-    if (p.id) chip.appendChild(objMark(objRef('person', p.id), p.name));
-    chip.title = p.name + ' \u2014 ' + p.number + (p.home ? ' \u00b7 at home' : ' \u00b7 out');
-    host.appendChild(chip);
-  });
-  var free = el('input'); free.type = 'tel'; free.className = 'sms-free'; free.placeholder = '+420 777 123 456';
-  free.title = 'Or a number that belongs to nobody on the list. Several, separated by commas, are fine.';
-  free.value = SMSBOX.free || '';
-  free.oninput = function () { SMSBOX.free = free.value; };
-  host.appendChild(free);
-  if (!people.length) host.appendChild(el('span', 'muted small', 'Nobody has a number on their card yet \u2014 Settings \u2192 Presence.'));
+  // (5.59.4) the recipients as chips: the contacts, their groups, the people with a number on
+  // their card and typed numbers - see rcPaint. SMSBOX.to and .free are still how the rest of
+  // the page asks for somebody (Answer), and become chips here
+  RC.people = people;
+  rcTakeLegacy();
+  rcPaint();
+  if (isAdmin() && CT.book === null && !CT.loading) ctLoad();
   smsPreview();
   renderSmsLog(st, !!force);
-}
-function smsRecipients() {
-  return SMSBOX.to.concat(String(SMSBOX.free || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean));
 }
 // What the text would really say, asked of the daemon - the same service the
 // alert, the SMS command and the one-tap previews use. It used to be filled
@@ -27021,9 +27251,16 @@ function renderSmsLog(st, force) {
       var unsure = !going && (m.ok === null || m.ok === undefined);
       var line = el('div', 'sms-line ' + m.dir + (m.ok || going ? '' : (unsure ? ' unsure' : ' bad')));
       var who = el('div', 'sms-who');            // the name over the time, not a table
-      var whoName = el('span', 'sms-name', (m.person ? ICON.person + ' ' + m.person : m.number || '?'));
+      // (5.59.4) a number in the contacts: the contact's name, the number beside it
+      var known = !m.person && m.contact && m.contact.name;
+      var whoName = el('span', 'sms-name', (m.person ? ICON.person + ' ' + m.person : (known ? null : m.number || '?')));
+      if (known) {
+        whoName.appendChild(ctAvatar(m.contact.name, 'sm'));
+        whoName.appendChild(document.createTextNode(m.contact.name));
+      }
       if (m.id) whoName.appendChild(objMark('smslog:' + m.id, 'this message'));
       who.appendChild(whoName);
+      if (known && m.number) who.appendChild(el('span', 'sms-num', ctFmt(m.number)));
       // "6 min ago" is how long, not when: for a text somebody is trying to
       // account for - the one that came at ten past four - the clock time is
       // the thing they are looking for.
@@ -27041,7 +27278,7 @@ function renderSmsLog(st, force) {
             + 'when the webhook is off. It may have waited up to that long.');
         who.appendChild(road);
       }
-      if (m.person && m.number) who.title = m.number;
+      if ((m.person || known) && m.number) who.title = m.number;
       line.appendChild(who);
       var bubble = el('div', 'sms-bubble ' + m.dir, m.text);
       if (going) bubble.title = 'Handed to the gateway; it has not said yet that it went.';
@@ -27056,7 +27293,7 @@ function renderSmsLog(st, force) {
       var again = cmdButton('', 'reset', 'small iconbtn'); again.classList.remove('needs-unlock');
       again.title = m.dir === 'in' ? 'Answer this one' : 'Send it again';
       again.onclick = function () {
-        SMSBOX.free = m.number; SMSBOX.to = [];
+        SMSBOX.free = m.number; SMSBOX.to = []; RC.chips = [];
         if (m.dir === 'out') $('sms-text').value = m.text;
         renderSmsTab(STATE.status, true);
         showSmsSub('write');                  // (5.47.4) the form is a part of its own now
@@ -27125,7 +27362,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var to = smsRecipients();
     if (!to.length) { toast('Nobody to send it to yet.', false); return; }
     if (!box.value.trim()) { toast('Nothing to say yet.', false); return; }
-    withPin('Send this message', 'To ' + esc(to.join(', ')) + '.', function (pin) {
+    withPin('Send this message', 'To ' + esc(rcWords() || to.join(', ')) + '.', function (pin) {
       return post('sms-send', {pin: pin, to: to, text: box.value}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'could not send');
         box.value = ''; smsPreview(); renderSmsLog(STATE.status);
@@ -27133,6 +27370,968 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
   };
+});
+
+// ---- (5.59.4) the contacts: kept in ZIGMon, an administrator's ------------------------------
+// A card for each, found by a name, a number or a group; the editor in a drawer at the side;
+// a file of contacts read with a preview of what it adds, brings up to date and skips; and on
+// Write a message, the recipients as chips with the contacts, the groups and the people on the
+// cards offered as you type.
+var CT = {book: null, groups: [], loading: null, filter: 'all', find: '', most: 2000};
+var CT_STAR = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.5l-5.1 2.7 1-5.6-4.1-4 5.7-.8z" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+var CT_STAR_O = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3.6l2.5 5.2 5.7.8-4.1 4 1 5.6L12 16.5l-5.1 2.7 1-5.6-4.1-4 5.7-.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+var CT_LABELS = ['mobile', 'home', 'work', 'work mobile', 'main', 'other'];
+function ctHue(name) {
+  var h = 7, s = String(name || '').toLowerCase();
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function ctInitials(name) {
+  var w = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!w.length) return '?';
+  var first = Array.from(w[0])[0] || '';
+  var last = w.length > 1 ? (Array.from(w[w.length - 1])[0] || '') : '';
+  return (first + last).toUpperCase();
+}
+function ctAvatar(name, cls) {
+  var a = el('span', 'ct-av' + (cls ? ' ' + cls : ''), ctInitials(name));
+  a.style.setProperty('--h', String(ctHue(name)));
+  a.setAttribute('aria-hidden', 'true');
+  return a;
+}
+function ctFmt(n) {
+  n = String(n || '');
+  var m = /^\+(\d{3})(\d{3})(\d{3})(\d{3})$/.exec(n);
+  if (m) return '+' + m[1] + ' ' + m[2] + ' ' + m[3] + ' ' + m[4];
+  m = /^(\d{3})(\d{3})(\d{3})$/.exec(n);
+  if (m) return m[1] + ' ' + m[2] + ' ' + m[3];
+  return n;
+}
+function ctDigits(s) { return String(s || '').replace(/[^0-9]/g, ''); }
+function ctFold(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function ctSameNum(a, b) {
+  var x = ctDigits(a), y = ctDigits(b);
+  if (/^00/.test(String(a || ''))) x = x.slice(2);
+  if (/^00/.test(String(b || ''))) y = y.slice(2);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  var wa = /^(\+|00)/.test(String(a || '')), wb = /^(\+|00)/.test(String(b || ''));
+  if (wa && wb) return false;
+  return x.length >= 9 && y.length >= 9 && x.slice(-9) === y.slice(-9);
+}
+function ctByNumber(n) {
+  var book = CT.book || [];
+  for (var i = 0; i < book.length; i++) {
+    for (var j = 0; j < (book[i].numbers || []).length; j++) if (ctSameNum(book[i].numbers[j].number, n)) return book[i];
+  }
+  return null;
+}
+function ctSorted(rows) {
+  return rows.slice().sort(function (a, b) { return a.name.localeCompare(b.name, 'cs', {sensitivity: 'base'}); });
+}
+function ctLoad(force) {
+  if (!isAdmin()) { CT.book = null; return Promise.resolve(null); }
+  if (CT.book && !force) return Promise.resolve(CT.book);
+  if (CT.loading) return CT.loading;
+  CT.loading = api('contacts').then(function (r) {
+    CT.loading = null; ctTake(r); return CT.book;
+  }, function (e) {
+    CT.loading = null; CT.failed = String((e && e.message) || e); ctPaintAll(); return null;
+  });
+  return CT.loading;
+}
+function ctTake(r) {
+  if (r && Array.isArray(r.contacts)) {
+    CT.book = r.contacts; CT.groups = r.groups || []; CT.failed = '';
+    if (r.most) CT.most = r.most;
+  }
+  ctPaintAll();
+}
+function ctPaintAll() {
+  ctPaint();
+  rcPaint();
+  if ($('sms-n-contacts')) $('sms-n-contacts').textContent = CT.book && CT.book.length ? String(CT.book.length) : '';
+}
+function ctGroupCount(g) {
+  var k = ctFold(g);
+  return (CT.book || []).filter(function (c) { return ctFold(c.group) === k; }).length;
+}
+function ctMatches(c, q) {
+  if (!q) return true;
+  var f = ctFold(q), d = ctDigits(q);
+  if (ctFold(c.name).indexOf(f) >= 0 || ctFold(c.group).indexOf(f) >= 0 || ctFold(c.note).indexOf(f) >= 0) return true;
+  if (d.length >= 3) return (c.numbers || []).some(function (n) { return ctDigits(n.number).indexOf(d) >= 0; });
+  return false;
+}
+function ctPaint() {
+  var host = $('ct-list');
+  if (!host) return;
+  var tools = $('ct-tools'), bar = $('ct-bar');
+  if (!isAdmin()) {
+    CT.book = null;
+    if (tools) tools.hidden = true;
+    if (bar) bar.hidden = true;
+    $('ct-count').textContent = '';
+    host.innerHTML = '';
+    var locked = el('div', 'ct-empty');
+    locked.appendChild(el('b', '', 'The contacts are an administrator\u2019s'));
+    locked.appendChild(el('span', '', 'Names and numbers of people: sign in as an administrator to see and change them.'));
+    host.appendChild(locked);
+    return;
+  }
+  if (tools) tools.hidden = false;
+  if (bar) bar.hidden = false;
+  if (CT.book === null) {
+    if (!CT.loading) ctLoad();
+    host.innerHTML = '';
+    host.appendChild(el('div', 'ct-empty', CT.failed ? CT.failed : 'Loading the contacts\u2026'));
+    return;
+  }
+  var book = CT.book;
+  $('ct-count').textContent = book.length ? book.length + (book.length === 1 ? ' contact' : ' contacts') : '';
+  // the filter chips: everybody, the favourites, each group
+  var chips = $('ct-groups');
+  chips.innerHTML = '';
+  var favN = book.filter(function (c) { return c.favourite; }).length;
+  if (CT.filter === 'fav' && !favN) CT.filter = 'all';
+  if (/^g:/.test(CT.filter) && !CT.groups.some(function (g) { return 'g:' + g === CT.filter; })) CT.filter = 'all';
+  var chip = function (key, words, n, cls, icon) {
+    var b = el('button', 'ct-chip' + (cls ? ' ' + cls : '') + (CT.filter === key ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.filter = key;
+    if (icon) b.insertAdjacentHTML('beforeend', icon);
+    b.appendChild(el('span', '', words));
+    b.appendChild(el('span', 'n', String(n)));
+    b.setAttribute('aria-pressed', CT.filter === key ? 'true' : 'false');
+    b.onclick = function () { CT.filter = key; ctPaint(); };
+    chips.appendChild(b);
+  };
+  chip('all', 'Everybody', book.length);
+  if (favN) chip('fav', 'Favourites', favN, 'star', CT_STAR);
+  CT.groups.forEach(function (g) { chip('g:' + g, g, ctGroupCount(g)); });
+  var rows = book.filter(function (c) {
+    if (CT.filter === 'fav' && !c.favourite) return false;
+    if (/^g:/.test(CT.filter) && ctFold(c.group) !== ctFold(CT.filter.slice(2))) return false;
+    return ctMatches(c, CT.find);
+  });
+  host.innerHTML = '';
+  if (!rows.length) {
+    var empty = el('div', 'ct-empty');
+    if (!book.length) {
+      empty.appendChild(el('b', '', 'No contacts yet'));
+      empty.appendChild(el('span', '', 'Add the people you write to, or bring them in from a phone, Google or Outlook: '
+        + 'a .vcf or .csv file \u2014 drop it here.'));
+      var br = el('div', 'btnrow');
+      var add = cmdButton('New contact', 'add', 'small primary'); add.onclick = function () { ctDrawer(null); };
+      var imp = cmdButton('Import a file', 'upload', 'small'); imp.onclick = ctPickFile;
+      br.appendChild(add); br.appendChild(imp);
+      empty.appendChild(br);
+    } else {
+      empty.appendChild(el('b', '', 'Nobody matches'));
+      empty.appendChild(el('span', '', 'Nothing in the names, the numbers, the groups or the notes has that in it.'));
+    }
+    host.appendChild(empty);
+    return;
+  }
+  // a letter over each run of names once there are enough to look through
+  var letter = null, letters = rows.length >= 24;
+  ctSorted(rows).forEach(function (c) {
+    var l = (Array.from(ctFold(c.name).trim())[0] || '#').toUpperCase();
+    if (!/[A-Z]/.test(l)) l = '#';
+    if (letters && l !== letter) { letter = l; host.appendChild(el('div', 'ct-letter', l)); }
+    host.appendChild(ctCard(c));
+  });
+}
+function ctCard(c) {
+  var card = el('div', 'ct-one');
+  card.tabIndex = 0;
+  card.dataset.id = c.id;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', c.name + ' \u2014 open to change');
+  card.appendChild(ctAvatar(c.name));
+  var body = el('div', 'ct-body');
+  body.appendChild(el('div', 'ct-name', c.name));
+  var first = (c.numbers || [])[0];
+  if (first) {
+    var num = el('div', 'ct-num');
+    num.appendChild(el('span', '', ctFmt(first.number)));
+    if (first.label) num.appendChild(el('span', 'lbl', first.label));
+    if (c.numbers.length > 1) num.appendChild(el('span', 'ct-more', '+' + (c.numbers.length - 1) + ' more'));
+    body.appendChild(num);
+  }
+  if (c.group || c.note) {
+    var meta = el('div', 'ct-meta');
+    if (c.group) {
+      var tag = el('span', 'ct-tag');
+      tag.style.setProperty('--h', String(ctHue(c.group)));
+      tag.appendChild(el('i'));
+      tag.appendChild(el('span', '', c.group));
+      meta.appendChild(tag);
+    }
+    if (c.note) meta.appendChild(el('span', 'ct-note', c.note.split('\n')[0]));
+    body.appendChild(meta);
+  }
+  card.appendChild(body);
+  var acts = el('div', 'ct-acts');
+  var write = el('button', 'ct-ib ct-write');
+  write.type = 'button';
+  write.title = 'Write to ' + c.name;
+  write.setAttribute('aria-label', write.title);
+  write.innerHTML = iconMarkup('sms', 16);
+  write.onclick = function (e) {
+    e.stopPropagation();
+    rcAddContact(c, 0);
+    showSmsSub('write');
+    setTimeout(function () { if ($('sms-text')) $('sms-text').focus(); }, 30);
+  };
+  var star = el('button', 'ct-ib star' + (c.favourite ? ' on' : ''));
+  star.type = 'button';
+  star.title = c.favourite ? 'A favourite \u2014 press to take the star away' : 'Make a favourite: first among the quick picks';
+  star.setAttribute('aria-label', star.title);
+  star.setAttribute('aria-pressed', c.favourite ? 'true' : 'false');
+  star.innerHTML = c.favourite ? CT_STAR : CT_STAR_O;
+  star.onclick = function (e) {
+    e.stopPropagation();
+    var want = !c.favourite;
+    c.favourite = want;
+    ctPaintAll();
+    post('contacts', {action: 'save', contact: Object.assign({}, c, {favourite: want})}).then(ctTake, function (err) {
+      c.favourite = !want; ctPaintAll(); zoops(err);
+    });
+  };
+  acts.appendChild(write);
+  acts.appendChild(star);
+  card.appendChild(acts);
+  card.onclick = function () { ctDrawer(c); };
+  card.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ctDrawer(c); } };
+  return card;
+}
+// -- the editor, in a drawer at the side --------------------------------------------------
+var CTD = {node: null, shade: null, key: null};
+function ctDrawerClose(now) {
+  var d = CTD.node, s = CTD.shade;
+  if (CTD.key) document.removeEventListener('keydown', CTD.key);
+  CTD.node = CTD.shade = CTD.key = null;
+  if (!d) return;
+  if (now) { d.remove(); s.remove(); return; }
+  d.classList.remove('open'); s.classList.remove('open');
+  setTimeout(function () { d.remove(); s.remove(); }, 230);
+}
+function ctDrawer(c) {
+  ctDrawerClose(true);
+  var isNew = !c;
+  var was = c || null;
+  c = c ? JSON.parse(JSON.stringify(c)) : {name: '', numbers: [{label: 'mobile', number: ''}], group: '', note: '', favourite: false};
+  if (!c.numbers || !c.numbers.length) c.numbers = [{label: 'mobile', number: ''}];
+  var shade = el('div', 'ct-shade');
+  var d = el('aside', 'ct-drawer');
+  d.id = 'ct-drawer';
+  d.setAttribute('role', 'dialog');
+  d.setAttribute('aria-modal', 'true');
+  d.setAttribute('aria-labelledby', 'ct-d-title');
+  var head = el('div', 'ct-dhead');
+  var av = ctAvatar(c.name || '?', 'lg');
+  head.appendChild(av);
+  var tt = el('div', 'ct-dtitle');
+  var h3 = el('h3', '', isNew ? 'New contact' : c.name);
+  h3.id = 'ct-d-title';
+  var sub = el('div', 'muted', '');
+  tt.appendChild(h3); tt.appendChild(sub);
+  head.appendChild(tt);
+  var x = el('button', 'ct-ib', '\u00d7');
+  x.type = 'button'; x.title = 'Close'; x.setAttribute('aria-label', 'Close'); x.style.fontSize = '22px';
+  x.onclick = function () { ctDrawerClose(); };
+  head.appendChild(x);
+  d.appendChild(head);
+  var body = el('div', 'ct-dbody');
+  var field = function (words, input, count) {
+    var f = el('div', 'ct-field');
+    var lab = el(input ? 'label' : 'div', input ? '' : 'lab', words);
+    if (input) { input.id = input.id || ('ct-e-' + words.toLowerCase().replace(/\W+/g, '')); lab.htmlFor = input.id; }
+    if (count) lab.appendChild(count);
+    f.appendChild(lab);
+    if (input) f.appendChild(input);
+    body.appendChild(f);
+    return f;
+  };
+  var name = el('input'); name.type = 'text'; name.id = 'ct-e-name'; name.maxLength = 80; name.value = c.name;
+  name.placeholder = 'Jana Nov\u00e1kov\u00e1'; name.autocomplete = 'off';
+  field('Name', name);
+  var numCount = el('span', 'cnt muted');
+  var numsField = field('Numbers', null, numCount);
+  var nums = el('div', 'ct-nums');
+  numsField.appendChild(nums);
+  var addNum = cmdButton('Add a number', 'add', 'small ct-addnum');
+  addNum.classList.remove('needs-unlock');
+  numsField.appendChild(addNum);
+  var dl = el('datalist'); dl.id = 'ct-labels';
+  CT_LABELS.forEach(function (l) { var o = el('option'); o.value = l; dl.appendChild(o); });
+  numsField.appendChild(dl);
+  var paintNums = function () {
+    nums.innerHTML = '';
+    c.numbers.forEach(function (n, i) {
+      var row = el('div', 'ct-nrow');
+      var lbl = el('input', 'ct-lbl'); lbl.type = 'text'; lbl.maxLength = 20; lbl.value = n.label || '';
+      lbl.setAttribute('list', 'ct-labels'); lbl.placeholder = 'label'; lbl.setAttribute('aria-label', 'Label of number ' + (i + 1));
+      lbl.oninput = function () { n.label = lbl.value; };
+      var tel = el('input', 'ct-tel'); tel.type = 'tel'; tel.value = n.number ? ctFmt(n.number) : '';
+      tel.placeholder = '+420 777 000 000'; tel.setAttribute('aria-label', 'Number ' + (i + 1)); tel.autocomplete = 'off';
+      tel.oninput = function () { n.number = tel.value; tel.classList.remove('bad'); };
+      var rm = el('button', 'ct-ib', '\u00d7');
+      rm.type = 'button'; rm.title = 'Take this number away'; rm.setAttribute('aria-label', rm.title); rm.style.fontSize = '18px';
+      rm.disabled = c.numbers.length < 2;
+      rm.style.visibility = c.numbers.length < 2 ? 'hidden' : '';
+      rm.onclick = function () { c.numbers.splice(i, 1); paintNums(); };
+      row.appendChild(lbl); row.appendChild(tel); row.appendChild(rm);
+      nums.appendChild(row);
+    });
+    numCount.textContent = c.numbers.length + ' of 5';
+    addNum.disabled = c.numbers.length >= 5;
+  };
+  addNum.onclick = function () {
+    if (c.numbers.length >= 5) return;
+    c.numbers.push({label: c.numbers.length ? 'home' : 'mobile', number: ''});
+    paintNums();
+    var all = nums.querySelectorAll('.ct-tel');
+    if (all.length) all[all.length - 1].focus();
+  };
+  paintNums();
+  var group = el('input'); group.type = 'text'; group.id = 'ct-e-group'; group.maxLength = 40; group.value = c.group || '';
+  group.placeholder = 'Family, Work, Neighbours\u2026'; group.setAttribute('list', 'ct-groups-dl'); group.autocomplete = 'off';
+  var gf = field('Group', group);
+  var gdl = el('datalist'); gdl.id = 'ct-groups-dl';
+  CT.groups.forEach(function (g) { var o = el('option'); o.value = g; gdl.appendChild(o); });
+  gf.appendChild(gdl);
+  if (CT.groups.length) {
+    var gq = el('div', 'ct-chips');
+    CT.groups.slice(0, 12).forEach(function (g) {
+      var b = el('button', 'ct-chip' + (ctFold(g) === ctFold(group.value) ? ' on' : ''), g);
+      b.type = 'button';
+      b.onclick = function () {
+        group.value = ctFold(g) === ctFold(group.value) ? '' : g;
+        Array.prototype.forEach.call(gq.children, function (x) { x.classList.toggle('on', ctFold(x.textContent) === ctFold(group.value)); });
+        paintHead();
+      };
+      gq.appendChild(b);
+    });
+    gf.appendChild(gq);
+  }
+  var noteCount = el('span', 'cnt muted');
+  var note = el('textarea'); note.id = 'ct-e-note'; note.maxLength = 200; note.rows = 3; note.value = c.note || '';
+  note.placeholder = 'Anything worth remembering';
+  field('Note', note, noteCount);
+  var paintNote = function () { noteCount.textContent = note.value.length + ' / 200'; };
+  note.oninput = paintNote; paintNote();
+  var fav = el('label', 'ct-favrow' + (c.favourite ? ' on' : ''));
+  var favBox = el('input'); favBox.type = 'checkbox'; favBox.checked = !!c.favourite; favBox.id = 'ct-e-fav';
+  var star = el('span', 'ct-star'); star.innerHTML = c.favourite ? CT_STAR : CT_STAR_O;
+  var ft = el('span', 't');
+  ft.appendChild(el('b', '', 'Favourite'));
+  ft.appendChild(el('span', '', 'One tap away under Write a message, and first in its suggestions'));
+  fav.appendChild(star); fav.appendChild(ft); fav.appendChild(favBox);
+  favBox.onchange = function () {
+    fav.classList.toggle('on', favBox.checked);
+    star.innerHTML = favBox.checked ? CT_STAR : CT_STAR_O;
+  };
+  body.appendChild(fav);
+  var said = el('p', 'ct-said');
+  said.setAttribute('role', 'alert');
+  body.appendChild(said);
+  d.appendChild(body);
+  var foot = el('div', 'ct-dfoot');
+  if (!isNew) {
+    var del = cmdButton('Delete', 'trash', 'small danger');
+    del.classList.remove('needs-unlock');
+    del.id = 'ct-e-delete';
+    del.onclick = function () {
+      zconfirm('Delete ' + was.name + '?', 'The contact and its numbers go from ZIGMon. The messages already sent and '
+        + 'received stay in the list.', 'Delete the contact', function () {
+        post('contacts', {action: 'delete', id: was.id}).then(function (r) {
+          ctTake(r); ctDrawerClose(); toast('Deleted ' + was.name, true);
+        }, function (e) { said.textContent = String((e && e.message) || e); });
+      });
+    };
+    foot.appendChild(del);
+  }
+  foot.appendChild(el('span', 'spacer'));
+  var cancel = cmdButton('Cancel', 'close', 'small');
+  cancel.classList.remove('needs-unlock');
+  cancel.onclick = function () { ctDrawerClose(); };
+  var save = cmdButton(isNew ? 'Add the contact' : 'Save', 'check', 'small primary');
+  save.classList.remove('needs-unlock');
+  save.id = 'ct-e-save';
+  foot.appendChild(cancel);
+  foot.appendChild(save);
+  d.appendChild(foot);
+  var paintHead = function () {
+    var nm = name.value.trim();
+    av.textContent = ctInitials(nm || '?');
+    av.style.setProperty('--h', String(ctHue(nm)));
+    h3.textContent = nm || (isNew ? 'New contact' : '\u2014');
+    var filled = c.numbers.filter(function (n) { return String(n.number || '').trim(); }).length;
+    sub.textContent = (filled ? filled + (filled === 1 ? ' number' : ' numbers') : 'No number yet')
+      + (group.value.trim() ? ' \u00b7 ' + group.value.trim() : '');
+  };
+  name.addEventListener('input', paintHead);
+  group.addEventListener('input', paintHead);
+  nums.addEventListener('input', paintHead);
+  paintHead();
+  var doSave = function () {
+    said.textContent = '';
+    var out = {name: name.value.trim(), group: group.value.trim(), note: note.value.trim(), favourite: favBox.checked,
+      numbers: c.numbers.map(function (n) { return {label: String(n.label || '').trim(), number: String(n.number || '').trim()}; })
+        .filter(function (n) { return n.number; })};
+    if (!isNew) out.id = was.id;
+    if (!out.name) { said.textContent = 'A contact needs a name.'; name.classList.add('bad'); name.focus(); return; }
+    if (!out.numbers.length) {
+      said.textContent = 'A contact needs at least one number.';
+      var t = nums.querySelector('.ct-tel'); if (t) { t.classList.add('bad'); t.focus(); }
+      return;
+    }
+    save.disabled = true;
+    post('contacts', {action: 'save', contact: out}).then(function (r) {
+      ctTake(r); ctDrawerClose(); toast((isNew ? 'Added ' : 'Saved ') + out.name, true);
+    }, function (e) {
+      save.disabled = false;
+      said.textContent = String((e && e.message) || e);
+      if (/phone number/.test(said.textContent)) {
+        Array.prototype.forEach.call(nums.querySelectorAll('.ct-tel'), function (t) {
+          if (said.textContent.indexOf(t.value.trim().slice(0, 30)) === 0) t.classList.add('bad');
+        });
+      }
+      if (/name|called/.test(said.textContent)) name.classList.add('bad');
+    });
+  };
+  save.onclick = doSave;
+  name.addEventListener('input', function () { name.classList.remove('bad'); });
+  d.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || e.target.tagName === 'INPUT')) { e.preventDefault(); doSave(); }
+  });
+  CTD.key = function (e) {
+    if (e.key !== 'Escape' || ($('zmodal') && !$('zmodal').hidden)) return;
+    if (Array.prototype.some.call(document.querySelectorAll('.backdrop'), function (b) { return !b.hidden; })) return;
+    ctDrawerClose();
+  };
+  document.addEventListener('keydown', CTD.key);
+  shade.onclick = function () { ctDrawerClose(); };
+  document.body.appendChild(shade);
+  document.body.appendChild(d);
+  CTD.node = d; CTD.shade = shade;
+  requestAnimationFrame(function () { shade.classList.add('open'); d.classList.add('open'); });
+  setTimeout(function () { try { (isNew ? name : name).focus(); } catch (e) {} }, 60);
+}
+// -- import, with a preview, and export ---------------------------------------------------
+function ctPickFile() { var f = $('ct-file'); if (f) { f.value = ''; f.click(); } }
+function ctReadFile(file) {
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { toast('That file is larger than 2 MB \u2014 export fewer contacts at a time.', false); return; }
+  var read = file.arrayBuffer ? file.arrayBuffer() : new Promise(function (ok, no) {
+    var r = new FileReader(); r.onload = function () { ok(r.result); }; r.onerror = no; r.readAsArrayBuffer(file);
+  });
+  read.then(function (buf) {
+    var text;
+    // a phone writes UTF-8; an older Outlook writes the Windows code page of Czech
+    try { text = new TextDecoder('utf-8', {fatal: true}).decode(buf); }
+    catch (e) { text = new TextDecoder('windows-1250').decode(buf); }
+    var fmt = /\.csv$/i.test(file.name) ? 'csv' : (/\.(vcf|vcard)$/i.test(file.name) ? 'vcf'
+      : (/BEGIN:VCARD/i.test(text.slice(0, 4096)) ? 'vcf' : 'csv'));
+    ctImportPreview({name: file.name || 'contacts', size: file.size, text: text, fmt: fmt, mode: 'merge'});
+  }, function (e) { zoops(e); });
+}
+function ctImportPreview(job) {
+  return post('contacts', {action: 'import', format: job.fmt, text: job.text, mode: job.mode, dry: true}).then(function (r) {
+    job.r = r; ctImportShow(job);
+  }, function (e) { zoops(e); });
+}
+function ctImportShow(job) {
+  var r = job.r, replace = job.mode === 'replace';
+  var doing = (r.added || 0) + (r.updated || 0) + (replace ? (r.removed || 0) : 0);
+  var words = !doing ? 'Nothing to import'
+    : (replace ? 'Replace with these ' + ((r.added || 0) + (r.updated || 0) + (r.unchanged || 0))
+      : 'Import ' + doing + (doing === 1 ? ' contact' : ' contacts'));
+  zmodal('Import contacts', function (body) {
+    body.classList.add('ct-imp');
+    var head = el('div', 'ct-imp-head');
+    var file = el('div', 'ct-imp-file');
+    var ico = el('span', 'ico'); ico.innerHTML = iconMarkup('book', 18);
+    file.appendChild(ico);
+    var ft = el('div');
+    ft.style.minWidth = '0';
+    ft.appendChild(el('b', '', job.name));
+    ft.appendChild(el('span', '', (job.fmt === 'vcf' ? 'vCard' : 'CSV') + ' \u00b7 ' + r.read + (job.fmt === 'vcf'
+      ? (r.read === 1 ? ' card' : ' cards') : (r.read === 1 ? ' row' : ' rows')) + ' read \u00b7 '
+      + (job.size < 1024 ? job.size + ' B' : Math.round(job.size / 1024) + ' kB')));
+    file.appendChild(ft);
+    head.appendChild(file);
+    var seg = el('div', 'ct-seg');
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Merge or replace');
+    [['merge', 'Merge'], ['replace', 'Replace']].forEach(function (m) {
+      var b = el('button', (job.mode === m[0] ? 'on' : '') + (m[0] === 'replace' ? ' danger' : ''), m[1]);
+      b.type = 'button';
+      b.dataset.mode = m[0];
+      b.title = m[0] === 'merge' ? 'Add the new ones and bring the ones already here up to date; nobody is removed'
+        : 'The file becomes the whole address book: whoever is not in it is removed';
+      b.setAttribute('aria-pressed', job.mode === m[0] ? 'true' : 'false');
+      b.onclick = function () { if (job.mode !== m[0]) { job.mode = m[0]; ctImportPreview(job); } };
+      seg.appendChild(b);
+    });
+    head.appendChild(seg);
+    body.appendChild(head);
+    if (replace && r.removed) {
+      body.appendChild(el('p', 'ct-imp-warn', 'Replace makes this file the whole address book: ' + r.removed
+        + (r.removed === 1 ? ' contact that is not in it is removed.' : ' contacts that are not in it are removed.')));
+    }
+    var sum = el('div', 'ct-imp-sum');
+    var pill = function (cls, n, w) {
+      var p = el('span', 'ct-pill ' + cls); p.appendChild(el('b', '', String(n))); p.appendChild(el('span', '', w)); sum.appendChild(p);
+    };
+    pill('add', r.added || 0, 'to add');
+    pill('update', r.updated || 0, 'to update');
+    if (r.unchanged) pill('same', r.unchanged, 'already here');
+    if (r.skipped_n) pill('skip', r.skipped_n, 'skipped');
+    if (replace && r.removed) pill('removed', r.removed, 'to remove');
+    body.appendChild(sum);
+    var table = el('div', 'ct-imp-table');
+    var hr = el('div', 'ct-imp-row ct-imp-h');
+    ['', 'Name', 'Numbers', 'Group'].forEach(function (w) { hr.appendChild(el('span', '', w)); });
+    table.appendChild(hr);
+    var plan = (r.plan || []).slice();
+    var order = {add: 0, update: 1, skip: 2, same: 3};
+    plan.sort(function (a, b) { return (order[a.action] - order[b.action]) || ((a.line || 0) - (b.line || 0)); });
+    var badge = {add: 'new', update: 'update', same: 'same', skip: 'skip'};
+    plan.slice(0, 1000).forEach(function (p) {
+      var row = el('div', 'ct-imp-row ' + p.action);
+      var b = el('span'); b.appendChild(el('span', 'ct-badge ' + p.action, badge[p.action] || p.action));
+      row.appendChild(b);
+      var who = el('span', 'who');
+      who.appendChild(ctAvatar(p.name || '?', 'sm'));
+      who.appendChild(el('span', '', p.name || '(no name) \u00b7 line ' + p.line));
+      row.appendChild(who);
+      row.appendChild(el('span', 'nums', (p.numbers || []).map(ctFmt).join(', ') || '\u2014'));
+      row.appendChild(el('span', 'grp muted', p.group || ''));
+      if (p.why) row.appendChild(el('span', 'why', 'Line ' + p.line + ': ' + p.why));
+      table.appendChild(row);
+    });
+    if (plan.length > 1000) table.appendChild(el('div', 'ct-imp-row', '\u2026 and ' + (plan.length - 1000) + ' more'));
+    (r.skipped || []).filter(function (s) { return !plan.some(function (p) { return p.line === s.line && p.action === 'skip'; }); })
+      .forEach(function (s) {
+        var row = el('div', 'ct-imp-row skip');
+        var b = el('span'); b.appendChild(el('span', 'ct-badge skip', 'skip')); row.appendChild(b);
+        row.appendChild(el('span', 'why', 'Line ' + s.line + ': ' + s.why));
+        table.appendChild(row);
+      });
+    if (!plan.length && !(r.skipped || []).length) table.appendChild(el('div', 'ct-imp-row', 'Nothing in this file.'));
+    body.appendChild(table);
+  }, [{words: 'Cancel', close: true},
+      {words: words, cls: (replace ? 'danger' : 'primary') + (doing ? '' : ' ct-none'), icon: 'download', go: function (btn) {
+        if (!doing) return;
+        btn.disabled = true;
+        post('contacts', {action: 'import', format: job.fmt, text: job.text, mode: job.mode}).then(function (x) {
+          closeZModal();
+          ctTake(x);
+          toast('Contacts: ' + x.added + ' added, ' + x.updated + ' updated' + (x.skipped_n ? ', ' + x.skipped_n + ' skipped' : '')
+            + (x.removed ? ', ' + x.removed + ' removed' : ''), true);
+        }, function (e) { btn.disabled = false; zmodalSaid(e); });
+      }}], 'medium');
+  var go = document.querySelector('#zmodal-foot .ct-none');
+  if (go) go.disabled = true;
+}
+function ctExport(fmt) {
+  var a = el('a');
+  a.href = '?api=contacts-export&format=' + (fmt === 'csv' ? 'csv' : 'vcf');
+  a.download = 'contacts.' + (fmt === 'csv' ? 'csv' : 'vcf');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+// -- Write a message: the recipients as chips ---------------------------------------------
+var RC = {chips: [], people: [], items: [], sel: -1, pick: null, chosen: -1};
+function rcAdd(ch) {
+  if (RC.chips.some(function (x) {
+    return x.value === ch.value || (ch.number && x.number && ctSameNum(x.number, ch.number));
+  })) { rcPaint(); return false; }
+  RC.chips.push(ch);
+  RC.chosen = -1;
+  rcPaint();
+  return true;
+}
+function rcAddContact(c, i) {
+  var n = (c.numbers || [])[i || 0];
+  if (!n) return false;
+  return rcAdd({kind: 'contact', value: i ? n.number : 'contact:' + c.id, name: c.name, number: n.number, label: n.label,
+    cid: c.id});
+}
+function rcAddNumber(raw) {
+  var s = String(raw || '').trim();
+  if (ctDigits(s).length < 3) return false;
+  var c = ctByNumber(s);
+  return rcAdd({kind: 'number', value: s, name: c ? c.name : '', number: s, cid: c ? c.id : ''});
+}
+function rcTakeLegacy() {
+  // the person chips and the typed numbers of before, and what Answer puts there
+  (SMSBOX.to || []).forEach(function (id) {
+    var p = (RC.people || []).filter(function (x) { return x.id === id; })[0];
+    if (p) rcAdd({kind: 'person', value: p.id, name: p.name, number: p.number});
+  });
+  String(SMSBOX.free || '').split(/[,;\n]/).forEach(function (x) { if (x.trim()) rcAddNumber(x); });
+  SMSBOX.to = []; SMSBOX.free = '';
+}
+function smsRecipients() {
+  rcTakeLegacy();
+  var typed = $('rc-in') ? $('rc-in').value.trim() : '';
+  if (typed && ctDigits(typed).length >= 6 && /^[+0-9 ()\/.\-]+$/.test(typed)) { rcAddNumber(typed); $('rc-in').value = ''; }
+  return RC.chips.map(function (c) { return c.value; });
+}
+function rcWords() {
+  return RC.chips.map(function (c) {
+    if (c.kind === 'group') return c.name + ' (group)';
+    return c.name ? c.name + ' (' + ctFmt(c.number) + ')' : ctFmt(c.number);
+  }).join(', ');
+}
+function rcChip(ch, i) {
+  var chip = el('span', 'rc-chip ' + ch.kind + (RC.chosen === i ? ' sel' : ''));
+  chip.dataset.value = ch.value;
+  if (ch.kind === 'group') {
+    var g = ctAvatar(ch.name, 'sm grp');
+    chip.appendChild(g);
+    chip.appendChild(el('span', 'nm', ch.name));
+    var n = ctGroupCount(ch.name);
+    chip.appendChild(el('span', 'no', n + (n === 1 ? ' contact' : ' contacts')));
+    chip.title = 'Everybody in ' + ch.name;
+  } else if (ch.name) {
+    chip.appendChild(ctAvatar(ch.name, 'sm'));
+    chip.appendChild(el('span', 'nm', ch.name));
+    chip.appendChild(el('span', 'no', ctFmt(ch.number)));
+    chip.title = ch.name + ' \u2014 ' + ctFmt(ch.number) + (ch.label ? ' (' + ch.label + ')' : '');
+  } else {
+    chip.appendChild(el('span', 'nm', ctFmt(ch.number)));
+    chip.title = 'A number of its own';
+  }
+  var c = ch.cid ? (CT.book || []).filter(function (x) { return x.id === ch.cid; })[0] : null;
+  if (c && (c.numbers || []).length > 1) {
+    chip.title += ' \u2014 click for another of the numbers';
+    chip.onclick = function (e) { if (e.target.closest('.x')) return; rcOpenPick(c, i); };
+  }
+  var x = el('button', 'x', '\u00d7');
+  x.type = 'button';
+  x.title = 'Take away';
+  x.setAttribute('aria-label', 'Take ' + (ch.name || ch.number) + ' away');
+  x.onclick = function (e) { e.stopPropagation(); RC.chips.splice(i, 1); RC.chosen = -1; rcPaint(); $('rc-in').focus(); };
+  chip.appendChild(x);
+  return chip;
+}
+function rcPaint() {
+  var host = $('sms-people');
+  if (!host) return;
+  if (!$('rc-in')) {
+    host.innerHTML = '';
+    host.classList.add('rc-host');
+    var wrap = el('div', 'rc-wrap');
+    var field = el('div', 'rc-field'); field.id = 'rc-field';
+    field.appendChild(el('span', 'rc-to', 'To'));
+    var input = el('input', 'rc-in'); input.id = 'rc-in'; input.type = 'text'; input.autocomplete = 'off';
+    input.setAttribute('role', 'combobox'); input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', 'rc-pop'); input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-label', 'Who it goes to: a name, a group or a number');
+    input.spellcheck = false;
+    field.appendChild(input);
+    var pop = el('div', 'rc-pop'); pop.id = 'rc-pop'; pop.setAttribute('role', 'listbox'); pop.hidden = true;
+    wrap.appendChild(field); wrap.appendChild(pop);
+    var quick = el('div', 'rc-quick'); quick.id = 'rc-quick';
+    wrap.appendChild(quick);
+    host.appendChild(wrap);
+    field.onmousedown = function (e) { if (e.target === field) { e.preventDefault(); input.focus(); } };
+    input.onfocus = function () { field.classList.add('focus'); if (!RC.pick) rcSuggest(); };
+    input.onblur = function () {
+      field.classList.remove('focus');
+      setTimeout(function () {
+        if (document.activeElement === input) return;
+        rcClose();
+        var t = input.value.trim();
+        if (t && ctDigits(t).length >= 6 && /^[+0-9 ()\/.\-]+$/.test(t)) { rcAddNumber(t); input.value = ''; }
+      }, 180);
+    };
+    input.oninput = function () {
+      RC.pick = null; RC.chosen = -1;
+      var v = input.value;
+      if (/[,;\n]/.test(v)) {
+        var parts = v.split(/[,;\n]/), rest = parts.pop();
+        parts.forEach(function (p) { if (ctDigits(p).length >= 3) rcAddNumber(p); });
+        input.value = rest;
+      }
+      rcSuggest();
+    };
+    input.onkeydown = rcKey;
+  }
+  var fieldNow = $('rc-field'), inp = $('rc-in');
+  Array.prototype.forEach.call(fieldNow.querySelectorAll('.rc-chip'), function (x) { x.remove(); });
+  RC.chips.forEach(function (ch, i) { fieldNow.insertBefore(rcChip(ch, i), inp); });
+  inp.placeholder = RC.chips.length ? 'Add another\u2026' : 'A name, a group or a number \u2014 +420 777 000 000';
+  // the quick picks: the favourites, then the people with a number on their card
+  var quickNow = $('rc-quick');
+  quickNow.innerHTML = '';
+  var favs = ctSorted((CT.book || []).filter(function (c) { return c.favourite && (c.numbers || []).length; })).slice(0, 12);
+  var ppl = (RC.people || []).filter(function (p) { return p.number; });
+  if (!favs.length && !ppl.length) {
+    if (!(CT.book || []).length) quickNow.appendChild(el('span', 'muted small', 'Nobody has a number on their card yet \u2014 Settings \u2192 Presence'
+      + (isAdmin() ? '; or add contacts under SMS \u2192 Contacts.' : '.')));
+    return;
+  }
+  var h = el('span', 'h');
+  h.innerHTML = CT_STAR.replace('width="16" height="16"', 'width="12" height="12"');
+  h.appendChild(document.createTextNode('Quick'));
+  quickNow.appendChild(h);
+  favs.forEach(function (c) {
+    var on = RC.chips.some(function (x) { return x.cid === c.id; });
+    var b = el('button', 'rc-q' + (on ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.cid = c.id;
+    b.appendChild(ctAvatar(c.name, 'sm'));
+    b.appendChild(el('span', '', c.name));
+    b.title = c.name + ' \u2014 ' + ctFmt(c.numbers[0].number);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () {
+      if (on) RC.chips = RC.chips.filter(function (x) { return x.cid !== c.id; });
+      else if (c.numbers.length > 1) { $('rc-in').focus(); rcOpenPick(c, null); return; }
+      else rcAddContact(c, 0);
+      rcPaint();
+    };
+    quickNow.appendChild(b);
+  });
+  ppl.forEach(function (p) {
+    var on = RC.chips.some(function (x) { return x.kind === 'person' && x.value === p.id; });
+    var b = el('button', 'rc-q ppl' + (on ? ' on' : ''));
+    b.type = 'button';
+    b.dataset.person = p.id;
+    b.appendChild(el('span', '', ICON.person + ' ' + p.name));
+    b.title = p.name + ' \u2014 ' + p.number + (p.home ? ' \u00b7 at home' : ' \u00b7 out');
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () {
+      if (on) RC.chips = RC.chips.filter(function (x) { return !(x.kind === 'person' && x.value === p.id); });
+      else rcAdd({kind: 'person', value: p.id, name: p.name, number: p.number});
+      rcPaint();
+    };
+    quickNow.appendChild(b);
+  });
+}
+function rcClose() {
+  var pop = $('rc-pop');
+  if (pop) pop.hidden = true;
+  if ($('rc-in')) $('rc-in').setAttribute('aria-expanded', 'false');
+  RC.items = []; RC.sel = -1; RC.pick = null;
+}
+function rcOpenPick(c, chipIndex) {
+  RC.pick = {c: c, chip: chipIndex};
+  RC.items = c.numbers.map(function (n, i) { return {kind: 'pick', c: c, i: i, n: n}; });
+  var current = chipIndex !== null && chipIndex !== undefined ? RC.chips[chipIndex] : null;
+  RC.sel = 0;
+  if (current) c.numbers.forEach(function (n, i) { if (ctSameNum(n.number, current.number)) RC.sel = i; });
+  rcPop('Which of ' + c.name + '\u2019s numbers?');
+  if ($('rc-in')) $('rc-in').focus();
+}
+function rcSuggest() {
+  var input = $('rc-in');
+  if (!input) return;
+  var q = input.value.trim(), f = ctFold(q), dg = ctDigits(q);
+  var chosen = function (pred) { return RC.chips.some(pred); };
+  var items = [];
+  var book = CT.book || [];
+  var looksNumber = dg.length >= 3 && /^[+0-9 ()\/.\-]+$/.test(q);
+  if (!q) {
+    ctSorted(book.filter(function (c) { return c.favourite; })).slice(0, 6).forEach(function (c) {
+      if (!chosen(function (x) { return x.cid === c.id; })) items.push({kind: 'contact', c: c, head: 'Favourites'});
+    });
+    CT.groups.slice(0, 6).forEach(function (g) {
+      if (!chosen(function (x) { return x.kind === 'group' && ctFold(x.name) === ctFold(g); })) items.push({kind: 'group', g: g, head: 'Groups'});
+    });
+  } else {
+    var hits = book.filter(function (c) {
+      if (chosen(function (x) { return x.cid === c.id; })) return false;
+      if (ctFold(c.name).indexOf(f) >= 0 || (f.length >= 2 && ctFold(c.group).indexOf(f) === 0)) return true;
+      return dg.length >= 3 && (c.numbers || []).some(function (n) { return ctDigits(n.number).indexOf(dg) >= 0; });
+    });
+    var rank = function (c) {
+      var nm = ctFold(c.name);
+      return (nm.indexOf(f) === 0 ? 0 : (new RegExp('(^|\\s)' + f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(nm) ? 1 : 2))
+        - (c.favourite ? 0.5 : 0);
+    };
+    hits.sort(function (a, b) { return rank(a) - rank(b) || a.name.localeCompare(b.name, 'cs'); });
+    var groups = CT.groups.filter(function (g) {
+      return ctFold(g).indexOf(f) >= 0 && !chosen(function (x) { return x.kind === 'group' && ctFold(x.name) === ctFold(g); });
+    });
+    var people = (RC.people || []).filter(function (p) {
+      if (chosen(function (x) { return x.kind === 'person' && x.value === p.id; })) return false;
+      return ctFold(p.name).indexOf(f) >= 0 || (dg.length >= 3 && ctDigits(p.number).indexOf(dg) >= 0);
+    });
+    if (looksNumber && dg.length >= 6 && !hits.some(function (c) { return (c.numbers || []).some(function (n) { return ctSameNum(n.number, q); }); }))
+      items.push({kind: 'number', q: q, head: 'A number'});
+    hits.slice(0, 8).forEach(function (c) { items.push({kind: 'contact', c: c, head: 'Contacts'}); });
+    groups.slice(0, 4).forEach(function (g) { items.push({kind: 'group', g: g, head: 'Groups'}); });
+    people.slice(0, 4).forEach(function (p) { items.push({kind: 'person', p: p, head: 'People on the cards'}); });
+    if (looksNumber && dg.length < 6) items.push({kind: 'number', q: q, head: 'A number', short: true});
+  }
+  RC.items = items;
+  RC.sel = items.length ? 0 : -1;
+  rcPop(null, q);
+}
+function rcMark(text, q) {
+  var span = el('b');
+  var i = q ? String(text).toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (i < 0) { span.textContent = text; return span; }
+  span.appendChild(document.createTextNode(text.slice(0, i)));
+  span.appendChild(el('mark', '', text.slice(i, i + q.length)));
+  span.appendChild(document.createTextNode(text.slice(i + q.length)));
+  return span;
+}
+function rcPop(title, q) {
+  var pop = $('rc-pop'), input = $('rc-in');
+  if (!pop) return;
+  pop.innerHTML = '';
+  if (!RC.items.length) { pop.hidden = true; input.setAttribute('aria-expanded', 'false'); return; }
+  var head = null;
+  if (title) pop.appendChild(el('div', 'rc-ph', title));
+  RC.items.forEach(function (it, i) {
+    if (!title && it.head !== head) { head = it.head; pop.appendChild(el('div', 'rc-ph', head)); }
+    var o = el('div', 'rc-opt' + (i === RC.sel ? ' on' : ''));
+    o.id = 'rc-opt-' + i;
+    o.setAttribute('role', 'option');
+    o.setAttribute('aria-selected', i === RC.sel ? 'true' : 'false');
+    var t = el('span', 't');
+    if (it.kind === 'contact') {
+      o.appendChild(ctAvatar(it.c.name, 'sm'));
+      t.appendChild(rcMark(it.c.name, q));
+      var n0 = it.c.numbers[0];
+      t.appendChild(el('span', 'mono', ctFmt(n0.number) + (it.c.numbers.length > 1 ? '  +' + (it.c.numbers.length - 1) + ' more' : '')
+        + (it.c.group ? '  \u00b7  ' + it.c.group : '')));
+      o.appendChild(t);
+      if (it.c.favourite) { var s = el('span', 'ct-star'); s.style.color = '#e3b341'; s.innerHTML = CT_STAR; o.appendChild(s); }
+    } else if (it.kind === 'group') {
+      o.appendChild(ctAvatar(it.g, 'sm grp'));
+      t.appendChild(rcMark(it.g, q));
+      var gn = ctGroupCount(it.g);
+      t.appendChild(el('span', '', 'Everybody in the group \u00b7 ' + gn + (gn === 1 ? ' contact' : ' contacts')));
+      o.appendChild(t);
+      o.appendChild(el('span', 'k', 'group'));
+    } else if (it.kind === 'person') {
+      var ic = el('span', 'ico', ICON.person); o.appendChild(ic);
+      t.appendChild(rcMark(it.p.name, q));
+      t.appendChild(el('span', 'mono', it.p.number + (it.p.home ? '  \u00b7  at home' : '')));
+      o.appendChild(t);
+    } else if (it.kind === 'pick') {
+      o.appendChild(ctAvatar(it.c.name, 'sm'));
+      t.appendChild(el('b', '', ctFmt(it.n.number)));
+      t.appendChild(el('span', '', it.n.label || 'number ' + (it.i + 1)));
+      o.appendChild(t);
+      if (it.i === 0) o.appendChild(el('span', 'k', 'first'));
+    } else {
+      var ic2 = el('span', 'ico', '#'); o.appendChild(ic2);
+      t.appendChild(el('b', '', 'Send to ' + it.q));
+      t.appendChild(el('span', '', it.short ? 'That is short for a phone number \u2014 add it anyway' : 'A number of its own'));
+      o.appendChild(t);
+    }
+    o.onmousedown = function (e) { e.preventDefault(); RC.sel = i; rcChoose(); };
+    o.onmousemove = function () { if (RC.sel !== i) { RC.sel = i; rcMarkSel(); } };
+    pop.appendChild(o);
+  });
+  pop.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  rcMarkSel();
+}
+function rcMarkSel() {
+  var pop = $('rc-pop');
+  Array.prototype.forEach.call(pop.querySelectorAll('.rc-opt'), function (o) {
+    var on = o.id === 'rc-opt-' + RC.sel;
+    o.classList.toggle('on', on);
+    o.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on && o.scrollIntoView) o.scrollIntoView({block: 'nearest'});
+  });
+  if ($('rc-in')) $('rc-in').setAttribute('aria-activedescendant', RC.sel >= 0 ? 'rc-opt-' + RC.sel : '');
+}
+function rcChoose() {
+  var it = RC.items[RC.sel], input = $('rc-in');
+  if (!it) return;
+  if (it.kind === 'contact') {
+    if (it.c.numbers.length > 1) { input.value = ''; rcOpenPick(it.c, null); return; }
+    rcAddContact(it.c, 0);
+  } else if (it.kind === 'pick') {
+    var pick = RC.pick || {};
+    var n = it.c.numbers[it.i];
+    var ch = {kind: 'contact', value: it.i ? n.number : 'contact:' + it.c.id, name: it.c.name, number: n.number, label: n.label,
+      cid: it.c.id};
+    if (pick.chip !== null && pick.chip !== undefined && RC.chips[pick.chip]) { RC.chips[pick.chip] = ch; rcPaint(); }
+    else rcAdd(ch);
+  } else if (it.kind === 'group') {
+    rcAdd({kind: 'group', value: 'group:' + it.g, name: it.g});
+  } else if (it.kind === 'person') {
+    rcAdd({kind: 'person', value: it.p.id, name: it.p.name, number: it.p.number});
+  } else {
+    rcAddNumber(it.q);
+  }
+  input.value = '';
+  rcClose();
+  input.focus();
+}
+function rcKey(e) {
+  var input = $('rc-in'), open = !$('rc-pop').hidden && RC.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!open) { rcSuggest(); return; }
+    RC.sel = (RC.sel + (e.key === 'ArrowDown' ? 1 : -1) + RC.items.length) % RC.items.length;
+    rcMarkSel();
+    return;
+  }
+  if ((e.key === 'Enter' || e.key === 'Tab') && open && RC.sel >= 0 && (input.value.trim() || RC.pick || e.key === 'Enter')) {
+    e.preventDefault();
+    rcChoose();
+    return;
+  }
+  if (e.key === 'Enter' && input.value.trim()) {
+    e.preventDefault();
+    if (rcAddNumber(input.value)) input.value = '';
+    return;
+  }
+  if (e.key === 'Escape' && open) { e.preventDefault(); e.stopPropagation(); rcClose(); return; }
+  if (e.key === 'Backspace' && !input.value && RC.chips.length) {
+    e.preventDefault();
+    if (RC.chosen === RC.chips.length - 1) { RC.chips.pop(); RC.chosen = -1; }
+    else RC.chosen = RC.chips.length - 1;
+    rcPaint();
+    return;
+  }
+  if (RC.chosen >= 0) { RC.chosen = -1; rcPaint(); }
+}
+document.addEventListener('DOMContentLoaded', function () {
+  var card = $('ct-card');
+  if (!card) return;
+  setButtonIcon($('ct-add'), 'add', 'New contact');
+  setButtonIcon($('ct-import'), 'upload', 'Import');
+  setButtonIcon($('ct-export-vcf'), 'download', 'vCard');
+  setButtonIcon($('ct-export-csv'), 'download', 'CSV');
+  $('ct-find-ico').innerHTML = iconMarkup('search', 15);
+  $('ct-add').onclick = function () { ctDrawer(null); };
+  $('ct-import').onclick = ctPickFile;
+  $('ct-export-vcf').onclick = function () { ctExport('vcf'); };
+  $('ct-export-csv').onclick = function () { ctExport('csv'); };
+  $('ct-file').onchange = function () { ctReadFile(this.files && this.files[0]); };
+  $('ct-find').oninput = function () { CT.find = this.value; ctPaint(); };
+  var depth = 0;
+  var showDrop = function (on) { $('ct-drop').hidden = !on; };
+  card.addEventListener('dragenter', function (e) {
+    if (!isAdmin() || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+    e.preventDefault(); depth += 1; showDrop(true);
+  });
+  card.addEventListener('dragover', function (e) {
+    if (!isAdmin() || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  });
+  card.addEventListener('dragleave', function () { depth = Math.max(0, depth - 1); if (!depth) showDrop(false); });
+  card.addEventListener('drop', function (e) {
+    depth = 0; showDrop(false);
+    if (!isAdmin() || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    ctReadFile(e.dataTransfer.files[0]);
+  });
 });
 
 // what the diagnosis found, in the app's own dialog

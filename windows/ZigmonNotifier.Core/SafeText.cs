@@ -56,6 +56,35 @@ public static class SafeText
         return Truncate(cleaned, maxLength);
     }
 
+    /// <summary>
+    /// A message's text (an SMS): cleaned like <see cref="Clean"/> line by line, but its line
+    /// breaks kept (\r\n and \r become \n, at most one empty line in a row), capped by whole
+    /// characters. Still shown as plain text only.
+    /// </summary>
+    public static string CleanMultiline(string? value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || maxLength <= 0) return string.Empty;
+        string s = value.Length > maxLength * 4 + 16 ? value.Substring(0, maxLength * 4 + 16) : value;
+        s = s.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n')
+             .Replace('\u2028', '\n').Replace('\u2029', '\n');
+        var lines = s.Split('\n');
+        var sb = new StringBuilder(Math.Min(s.Length, maxLength + 8));
+        int empty = 0;
+        foreach (string raw in lines)
+        {
+            string line = Clean(raw, maxLength);
+            if (line.Length == 0)
+            {
+                if (sb.Length == 0 || ++empty > 1) continue;
+            }
+            else empty = 0;
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append(line);
+            if (sb.Length > maxLength * 2) break;
+        }
+        return Truncate(sb.ToString().TrimEnd('\n', ' '), maxLength);
+    }
+
     /// <summary>Cuts to at most <paramref name="maxLength"/> UTF-16 units without splitting a character.</summary>
     public static string Truncate(string s, int maxLength)
     {

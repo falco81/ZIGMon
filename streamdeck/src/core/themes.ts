@@ -102,7 +102,12 @@ export interface Face {
   taken?: boolean;
   /** (1.3) The colour an off key is drawn in, when the user chose one; none = the look's own off style. */
   offAccent?: string | null;
+  /** (1.3) An unread count (the SMS keys): a small pill at the top right. */
+  badge?: number | null;
 }
+
+/** (1.3) The new actions say one more short thing under the big words in the clear looks: their detail. */
+const TAGGED = new Set(["power", "security", "heatgroup", "away", "openings", "batteries", "zigbee", "timer", "room", "sms"]);
 
 export interface LookOpts {
   info: Info;
@@ -621,6 +626,7 @@ function tag(f: Face, i: Info): string {
     return [d, i.mode ? f.mode : ""].filter(Boolean).join(" · ");
   }
   if (f.kind === "blinds") return i.detail ? f.detail : "";
+  if (TAGGED.has(f.kind)) return i.detail ? f.detail : i.mode ? f.mode : "";
   return "";
 }
 
@@ -1605,7 +1611,19 @@ export function renderLook(theme: string, f: Face, o: LookOpts): string {
   const i = o.info;
   // nothing at all would be a blank key: the icon at least
   const info = i.icon || i.name || i.state || i.room || i.detail || i.mode || i.graph ? i : { ...i, icon: true };
-  return draw(f, { ...o, info });
+  const svg = draw(f, { ...o, info });
+  return f.badge ? svg.replace(/<\/svg>$/, unreadPill(f, f.badge) + "</svg>") : svg;
+}
+
+/** (1.3) The unread pill: the count on the accent, left of any lock or hand badge, ringed in the key's dark. */
+export function unreadPill(f: Pick<Face, "allowed" | "online" | "hold" | "accent">, count: number, top = 8): string {
+  const t = count > 99 ? "99+" : String(Math.max(0, Math.round(count)));
+  const w = Math.max(24, textWidth(t, 13, 800) + 14);
+  const shift = (f.allowed ? 0 : 22) + (f.online ? 0 : 22) + (f.hold ? 22 : 0);
+  const x = 136 - shift - w;
+  return rect(x - 2, top - 2, w + 4, 26, 13, P.bg)
+    + rect(x, top, w, 22, 11, f.online ? f.accent : P.crit)
+    + text(x + w / 2, top + 15.5, t, { size: 13, weight: 800, fill: P.bg, anchor: "middle" });
 }
 
 /** The short card a press can show on a thermostat: its mode, the target, what it measures and where. */

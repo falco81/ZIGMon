@@ -2,7 +2,8 @@
 
 Control your ZIGMon home from an Elgato **Stream Deck XL** (32 keys) or **Stream Deck +**
 (8 keys, 4 dials and a touch strip), and see its state live: sockets, lights and dimmers,
-heating, blinds, scenes, readings and ZIGMon's own health. Every key is drawn in ZIGMon's
+heating, blinds, scenes, readings, the house's power, security, windows, batteries, rooms,
+timers, SMS and ZIGMon's own health. Every key is drawn in ZIGMon's
 dashboard colours and redraws the moment something changes in the house.
 
 Nothing can be controlled unless ZIGMon allows it: Stream Deck control is switched on in
@@ -17,6 +18,7 @@ and the administrator grants the functions one by one.
 - ZIGMon **5.59 or newer**, reachable from that computer over **https** (plain http only when
   ZIGMon runs on the same computer). The graphs from ZIGMon's history and the heated rooms'
   target, mode and thermometer need a ZIGMon **newer than 5.59.0** (with 5.59.0 the rest works as in 1.0).
+  The ten actions new in 1.3 need **ZIGMon 5.59.4** (the rest works with an older one as before).
 - The other Stream Deck models work too (keys only, sized for their grid); the XL and + are
   the ones the plugin is designed for.
 
@@ -24,7 +26,7 @@ and the administrator grants the functions one by one.
 
 1. In ZIGMon, as the administrator: **Settings → Messages → Stream Deck**.
 2. Switch on **Allow Stream Deck control**.
-3. Click **Download ZIGMon for Stream Deck 1.2.0**. Compare the SHA-256 shown there with the
+3. Click **Download ZIGMon for Stream Deck 1.3.0**. Compare the SHA-256 shown there with the
    file if you like (`Get-FileHash ZIGMon.streamDeckPlugin` in PowerShell).
 4. Double-click the downloaded `.streamDeckPlugin`. Stream Deck asks to install it; say yes.
    A **ZIGMon for Stream Deck** category appears in the actions list.
@@ -72,6 +74,16 @@ deck to control are shown with a lock, and a live preview shows the key.
 | **Blinds** | A window with the blind drawn at its position, Open/Closed/percentage, Opening…/Closing…. A press: open/close (by where it is), stop, open or close. | Turn = position, push = stop/open/close, touch = stop. Strip: the window. |
 | **Scene** | Runs a scene, sequence or group of actions. A green tick when done, a red cross when not. | Push or touch = run. |
 | **ZIGMon status** | ZIGMon's own health: open alerts, blocked addresses, the proxy, the Zigbee gateway, health - green, amber or red. | Strip: the same with a state pill. |
+| **House power** *(1.3)* | The house's watts now, today's kWh, a graph over 1 h / 6 h / 24 h / 7 d. | Turn = the span. |
+| **Network security** *(1.3)* | Alerts standing and addresses blocked; a red shield on an alert. Held press = acknowledge the latest. | Push (held) = acknowledge. |
+| **Heating everywhere** *(1.3)* | Rooms heating n/m, the common mode or Mixed, min–max °C. Press = next mode, or one mode, for every room. | Turn / push = the mode. |
+| **Away / Home** *(1.3)* | Away or Home, lights on, rooms heating. Press = switch, and turn off the switches you chose. | Push = switch. |
+| **Windows & doors** *(1.3)* | How many are open and which; red when one lets the heat out. | Strip: count, names, a bar of sensors. |
+| **Batteries** *(1.3)* | How many are low, the lowest by name and %. | Strip: the same with its level. |
+| **Zigbee network** *(1.3)* | Online / offline, the one that dropped off last. | Strip: the same with a bar. |
+| **Timer** *(1.3)* | A switch on for N minutes with a live countdown; press again = off. | Turn = minutes, push = start / cancel. |
+| **Room** *(1.3)* | Temperature, humidity, what is on, its heating. | Turn = through its items, push = switch the one shown. |
+| **SMS** *(1.3)* | Show the latest / write a new one in the desktop app, or the SMS status with mute (held). | Push = the same. |
 
 Turning a dial moves the value on the strip at once; the clicks are gathered and sent to
 ZIGMon as one change (ZIGMon keeps it within the item's range and step).
@@ -153,6 +165,109 @@ buttons do. Switched on from this key, the thing is taken over: rules and schedu
 alone. Switched off from it, they take over again. A small figure on the key shows it is taken
 over, whether by this key, another key or a button. An older ZIGMon ignores the switch.
 
+### The ten new actions (1.3, ZIGMon 5.59.4)
+
+Ten more actions show what ZIGMon 5.59.4 sums up for the whole house, and act on it. Each works
+on keys and on the Stream Deck + dials (with a touch strip of its own), has its own Classic drawing
+and every one of the 42 looks, the On / Off colours, the label, long names and the choice of what
+the key shows - exactly like the actions above. Their settings show a **Now** card with what the
+key has no room for (every window open, the whole latest alert, a room's items...).
+
+They need **ZIGMon 5.59.4 or newer**: only a ZIGMon that offers them is asked for them, and with an
+older one the keys say **Needs ZIGMon 5.59.4 or newer** and do nothing. The house's own summaries
+need no picking: put the action on a key and it shows them (if ZIGMon lets this deck see them).
+
+#### House power (1.3, ZIGMon 5.59.4)
+
+The house's power now, big (**452 W**, **1.84 kW**), today's **kWh** under it and a graph over
+**1 h, 6 h, 24 h or 7 d** (ZIGMon's own: the minute peaks for 1 h, hourly averages of the metered
+sockets for the longer ones). Lit while anything draws power. A press refreshes it. On a dial,
+**turn = the span**; the strip shows the figure over the graph. The **Now** card splits it into
+sockets and lights.
+
+#### Network security (1.3, ZIGMon 5.59.4)
+
+The alerts standing (**2 alerts**, a dot for each) and the addresses kept out (**14 blocked ·
+37 in 24 h**); the shield turns **red** on an alert, and says **Quiet** in green when there is
+none. The **Now** card shows the **latest alert's text** (addresses and numbers hidden by ZIGMon)
+and when it came. A press **held 1.5 s acknowledges the latest alert** - the dashboard's *seen*;
+older ones stay. That needs the **System** permission for this deck (for everything, or for
+*Network security* by name) and is **always held**; without it the key still shows everything
+and says *needs System in ZIGMon* when pressed. With nothing standing it says *All clear*.
+
+#### Heating everywhere (1.3, ZIGMon 5.59.4)
+
+How many heated rooms are calling for heat (**1/4**, with a segment per room), their **common
+mode** - or **Mixed** - and the lowest and highest room temperature (**18.5–21.0°**). A press:
+**Next mode** for every room (shown at once and sent 1.2 s after the last press, as a
+thermostat's Next mode; from Mixed it starts at Plan) or **one mode for all** (Plan, Comfort, Eco,
+Night, Max, Off or By hand). On a dial, turning steps the mode the same way. Under the *climate*
+permission and its hold.
+
+#### Away / Home (1.3, ZIGMon 5.59.4)
+
+**Away** or **Home** (the heating's away switch; *by the dates* when the away dates are in force),
+with the **lights on** and the **rooms heating**. A press switches it. In the settings you can also
+tick **switches and lights to turn off when going Away**: they are sent after the away switch,
+each as its own command under its own permission - one this deck may not switch is skipped (the
+key says how many were), and one that needs a hold makes the Away key need one when going away.
+Coming home turns nothing back on.
+
+#### Windows & doors (1.3, ZIGMon 5.59.4)
+
+How many are **open** and which - the first one or two on the key, all of them in the **Now**
+card - or **Closed** in green. A segment per contact sensor. **Red, with a flame on the tile,
+when an open one is in a room that is heating** (the heat is going out of the window). A press
+refreshes.
+
+#### Batteries (1.3, ZIGMon 5.59.4)
+
+How many batteries are **low** (below 20 %), and the lowest one by name with its per cent and a
+battery drawn at its level - amber, red when one is below 10 %; **All OK** in green otherwise.
+
+#### Zigbee network (1.3, ZIGMon 5.59.4)
+
+The Zigbee devices **online**, or how many are **offline** (amber), with the one that **dropped
+off** last and when, and a bar of online against offline.
+
+#### Timer (1.3, ZIGMon 5.59.4)
+
+On a switch (a socket, a light, a relay): a press turns it **on for 5, 10, 15, 30, 60 or 120
+minutes** - or any number from 1 to 720 you type - and ZIGMon turns it **off** after them (even if
+this computer sleeps; it is ZIGMon's own timer, kept over a restart). While it runs the key shows a
+**live countdown** in a ring that drains; **a press again turns it off**, which cancels the timer.
+On a dial, **turn = the minutes** (5, 10, 15, 20... up to 12 h), **push = start** (or cancel).
+By hand and hold work as on Control. **Control** keys on a switch get a **Timer** press as well,
+with the same minutes, and show the countdown by the state.
+
+#### Room (1.3, ZIGMon 5.59.4)
+
+A room at a glance: its **temperature** big, the **humidity**, how many of its switches are on
+(**1/3**), and its **heating** mode and target (*Comfort → 21°*, in orange while it calls for heat).
+A key press refreshes. On a Stream Deck + dial, **turn = scroll through the room's items** (the ones
+ZIGMon lets this deck see, in ZIGMon's order); the strip shows the one chosen with its state and a
+row of dots, and **a push switches it or runs it** with that item's own rules - its own permission,
+its own hold.
+
+#### SMS (1.3, ZIGMon 5.59.4)
+
+One action, three modes:
+
+- **Show latest** - texts received today, who sent the latest (a contact's name or `…123`) and
+  when, with an **unread** badge. A press shows the latest SMS, with Reply, in the **ZIGMon
+  desktop app linked to this Stream Deck**.
+- **Write new** - a press opens a new message in that desktop app, addressed to the numbers and
+  contact groups you add in the settings (`+420 777 123 456` or `group:Family`, at most 20), or to
+  nobody. The deck has no list of contacts: ZIGMon finds the numbers of a group itself.
+- **Status** - the latest SMS's sender (masked) and today's count, *modem offline* in red when the
+  gateway is down, and **Muted until 15:47** while the alerts are hushed. A press **held 1.5 s
+  mutes all alerts** for 15 min - 4 h (your choice) and, while muted, unmutes. Under **System**,
+  always held.
+
+*Show latest* and *Write new* need the **sms** permission, and ZIGMon hands them to a desktop app
+linked to this Stream Deck installation (ZIGMon → Settings → Messages → Stream Deck). When none is
+running the key says **No desktop app running** - *link one in ZIGMon*.
+
 ### What the keys tell you
 
 | Key says | Meaning |
@@ -166,6 +281,9 @@ over, whether by this key, another key or a button. An older ZIGMon ignores the 
 | **Disconnected** | The installation was revoked in ZIGMon - pair again. |
 | a lock | The item is visible but not allowed for this deck. |
 | a hand | Hold to confirm. |
+| **Needs ZIGMon 5.59.4 or newer** | One of the 1.3 actions on an older ZIGMon. |
+| **No desktop app running** | An SMS key: no ZIGMon desktop app linked to this Stream Deck is running. |
+| a number in a pill | Unread SMS. |
 
 ## Security
 

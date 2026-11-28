@@ -9,17 +9,22 @@ import { cleanHex, hexToHsv, hsvToHex, type Hsv } from "../core/colour.js";
 import { ACCENTS, colourOf, P } from "../core/palette.js";
 import { lookFor } from "../core/render.js";
 import { THEMES } from "../core/themes.js";
+import { cleanRecipient, FIXED_ITEM, isNewKind, itemFor, NEEDS_ZIGMON, NEW_TITLES, needs, type NewKind } from "../core/kinds.js";
 
-type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status";
+type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind;
 
 interface PiAttr { key: string; label: string; type: string; unit: string; min: number | null; max: number | null; step: number | null; values: string[] }
 interface PiItem {
   id: string; name: string; room: string | null; kind: string; icon: string; cap: string; allowed: boolean; hold: boolean;
   actions: string[]; attrs: PiAttr[]; valueText: string; on: boolean | null; online: boolean;
+  /** (1.3) An action granted under a capability of its own (ack / mute / unmute under system). */
+  act?: Record<string, { cap: string; allowed: boolean; hold: boolean }> | null;
 }
+/** (1.3) A switch an Away key may turn off as well. */
+interface PiExtra { id: string; name: string; room: string | null; kind: string; icon: string; cap: string; allowed: boolean; hold: boolean }
 interface CapGrant { on: boolean; all: boolean; targets: string[]; hold: boolean }
 interface Status {
-  phase: string; message: string; plugin: string; address: string; house: string; zigmon: string;
+  phase: string; message: string; plugin: string; address: string; house: string; zigmon: string; features?: string[];
   install: { name: string; hint: string; caps: Record<string, CapGrant> } | null;
   decks: { id: string; name: string; type: number; cols: number; rows: number; approved: boolean | null }[];
   pair: { code: string; expires: number } | null;
@@ -30,7 +35,7 @@ interface Status {
   retryInMs: number | null;
   items: number;
 }
-type Settings = Record<string, string | number | boolean | null | undefined>;
+type Settings = Record<string, string | number | boolean | null | undefined | string[]>;
 
 const KIND = (document.body.dataset.action || "control") as Kind;
 
@@ -46,6 +51,13 @@ let preview = "";
 /** (1.1) The Look section's pictures, drawn by the plugin from the item's real state. */
 interface Looks { themes: { id: string; name: string; image: string }[]; on: string; off: string; words: [string, string] }
 let looks: Looks | null = null;
+/** (1.3) What the item says now beyond the key (the plugin's words, shown as text). */
+let facts: [string, string][] = [];
+/** (1.3) Away / Home: the switches it may turn off too. */
+let extras: PiExtra[] = [];
+let extraQuery = "";
+let smsDraft = "";
+let smsError = "";
 let query = "";
 let pickerOpen = false;
 let connOpen = false;
@@ -134,10 +146,12 @@ function onMessage(ev: MessageEvent): void {
       if (status.phase !== was) toPlugin({ t: "preview" });
     } else if (p.t === "catalog") {
       items = (p.items as PiItem[]) ?? [];
+      extras = Array.isArray(p.extras) ? (p.extras as PiExtra[]) : [];
       catalogLoaded = true;
     } else if (p.t === "preview") {
       preview = typeof p.image === "string" && p.image.startsWith("data:image/svg+xml") ? p.image : "";
       looks = cleanLooks(p.looks);
+      facts = cleanFacts(p.facts);
       // (1.3) mid-pick the page is not rebuilt (it would drop the pointer, or what is half typed): only the pictures change
       if (picking()) {
         patchPictures();
@@ -172,6 +186,24 @@ function onMessage(ev: MessageEvent): void {
   ws.onmessage = onMessage;
   render();
 };
+
+/** (1.3) The "Now" rows: pairs of short strings, nothing else (shown with textContent). */
+function cleanFacts(v: unknown): [string, string][] {
+  if (!Array.isArray(v)) return [];
+  return v.slice(0, 48).flatMap((r) => (Array.isArray(r) && typeof r[0] === "string" && typeof r[1] === "string" ? [[r[0].slice(0, 40), r[1].slice(0, 200)] as [string, string]] : []));
+}
+
+/** (1.3) The item this key shows: a new action's fixed summary (or SMS mode's item), else the one picked. */
+function currentId(): string | undefined {
+  return isNewKind(KIND) ? itemFor(KIND, settings) : typeof settings.item === "string" ? settings.item : undefined;
+}
+
+/** (1.3) This ZIGMon is too old for a new action: what it is, or "" when it offers what is needed. */
+function tooOld(): string {
+  if (!isNewKind(KIND) || !status || status.phase !== "online") return "";
+  const f = status.features ?? [];
+  return needs(KIND).every((x) => f.includes(x)) ? "" : status.zigmon || "older";
+}
 
 /** Only pictures we drew (data:image/svg+xml) and our own look names get onto the page. */
 function cleanLooks(v: unknown): Looks | null {
@@ -230,6 +262,17 @@ const TITLES: Record<Kind, [string, string]> = {
   blinds: ["The blinds", "Turn: position · push: stop / open / close"],
   scene: ["The scene to run", "Scenes, sequences and groups of actions"],
   status: ["What to watch", "ZIGMon's own health"],
+  // (1.3, ZIGMon 5.59.4)
+  power: ["House power", "Watts now, today's kWh and a graph · dial: turn for the span"],
+  security: ["Network security", "Alerts and addresses kept out · hold to acknowledge"],
+  heatgroup: ["Heating in every room", "How many heat, the common mode · press: next mode for all"],
+  away: ["Away / Home", "The heating's away switch, and what to switch off with it"],
+  openings: ["Windows & doors", "How many are open, and which"],
+  batteries: ["Batteries", "How many are low, and the lowest"],
+  zigbee: ["Zigbee network", "Online, offline, the one that dropped off last"],
+  timer: ["The switch to time", "Press: on for the minutes · again: off · dial: turn for the minutes"],
+  room: ["The room", "Temperature, humidity, what is on · dial: its items one by one"],
+  sms: ["SMS", "In the desktop app linked to this Stream Deck"],
 };
 
 // ------------------------------------------------------------------ the deck pictures
@@ -498,11 +541,77 @@ function stateWord(it: PiItem): HTMLElement {
   return h("span", "st", [it.valueText]);
 }
 
-function picker(): HTMLElement {
+/** (1.3) A new action that shows one of the house's summaries: no picking, just what it is and whether ZIGMon has it. */
+function fixedCard(): HTMLElement {
   const card = h("div", "card");
   const [title, lede] = TITLES[KIND];
+  const nt = NEW_TITLES[KIND as NewKind];
+  card.append(h("h2", "", [ic(nt?.icon ?? "grid", "sm"), title, h("span", "count", ["1.3"])]));
+  if (KIND === "sms") {
+    const mode = String(settings.smsMode ?? "last");
+    card.append(...chips("What the key does", [["last", "Show latest", "inbox"], ["compose", "Write new", "send"], ["status", "Status & mute", "bellOff"]], mode, "smsMode"));
+  }
+  const st = status;
+  const id = currentId();
+  const it = items.find((i) => i.id === id);
+  if (!st || st.phase !== "online") {
+    card.append(h("div", "empty", [ic("link"), st && (st.phase === "offline" || st.phase === "connecting") ? "Waiting for ZIGMon…" : "Connect to ZIGMon above."]));
+    return card;
+  }
+  const old = tooOld();
+  if (old) {
+    card.append(h("div", "note warn", [ic("download", "sm"), h("span", "", ["Needs ", h("b", "", ["ZIGMon " + NEEDS_ZIGMON]), " or newer. This one is " + old + ": the key says so until ZIGMon is updated."])]));
+    return card;
+  }
+  if (!it) {
+    card.append(h("div", "note", [ic("search", "sm"), KIND === "sms"
+      ? "ZIGMon shows this deck no such SMS item: SMS may not be set up, or the administrator has not granted SMS (or status) to this deck."
+      : "ZIGMon shows this deck no such item yet (none in the house, or not granted to this deck)."]));
+    return card;
+  }
+  card.append(h("div", "picked", [
+    tile(nt?.icon ?? itemIcon(it), autoColour("on", it)),
+    h("div", "grow", [h("div", "n", [it.name]), h("div", "s", [it.valueText || kindWord(it.kind)])]),
+    stateWord(it),
+  ]));
+  grantNotes(card, it);
+  if (preview) {
+    card.append(h("div", "sep"), h("div", "preview", [picture(preview, "", "preview"), h("div", "muted small", [lede])]));
+  }
+  return card;
+}
+
+/** (1.3) The grant of what a press does: an `act` grant (System) where the item has one, else the item's own. */
+function pressGrant(it: PiItem): { allowed: boolean; hold: boolean; cap: string } {
+  const a = KIND === "security" ? "ack" : KIND === "sms" && settings.smsMode === "status" ? "mute" : "";
+  const g = a ? it.act?.[a] : undefined;
+  return g ? { allowed: g.allowed, hold: g.hold, cap: g.cap } : { allowed: it.allowed, hold: it.hold, cap: it.cap };
+}
+
+function grantNotes(card: HTMLElement, it: PiItem): void {
+  if (KIND === "power" || KIND === "openings" || KIND === "batteries" || KIND === "zigbee") return;
+  const g = pressGrant(it);
+  if (!g.allowed) card.append(h("div", "note crit", [ic("lock", "sm"), h("span", "", [g.cap === "system" && it.cap === "status"
+    ? "This deck may watch it, but a press needs " : "ZIGMon does not allow this deck to use it. The administrator can grant it in ",
+  h("b", "", [g.cap === "system" && it.cap === "status" ? "System" : "Settings → Messages → Stream Deck → Permissions"]),
+  g.cap === "system" && it.cap === "status" ? " - for everything, or for " + it.id + " by name." : "."])]));
+  else if (g.hold) card.append(h("div", "note warn", [ic("hand", "sm"), KIND === "security" || KIND === "sms"
+    ? "Always held: keep the key (or the dial) pressed 1.5 s - it changes how the house behaves."
+    : "ZIGMon asks for a confirmation: hold the key (or the dial) for 1.5 s - a ring fills while you hold."]));
+}
+
+function picker(): HTMLElement {
+  if (FIXED_ITEM[KIND as NewKind] || KIND === "sms") return fixedCard();
+  const card = h("div", "card");
+  const [title, lede] = TITLES[KIND];
+  const old = tooOld();
+  if (old) {
+    card.append(h("h2", "", [ic(NEW_TITLES[KIND as NewKind]?.icon ?? "grid", "sm"), title]));
+    card.append(h("div", "note warn", [ic("download", "sm"), h("span", "", ["Needs ", h("b", "", ["ZIGMon " + NEEDS_ZIGMON]), " or newer. This one is " + old + ": the key says so until ZIGMon is updated."])]));
+    return card;
+  }
   card.append(h("h2", "", [ic(KIND === "reading" ? "gauge" : KIND === "status" ? "heart" : "grid", "sm"), title, catalogLoaded ? h("span", "count", [String(items.length)]) : null]));
-  const chosen = items.find((i) => i.id === settings.item);
+  const chosen = items.find((i) => i.id === currentId());
   const st = status;
   if (!st || st.phase !== "online") {
     if (!catalogLoaded || items.length === 0) {
@@ -557,6 +666,8 @@ function kindWord(k: string): string {
     socket: "socket", light: "light", switch: "switch", dimmer: "dimmer", thermostat: "thermostat", cover: "blinds", scene: "scene",
     sequence: "sequence", group: "group of actions", rule: "rule", schedule: "schedule", message: "message", system: "system",
     sensor: "sensor", reading: "reading", status: "ZIGMon status",
+    power: "house power", security: "network security", heatgroup: "heating", away: "away / home", openings: "windows & doors",
+    batteries: "batteries", zigbee: "Zigbee network", room: "room", sms: "SMS",
   };
   return w[k] ?? k;
 }
@@ -601,12 +712,14 @@ function renderList(): void {
 
 // ------------------------------------------------------------------ per-action options
 
+const NUMERIC = new Set(["span", "step", "decimals", "minutes", "muteMinutes"]);
+
 function chips(label: string, options: [string, string, string?][], current: string | undefined, key: string): HTMLElement[] {
   const wrap = h("div", "chips");
   for (const [v, word, iconName] of options) {
     const c = h("button", "chip" + (current === v ? " on" : ""), [iconName ? ic(iconName, "sm") : null, word]);
     c.type = "button";
-    c.addEventListener("click", () => saveSettings({ [key]: key === "span" || key === "step" || key === "decimals" ? Number(v) : v }));
+    c.addEventListener("click", () => saveSettings({ [key]: NUMERIC.has(key) ? Number(v) : v }));
     wrap.append(c);
   }
   return [h("label", "f", [label]), wrap];
@@ -632,17 +745,20 @@ function toggle(label: string, key: string, def: boolean): HTMLElement {
 }
 
 function optionsCard(): HTMLElement | null {
-  const it = items.find((i) => i.id === settings.item);
+  const it = items.find((i) => i.id === currentId());
   const card = h("div", "card");
   card.append(h("h2", "", [ic("gear", "sm"), "Options"]));
   const press = settings.press as string | undefined;
   switch (KIND) {
     case "control": {
-      const acts = (it?.actions ?? ["toggle", "on", "off"]).filter((a) => a !== "set" && a !== "step");
+      const acts = (it?.actions ?? ["toggle", "on", "off"]).filter((a) => a !== "set" && a !== "step" && a !== "ack" && a !== "mute" && a !== "unmute");
       const words: Record<string, [string, string]> = {
         toggle: ["Toggle", "switch"], on: ["Turn on", "power"], off: ["Turn off", "power"], run: ["Run", "play"], open: ["Open", "blindsUp"], close: ["Close", "blindsDown"], stop: ["Stop", "stop"],
+        timer: ["Timer", "stopwatch"],
       };
       if (acts.length) card.append(...chips("A press of the key / dial", acts.map((a) => [a, words[a]?.[0] ?? a, words[a]?.[1]] as [string, string, string?]), press ?? acts[0], "press"));
+      // (1.3, ZIGMon 5.59.4) Timer: on for the minutes, a press again turns it off (and the timer with it)
+      if (press === "timer" && it?.actions.includes("timer")) card.append(...minutesChooser());
       if (it?.attrs.some((a) => a.type === "number")) card.append(numberField("Dial: change per click (empty = automatic)", "step", "auto"));
       break;
     }
@@ -680,10 +796,183 @@ function optionsCard(): HTMLElement | null {
       break;
     case "status":
       break;
+    // (1.3, ZIGMon 5.59.4)
+    case "power":
+      card.append(h("div", "note", [ic("info", "sm"), "On a Stream Deck +, turn the dial for 1 h, 6 h, 24 h or 7 days; the key keeps the span chosen under Look."]));
+      break;
+    case "security":
+      card.append(h("div", "note", [ic("hand", "sm"), "A held press (1.5 s) acknowledges the latest alert, as the dashboard's “seen” does; older ones stay. It needs System for this deck in ZIGMon."]));
+      break;
+    case "heatgroup": {
+      const modes = it?.attrs.find((a) => a.type === "enum" && /mode/i.test(a.key))?.values ?? ["plan", "comfort", "eco", "night", "max", "off", "manual"];
+      const set = modes.filter((m) => m in MODE_CHIPS);
+      card.append(...chips("A press of the key / dial", [["mode", "Next mode", "refresh"], ...set.map((m) => ["set:" + m, MODE_CHIPS[m]![0], MODE_CHIPS[m]![1]] as [string, string, string])], press ?? "mode", "press"));
+      card.append(h("div", "note", [ic("info", "sm"), "Every heated room gets the mode, one after another. Next mode is sent once the presses stop (from Mixed it starts at Plan); turning the dial steps it too."]));
+      break;
+    }
+    case "away":
+      card.append(awayExtras());
+      break;
+    case "timer":
+      card.append(...minutesChooser());
+      card.append(h("div", "note", [ic("info", "sm"), "A press turns it on now and ZIGMon turns it off after the minutes - even if this PC sleeps. A press while it runs turns it off at once. On a dial: turn for the minutes, push to start."]));
+      break;
+    case "room":
+      card.append(h("div", "note", [ic("dial", "sm"), "On a Stream Deck +, turn the dial through the room's items; the strip shows the one chosen, and a push switches or runs it - each by its own permission and hold."]));
+      break;
+    case "sms": {
+      const mode = String(settings.smsMode ?? "last");
+      if (mode === "compose") card.append(...recipients());
+      if (mode === "status") {
+        card.append(...chips("A held press mutes the alerts for", [["15", "15 min"], ["30", "30 min"], ["60", "1 h"], ["120", "2 h"], ["240", "4 h"]], String(settings.muteMinutes ?? 60), "muteMinutes"));
+        card.append(h("div", "note", [ic("bellOff", "sm"), "While muted, ZIGMon sends no alert by any road (the events still record everything). A held press while muted unmutes. It needs System for this deck."]));
+      } else card.append(h("div", "note", [ic("deck", "sm"), "ZIGMon hands this to the desktop app linked to this Stream Deck (Settings → Messages → Stream Deck). When none is running, the key says so."]));
+      break;
+    }
   }
-  if (KIND !== "reading" && KIND !== "status") card.append(holdSwitch(it));
-  if ((KIND === "control" || KIND === "dimmer") && it && it.cap === "switch") card.append(byHandSwitch());
+  if (KIND !== "reading" && KIND !== "status" && KIND !== "power" && KIND !== "openings" && KIND !== "batteries" && KIND !== "zigbee" && !(KIND === "security" || (KIND === "sms" && settings.smsMode === "status"))) card.append(holdSwitch(it));
+  if ((KIND === "control" || KIND === "dimmer" || KIND === "timer") && it && it.cap === "switch") card.append(byHandSwitch());
   if (card.childElementCount <= 1) return null;
+  return card;
+}
+
+const MODE_CHIPS: Record<string, [string, string]> = {
+  plan: ["Plan", "calendar"], comfort: ["Comfort", "sun"], eco: ["Eco", "leaf"], night: ["Night", "moon"], max: ["Max", "flame"], off: ["Off", "power"], manual: ["By hand", "hand"],
+};
+
+/** (1.3) The Timer's minutes: the ready choices, or a number of the user's own (1-720). */
+function minutesChooser(): HTMLElement[] {
+  const m = typeof settings.minutes === "number" ? settings.minutes : 30;
+  const ready = ["5", "10", "15", "30", "60", "120"];
+  const out = chips("On for", ready.map((v) => [v, Number(v) >= 60 ? Number(v) / 60 + " h" : v + " min"] as [string, string]), ready.includes(String(m)) ? String(m) : "", "minutes");
+  const own = h("input", "in") as HTMLInputElement;
+  own.type = "number";
+  own.min = "1";
+  own.max = "720";
+  own.step = "1";
+  own.placeholder = "minutes";
+  own.dataset.key = "minutesOwn";
+  own.value = ready.includes(String(m)) ? "" : String(m);
+  own.addEventListener("change", () => {
+    const v = Math.round(Number(own.value));
+    saveSettings({ minutes: Number.isFinite(v) && v >= 1 && v <= 720 ? v : undefined });
+  });
+  return [...out, h("div", "row", [h("span", "muted small", ["or minutes of your own (1-720)"]), own])];
+}
+
+/** (1.3) Away / Home: the switches turned off too when going Away, each under its own permission. */
+function awayExtras(): HTMLElement {
+  const wrap = h("div", "");
+  const chosen = new Set(Array.isArray(settings.awayOff) ? settings.awayOff : []);
+  wrap.append(h("label", "f", ["Going Away also turns off", h("span", "count", [String(chosen.size)])]));
+  if (extras.length > 8) {
+    const s = h("input", "in") as HTMLInputElement;
+    s.type = "search";
+    s.placeholder = "Search switches and lights";
+    s.dataset.key = "extraSearch";
+    s.value = extraQuery;
+    s.addEventListener("input", () => {
+      extraQuery = s.value;
+      render();
+    });
+    wrap.append(h("div", "search", [ic("search", "sm"), s]));
+  }
+  const q = extraQuery.trim().toLowerCase();
+  const list = h("div", "list extras");
+  const shownList = extras.filter((x) => chosen.has(x.id) || !q || [x.name, x.room ?? "", x.id].some((t) => t.toLowerCase().includes(q)))
+    .sort((a, b) => Number(chosen.has(b.id)) - Number(chosen.has(a.id)) || (a.room ?? "~").localeCompare(b.room ?? "~") || a.name.localeCompare(b.name));
+  for (const x of shownList.slice(0, 120)) {
+    const on = chosen.has(x.id);
+    const o = h("div", "opt" + (on ? " sel" : "") + (x.allowed ? "" : " locked"), [
+      tile(lookFor(x.kind, x.icon).icon, x.allowed ? lookFor(x.kind, x.icon).accent : P.muted, true),
+      h("div", "grow", [h("div", "n", [x.name]), h("div", "s", [[x.room, kindWord(x.kind)].filter(Boolean).join(" · ")])]),
+      !x.allowed ? h("span", "badge", [ic("lock", "sm")]) : x.hold ? h("span", "badge hold", [ic("hand", "sm")]) : null,
+      h("span", "tick", [ic(on ? "check" : "close", "sm")]),
+    ]);
+    o.title = x.allowed ? (x.hold ? "Needs a hold: the Away key will need one too when going away" : "") : "Not allowed for this deck: it will be skipped";
+    o.addEventListener("click", () => {
+      const next = new Set(chosen);
+      if (on) next.delete(x.id);
+      else next.add(x.id);
+      saveSettings({ awayOff: next.size ? [...next].slice(0, 20) : undefined });
+    });
+    list.append(o);
+  }
+  if (!extras.length) list.append(h("div", "empty", [ic("search"), "ZIGMon shows this deck nothing it could switch off."]));
+  wrap.append(list);
+  wrap.append(h("div", "note", [ic("info", "sm"), "Sent after the away switch, each as its own command under its own permission: one not allowed is skipped, and one that needs a hold makes the Away key need one when going away. Coming home turns nothing back on."]));
+  return wrap;
+}
+
+/** (1.3) SMS, Write new: whom the desktop app's new message is to. The deck has no list of contacts. */
+function recipients(): HTMLElement[] {
+  const to = Array.isArray(settings.smsTo) ? settings.smsTo : [];
+  const chipsWrap = h("div", "chips");
+  to.forEach((r, k) => {
+    const c = h("button", "chip on", [ic(r.startsWith("group:") ? "layers" : r.startsWith("contact:") ? "person" : "message", "sm"), r.startsWith("group:") ? r.slice(6) + " (group)" : r, ic("close", "sm")]);
+    c.type = "button";
+    c.title = "Remove";
+    c.addEventListener("click", () => {
+      const next = to.filter((_, j) => j !== k);
+      saveSettings({ smsTo: next.length ? next : undefined });
+    });
+    chipsWrap.append(c);
+  });
+  if (!to.length) chipsWrap.append(h("span", "muted small", ["Nobody yet: the new message opens empty."]));
+  const input = h("input", "in" + (smsError ? " bad" : "")) as HTMLInputElement;
+  input.placeholder = "+420 777 123 456 or group:Family";
+  input.dataset.key = "smsTo";
+  input.value = smsDraft;
+  const add = () => {
+    const r = cleanRecipient(input.value);
+    if (!r) {
+      smsError = "A phone number (digits, + at the start), group:<name> or contact:<id>.";
+      smsDraft = input.value;
+      render();
+      return;
+    }
+    if (to.length >= 20) {
+      smsError = "At most 20.";
+      render();
+      return;
+    }
+    smsDraft = "";
+    smsError = "";
+    saveSettings({ smsTo: [...new Set([...to, r])] });
+  };
+  input.addEventListener("input", () => {
+    smsDraft = input.value;
+    smsError = "";
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") add();
+  });
+  const out: HTMLElement[] = [h("label", "f", ["To (optional, at most 20)"]), chipsWrap, h("div", "row", [input, btn("Add", "", "edit", add, "smsAdd")])];
+  if (smsError) out.push(h("div", "err", [smsError]));
+  out.push(h("div", "note", [ic("info", "sm"), h("span", "", ["ZIGMon gives the Stream Deck no list of contacts, so type a phone number or ", h("b", "", ["group:"]), " and the name of a contact group as ZIGMon's SMS tab has it. ZIGMon finds the numbers; the desktop app opens the message to them."])]));
+  return out;
+}
+
+/** (1.3) "Now": what the item says beyond the key - every window open, the whole latest alert, the room's items. */
+function factsCard(): HTMLElement | null {
+  if (!isNewKind(KIND) || !facts.length) return null;
+  const card = h("div", "card");
+  card.append(h("h2", "", [ic("pulse", "sm"), "Now"]));
+  const kv = h("dl", "kv");
+  let list: HTMLElement | null = null;
+  for (const [k, v] of facts) {
+    if (k === "·") {
+      if (!list) {
+        list = h("ul", "names");
+        kv.append(h("dt", "", [KIND === "room" ? "Items" : "Names"]), h("dd", "", [list]));
+      }
+      list.append(h("li", "", [v]));
+      continue;
+    }
+    list = null;
+    kv.append(h("dt", "", [k]), h("dd", "", [v]));
+  }
+  card.append(kv);
   return card;
 }
 
@@ -698,6 +987,17 @@ const INFO: Record<Kind, [string, string, string][]> = {
   blinds: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Position", "blinds"], ["showDetail", "Moving", "down"], ["showGraph", "Window", "window"]],
   scene: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Run / done", "play"]],
   status: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Value", "heart"], ["showDetail", "Detail", "info"]],
+  // (1.3, ZIGMon 5.59.4)
+  power: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Power now", "bolt"], ["showDetail", "kWh today", "sun"], ["showGraph", "Graph", "pulse"], ["showMode", "Span", "clock"]],
+  security: [["showIcon", "Shield", "shield"], ["showName", "Name", "edit"], ["showState", "Alerts", "bell"], ["showDetail", "Blocked", "wall"], ["showMode", "New today", "clock"], ["showGraph", "Alert dots", "grid"]],
+  heatgroup: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Rooms heating", "flame"], ["showMode", "Mode", "layers"], ["showDetail", "Min – max °C", "thermo"], ["showGraph", "Rooms bar", "dial"]],
+  away: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Away / Home", "home"], ["showDetail", "Lights & heating", "bulbOn"], ["showMode", "By the dates", "calendar"]],
+  openings: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "How many open", "windowOpen"], ["showDetail", "Which", "door"], ["showMode", "Heat escaping", "flame"], ["showGraph", "Sensors bar", "dial"]],
+  batteries: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "How many low", "batteryLow"], ["showDetail", "The lowest", "battery"], ["showGraph", "Its level", "dial"]],
+  zigbee: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Online / offline", "mesh"], ["showDetail", "Last dropped", "wifiOff"], ["showGraph", "Online bar", "dial"]],
+  timer: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Countdown", "stopwatch"], ["showDetail", "Off at", "clock"], ["showGraph", "Ring", "dial"], ["showBattery", "Battery", "battery"]],
+  room: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Temperature", "thermo"], ["showDetail", "Humidity & on", "drop"], ["showMode", "Heating", "flame"]],
+  sms: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Count / word", "message"], ["showDetail", "From / to", "person"], ["showMode", "Unread", "inbox"]],
 };
 const SPAN_WORDS: [number, string][] = [[3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [604800, "7 d"]];
 
@@ -716,7 +1016,7 @@ function picture(src: string, cls: string, pic?: string): HTMLImageElement {
 }
 
 function lookCard(): HTMLElement {
-  const it = items.find((i) => i.id === settings.item);
+  const it = items.find((i) => i.id === currentId());
   const card = h("div", "card look-card");
   const theme = String(settings.theme ?? "classic");
   card.append(h("h2", "", [ic("sparkle", "sm"), "Look", h("span", "count", [THEMES.find((t) => t.id === theme)?.name ?? "Classic"])]));
@@ -767,7 +1067,7 @@ function lookCard(): HTMLElement {
     btn("Everything", "ghost", "grid", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showGraph" && KIND === "thermostat" ? true : undefined])))),
     btn("Icon only", "ghost", "sparkle", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showIcon"])))),
   ]));
-  if ((KIND === "reading" || KIND === "thermostat") && shown("showGraph")) {
+  if ((KIND === "reading" || KIND === "thermostat" || KIND === "power") && shown("showGraph")) {
     card.append(...chips("Graph over the last", SPAN_WORDS.map(([v, w]) => [String(v), w] as [string, string]), String(settings.span ?? 86400), "span"));
     card.append(toggle("Min / max on the graph", "showScale", false));
     if (KIND === "thermostat") card.append(toggle("The target as a dashed line", "showTarget", true));
@@ -814,6 +1114,12 @@ function autoColour(tab: ColourTab, it: PiItem | undefined): string {
   if (KIND === "blinds") return P.purple;
   if (KIND === "reading") return P.water;
   if (KIND === "status") return P.ok;
+  // (1.3) the new actions' own colours, as their keys draw them
+  const own: Partial<Record<Kind, string>> = {
+    power: P.warn, security: P.crit, heatgroup: P.orange, away: ACCENTS.indigo!.colour, openings: P.warn, batteries: P.warn, zigbee: P.warn, timer: P.water, room: P.info,
+    sms: settings.smsMode === "status" ? ACCENTS.indigo!.colour : P.info,
+  };
+  if (own[KIND]) return own[KIND]!;
   return it ? itemColour(it) : P.info;
 }
 
@@ -878,7 +1184,7 @@ function patchPictures(): void {
 function paintColour(tab: ColourTab, from?: "sv" | "hue" | "hex"): void {
   const root = document.querySelector<HTMLElement>(".colours");
   if (!root) return;
-  const it = items.find((i) => i.id === settings.item);
+  const it = items.find((i) => i.id === currentId());
   const v = colourSetting(tab);
   const [word, hex] = colourWords(v);
   const c = hex || autoColour(tab, it);
@@ -1203,7 +1509,7 @@ function render(): void {
   const sel = a instanceof HTMLInputElement && a.type !== "number" ? [a.selectionStart, a.selectionEnd] : null;
   const scroll = document.getElementById("list")?.scrollTop ?? 0;
   const parts: (HTMLElement | null)[] = [updateCard(), connectionCard(), picker()];
-  if (settings.item && !pickerOpen) parts.push(lookCard(), optionsCard());
+  if (currentId() && !pickerOpen && !tooOld()) parts.push(factsCard(), lookCard(), optionsCard());
   parts.push(h("div", "foot", [ic("zigmon"), "ZIGMon for Stream Deck " + (status?.plugin ?? "")]));
   app.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
   if (focusKey) {
