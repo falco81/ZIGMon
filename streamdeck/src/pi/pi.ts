@@ -10,6 +10,7 @@ import { ACCENTS, colourOf, P } from "../core/palette.js";
 import { lookFor } from "../core/render.js";
 import { THEMES } from "../core/themes.js";
 import { cleanRecipient, FIXED_ITEM, isNewKind, itemFor, NEEDS_ZIGMON, NEW_TITLES, needs, type NewKind } from "../core/kinds.js";
+import { chosenOf, fold, parseSmsBook, searchBook, SMS_TO_MOST, toggled, typedNumber, type SmsBook } from "../core/smsbook.js";
 
 type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind;
 
@@ -58,6 +59,9 @@ let extras: PiExtra[] = [];
 let extraQuery = "";
 let smsDraft = "";
 let smsError = "";
+/** (1.3) SMS, Write new: ZIGMon's address book (no numbers), null when it sent none; the picker's search. */
+let book: SmsBook | null = null;
+let smsQuery = "";
 let query = "";
 let pickerOpen = false;
 let connOpen = false;
@@ -147,6 +151,9 @@ function onMessage(ev: MessageEvent): void {
     } else if (p.t === "catalog") {
       items = (p.items as PiItem[]) ?? [];
       extras = Array.isArray(p.extras) ? (p.extras as PiExtra[]) : [];
+      // (1.3) parsed again here, as strictly as the plugin did
+      const sb = p.sms && typeof p.sms === "object" ? (p.sms as Record<string, unknown>) : null;
+      book = sb ? parseSmsBook({ sms_contacts: sb.contacts, sms_groups: sb.groups }) : null;
       catalogLoaded = true;
     } else if (p.t === "preview") {
       preview = typeof p.image === "string" && p.image.startsWith("data:image/svg+xml") ? p.image : "";
@@ -905,41 +912,85 @@ function awayExtras(): HTMLElement {
   return wrap;
 }
 
-/** (1.3) SMS, Write new: whom the desktop app's new message is to. The deck has no list of contacts. */
+/**
+ * (1.3) SMS, Write new: whom the desktop app's new message is to. With ZIGMon's address book (names
+ * and groups, no numbers): a search, the favourites and the groups as quick chips, every contact in
+ * a list. It stores contact:<id> and group:<name>, at most 20; a typed number is the fallback, and
+ * the only way when ZIGMon sent no book.
+ */
 function recipients(): HTMLElement[] {
-  const to = Array.isArray(settings.smsTo) ? settings.smsTo : [];
-  const chipsWrap = h("div", "chips");
-  to.forEach((r, k) => {
-    const c = h("button", "chip on", [ic(r.startsWith("group:") ? "layers" : r.startsWith("contact:") ? "person" : "message", "sm"), r.startsWith("group:") ? r.slice(6) + " (group)" : r, ic("close", "sm")]);
-    c.type = "button";
-    c.title = "Remove";
-    c.addEventListener("click", () => {
-      const next = to.filter((_, j) => j !== k);
-      saveSettings({ smsTo: next.length ? next : undefined });
-    });
-    chipsWrap.append(c);
-  });
-  if (!to.length) chipsWrap.append(h("span", "muted small", ["Nobody yet: the new message opens empty."]));
-  const input = h("input", "in" + (smsError ? " bad" : "")) as HTMLInputElement;
-  input.placeholder = "+420 777 123 456 or group:Family";
-  input.dataset.key = "smsTo";
-  input.value = smsDraft;
-  const add = () => {
-    const r = cleanRecipient(input.value);
-    if (!r) {
-      smsError = "A phone number (digits, + at the start), group:<name> or contact:<id>.";
-      smsDraft = input.value;
+  const to = Array.isArray(settings.smsTo) ? settings.smsTo.filter((x): x is string => typeof x === "string") : [];
+  const has = new Set(to);
+  const full = to.length >= SMS_TO_MOST;
+  const pick = (r: string) => {
+    const t = toggled(to, r);
+    if (t.full) {
+      smsError = "At most " + SMS_TO_MOST + " recipients: remove one first.";
       render();
       return;
     }
-    if (to.length >= 20) {
-      smsError = "At most 20.";
+    smsError = "";
+    saveSettings({ smsTo: t.to.length ? t.to : undefined });
+  };
+  const out: HTMLElement[] = [h("label", "f", ["To", h("span", "count", [to.length + " / " + SMS_TO_MOST])])];
+
+  // who is chosen, each a chip that removes it
+  const chosen = h("div", "chips to");
+  let missing = 0;
+  for (const r of to) {
+    const c = chosenOf(r, book);
+    if (c.missing) missing++;
+    const chip = h("button", "chip rc " + c.kind + (c.missing ? " miss" : ""), [
+      ic(c.missing ? "alert" : c.kind === "contact" ? "person" : c.kind === "group" ? "people" : "message", "sm"),
+      h("span", "nm", [c.label]),
+      c.kind === "group" && !c.missing ? h("span", "k", ["group"]) : c.missing && c.kind === "group" ? h("span", "k", ["missing group"]) : null,
+      h("span", "x", [ic("close", "sm")]),
+    ]);
+    chip.type = "button";
+    chip.title = c.missing
+      ? (c.kind === "contact" ? "No longer in ZIGMon's address book" : "No contact is in this group now") + " - click to remove"
+      : "Remove " + c.label;
+    chip.addEventListener("click", () => pick(r));
+    chosen.append(chip);
+  }
+  if (!to.length) chosen.append(h("span", "muted small none", ["Nobody yet - the message opens empty and you choose in the desktop app."]));
+  out.push(chosen);
+  if (missing) {
+    out.push(h("div", "note warn", [ic("alert", "sm"), h("span", "", [missing === 1 ? "One recipient is " : missing + " recipients are ",
+      "no longer in ZIGMon's address book. Remove ", missing === 1 ? "it" : "them", ", or the key is refused with ", h("b", "", ["Unknown recipient"]), "."])]));
+  }
+
+  if (book) out.push(...bookPicker(book, has, full, pick));
+  else {
+    const noCap = status?.install && status.install.caps.sms?.on !== true;
+    out.push(h("div", "note", [ic("info", "sm"), h("span", "", [noCap
+      ? "ZIGMon sends this deck no contacts: the administrator has not granted it SMS. "
+      : "This ZIGMon sends the Stream Deck no contacts (it is older than its SMS address book). ",
+    "Type a phone number, or ", h("b", "", ["group:"]), " and a group's name as ZIGMon's SMS tab has it."])]));
+  }
+
+  // the fallback: a number typed by hand (and, without a book, group:<name>)
+  const input = h("input", "in" + (smsError && smsDraft ? " bad" : "")) as HTMLInputElement;
+  input.placeholder = book ? "+420 777 123 456" : "+420 777 123 456 or group:Work";
+  input.inputMode = book ? "tel" : "text";
+  input.dataset.key = "smsTo";
+  input.value = smsDraft;
+  const add = () => {
+    const r = book ? typedNumber(input.value) : cleanRecipient(input.value);
+    smsDraft = input.value;
+    if (!r) {
+      smsError = book ? "A phone number: + at the start, then digits." : "A phone number (+ and digits) or group:<name>.";
+      render();
+      return;
+    }
+    if (has.has(r)) {
+      smsDraft = "";
+      smsError = "";
       render();
       return;
     }
     smsDraft = "";
-    smsError = "";
-    saveSettings({ smsTo: [...new Set([...to, r])] });
+    pick(r);
   };
   input.addEventListener("input", () => {
     smsDraft = input.value;
@@ -948,10 +999,83 @@ function recipients(): HTMLElement[] {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") add();
   });
-  const out: HTMLElement[] = [h("label", "f", ["To (optional, at most 20)"]), chipsWrap, h("div", "row", [input, btn("Add", "", "edit", add, "smsAdd")])];
+  out.push(h("div", "sub", [ic("message", "sm"), book ? "Or a phone number" : "A phone number or group"]));
+  out.push(h("div", "row", [input, btn("Add", "", "check", add, "smsAdd")]));
   if (smsError) out.push(h("div", "err", [smsError]));
-  out.push(h("div", "note", [ic("info", "sm"), h("span", "", ["ZIGMon gives the Stream Deck no list of contacts, so type a phone number or ", h("b", "", ["group:"]), " and the name of a contact group as ZIGMon's SMS tab has it. ZIGMon finds the numbers; the desktop app opens the message to them."])]));
   return out;
+}
+
+/** (1.3) The address book's part of the picker: the search, favourites and groups as chips, the contacts. */
+function bookPicker(b: SmsBook, has: Set<string>, full: boolean, pick: (r: string) => void): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  if (!b.contacts.length && !b.groups.length) {
+    out.push(h("div", "note", [ic("person", "sm"), "ZIGMon's address book is empty: add contacts in its SMS tab, or type a number below."]));
+    return out;
+  }
+  const s = h("input", "in") as HTMLInputElement;
+  s.type = "search";
+  s.placeholder = "Search " + b.contacts.length + (b.contacts.length === 1 ? " contact" : " contacts") + (b.groups.length ? " and groups" : "");
+  s.dataset.key = "smsSearch";
+  s.value = smsQuery;
+  s.addEventListener("input", () => {
+    smsQuery = s.value;
+    render();
+  });
+  out.push(h("div", "search", [ic("search", "sm"), s]));
+  const q = smsQuery.trim();
+  const found = searchBook(b, q);
+  const mark = (text: string) => {
+    if (!q) return [text];
+    const i = fold(text).indexOf(fold(q));
+    return i < 0 ? [text] : [text.slice(0, i), h("mark", "", [text.slice(i, i + q.length)]), text.slice(i + q.length)];
+  };
+  const quick = (r: string, iconName: string, label: string, cls: string, title: string) => {
+    const on = has.has(r);
+    const c = h("button", "chip " + cls + (on ? " on" : "") + (full && !on ? " dis" : ""), [ic(on ? "check" : iconName, "sm"), ...mark(label)]);
+    c.type = "button";
+    c.title = on ? "Chosen - click to remove" : title;
+    c.addEventListener("click", () => pick(r));
+    return c;
+  };
+  const favs = found.contacts.filter((c) => c.favourite);
+  if (!q && favs.length) {
+    out.push(h("div", "sub", [ic("star", "sm"), "Favourites"]));
+    out.push(h("div", "chips", favs.slice(0, 24).map((c) => quick("contact:" + c.id, "star", c.name, "fav", c.group ? c.name + " · " + c.group : c.name))));
+  }
+  if (found.groups.length) {
+    out.push(h("div", "sub", [ic("people", "sm"), "Groups", h("span", "c", [String(found.groups.length)])]));
+    out.push(h("div", "chips", found.groups.slice(0, 40).map((g) => {
+      const n = b.contacts.filter((c) => c.group !== null && c.group.toLowerCase() === g.toLowerCase()).length;
+      return quick("group:" + g, "people", g, "grp", "Everyone in " + g + (n ? " (" + n + ")" : ""));
+    })));
+  }
+  out.push(h("div", "sub", [ic("person", "sm"), q ? "Contacts found" : "All contacts", h("span", "c", [String(found.contacts.length)])]));
+  const list = h("div", "list contacts");
+  list.id = "list";
+  for (const c of found.contacts.slice(0, 200)) {
+    const r = "contact:" + c.id;
+    const on = has.has(r);
+    const o = h("div", "opt" + (on ? " sel" : "") + (full && !on ? " dis" : ""), [
+      h("span", "ava", [initials(c.name)]),
+      h("div", "grow", [h("div", "n", mark(c.name)), h("div", "s", c.group ? mark(c.group) : ["no group"])]),
+      c.favourite ? h("span", "fv", [ic("star", "sm")]) : null,
+      h("span", "tick", [on ? ic("check", "sm") : null]),
+    ]);
+    o.title = on ? "Chosen - click to remove" : full ? "At most " + SMS_TO_MOST : "Add " + c.name;
+    o.addEventListener("click", () => pick(r));
+    list.append(o);
+  }
+  if (found.contacts.length > 200) list.append(h("div", "empty small", ["… and " + (found.contacts.length - 200) + " more - search for them"]));
+  if (!found.contacts.length) list.append(h("div", "empty", [ic("search"), q ? "No contact matches “" + q + "”" : "No contacts"]));
+  out.push(list);
+  return out;
+}
+
+/** "JN" for Jana Nováková: the avatar's letters (text, never markup). */
+function initials(name: string): string {
+  const w = name.split(/\s+/).filter((x) => /\p{L}|\p{N}/u.test(x));
+  const first = (x: string | undefined) => (x ? [...x.replace(/^[^\p{L}\p{N}]+/u, "")][0] ?? "" : "");
+  return (first(w[0]) + (w.length > 1 ? first(w[w.length - 1]) : "")).toUpperCase() || "?";
 }
 
 /** (1.3) "Now": what the item says beyond the key - every window open, the whole latest alert, the room's items. */

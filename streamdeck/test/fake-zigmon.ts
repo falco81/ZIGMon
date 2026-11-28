@@ -137,6 +137,23 @@ export function extendedItems(now = Math.floor(Date.now() / 1000)): FakeItem[] {
   ];
 }
 
+/** (PROTOCOL-SMS.md 3) An address book as the extended catalogue carries it: names and groups, no numbers. */
+export function sampleBook(): { sms_contacts: { id: string; name: string; group: string | null; favourite: boolean }[]; sms_groups: string[] } {
+  return {
+    sms_contacts: [
+      { id: "c_5f2a9e", name: "Jana Nováková", group: "Family", favourite: true },
+      { id: "c_77b0c1", name: "Petr Novák", group: "Family", favourite: true },
+      { id: "c_0a1b2c", name: "Eliška Dvořáková", group: "Family", favourite: false },
+      { id: "c_9d8e7f", name: "Martin Svoboda", group: "Work", favourite: true },
+      { id: "c_31c4d5", name: "Office reception", group: "Work", favourite: false },
+      { id: "c_e6f708", name: "Tomáš Černý", group: "Neighbours", favourite: false },
+      { id: "c_12ab34", name: "Lucie Horáková", group: null, favourite: false },
+      { id: "c_56cd78", name: "Plumber - Karel", group: null, favourite: false },
+    ],
+    sms_groups: ["Family", "Neighbours", "Work"],
+  };
+}
+
 export class FakeZigmon {
   enabled = true;
   items: FakeItem[] = sampleItems();
@@ -146,6 +163,10 @@ export class FakeZigmon {
   extended: FakeItem[] = extendedItems();
   /** (PROTOCOL-SMS.md 3) whether a desktop app linked to this Stream Deck is running. */
   desktopApp = false;
+  /** (PROTOCOL-SMS.md 3) whether the linked app's key may (false: 409 not_allowed). */
+  desktopAppMay = true;
+  /** (PROTOCOL-SMS.md 3) the address book an extended catalogue carries (null: none, as without the cap sms). */
+  smsBook: { sms_contacts: unknown[]; sms_groups: unknown[] } | null = sampleBook();
   /** Every question's road and whether it asked for the summaries. */
   asked: { do: string; method: string; extended: boolean }[] = [];
   boot = 1732700000;
@@ -320,7 +341,11 @@ export class FakeZigmon {
           plugin: this.plugin,
         });
       case "catalog":
-        return send(200, { ok: true, boot: this.boot, seq: this.seq, rooms: [{ id: "1", name: "Obývák" }, { id: "2", name: "Kitchen" }], items: (ext ? all() : this.items).map(item) });
+        return send(200, {
+          ok: true, boot: this.boot, seq: this.seq, rooms: [{ id: "1", name: "Obývák" }, { id: "2", name: "Kitchen" }], items: (ext ? all() : this.items).map(item),
+          // (PROTOCOL-SMS.md 3) the address book, only in the extended catalogue of an installation with the cap sms
+          ...(ext && this.features.includes("sms") && this.smsBook ? this.smsBook : {}),
+        });
       case "state": {
         const b = (body && typeof body === "object" ? body : {}) as { ids?: string; history?: { span?: number; points?: number } };
         const ids = (u.searchParams.get("ids") ?? b.ids ?? "").split(",");
@@ -379,14 +404,22 @@ export class FakeZigmon {
           this.setState(it.id, { on: true, attrs: { off_at: Math.ceil(Date.now() / 1000) + b.minutes * 60 } });
         } else if (a === "ack") {
           const n = Number((s.attrs as Record<string, unknown>).alerts ?? 0);
-          if (n <= 0) return send(409, { ok: false, error: "there is no alert standing" });
+          if (n <= 0) return send(409, { ok: false, error: "there is no alert standing", nothing: true });
           this.setState(it.id, { value: n - 1, on: n - 1 === 0, attrs: { alerts: n - 1, level: n - 1 ? "crit" : "ok" } });
         } else if (a === "mute") {
           if (typeof b.minutes !== "number" || !Number.isInteger(b.minutes) || b.minutes < 15 || b.minutes > 240) return send(400, { ok: false, error: "minutes must be 15-240" });
           this.setState(it.id, { attrs: { muted_until: Math.floor(Date.now() / 1000) + b.minutes * 60 } });
         } else if (a === "unmute") this.setState(it.id, { attrs: { muted_until: null } });
         else if (a === "run" && it.cap === "sms") {
-          if (!this.desktopApp) return send(409, { ok: false, error: "no desktop app linked to this Stream Deck is running" });
+          if (b.to !== undefined) {
+            if (!Array.isArray(b.to) || b.to.length > 20) return send(400, { ok: false, error: "to must be a list of at most 20" });
+            const ids = new Set(((this.smsBook?.sms_contacts ?? []) as { id: string }[]).map((c) => "contact:" + c.id));
+            const groups = ((this.smsBook?.sms_groups ?? []) as string[]).map((g) => "group:" + g.toLowerCase());
+            const bad = (b.to as unknown[]).filter((x) => typeof x !== "string" || (x.startsWith("contact:") ? !ids.has(x) : x.startsWith("group:") ? !groups.includes(x.toLowerCase()) : !/^\+?\d{3,20}$/.test(x)));
+            if (bad.length) return send(400, { ok: false, error: bad[0] + " is not a contact, a group or a phone number here" + (bad.length > 1 ? " (and " + (bad.length - 1) + " more)" : ""), bad_to: bad });
+          }
+          if (!this.desktopApp) return send(409, { ok: false, error: "no desktop app linked to this Stream Deck is running", apps: 0, no_app: true });
+          if (!this.desktopAppMay) return send(409, { ok: false, error: "the desktop app linked to this Stream Deck may not " + (it.id === "sms:last" ? "read" : "send") + " SMS", apps: 1, not_allowed: true });
           this.setState(it.id, {});
         } else if (a === "toggle" && it.id === "house:away") {
           const away = !(s.attrs as Record<string, unknown>).away;

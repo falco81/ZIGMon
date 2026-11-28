@@ -17,7 +17,9 @@ import { renderHold, renderToast } from "../src/core/render.js";
 import { FakeProtector } from "../src/core/secrets.js";
 import { esc, fit } from "../src/core/svg.js";
 import { ActionView, type ActionKind } from "../src/core/views.js";
-import { FakeZigmon, MemoryStore, MockSurface, until } from "../test/fake-zigmon.js";
+import { parseItem } from "../src/core/protocol.js";
+import { parseSmsBook, type SmsBook } from "../src/core/smsbook.js";
+import { extendedItems, FakeZigmon, MemoryStore, MockSurface, sampleBook, sampleItems, until } from "../test/fake-zigmon.js";
 import { newActionsSheet } from "./sheet.js";
 
 const require = createRequire(import.meta.url);
@@ -185,6 +187,29 @@ async function main(): Promise<void> {
   };
   const statusOffline = { t: "status", status: { ...st, phase: "offline", message: "nothing answers at that address (connection refused)", retryInMs: 8000 } };
   const statusOff = { t: "status", status: { ...st, phase: "off", message: "Stream Deck control is switched off in ZIGMon (Settings → Stream Deck)." } };
+  // (1.3) the SMS key's recipient picker: a 5.59.4 with the cap sms and its address book, and one without the book
+  const smsItems = [...sampleItems(), ...extendedItems()].map((r) => parseItem(r));
+  const smsHub = (book: SmsBook | null) => {
+    const stub = Object.create(hub) as Hub;
+    const byId = new Map(smsItems.map((i) => [i.id, i]));
+    stub.allItems = () => smsItems;
+    stub.allRooms = () => [];
+    stub.item = (id) => (id ? byId.get(id) : undefined);
+    stub.state = (id) => (id ? byId.get(id)?.state : undefined);
+    stub.smsBook = () => book;
+    stub.supports = () => true;
+    Object.defineProperty(stub, "currentPhase", { get: () => "online" });
+    Object.defineProperty(stub, "pairCode", { get: () => null });
+    stub.deckIsApproved = () => true;
+    return stub;
+  };
+  const statusSms = { t: "status", status: { ...st, zigmon: "5.59.4", features: ["extended", "timer", "summaries-5.59.4", "sms"], install: { ...(st.install as object), caps: { ...((st.install as { caps: object }).caps), sms: { on: true, all: true, targets: [] } } } } };
+  const smsTo = ["contact:c_5f2a9e", "group:Work", "+420777123456", "contact:c_00ff00"];
+  const smsSettings = { smsMode: "compose", smsTo };
+  const smsPreview = (book: SmsBook | null) => ({ t: "preview", image: new ActionView("sms", smsHub(book), new MockSurface("Keypad", "XL-1"), smsSettings).previewImage() });
+  const smsBook = parseSmsBook(sampleBook());
+  const smsMsgs = [statusSms, catalogMessage(smsHub(smsBook), "sms"), smsPreview(smsBook)];
+  const smsNoBook = [statusSms, catalogMessage(smsHub(null), "sms"), smsPreview(null)];
 
   // ---------------------------------------------------------------- pages
   const deckPage = (title: string, inner: string, w: number) => `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -237,8 +262,14 @@ async function main(): Promise<void> {
       ["pi-blinds", "blinds", [...pageMsgs["online-blinds"]!, { t: "preview", image: previews.blinds }], { item: "zb:0xd4:cover" }],
       ["pi-scene", "scene", pageMsgs["online-scene"]!, {}],
       ["pi-status", "status", [...pageMsgs["online-status"]!, { t: "preview", image: previews.status }], { item: "status:alerts" }],
+      ["pi-sms-picker", "sms" as ActionKind, smsMsgs, smsSettings],
+      ["pi-sms-search", "sms" as ActionKind, smsMsgs, smsSettings, "smsSearch"],
+      ["pi-sms-nobook", "sms" as ActionKind, smsNoBook, smsSettings],
     ];
+    // node out/scripts/shots.js <dir> <name prefix>: only those inspectors (and no sheet)
+    const only = process.argv[3];
     for (const [name, kind, msgs, settings, extra] of pis) {
+      if (only && !name.startsWith(only)) continue;
       const page = await browser.newPage({ viewport: { width: 350, height: 640 }, deviceScaleFactor: 2 });
       await page.addInitScript((init: { msgs: unknown[] }) => {
         class MockWS {
@@ -267,6 +298,10 @@ async function main(): Promise<void> {
         await page.fill('input[type="search"]', "lam");
         await page.waitForTimeout(100);
       }
+      if (extra === "smsSearch") {
+        await page.fill('input[data-key="smsSearch"]', "nov");
+        await page.waitForTimeout(100);
+      }
       if (extra === "open") {
         await page.click(".head.collapse");
         await page.waitForTimeout(100);
@@ -280,6 +315,7 @@ async function main(): Promise<void> {
     await fake.stop();
   }
   // (1.3) the ten new actions on a sheet of their own
+  if (process.argv[3]) return void console.log("screenshots in " + out);
   console.log("new actions: " + (await newActionsSheet(out)));
   console.log("screenshots in " + out);
 }
