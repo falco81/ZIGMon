@@ -1050,6 +1050,57 @@ if (isset($_GET['api'])) {
     // the address, which a log keeps - and the daemon checks it; no sign-in and no API
     // token, as a one-tap link. Each value is cut down to what it may hold before it goes
     // into a header line or the daemon's address (the lines are joined with CRLF).
+    // (5.59.3) The desktop app and the Stream Deck are for the home network and never for
+    // the internet: the front server passes only /tap, and this is the second lock behind
+    // it. The caller and every address a proxy says it passed along must be a home one -
+    // private, loopback, link-local, the CGNAT range a VPN such as Tailscale hands out,
+    // or an IPv6 unique-local one. Anything else, or an address that does not parse, is
+    // turned away before a header is read.
+    if ($what === 'notifier' || $what === 'deck') {
+        $homeAddr = function (string $a): bool {
+            $a = trim($a, " \t\"");
+            if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $a, $m)) { $a = $m[1]; }
+            if (preg_match('/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i', $a, $m)) { $a = $m[1]; }
+            if (preg_match('/^(\d+\.\d+\.\d+\.\d+)(?::\d+)?$/', $a, $m)) { $a = $m[1]; }
+            $bin = @inet_pton($a);
+            if ($bin === false) { return false; }
+            $nets = strlen($bin) === 4
+                ? [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16], ['127.0.0.0', 8],
+                   ['169.254.0.0', 16], ['100.64.0.0', 10]]
+                : [['::1', 128], ['fc00::', 7], ['fe80::', 10]];
+            foreach ($nets as [$net, $bits]) {
+                $n = inet_pton($net);
+                $whole = intdiv($bits, 8);
+                $rest = $bits % 8;
+                if (substr($bin, 0, $whole) !== substr($n, 0, $whole)) { continue; }
+                if ($rest === 0) { return true; }
+                $mask = (0xff << (8 - $rest)) & 0xff;
+                if ((ord($bin[$whole]) & $mask) === (ord($n[$whole]) & $mask)) { return true; }
+            }
+            return false;
+        };
+        $callers = [(string) ($_SERVER['REMOTE_ADDR'] ?? '')];
+        foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'HTTP_FORWARDED'] as $h) {
+            if (!isset($_SERVER[$h])) { continue; }
+            foreach (explode(',', (string) $_SERVER[$h]) as $one) {
+                if ($h === 'HTTP_FORWARDED') {
+                    if (!preg_match('/for=("?)([^;,"]*)\1/i', $one, $m)) { continue; }
+                    $one = $m[2];
+                }
+                $callers[] = $one;
+            }
+        }
+        foreach ($callers as $one) {
+            if (!$homeAddr($one)) {
+                header('Content-Type: application/json; charset=utf-8');
+                header('Cache-Control: no-store');
+                http_response_code(403);
+                echo json_encode(['ok' => false, 'error' => 'the desktop app and the Stream Deck '
+                                  . 'reach ZIGMon only from the home network']);
+                exit;
+            }
+        }
+    }
     if ($what === 'notifier') {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');

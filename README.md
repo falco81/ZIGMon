@@ -2083,7 +2083,12 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.59.2**
+Current version: **5.59.3**
+
+5.59.3 — The desktop app and the Stream Deck are for the home network only, with a second lock behind the front server.
+
+- The front server already passed `/tap` and nothing else. Now the dashboard's relay also turns `api=notifier` and `api=deck` away with 403 unless the caller, and every address in `X-Forwarded-For`, `X-Real-IP` and `Forwarded`, is a home address. Home means private, loopback, link-local, the CGNAT range a VPN such as Tailscale gives out, or IPv6 unique-local. An address that does not parse is not home.
+- Nothing else changes: the rest of the API, `/tap` and the dashboard work as before.
 
 5.59.2 — A test alert for each desktop app key, sent from the dashboard.
 
