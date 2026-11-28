@@ -15,7 +15,7 @@ import { ACCENTS, ALLOWED_COLOURS, P } from "../src/core/palette.js";
 import { parseItem, parseStateAnswer, type Item } from "../src/core/protocol.js";
 import { FakeProtector } from "../src/core/secrets.js";
 import { cleanLabel, LABEL_MOST, normalizeAction, THEME_IDS } from "../src/core/settings.js";
-import { nameLines, smartWrap } from "../src/core/svg.js";
+import { nameLines, smartWrap, textWidth } from "../src/core/svg.js";
 import { ALL_INFO, renderLook, THEMES } from "../src/core/themes.js";
 import { ActionView, clockOf, type ActionKind } from "../src/core/views.js";
 import { FakeZigmon, MemoryStore, MockSurface, sampleItems, until } from "./fake-zigmon.js";
@@ -211,6 +211,8 @@ const HAND = ICONS.hand!;
 
 /** (1.2) The ten clear looks: one thing big, at most one small line. */
 const CLEAR = ["huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono"];
+/** (1.3) Eighteen that lead with the name, the status with it. */
+const NAMEFIRST = ["namebar", "caption", "led", "tworows", "plate", "ticker", "card", "halves", "stacked", "corner", "lined", "terminal", "marquee", "widget", "sign", "note", "pass", "glow"];
 /** (1.3) Twenty more, as clear, each with its own shape. */
 const MORE = ["diagonal", "hex", "stripe", "switch", "lcd", "dial", "ticket", "bubble", "frame", "shadow", "line", "tube", "stamp", "pastel", "carbon", "grid", "tab", "rise", "spot", "button"];
 const ALL_KINDS: [ActionKind, string][] = [
@@ -230,12 +232,13 @@ const sizes = (svg: string) => {
 };
 
 describe("the clear looks (1.2)", () => {
-  it("there are 42 looks: the twelve, ten clear ones and twenty more, each known to the settings, with a short name and a hint", () => {
-    assert.equal(THEMES.length, 42);
+  it("there are 60 looks: the twelve, ten clear ones, twenty more and eighteen name-first ones, each known to the settings, with a short name and a hint", () => {
+    assert.equal(THEMES.length, 60);
     assert.deepEqual(THEMES.slice(12, 22).map((t) => t.id), CLEAR);
-    assert.deepEqual(THEMES.slice(22).map((t) => t.id), MORE);
+    assert.deepEqual(THEMES.slice(22, 42).map((t) => t.id), MORE);
+    assert.deepEqual(THEMES.slice(42).map((t) => t.id), NAMEFIRST);
     assert.deepEqual([...THEME_IDS], THEMES.map((t) => t.id), "the settings keep exactly the looks there are");
-    assert.equal(new Set(THEMES.map((t) => t.name)).size, 42, "names differ");
+    assert.equal(new Set(THEMES.map((t) => t.name)).size, 60, "names differ");
     for (const t of THEMES.slice(12)) {
       assert.ok(t.name.length <= 8, t.id + ": a name short enough for the inspector's grid");
       assert.ok(t.hint.length > 5, t.id + ": a hint");
@@ -722,3 +725,180 @@ describe("the touch strip in every look", () => {
     }
   });
 });
+
+/**
+ * No text runs off the key: every <text> outside a transformed group, measured as svg.ts measures it
+ * (its tspan unit included), lies within the 144 px key, give or take `tol`; and no baseline is
+ * above the key's top or below its foot.
+ */
+function withinKey(svg: string, where: string, tol = 3): void {
+  const flat = svg.replace(/<g [^>]*transform="[^"]*"[^>]*>(?:(?!<\/g>).)*?<text[\s\S]*?<\/g>/g, "");
+  for (const m of flat.matchAll(/<text ([^>]*)>(.*?)<\/text>/gs)) {
+    const a = m[1]!;
+    const num = (k: string) => Number(new RegExp(`(?:^| )${k}="([\\d.-]+)"`).exec(a)?.[1] ?? NaN);
+    const x = num("x"), y = num("y"), size = num("font-size"), weight = num("font-weight") || 600;
+    if (!Number.isFinite(x) || !Number.isFinite(size)) continue;
+    const anchor = /text-anchor="(\w+)"/.exec(a)?.[1] ?? "start";
+    const body = m[2]!;
+    const main = body.replace(/<tspan[\s\S]*$/, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    let w = textWidth(main, size, weight);
+    for (const t of body.matchAll(/<tspan[^>]*font-size="([\d.]+)"[^>]*>(.*?)<\/tspan>/g)) w += textWidth(t[2]!, Number(t[1]), 600) + 4;
+    const left = anchor === "middle" ? x - w / 2 : anchor === "end" ? x - w : x;
+    assert.ok(left >= -tol && left + w <= 144 + tol, `${where}: "${main}" runs off the key (${Math.round(left)}..${Math.round(left + w)})`);
+    assert.ok(y - size * 0.72 >= -tol && y + size * 0.2 <= 144 + tol, `${where}: "${main}" runs off the top or the foot (${Math.round(y)})`);
+  }
+}
+
+/** The texts at least `min` px, joined without spaces. */
+const bigText = (svg: string, min: number) => sizes(svg).filter((x) => x.size >= min).map((x) => x.words).join("").replace(/\s+/g, "");
+/** The texts of a drawing with their sizes, tspans kept as text. */
+const sized = (svg: string) => [...svg.matchAll(/<text\b[^>]*font-size="([\d.]+)"[^>]*>(.*?)<\/text>/gs)].map((m) => ({ size: Number(m[1]), words: m[2]!.replace(/<[^>]+>/g, "") }));
+
+describe("the eighteen name-first looks (1.3)", () => {
+  it("every one x every action x on / off / offline / locked / hold: valid SVG, our colours, the badges, nothing off the key", () => {
+    for (const t of NAMEFIRST) {
+      for (const [kind, id] of ALL_KINDS) {
+        for (const st of ["on", "off", "offline", "locked", "hold"]) {
+          const svg = key(kind, variant(id, st), { theme: t }).s.svg;
+          const where = `${t}/${kind}/${st}`;
+          wellFormed(svg);
+          ownColours(svg, where);
+          withinKey(svg, where);
+          assert.match(svg, /^<svg[^>]*width="144" height="144"/, where);
+          if (st === "offline" && kind !== "scene" && kind !== "status") assert.match(svg, />(Offline|OFFLINE)</, where + ": offline is said");
+          if (st === "locked" && kind !== "status") assert.ok(svg.includes(LOCK), where + ": the lock");
+          if (st === "hold" && kind !== "reading" && kind !== "status") assert.ok(svg.includes(HAND), where + ": the hand");
+        }
+        for (const only of INFO_KEYS) {
+          const svg = key(kind, variant(id, "on"), { theme: t, accent: "yellow", ...Object.fromEntries(INFO_KEYS.map((k) => [k, k === only])) }).s.svg;
+          wellFormed(svg);
+          withinKey(svg, `${t}/${kind}/only ${only}`);
+        }
+      }
+    }
+  });
+
+  it("the name is the big readable text, and the status is there with it", () => {
+    const want: [ActionKind, string, RegExp[]][] = [
+      ["control", "Lampa", [/^On$/, /^42 W$/]],
+      ["dimmer", "zb:0xb2:light", [/^On$/, /^70 ?%$/]],
+      ["thermostat", "zb:0xc3:trv", [/^20\.4°C$/]],
+      ["reading", "read:0xe5:temperature", [/^7\.3°C$/]],
+      ["blinds", "zb:0xd4:cover", [/^60 ?%$/]],
+    ];
+    for (const t of NAMEFIRST) {
+      for (const [kind, id, states] of want) {
+        for (const st of ["on", "off"]) {
+          const item = variant(id, st);
+          const svg = key(kind, item, { theme: t }).s.svg;
+          const where = `${t}/${kind}/${st}`;
+          // the whole name, in letters of 15 px or more
+          assert.ok(bigText(svg, 15).includes(item.name.replace(/\s+/g, "")), `${where}: the name big: ${JSON.stringify(sized(svg))}`);
+          const all = sized(svg);
+          const name = all.filter((x) => item.name.includes(x.words.trim()) && x.words.trim().length > 2);
+          assert.ok(name.length && name.every((x) => x.size >= 15), `${where}: the name >= 15 px`);
+          if (st === "on") {
+            for (const re of states) assert.ok(all.some((x) => re.test(x.words.trim())), `${where}: ${re} in ${all.map((x) => x.words).join(" | ")}`);
+            assert.ok(all.some((x) => states[0]!.test(x.words.trim()) && x.size >= 15), `${where}: the status >= 15 px`);
+          }
+        }
+      }
+      // off says Off, as big
+      const off = sized(key("control", variant("Lampa", "off"), { theme: t }).s.svg);
+      assert.ok(off.some((x) => x.words === "Off" && x.size >= 15), t + ": Off");
+      // a timer's countdown, a count
+      const heat = sized(key("thermostat", roomItem({}), { theme: t }).s.svg).map((x) => x.words).join(" | ");
+      assert.match(heat, /Heating in/, t);
+    }
+  });
+
+  it("long names with diacritics: shown whole (two lines, smaller), never off the key, in every fit", () => {
+    for (const t of NAMEFIRST) {
+      for (const label of ["Světlo Ložnice strop", "Heating in Kuchyne", "Light-Loznice-Main", "Žluťoučký kůň úpěl ďábelské ódy"]) {
+        for (const [kind, id] of ALL_KINDS) {
+          for (const nameFit of [undefined, "fit", "wrap", "cut"]) {
+            for (const st of ["on", "offline", "locked"]) {
+              const svg = key(kind, variant(id, st), { theme: t, label, nameFit }).s.svg;
+              const where = `${t}/${kind}/${st}/${label}/${nameFit}`;
+              wellFormed(svg);
+              withinKey(svg, where);
+              if (nameFit !== "cut" && label.length <= 20 && kind !== "status") {
+                assert.ok(bigText(svg, 15).includes(label.replace(/\s+/g, "")), `${where}: the whole name: ${JSON.stringify(sized(svg))}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("each piece switched off disappears; with no name the room takes its place", () => {
+    for (const t of NAMEFIRST) {
+      const it = variant("Lampa", "on");
+      assert.ok(!key("control", it, { theme: t, showName: false, showRoom: false }).s.svg.includes("Lampa"), t + ": name off");
+      assert.ok(texts(key("control", it, { theme: t, showName: false }).s.svg).includes("Obývák"), t + ": the room instead");
+      assert.ok(!texts(key("control", it, { theme: t, showState: false, showDetail: false }).s.svg).some((x) => x.toLowerCase() === "on"), t + ": state off");
+      assert.ok(!key("control", it, { theme: t, showDetail: false }).s.svg.includes("42 W"), t + ": detail off");
+      assert.ok(!key("control", it, { theme: t, showIcon: false }).s.svg.includes("<g transform"), t + ": icon off");
+      const th = roomItem({});
+      const thermo = key("thermostat", th, { theme: t }).s.svg;
+      assert.ok(/35\.0/.test(thermo) && /Max/.test(thermo), t + ": the target and the mode");
+      assert.ok(!/35\.0/.test(key("thermostat", th, { theme: t, showDetail: false }).s.svg), t + ": the target off");
+      assert.ok(!/Max/.test(key("thermostat", th, { theme: t, showMode: false }).s.svg), t + ": the mode off");
+      const dim = key("dimmer", variant("zb:0xb2:light", "on"), { theme: t }).s.svg;
+      assert.notEqual(dim, key("dimmer", variant("zb:0xb2:light", "on"), { theme: t, showGraph: false }).s.svg, t + ": the level is drawn, and goes with the graph");
+      const low = parseItem({ ...sampleItems()[0]!, state: { ...sampleItems()[0]!.state, battery: 8 } });
+      assert.ok(key("control", low, { theme: t }).s.svg.includes(ICONS.battery!), t + ": a low battery");
+      assert.ok(!key("control", low, { theme: t, showBattery: false }).s.svg.includes(ICONS.battery!), t + ": battery off");
+    }
+  });
+
+  it("on and off differ, every accent is used, and an off key takes the off colour the user chose", () => {
+    const off = P.pink;
+    for (const t of NAMEFIRST) {
+      for (const [kind, id] of ALL_KINDS) {
+        if (kind === "reading" || kind === "status") continue;
+        const p = key(kind, variant(id, "on"), { theme: t }).v.previewSet()!;
+        assert.notEqual(p.on, p.off, t + "/" + kind);
+      }
+      for (const [name, a] of Object.entries(ACCENTS)) {
+        assert.ok(key("control", variant("Lampa", "on"), { theme: t, accent: name }).s.svg.includes(a.colour), t + ": the accent " + name);
+      }
+      for (const [kind, id] of [["control", "Lampa"], ["dimmer", "zb:0xb2:light"], ["thermostat", "zb:0xc3:trv"]] as const) {
+        const onFace = key(kind, variant(id, "on"), { theme: t }).v.face();
+        const offFace = kind === "thermostat" ? { ...onFace, active: false, icon: "thermostat" } : key(kind, variant(id, "off"), { theme: t }).v.face();
+        const o = { info: ALL_INFO, fit: "fit" as const };
+        assert.ok(!renderLook(t, offFace, o).includes(off), t + "/" + kind + ": not pink of itself");
+        const tinted = renderLook(t, { ...offFace, offAccent: off }, o);
+        assert.ok(tinted.includes(off), t + "/" + kind + ": off, in the chosen colour");
+        ownColours(tinted, t + "/" + kind);
+        assert.equal(renderLook(t, { ...onFace, offAccent: off }, o), renderLook(t, onFace, o), t + "/" + kind + ": on, the accent stays");
+        const gone = { ...offFace, online: false };
+        assert.equal(renderLook(t, { ...gone, offAccent: off }, o), renderLook(t, gone, o), t + "/" + kind + ": offline keeps its red");
+      }
+    }
+  });
+
+  it("user text is escaped, and each has its own paper on a dial's strip", () => {
+    for (const t of NAMEFIRST) {
+      for (const [kind, id] of ALL_KINDS) {
+        const svg = key(kind, variant(id, "on"), { theme: t, label: '<b>&"x"' }).s.svg;
+        wellFormed(svg);
+        assert.ok(!svg.includes("<b>") && !svg.includes('&"x"'), t + "/" + kind);
+        if (kind !== "status") assert.ok(svg.includes("&lt;b&gt;&amp;&quot;x&quot;"), t + "/" + kind + ": the label, escaped");
+        const evil = key(kind, variant(id, "evil"), { theme: t }).s.svg;
+        wellFormed(evil);
+        assert.ok(!evil.includes("<script"), t + "/" + kind);
+      }
+      const s = new MockSurface("Encoder", "D");
+      const v = new ActionView("dimmer", stubHub([variant("zb:0xb2:light", "on")]), s, { item: "zb:0xb2:light", theme: t });
+      v.draw(true);
+      const bg = svgOf(String(s.feedbacks.at(-1)!.bg));
+      assert.match(bg, /width="200" height="100"/, t + ": the strip's paper");
+      wellFormed(bg);
+      ownColours(bg, t + ": strip");
+      v.dispose();
+    }
+  });
+});
+

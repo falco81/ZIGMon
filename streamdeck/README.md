@@ -131,7 +131,21 @@ brackets), **Shadow** (a card with a coloured shadow), **Line** (the value on on
 **Tube** (a thermometer tube), **Stamp** (a giant faint icon), **Pastel** (soft colour, dark
 type), **Carbon** (carbon weave and a light strip), **Grid** (a grid of lamps), **Tab** (a
 folder with the name on its tab), **Rise** (a rising sun), **Spot** (a spotlight) and
-**Button** (a real key, pressed when on) - with an On / Off pair above them. Then the
+**Button** (a real key, pressed when on) - and eighteen name-first ones, which put the name
+first, big and whole (on two lines and smaller rather than cut, as the name's fit says), with the
+status right with it - On / Off, the temperature with its unit, the watts, the brightness, the
+position, the mode, the countdown or the count - so both read at once even on an XL's small keys:
+**Name bar** (the name on a coloured band, the status under it), **Caption** (the name centred,
+the status in a pill), **LED** (the name, a lit lamp and the status), **Two rows** (the name and
+the status split by a hairline), **Plate** (an engraved nameplate with a status window),
+**Ticker** (the name over a status strip), **Card** (the name over an icon tile and the status),
+**Halves** (the name on top, the status on a coloured half), **Stacked** (the name, the status, a
+tiny icon), **Corner** (the name big, the status in a corner badge), **Lined** (the name
+underlined in the accent when on), **Terminal** (a console: the name, then `> status`),
+**Marquee** (the name in a ring of bulbs), **Widget** (a phone widget, the name at its foot),
+**Sign** (a road sign with the name on it), **Note** (an index card, the status highlighted),
+**Pass** (a lanyard pass, the name big) and **Glow** (the name itself glows when on) - 60 looks in
+all, with an On / Off pair above them. Then the
 **colours**, in two tabs: the **On colour** (Auto by kind) and the **Off colour** (Auto keeps the
 look's own grey). Each is one of 24 named colours (the first ten as in 1.1, plus indigo, sky,
 cyan, mint, lime, gold, peach, coral, rose, magenta, lavender, brown, slate and white) or a colour
@@ -173,7 +187,7 @@ over, whether by this key, another key or a button. An older ZIGMon ignores the 
 
 Ten more actions show what ZIGMon 5.59.4 sums up for the whole house, and act on it. Each works
 on keys and on the Stream Deck + dials (with a touch strip of its own), has its own Classic drawing
-and every one of the 42 looks, the On / Off colours, the label, long names and the choice of what
+and every one of the 60 looks, the On / Off colours, the label, long names and the choice of what
 the key shows - exactly like the actions above. Their settings show a **Now** card with what the
 key has no room for (every window open, the whole latest alert, a room's items...).
 

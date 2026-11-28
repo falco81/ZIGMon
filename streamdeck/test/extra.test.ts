@@ -280,6 +280,29 @@ describe("1.3 keys: Classic and every look, every state", () => {
     }
   });
 
+  it("the name-first looks keep the name and the status inside the key, and the name whole and big", () => {
+    const nameFirst = THEMES.slice(42).map((t) => t.id);
+    assert.equal(nameFirst.length, 18);
+    for (const k of NEW_KINDS) {
+      for (const s of SETTINGS[k]) {
+        for (const [st, items] of variants(ID_OF(k, s))) {
+          for (const t of nameFirst) {
+            for (const info of [{}, { label: "Světlo Ložnice strop" }, { label: "Light-Loznice-Main", nameFit: "wrap" }, { label: "Heating in Kuchyne", nameFit: "cut" }]) {
+              const svg = view(k, items, { ...s, ...info, theme: t }).s.svg;
+              const where = `${t}/${k}/${st}/${JSON.stringify(info)}`;
+              withinKey(svg, where);
+              const label = (info as { label?: string }).label;
+              if (label && (info as { nameFit?: string }).nameFit !== "cut") {
+                const big = [...svg.matchAll(/<text\b[^>]*font-size="([\d.]+)"[^>]*>(.*?)<\/text>/gs)].filter((m) => Number(m[1]) >= 15).map((m) => m[2]!.replace(/<[^>]+>.*$/s, "")).join("").replace(/\s+/g, "");
+                assert.ok(big.includes(label.replace(/\s+/g, "")), where + ": the whole name, 15 px or more");
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
   it("lit and unlit differ in every look; the inspector's pictures and words are there", () => {
     for (const k of NEW_KINDS) {
       for (const s of SETTINGS[k]) {

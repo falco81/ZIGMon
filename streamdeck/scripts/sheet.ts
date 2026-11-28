@@ -156,8 +156,8 @@ export async function newActionsSheet(out: string): Promise<string> {
   })()]);
   html += `<h2>Special states</h2><div class="special">${special.map(([t, svg]) => `<figure>${img(svg, svg.includes('width="200"') ? "s" : "k")}<figcaption>${esc(t)}</figcaption></figure>`).join("")}</div>`;
   // ---------------------------------------------------------------- every look, for one
-  html += `<h2>All 42 looks - Windows &amp; doors (open, heat escaping)</h2><div class="all">${THEMES.map((t) => img(keyOf("openings", all, { theme: t.id === "classic" ? undefined : t.id }).s.svg, "m")).join("")}</div>`;
-  html += `<h2>All 42 looks - Timer (running)</h2><div class="all">${THEMES.map((t) => img(keyOf("timer", patched(base, "Lampa", { on: true, attrs: { off_at: Math.floor(Date.now() / 1000) + 1234 } }), { item: "Lampa", minutes: 30, theme: t.id === "classic" ? undefined : t.id }).s.svg, "m")).join("")}</div>`;
+  html += `<h2>All ${THEMES.length} looks - Windows &amp; doors (open, heat escaping)</h2><div class="all">${THEMES.map((t) => img(keyOf("openings", all, { theme: t.id === "classic" ? undefined : t.id }).s.svg, "m")).join("")}</div>`;
+  html += `<h2>All ${THEMES.length} looks - Timer (running)</h2><div class="all">${THEMES.map((t) => img(keyOf("timer", patched(base, "Lampa", { on: true, attrs: { off_at: Math.floor(Date.now() / 1000) + 1234 } }), { item: "Lampa", minutes: 30, theme: t.id === "classic" ? undefined : t.id }).s.svg, "m")).join("")}</div>`;
 
   const page = `<!doctype html><html><head><meta charset="utf-8"><style>
     body{margin:0;background:radial-gradient(120% 80% at 50% 0%,#1b222c,#07090c);font-family:Inter,Segoe UI,sans-serif;color:#8B94A3;padding:26px 30px;width:1960px}

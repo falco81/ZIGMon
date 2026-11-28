@@ -1672,6 +1672,35 @@ function stripPaper(theme: string, lit: boolean, c: string): string {
     case "pastel":
       // dark like the others: the strip's words keep their own (light) ink
       return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel}"/><rect width="200" height="100" fill="${lit ? c : P.panel2}" fill-opacity="${lit ? 0.18 : 1}"/>`);
+    // (1.3) the name-first looks
+    case "namebar":
+    case "ticker":
+    case "halves":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect width="200" height="${theme === "namebar" ? 10 : 0}" fill="${lit ? c : P.panel2}"/><rect x="0" y="${theme === "namebar" ? 100 : theme === "ticker" ? 92 : 70}" width="200" height="30" fill="${lit ? c : P.panel2}"${theme === "halves" && lit ? ' fill-opacity="0.35"' : ""}/>`);
+    case "caption":
+    case "stacked":
+    case "glow":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<ellipse cx="100" cy="${theme === "stacked" ? 0 : 40}" rx="120" ry="55" fill="${c}" fill-opacity="${theme === "glow" ? 0.12 : 0.18}"/>` : ""));
+    case "led":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel2}"/><circle cx="190" cy="10" r="5" fill="${lit ? c : P.muted}"/>`);
+    case "tworows":
+    case "lined":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${theme === "lined" ? X.night : P.bg}"/><rect x="${theme === "lined" ? 0 : 20}" y="${theme === "lined" ? 96 : 50}" width="${theme === "lined" ? 60 : 160}" height="${lit ? 3 : 1.5}" fill="${lit ? c : P.line}"/>`);
+    case "plate":
+    case "sign":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="3" y="3" width="194" height="94" rx="10" fill="${theme === "sign" && lit ? c : P.panel2}"${theme === "sign" && lit ? ' fill-opacity="0.35"' : ""} stroke="${lit ? c : P.line}" stroke-width="2"/>`);
+    case "card":
+    case "widget":
+    case "pass":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="3" y="3" width="194" height="94" rx="16" fill="${P.panel}" stroke="${lit ? c : P.line}" stroke-width="1.5"/><rect x="3" y="3" width="8" height="94" rx="4" fill="${lit ? c : P.panel2}"/>`);
+    case "corner":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><path d="M 150 100 V 82 Q 150 70 162 70 H 200 V 100 Z" fill="${lit ? c : P.panel2}"/>`);
+    case "terminal":
+    case "marquee":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="3" y="3" width="194" height="94" rx="10" fill="${P.bg}" stroke="${lit ? c : P.line}" stroke-width="1.5"${theme === "marquee" ? ' stroke-dasharray="2 6"' : ""}/>`);
+    case "note":
+      // dark like the others: the strip's words keep their own (light) ink
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel}"/><path d="M 14 0 V 100" stroke="${P.crit}" stroke-opacity="0.5"/>` + (lit ? `<rect x="0" y="94" width="200" height="6" fill="${c}"/>` : ""));
     default:
       return svgDoc(4, 4, "");
   }

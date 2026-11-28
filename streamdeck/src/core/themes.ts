@@ -53,6 +53,25 @@ export const THEMES: readonly { id: string; name: string; hint: string }[] = [
   { id: "rise", name: "Rise", hint: "a sun rising with the level" },
   { id: "spot", name: "Spot", hint: "a spotlight on the value" },
   { id: "button", name: "Button", hint: "a real key, pressed when on" },
+  // (1.3) eighteen name-first looks: the name big and whole, the status right with it
+  { id: "namebar", name: "Name bar", hint: "the name on a coloured band, the status under it" },
+  { id: "caption", name: "Caption", hint: "the name centred, the status in a pill" },
+  { id: "led", name: "LED", hint: "the name, a lit lamp and the status" },
+  { id: "tworows", name: "Two rows", hint: "the name and the status split by a line" },
+  { id: "plate", name: "Plate", hint: "an engraved nameplate with a status window" },
+  { id: "ticker", name: "Ticker", hint: "the name over a status strip" },
+  { id: "card", name: "Card", hint: "an icon tile, the name and the status beside it" },
+  { id: "halves", name: "Halves", hint: "the name on top, the status on a coloured half" },
+  { id: "stacked", name: "Stacked", hint: "the name, the status, a tiny icon" },
+  { id: "corner", name: "Corner", hint: "the name big, the status in a corner badge" },
+  { id: "lined", name: "Lined", hint: "the name underlined in the accent when on" },
+  { id: "terminal", name: "Terminal", hint: "a console: the name, then > status" },
+  { id: "marquee", name: "Marquee", hint: "the name in a ring of bulbs" },
+  { id: "widget", name: "Widget", hint: "a phone widget, the name at its foot" },
+  { id: "sign", name: "Sign", hint: "a road sign with the name on it" },
+  { id: "note", name: "Note", hint: "an index card, the status highlighted" },
+  { id: "pass", name: "Pass", hint: "a lanyard pass, the name big" },
+  { id: "glow", name: "Glow", hint: "the name itself glows when on" },
 ];
 
 export interface Info {
@@ -1599,10 +1618,690 @@ function button(f: Face, o: LookOpts): string {
   return doc(s, defs);
 }
 
+// ------------------------------------------------------------------ (1.3) the name-first looks
+//
+// Eighteen looks that lead with the name: set big (two lines, smaller before it is cut, as the
+// name's fit says), and the status right under or beside it - On / Off, the temperature with
+// its unit, the watts, the brightness, the position, the mode, the countdown, the count - so
+// both read at once on a 72 px key. The detail goes on a small line when there is room (a
+// thermostat's target and mode first); the room only when the name takes one line.
+
+/** What a name-first look works out first: the bits, the title it leads with, the room under it. */
+interface NF extends Bits {
+  /** The name, else the room (with the name hidden the room leads). */
+  title: string;
+  /** The room, when the name leads and the room is shown. */
+  room: string;
+  /** How wide the badges at the top right are (0: none). */
+  bw: number;
+}
+
+function nf(f: Face, o: LookOpts): NF {
+  const b = bits(f, o), i = b.i;
+  const title = i.name && f.name ? f.name : i.room && f.room ? f.room : "";
+  const room = i.name && f.name && i.room && f.room ? f.room : "";
+  const k = (f.allowed ? 0 : 1) + (f.online ? 0 : 1) + (i.battery && f.battery !== null && f.battery <= 20 ? 1 : 0) + (f.hold ? 1 : 0) + (f.taken ? 1 : 0);
+  return { ...b, title, room, bw: k ? k * 26 + 4 : 0 };
+}
+
+interface NameSet { lines: string[]; size: number }
+
+/** The title laid out as the key's name fit says: two lines by default, smaller before it is cut. */
+function nameOf(b: NF, o: LookOpts, size: number, maxW: number, weight = 750, lines = 2): NameSet | null {
+  if (!b.title) return null;
+  const w = Math.max(40, maxW);
+  const ns = nameLines(b.title, o.fit, size, w, weight, lines);
+  // wrapped, but still cut: smaller rather than cut, as fit does (these looks are for the name)
+  if (o.fit === "wrap" && ns.lines.some((l) => l.endsWith("…"))) return nameLines(b.title, "fit", size, w, weight, lines);
+  return ns;
+}
+
+/** How tall a name block is, from the top of its first line to below its last. */
+const nameH = (ns: NameSet | null, lh = 1.1) => (ns ? ns.size * 0.74 + (ns.lines.length - 1) * ns.size * lh + ns.size * 0.24 : 0);
+
+/** The name's lines, the first one's baseline at y. */
+function linesSvg(ns: NameSet | null, x: number, y: number, anchor: "start" | "middle" | "end", fill: string, weight = 750, family?: string, lh = 1.1, extra = ""): string {
+  if (!ns) return "";
+  let s = "";
+  ns.lines.forEach((l, k) => {
+    const t = text(x, y + k * ns.size * lh, l, { size: ns.size, weight, fill, anchor, family, spacing: -0.2 });
+    s += extra ? t.replace("<text ", "<text " + extra + " ") : t;
+  });
+  return s;
+}
+
+interface St { words: string; unit: string; size: number; sub: string }
+
+/**
+ * The status: the state with its unit, at the largest of `sizes` that fits `maxW`; with the state
+ * hidden, the detail and the mode in its place. `sub` is the line under it: the detail and the mode.
+ * A size small enough that the status and its line fit a band `band` high is chosen first.
+ */
+function statOf(f: Face, i: Info, sizes: number[], maxW: number, band = 999, weight = 800): St {
+  if (!i.state) {
+    const s = subline(f, i);
+    if (!s) return { words: "", unit: "", size: 0, sub: "" };
+    const ok = sizes.map((a) => Math.max(14, Math.round(a * 0.72))).filter((a) => a * 0.74 <= band);
+    const t = fitSize(s, ok.length ? ok : [14], maxW, weight);
+    return { words: t.text, unit: "", size: t.size, sub: "" };
+  }
+  const v = stateText(f);
+  const unit = f.unit && f.online ? f.unit : "";
+  const sub = f.kind === "thermostat" && f.online ? [i.detail ? f.detail.replace(/\s*°[CF]$/, "°") : "", i.mode ? f.mode : ""].filter(Boolean).join(" · ") : subline(f, i);
+  const fits = sizes.filter((s) => s * 0.74 + (sub ? 18 : 0) <= band);
+  const list = fits.length ? fits : [sizes[sizes.length - 1]!];
+  const uw = (s: number) => (unit ? textWidth(fit(unit, 14, 44, 650), Math.max(11, s * 0.5), 600) + 4 : 0);
+  for (const s of list) if (textWidth(v, s, weight) + uw(s) <= maxW) return { words: v, unit, size: s, sub };
+  const s = list[list.length - 1]!;
+  return { words: fit(v, s, maxW - uw(s), weight), unit, size: s, sub };
+}
+
+/** The status's words: the unit a smaller tspan, offline in red. */
+function statSvg(st: St, f: Face, x: number, y: number, fill: string, unitFill: string, anchor: "start" | "middle" | "end", crit: string = P.crit, family?: string, extra = ""): string {
+  if (!st.size) return "";
+  const u = st.unit ? `<tspan dx="3" font-size="${n(Math.max(11, st.size * 0.5))}" font-weight="700" fill="${unitFill}">${escText(fit(st.unit, 14, 44, 650))}</tspan>` : "";
+  const t = text(x, y, st.words, { size: st.size, weight: 800, fill: f.online ? fill : crit, anchor, family, spacing: -0.3 });
+  return (extra ? t.replace("<text ", "<text " + extra + " ") : t).replace(/<\/text>$/, u + "</text>");
+}
+
+/** The small line under the status, a little smaller before it is cut. */
+function subSvg(t: string, x: number, y: number, maxW: number, fill: string, anchor: "start" | "middle" | "end" = "start", size = 12.5, family?: string): string {
+  if (!t) return "";
+  const s = fitSize(t, [size, size * 0.9, size * 0.82], maxW, 650);
+  return text(x, y, s.text, { size: s.size, weight: 650, fill, anchor, family });
+}
+
+/** The status and its small line in the band top..bottom, centred in it. Returns the status's baseline. */
+function statBlock(f: Face, st: St, x: number, anchor: "start" | "middle" | "end", top: number, bottom: number, maxW: number, fill: string, unitFill: string, subFill: string,
+  crit: string = P.crit, family?: string): { svg: string; y: number; end: number } {
+  if (!st.size) return { svg: "", y: top, end: top };
+  const sub = st.sub && st.size * 0.74 + 18 <= bottom - top + 2 ? st.sub : "";
+  const h = st.size * 0.74 + (sub ? 18 : 0);
+  const y = top + Math.max(0, (bottom - top - h) / 2) + st.size * 0.74;
+  return { svg: statSvg(st, f, x, y, fill, unitFill, anchor, crit, family) + (sub ? subSvg(sub, x, y + 17, maxW, subFill, anchor, 12.5, family) : ""), y, end: y + (sub ? 18 : 0) };
+}
+
+interface Col {
+  x: number; anchor: "start" | "middle" | "end"; top: number; bottom: number; maxW: number;
+  nameFill: string; statFill: string; unitFill: string; subFill: string; roomFill?: string;
+  size?: number; weight?: number; family?: string; statSizes?: number[]; gap?: number; crit?: string; nameExtra?: string; statExtra?: string;
+}
+interface ColOut { svg: string; ns: NameSet | null; st: St; nameTop: number; nameBase: number; nameEnd: number; statY: number; end: number }
+
+/**
+ * The name, the room under it when the name takes one line, the status and its small line - stacked
+ * and centred in top..bottom. Whatever does not fit goes: the room, then the status gets smaller,
+ * then the small line, then the name gets smaller (never under 15 px).
+ */
+function column(f: Face, o: LookOpts, b: NF, c: Col): ColOut {
+  const i = b.i, w = c.weight ?? 750, gap = c.gap ?? 9;
+  const sizes = c.statSizes ?? [28, 25, 22, 19, 17, 15];
+  let size = c.size ?? 22;
+  let ns = nameOf(b, o, size, c.maxW, w);
+  let st = statOf(f, i, sizes, c.maxW, 999);
+  let room = b.room && ns && ns.lines.length === 1 ? b.room : "";
+  let sub = st.sub;
+  const H = () => nameH(ns) + (room ? 16 : 0) + (st.size ? (ns ? gap : 0) + st.size * 0.74 : 0) + (sub ? 18 : 0);
+  const avail = c.bottom - c.top;
+  if (H() > avail) room = "";
+  for (const s of sizes) {
+    if (H() <= avail || s >= st.size) continue;
+    st = { ...statOf(f, i, [s], c.maxW), sub: st.sub };
+  }
+  if (H() > avail) sub = "";
+  while (H() > avail && ns && size > 15.5) {
+    size = Math.max(15.5, size - 1.5);
+    ns = nameOf(b, o, size, c.maxW, w);
+  }
+  let y = c.top + Math.max(0, (avail - H()) / 2);
+  const nameTop = y;
+  let s = "";
+  const nameBase = y + (ns ? ns.size * 0.74 : 0);
+  if (ns) {
+    s += linesSvg(ns, c.x, nameBase, c.anchor, c.nameFill, w, c.family, 1.1, c.nameExtra);
+    y += nameH(ns);
+  }
+  const nameEnd = y;
+  if (room) {
+    s += text(c.x, y + 12, fit(room, 12.5, c.maxW, 600), { size: 12.5, weight: 600, fill: c.roomFill ?? c.subFill, anchor: c.anchor, family: c.family });
+    y += 16;
+  }
+  let statY = y;
+  if (st.size) {
+    statY = y + (ns ? gap : 0) + st.size * 0.74;
+    s += statSvg(st, f, c.x, statY, c.statFill, c.unitFill, c.anchor, c.crit, c.family, c.statExtra);
+    y = statY;
+  }
+  if (sub) {
+    s += subSvg(sub, c.x, y + 17, c.maxW, c.subFill, c.anchor, 12.5, c.family);
+    y += 18;
+  }
+  return { svg: s, ns, st, nameTop, nameBase, nameEnd, statY, end: y };
+}
+
+/** The level as a thin bar along the foot: lit in the accent, else the off colour or grey. */
+function footBar(b: NF, x: number, y: number, w: number, h = 4, track: string = P.line): string {
+  if (b.lv === null) return "";
+  return rect(x, y, w, h, h / 2, track) + rect(x, y, Math.max(h, w * b.lv), h, h / 2, b.lit ? b.base : greyOr(b, P.muted));
+}
+
+/** A dashed red edge for an offline key, else a solid one. */
+const edge = (f: Face, b: NF, lit: string, grey: string = P.line) => (f.online ? `stroke="${b.lit ? lit : greyOr(b, grey)}"` : `stroke="${P.crit}" stroke-dasharray="6 4"`);
+
+/** Name bar: the name on a coloured band across the top, the status big under it. */
+function namebar(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const ns = b.alone ? null : nameOf(b, o, 21, 120, 750);
+  const band = ns ? Math.max(42, Math.round(12 + nameH(ns) + 10)) : 24;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  s += rect(0, 0, 144, band, 0, b.lit ? b.base : f.online && b.off ? b.off : P.panel2, !b.lit && b.off ? 'fill-opacity="0.35"' : "");
+  s += f.online ? rect(0, band - 3, 144, 3, 0, b.lit ? b.c : greyOr(b, P.line)) : `<path d="M 0 ${band - 1.5} H 144" stroke="${P.crit}" stroke-width="3" stroke-dasharray="6 4"/>`;
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 44, 64, ic, 2) + badges(f, i, DARK, 3, true));
+  s += linesSvg(ns, 12, 12 + (ns ? ns.size * 0.74 : 0), "start", b.lit ? P.bg : P.text);
+  const room = b.room && ns && ns.lines.length === 1 && band - 12 - nameH(ns) >= 14 ? b.room : "";
+  const showLv = b.lv !== null;
+  const top = band + 6, bottom = showLv ? 130 : 138;
+  const iw = Math.max(i.icon ? 30 : 0, b.bw);
+  const st = statOf(f, i, [32, 28, 25, 22, 19, 16], 120 - iw, bottom - top - (room ? 15 : 0));
+  const sb = statBlock(f, st, 12, "start", top + (room ? 15 : 0), bottom, 120 - iw, ink(f, b, b.base), P.dim, P.dim);
+  if (room) s += text(12, top + 10, fit(room, 12, 120, 600), { size: 12, weight: 600, fill: P.dim });
+  s += sb.svg;
+  if (i.icon) s += icon(f.icon, 110, b.bw ? bottom - 24 : (top + bottom) / 2 - 12, 24, ic, 2.2);
+  if (showLv) s += footBar(b, 12, 134, 120);
+  s += badges(f, i, DARK, band + 4, true);
+  return doc(s);
+}
+
+/** Caption: the name centred and big, the status in a pill under it - filled when on. */
+function captionLook(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = radial("cg", [[0, b.base, 0.3], [1, b.base, 0]], 0.5, 0.3, 0.7);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  if (b.lit) s += rect(0, 0, 144, 144, 0, "url(#cg)");
+  else if (b.off) s += rect(0, 0, 144, 144, 0, b.off, 'fill-opacity="0.06"');
+  s += frame(DARK, f.online ? (b.lit ? b.c : greyOr(b, P.line)) : P.crit, b.lit ? 0.6 : 1, 1.5, 22);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 12, 11, 20, ic, 2.2);
+  const top = i.icon || b.bw ? 34 : 14;
+  const ns = nameOf(b, o, 22, 124, 750);
+  const st = statOf(f, i, [21, 19, 17, 15], 104);
+  const pillH = st.size ? st.size + 10 : 0;
+  let sub = st.sub;
+  const lv = b.lv !== null;
+  const h = () => nameH(ns) + (pillH ? (ns ? 6 : 0) + pillH : 0) + (sub ? 16 : 0);
+  if (h() > 138 - top) sub = "";
+  let y = top + Math.max(0, (138 - top - h()) / 2);
+  s += linesSvg(ns, 72, y + (ns ? ns.size * 0.74 : 0), "middle", P.text);
+  y += nameH(ns) + (ns ? 6 : 0);
+  if (pillH) {
+    const tw = textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0);
+    const pw = Math.min(128, tw + 26);
+    const fill = b.lit ? b.base : P.panel2;
+    s += rect(72 - pw / 2, y, pw, pillH, pillH / 2, fill, `${!b.lit && b.off ? 'fill-opacity="1"' : ""} ${edge(f, b, b.base, P.muted)} stroke-width="1.8"`);
+    if (lv && f.online) s += rect(72 - pw / 2 + 6, y + pillH - 4, Math.max(3, (pw - 12) * b.lv!), 2.5, 1.2, b.lit ? P.bg : greyOr(b, P.dim), b.lit ? 'fill-opacity="0.55"' : "");
+    s += statSvg(st, f, 72, y + pillH / 2 + st.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "middle");
+    y += pillH;
+  }
+  if (sub) s += subSvg(sub, 72, y + 14, 124, P.dim, "middle");
+  s += badges(f, i, DARK, 11, true);
+  return doc(s, defs);
+}
+
+/** LED: the name big at the top left, a lit lamp and the status word at the foot. */
+function led(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = grad("lp", P.panel2, 1, P.bg, 1);
+  let s = rect(0, 0, 144, 144, 0, "url(#lp)") + frame(DARK, f.online ? greyOr(b, P.line) : P.crit, 1, 1.5, 18);
+  const lamp = b.lit ? b.base : !f.online ? P.crit : b.off ?? P.muted;
+  if (b.alone) return doc(s + icon(f.icon, 40, 36, 64, iconInk(f, b, b.base), 2) + `<circle cx="72" cy="118" r="6" fill="${lamp}"/>` + badges(f, i, DARK, 12, true), defs);
+  const st = statOf(f, i, [24, 22, 20, 18, 16], 92 - (i.icon ? 26 : 0), 40);
+  const hasSt = st.size > 0;
+  const statTop = hasSt ? (st.sub ? 92 : 104) : 136;
+  const nameTop = b.bw ? 36 : 14;
+  const ns = nameOf(b, o, 23, 120, 750);
+  const nh = nameH(ns);
+  // the name sits at the top; it may take the room's line when it is one line
+  s += linesSvg(ns, 14, nameTop + (ns ? ns.size * 0.74 : 0), "start", P.text);
+  if (b.room && ns && ns.lines.length === 1 && nameTop + nh + 16 < statTop) s += text(14, nameTop + nh + 12, fit(b.room, 12.5, 116, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (hasSt) {
+    const y = Math.max(statTop, nameTop + nh + 6) + st.size * 0.74;
+    const cy = y - st.size * 0.36;
+    if (b.lit) s += `<circle cx="22" cy="${n(cy)}" r="11" fill="${lamp}" fill-opacity="0.22"/>`;
+    s += `<circle cx="22" cy="${n(cy)}" r="6.5" fill="${b.lit || !f.online || b.off ? lamp : P.bg}" stroke="${lamp}" stroke-width="2"/>`;
+    if (b.lit) s += `<circle cx="20" cy="${n(cy - 2)}" r="2" fill="${X.white}" fill-opacity="0.6"/>`;
+    s += statSvg(st, f, 38, y, ink(f, b, P.text), P.dim, "start");
+    if (st.sub && y + 18 <= 140) s += subSvg(st.sub, 14, y + 18, 120, b.lit ? b.base : P.dim);
+  }
+  if (i.icon) s += icon(f.icon, 110, hasSt ? (st.sub ? 92 : 106) : 112, 20, iconInk(f, b, b.base), 2.2);
+  if (b.lv !== null) s += rect(136, 40, 3, 90, 1.5, P.line) + rect(136, 40 + 90 * (1 - b.lv), 3, Math.max(3, 90 * b.lv), 1.5, b.lit ? b.base : greyOr(b, P.muted));
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Two rows: the name above a hairline, the status below it - the line lit in the accent when on. */
+function tworows(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true));
+  const ns = nameOf(b, o, 22, 124, 750);
+  const st = statOf(f, i, [28, 25, 22, 19, 16], 124, 52);
+  const mid = ns && st.size ? Math.max(64, Math.min(84, (b.bw ? 30 : 10) + nameH(ns) + 14)) : ns ? 120 : 30;
+  // the name centred above the line
+  const top = b.bw ? 32 : 8;
+  s += linesSvg(ns, 72, top + Math.max(0, (mid - 8 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0), "middle", P.text);
+  // the hairline, broken by the icon in its middle
+  const lc = f.online ? (b.lit ? b.c : greyOr(b, P.line)) : P.crit;
+  const lw = b.lit ? 2.5 : 1.5;
+  if (i.icon) {
+    s += `<path d="M 12 ${mid} H 58 M 86 ${mid} H 132" stroke="${lc}" stroke-width="${lw}" stroke-linecap="round"${f.online ? "" : ' stroke-dasharray="5 4"'}/>`;
+    s += icon(f.icon, 63, mid - 9, 18, ic, 2.2);
+  } else s += `<path d="M 12 ${mid} H 132" stroke="${lc}" stroke-width="${lw}" stroke-linecap="round"${f.online ? "" : ' stroke-dasharray="5 4"'}/>`;
+  if (b.lv !== null) s += `<path d="M 12 ${mid} H ${n(12 + 120 * b.lv)}" stroke="${b.lit ? b.base : greyOr(b, P.muted)}" stroke-width="${lw + 1.5}" stroke-linecap="round"/>`;
+  const sb = statBlock(f, st, 72, "middle", mid + 10, 138, 124, ink(f, b, b.base), P.dim, P.dim);
+  s += sb.svg;
+  s += badges(f, i, DARK, 8, true);
+  return doc(s);
+}
+
+/** Plate: an engraved metal nameplate with four screws, the status in a window set into it. */
+function plate(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = grad("pl", P.line, 1, P.panel, 1, 1, 1) + grad("pw", X.night, 1, P.bg, 1);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  s += rect(5, 5, 134, 134, 14, "url(#pl)", `${edge(f, b, b.c, P.muted)} stroke-width="${b.lit ? 2.5 : 1.5}"`);
+  s += rect(9, 9, 126, 126, 11, "none", `stroke="${X.white}" stroke-opacity="0.07" stroke-width="1"`);
+  for (const [x, y] of [[16, 16], [128, 16], [16, 128], [128, 128]] as const) {
+    s += `<circle cx="${x}" cy="${y}" r="3.6" fill="${P.panel2}" stroke="${X.night}" stroke-width="1"/><path d="M ${x - 2} ${y + 2} L ${x + 2} ${y - 2}" stroke="${X.night}" stroke-width="1.2"/>`;
+  }
+  const ic = iconInk(f, b, b.base, P.dim);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  const st = statOf(f, i, [24, 22, 20, 18, 16], i.icon ? 88 : 104, 44);
+  const win = st.size ? st.size * 0.74 + (st.sub ? 18 : 0) + 16 : 0;
+  const winTop = 132 - win;
+  const ns = nameOf(b, o, 22, 116, 800);
+  const top = b.bw ? 34 : 22;
+  const ny = top + Math.max(0, (winTop - 6 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0);
+  // engraved: a dark cut under light letters
+  s += linesSvg(ns, 72, ny + 1.2, "middle", X.night, 800);
+  s += linesSvg(ns, 72, ny, "middle", b.lit ? P.text : X.silver, 800);
+  if (i.icon && b.bw === 0 && ny - (ns?.size ?? 0) * 0.74 > 40) s += icon(f.icon, 62, 14, 20, ic, 2.2);
+  if (win) {
+    s += rect(16, winTop, 112, win, 8, "url(#pw)", `${edge(f, b, b.base)} stroke-width="1.5"`);
+    if (b.lit) s += rect(17, winTop + 1, 110, win - 2, 7, b.base, 'fill-opacity="0.14"');
+    else if (b.off) s += rect(17, winTop + 1, 110, win - 2, 7, b.off, 'fill-opacity="0.12"');
+    const inWin = i.icon && !(b.bw === 0 && ny - (ns?.size ?? 0) * 0.74 > 40);
+    s += statBlock(f, st, inWin ? 80 : 72, "middle", winTop + 8, winTop + win - 8, inWin ? 88 : 104, ink(f, b, b.base), P.dim, P.dim).svg;
+    if (inWin) s += icon(f.icon, 22, winTop + win / 2 - 8, 16, ic, 2.2);
+    if (b.lv !== null) s += footBar(b, 24, winTop + win - 5, 96, 2.5, P.panel2);
+  }
+  s += badges(f, i, DARK, 10, true);
+  return doc(s, defs);
+}
+
+/** Ticker: the name over a strip along the foot that carries the status - lit in the accent when on. */
+function ticker(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  const iw = i.icon ? 30 : 0;
+  const st = b.alone ? null : statOf(f, i, [26, 24, 22, 20, 18], 122 - iw);
+  const strip = st && st.size ? 46 : 14;
+  const sy = 144 - strip;
+  s += rect(0, sy, 144, strip, 0, b.lit ? b.base : P.panel2);
+  if (b.off) s += rect(0, sy, 144, strip, 0, b.off, 'fill-opacity="0.3"');
+  // the strip's top edge: lit as far as the level
+  if (!f.online) s += `<path d="M 0 ${sy + 1.5} H 144" stroke="${P.crit}" stroke-width="3" stroke-dasharray="6 4"/>`;
+  else if (b.lv !== null) s += rect(0, sy, 144, 4, 0, b.lit ? P.bg : P.line, b.lit ? 'fill-opacity="0.3"' : "") + rect(0, sy, Math.max(4, 144 * b.lv), 4, 0, b.lit ? X.white : greyOr(b, P.muted), b.lit ? 'fill-opacity="0.7"' : "");
+  else s += rect(0, sy, 144, 3, 0, b.lit ? b.c : greyOr(b, P.muted));
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.dim;
+  if (b.alone) return doc(s + icon(f.icon, 40, 28, 64, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += icon(f.icon, 110, sy + strip / 2 - 11, 22, ic, 2.2);
+  const top = b.bw ? 34 : 10;
+  const ns = nameOf(b, o, 22, 124, 750);
+  const sub = st!.sub;
+  const room = b.room && ns && ns.lines.length === 1 ? b.room : "";
+  const extra = (sub ? 18 : 0) + (room ? 16 : 0);
+  const nb = sy - 4;
+  let y = top + Math.max(0, (nb - top - nameH(ns) - extra) / 2);
+  s += linesSvg(ns, 12, y + (ns ? ns.size * 0.74 : 0), "start", P.text);
+  y += nameH(ns);
+  if (room && y + 16 <= nb - (sub ? 18 : 0)) {
+    s += text(12, y + 12, fit(room, 12.5, 120, 600), { size: 12.5, weight: 600, fill: P.dim });
+    y += 16;
+  }
+  if (sub && y + 16 <= nb) s += subSvg(sub, 12, y + 15, 120, b.lit ? b.base : P.dim);
+  if (st!.size) s += statSvg(st!, f, 12, sy + strip / 2 + 1.5 + st!.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "start");
+  s += badges(f, i, DARK, 10, true);
+  return doc(s);
+}
+
+/** Card: the name across the top of a card, an icon tile and the status side by side under it. */
+function card(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(4, 4, 136, 136, 16, P.panel, `${edge(f, b, b.c)} stroke-width="${b.lit ? 2 : 1.2}"`);
+  const ic = iconInk(f, b, b.lit ? P.bg : b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 10, true));
+  const x = i.icon ? 52 : 14, w = 132 - x;
+  const st = statOf(f, i, [26, 23, 20, 18, 16], w, 44);
+  const rowH = Math.max(i.icon ? 34 : 0, st.size ? st.size * 0.74 + (st.sub ? 18 : 0) : 0);
+  const rowTop = 132 - rowH;
+  if (i.icon) {
+    const ty = rowTop + rowH / 2 - 17;
+    s += rect(12, ty, 34, 34, 10, b.lit ? b.base : P.panel2, !b.lit && b.off ? `stroke="${b.off}" stroke-width="1.5"` : "");
+    if (b.lv !== null) s += rect(12, ty + 34 * (1 - b.lv), 34, 34 * b.lv, 10, b.lit ? X.white : greyOr(b, P.muted), `fill-opacity="${b.lit ? 0.25 : 0.35}"`);
+    s += icon(f.icon, 18, ty + 6, 22, ic, 2.2);
+  }
+  if (st.size) s += statBlock(f, st, x, "start", rowTop, 132, Math.min(126 - x + 6, w + 6), ink(f, b, b.base), P.dim, P.dim).svg;
+  const top = b.bw ? 32 : 14;
+  const ns = nameOf(b, o, 22, 118, 800);
+  const room = b.room && ns && ns.lines.length === 1 ? b.room : "";
+  const H = nameH(ns) + (room ? 16 : 0);
+  const y = top + Math.max(0, (rowTop - 8 - top - H) / 2);
+  s += linesSvg(ns, 14, y + (ns ? ns.size * 0.74 : 0), "start", P.text, 800);
+  if (room && y + H <= rowTop - 4) s += text(14, y + nameH(ns) + 12, fit(room, 12.5, 116, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (ns && rowH) s += `<path d="M 14 ${n(rowTop - 7)} H 130" stroke="${P.line}" stroke-width="1"/>`;
+  s += badges(f, i, DARK, 9, true);
+  return doc(s);
+}
+
+/** Halves: the name on the dark top half, the status on the bottom half - filled with the accent when on. */
+function halves(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  const ic = iconInk(f, b, b.base);
+  const ns = b.alone ? null : nameOf(b, o, 22, 126, 750);
+  const st = b.alone ? null : statOf(f, i, [28, 25, 22, 19, 16], 124, 50);
+  const mid = !ns ? 50 : !st?.size ? 120 : Math.max(66, Math.min(82, Math.round((b.bw ? 30 : 8) + nameH(ns) + 10)));
+  const fill = b.lit ? b.base : P.panel2;
+  s += rect(0, mid, 144, 144 - mid, 0, fill);
+  if (b.off) s += rect(0, mid, 144, 144 - mid, 0, b.off, 'fill-opacity="0.32"');
+  if (!f.online) s += `<path d="M 0 ${mid + 1.5} H 144" stroke="${P.crit}" stroke-width="3" stroke-dasharray="6 4"/>`;
+  if (b.lv !== null) s += rect(0, mid, 144 * b.lv, 4, 0, b.lit ? P.bg : greyOr(b, P.muted), b.lit ? 'fill-opacity="0.35"' : "");
+  if (b.alone) return doc(s + icon(f.icon, 40, 30, 64, ic, 2) + badges(f, i, DARK, 12, true));
+  const top = b.bw ? 30 : 6;
+  s += linesSvg(ns, 72, top + Math.max(0, (mid - 4 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0), "middle", P.text);
+  if (i.icon) s += `<g opacity="${b.lit ? 0.28 : 0.4}">` + icon(f.icon, 112, 112, 30, b.lit ? P.bg : ic, 2) + `</g>`;
+  if (st) s += statBlock(f, st, 72, "middle", mid + 8, 140, 124, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, b.lit ? P.bg : P.dim).svg;
+  s += badges(f, i, DARK, 8, true);
+  return doc(s);
+}
+
+/** Stacked: the name, the status under it in the accent, a tiny icon at the foot - all centred. */
+function stacked(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = grad("sg", b.lit ? b.base : b.off ?? P.panel2, b.lit ? 0.28 : b.off ? 0.16 : 0.9, X.night, 0);
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(0, 0, 144, 144, 0, "url(#sg)");
+  s += rect(52, 0, 40, 4, 2, f.online ? (b.lit ? b.c : greyOr(b, P.line)) : P.crit);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  const foot = i.icon || b.lv !== null;
+  const col = column(f, o, b, { x: 72, anchor: "middle", top: b.bw ? 32 : 10, bottom: foot ? 118 : 136, maxW: 126, size: 23, nameFill: P.text, statFill: ink(f, b, b.base), unitFill: P.dim, subFill: P.dim, gap: 7 });
+  s += col.svg;
+  if (i.icon) s += icon(f.icon, 64, 121, 16, ic, 2.2);
+  if (b.lv !== null) s += footBar(b, 44, 139, 56, 3);
+  s += badges(f, i, DARK, 8, true);
+  return doc(s, defs);
+}
+
+/** Corner: the name full and big, the status in a badge tucked into the bottom right corner. */
+function corner(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg) + frame(DARK, f.online ? greyOr(b, P.line) : P.crit, 1, 1.5, 18);
+  const ic = iconInk(f, b, b.base);
+  const st = b.alone ? null : statOf(f, i, [24, 22, 20, 18, 16], 112, 40);
+  let bh = 0, bwid = 0;
+  if (st && st.size) {
+    const tw = textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0);
+    const sw = st.sub ? Math.min(118, textWidth(st.sub, 12, 650)) : 0;
+    bwid = Math.min(130, Math.max(54, tw, sw) + 24);
+    bh = st.size * 0.74 + (st.sub ? 18 : 0) + 20;
+  }
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += icon(f.icon, 13, 12, 20, ic, 2.2);
+  const top = i.icon || b.bw ? 36 : 14;
+  const ns = nameOf(b, o, 24, 120, 800);
+  const nb = 144 - bh - 4;
+  const ny = top + Math.max(0, Math.min((nb - top - nameH(ns)) / 2, 6)) + (ns ? ns.size * 0.74 : 0);
+  s += linesSvg(ns, 13, ny, "start", P.text, 800);
+  if (b.room && ns && ns.lines.length === 1 && ny + 20 < nb) s += text(13, ny + 19, fit(b.room, 12.5, 118, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (bh) {
+    const x0 = 144 - bwid, y0 = 144 - bh;
+    s += `<path d="M ${n(x0)} 144 V ${n(y0 + 16)} Q ${n(x0)} ${n(y0)} ${n(x0 + 16)} ${n(y0)} H 144 V 144 Z" fill="${b.lit ? b.base : P.panel2}"/>`;
+    if (b.off) s += `<path d="M ${n(x0)} 144 V ${n(y0 + 16)} Q ${n(x0)} ${n(y0)} ${n(x0 + 16)} ${n(y0)} H 144 V 144 Z" fill="${b.off}" fill-opacity="0.35" stroke="${b.off}" stroke-width="1.5"/>`;
+    if (!f.online) s += `<path d="M ${n(x0)} 144 V ${n(y0 + 16)} Q ${n(x0)} ${n(y0)} ${n(x0 + 16)} ${n(y0)} H 144" fill="none" stroke="${P.crit}" stroke-width="2" stroke-dasharray="5 4"/>`;
+    const y = y0 + 12 + st!.size * 0.74;
+    s += statSvg(st!, f, 132, y, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "end");
+    if (st!.sub) s += subSvg(st!.sub, 132, y + 17, bwid - 22, b.lit ? P.bg : P.dim, "end", 12);
+    if (b.lv !== null) s += rect(x0 + 10, 139, (bwid - 20) * b.lv, 2.5, 1.2, b.lit ? P.bg : greyOr(b, P.muted), b.lit ? 'fill-opacity="0.5"' : "");
+  }
+  s += badges(f, i, DARK, 11, true);
+  return doc(s);
+}
+
+/** Lined: the name with an accent line under it - as wide as the name when on, the level when dimmed, a stub when off. */
+function lined(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + rect(44, 116, 56, 5, 2.5, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.line) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += icon(f.icon, 14, 12, 20, ic, 2.2);
+  const col = column(f, o, { ...b, room: "" }, { x: 14, anchor: "start", top: i.icon || b.bw ? 36 : 14, bottom: 136, maxW: 118, size: 23, weight: 800, nameFill: P.text, statFill: ink(f, b, P.text), unitFill: P.dim, subFill: P.dim, gap: 16, statSizes: [26, 23, 20, 18, 16] });
+  if (col.ns) {
+    const nw = Math.min(118, Math.max(...col.ns.lines.map((l) => textWidth(l, col.ns!.size, 800))));
+    const y = col.nameEnd + 3;
+    const w = b.lit ? (b.lv !== null ? Math.max(14, nw * b.lv) : nw) : 22;
+    if (b.lit && b.lv !== null) s += rect(14, y, nw, 5, 2.5, P.line);
+    s += f.online ? rect(14, y, w, 5, 2.5, b.lit ? b.c : greyOr(b, P.muted)) : `<path d="M 14 ${n(y + 2.5)} H ${n(14 + nw)}" stroke="${P.crit}" stroke-width="3" stroke-dasharray="5 4"/>`;
+  }
+  s += col.svg;
+  s += badges(f, i, DARK, 11, true);
+  return doc(s);
+}
+
+/** Terminal: a little console window - the name, then "> status" in the accent with a block cursor when on. */
+function terminal(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const green = b.lit ? b.base : !f.online ? P.crit : b.off ?? P.dim;
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(3, 3, 138, 138, 12, P.bg, `${edge(f, b, b.c)} stroke-width="1.5"`);
+  s += `<path d="M 3 22 H 141" stroke="${P.line}" stroke-width="1"/>`;
+  // the level: a progress line under the title bar
+  if (b.lv !== null) s += rect(4, 21, Math.max(2, 136 * b.lv), 2.5, 0, green);
+  for (const [x, c] of [[15, P.crit], [27, P.warn], [39, P.ok]] as const) s += `<circle cx="${x}" cy="12.5" r="3.5" fill="${c}" fill-opacity="${b.lit ? 0.9 : 0.4}"/>`;
+  if (b.alone) return doc(s + icon(f.icon, 42, 44, 60, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 3.5, true));
+  if (i.icon) s += icon(f.icon, 118, 5, 15, iconInk(f, b, b.base), 2.2);
+  // a monospace letter is wider than our measure of most letters: measure against less
+  const k = 0.86;
+  const ns = nameOf(b, o, 21, 120 * k, 700);
+  const st = statOf(f, i, [22, 20, 18, 16], (120 - 16) * k, 50);
+  const sub = st.sub;
+  const H = nameH(ns) + (st.size ? 10 + st.size * 0.74 : 0) + (sub ? 18 : 0);
+  let y = 30 + Math.max(0, (138 - 30 - H) / 2);
+  s += linesSvg(ns, 12, y + (ns ? ns.size * 0.74 : 0), "start", P.text, 700, MONO, 1.12);
+  y += nameH(ns, 1.12);
+  if (st.size) {
+    y += 10 + st.size * 0.74;
+    s += text(12, y, ">", { size: st.size, weight: 800, fill: green, family: MONO });
+    s += statSvg(st, f, 12 + st.size * 0.75, y, green, P.dim, "start", P.crit, MONO);
+    const cx = 12 + st.size * 0.75 + (textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0)) / k + 4;
+    if (b.lit && cx < 128) s += rect(cx, y - st.size * 0.72, st.size * 0.5, st.size * 0.82, 1, green, 'fill-opacity="0.75"');
+  }
+  if (sub && y + 18 <= 140) s += subSvg(sub, 12, y + 17, 120 * k, P.dim, "start", 12, MONO);
+  s += badges(f, i, DARK, 3.5, true);
+  return doc(s);
+}
+
+/** Marquee: the name in lights - a ring of bulbs, lit in the accent when on - the status under it. */
+function marquee(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(4, 4, 136, 136, 14, P.panel2) + rect(16, 16, 112, 112, 8, P.bg, `${edge(f, b, b.c)} stroke-width="1.2"`);
+  const on = b.lit ? (b.lv !== null ? b.lv : 1) : 0;
+  const pts: [number, number][] = [];
+  for (let k = 0; k < 9; k++) pts.push([10 + k * 15.5, 10]);
+  for (let k = 1; k < 9; k++) pts.push([134, 10 + k * 15.5]);
+  for (let k = 7; k >= 0; k--) pts.push([10 + k * 15.5, 134]);
+  for (let k = 8; k >= 1; k--) pts.push([10, 10 + k * 15.5]);
+  pts.forEach(([x, y], k) => {
+    const lit = b.lit && k < Math.round(pts.length * on);
+    if (lit) s += `<circle cx="${n(x)}" cy="${n(y)}" r="4.6" fill="${b.base}" fill-opacity="0.3"/>`;
+    s += `<circle cx="${n(x)}" cy="${n(y)}" r="2.6" fill="${lit ? b.base : !f.online ? P.crit : b.off ?? P.line}"${!f.online ? ' fill-opacity="0.6"' : ""}/>`;
+  });
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 42, 42, 60, ic, 2) + badges(f, i, DARK, 12, true));
+  const foot = i.icon;
+  const col = column(f, o, b, { x: 72, anchor: "middle", top: b.bw ? 34 : 20, bottom: foot ? 108 : 124, maxW: 104, size: 21, nameFill: b.lit ? X.white : P.text, statFill: ink(f, b, b.base), unitFill: P.dim, subFill: P.dim, gap: 7, statSizes: [24, 22, 20, 18, 16] });
+  s += col.svg;
+  if (foot) s += icon(f.icon, 64, 108, 16, ic, 2.2);
+  s += badges(f, i, DARK, 13, true);
+  return doc(s);
+}
+
+/** Widget: a phone-widget card - an icon chip and the status at the top, the name big at the foot. */
+function widget(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = b.lit ? grad("wg", b.base, 0.34, b.base, 0.1, 1, 1) : grad("wg", P.panel2, 1, P.panel, 1, 1, 1);
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(4, 4, 136, 136, 22, P.bg) + rect(4, 4, 136, 136, 22, "url(#wg)", `${edge(f, b, b.c)} stroke-width="1.2"`);
+  if (b.off) s += rect(4, 4, 136, 136, 22, b.off, 'fill-opacity="0.1"');
+  const ic = iconInk(f, b, b.lit ? P.bg : b.base);
+  if (b.alone) return doc(s + `<circle cx="72" cy="72" r="38" fill="${b.lit ? b.base : P.panel2}"/>` + icon(f.icon, 50, 50, 44, ic, 2.2) + badges(f, i, DARK, 12, true), defs);
+  let y = 14;
+  if (i.icon) {
+    s += `<circle cx="27" cy="27" r="14" fill="${b.lit ? b.base : P.panel2}"${!b.lit && b.off ? ` stroke="${b.off}" stroke-width="1.5"` : ""}/>` + icon(f.icon, 19, 19, 16, ic, 2.2);
+    y = 44;
+  } else if (b.bw) y = 36;
+  const st = statOf(f, i, [20, 18, 17, 16, 15], 116, 40);
+  const ns = nameOf(b, o, 23, 120, 800);
+  // the name at the foot, the status over it
+  const nameTop = 134 - nameH(ns);
+  const sub = st.sub && nameTop - 6 - (y + st.size * 0.74) >= 17 ? st.sub : "";
+  if (st.size) {
+    const sy = Math.min(nameTop - 8 - (sub ? 17 : 0), Math.max(y + st.size * 0.74, nameTop - 8 - (sub ? 17 : 0)));
+    s += statSvg(st, f, 16, sy, b.lit ? (f.stateColour ?? X.white) : f.stateColour ?? b.off ?? P.dim, b.lit ? P.text : P.muted, "start");
+    if (sub) s += subSvg(sub, 16, sy + 16, 112, b.lit ? P.text : P.dim, "start", 12);
+  }
+  s += linesSvg(ns, 16, nameTop + (ns ? ns.size * 0.74 : 0), "start", b.lit ? X.white : P.text, 800);
+  if (b.lv !== null) s += footBar(b, 16, 136, 112, 3);
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Sign: a road sign - in the accent with a dark inner border when on, grey when off - the name on it, the status under a rule. */
+function sign(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const fill = b.lit ? b.base : P.panel2;
+  const fg = b.lit ? P.bg : P.text;
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(3, 3, 138, 138, 16, fill);
+  if (b.off) s += rect(3, 3, 138, 138, 16, b.off, 'fill-opacity="0.3"');
+  s += rect(8, 8, 128, 128, 11, "none", f.online ? `stroke="${b.lit ? P.bg : b.off ?? P.dim}" stroke-width="2.5"` : `stroke="${P.crit}" stroke-width="2.5" stroke-dasharray="6 4"`);
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.dim;
+  if (b.alone) return doc(s + icon(f.icon, 42, 42, 60, ic, 2.2) + badges(f, i, DARK, 12, true));
+  const ns = nameOf(b, o, 22, 112, 800);
+  const st = statOf(f, i, [24, 22, 20, 18, 16], 112, 44);
+  const lower = st.size ? st.size * 0.74 + (st.sub ? 18 : 0) + 16 : 0;
+  const rule = 130 - lower;
+  if (i.icon) s += icon(f.icon, 62, 14, 20, ic, 2.2);
+  const top = i.icon || b.bw ? 36 : 16;
+  s += linesSvg(ns, 72, top + Math.max(0, (rule - 4 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0), "middle", fg, 800);
+  if (lower) {
+    s += `<path d="M 16 ${n(rule)} H 128" stroke="${fg}" stroke-opacity="0.45" stroke-width="1.5"/>`;
+    if (b.lv !== null) s += `<path d="M 16 ${n(rule)} H ${n(16 + 112 * b.lv)}" stroke="${fg}" stroke-width="3" stroke-linecap="round"/>`;
+    s += statBlock(f, st, 72, "middle", rule + 8, 130, 112, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, b.lit ? P.panel2 : P.dim).svg;
+  }
+  s += badges(f, i, DARK, 12, true);
+  return doc(s);
+}
+
+/** Note: a ruled index card with a red margin - the name in ink, the status marked with a highlighter when on. */
+function note(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i, ink2 = PAPER;
+  let s = rect(0, 0, 144, 144, 0, X.paper2) + rect(3, 3, 138, 138, 6, X.paper, f.online ? `stroke="${b.lit ? b.c : greyOr(b, X.paperLine)}" stroke-width="${b.lit || b.off ? 2.5 : 1}"` : `stroke="${X.inkCrit}" stroke-width="2" stroke-dasharray="6 4"`);
+  for (let y = 36; y < 140; y += 22) s += `<path d="M 4 ${y} H 140" stroke="${X.paperLine}" stroke-width="1"/>`;
+  s += `<path d="M 16 4 V 140" stroke="${P.crit}" stroke-opacity="0.55" stroke-width="1.2"/>`;
+  const ic = b.lit ? b.c : !f.online ? X.inkCrit : b.off ?? X.inkMuted;
+  if (b.alone) return doc(s + icon(f.icon, 42, 40, 60, ic, 2) + badges(f, i, ink2, 12, true));
+  const col = column(f, o, b, { x: 24, anchor: "start", top: b.bw ? 34 : 12, bottom: 136, maxW: 112, size: 22, weight: 750, nameFill: X.ink, statFill: f.stateColour && b.lit ? f.stateColour : b.lit ? X.ink : b.off ?? X.inkDim, unitFill: X.inkDim, subFill: X.inkDim, crit: X.inkCrit, statSizes: [24, 22, 20, 18, 16], gap: 10 });
+  // the highlighter behind the status
+  if (col.st.size && f.online) {
+    const tw = textWidth(col.st.words, col.st.size, 800) + (col.st.unit ? textWidth(col.st.unit, Math.max(11, col.st.size * 0.5), 600) + 4 : 0);
+    const hl = b.lit ? b.base : b.off;
+    if (hl) s += rect(20, col.statY - col.st.size * 0.62, Math.min(118, tw + 10), col.st.size * 0.72, 3, hl, `fill-opacity="${b.lit ? 0.42 : 0.3}"`);
+    if (b.lv !== null) s += rect(20, col.statY + 4, Math.min(118, tw + 10) * b.lv, 2.5, 1.2, b.lit ? b.base : greyOr(b, X.inkMuted));
+  }
+  s += col.svg;
+  if (i.icon) s += icon(f.icon, 118, 114, 16, ic, 2);
+  s += badges(f, i, ink2, 10, true);
+  return doc(s);
+}
+
+/** Pass: a lanyard pass - a slot at the top, a coloured band with the status, the name big under it. */
+function pass(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(8, 4, 128, 136, 12, P.panel, `${edge(f, b, b.c)} stroke-width="1.2"`);
+  s += rect(58, 10, 28, 6, 3, X.night);
+  const ic = iconInk(f, b, b.lit ? P.bg : b.base);
+  const st = b.alone ? null : statOf(f, i, [22, 20, 18, 16], i.icon ? 84 : 108);
+  const bandH = st && st.size ? 36 : 14;
+  s += rect(9, 22, 126, bandH, 0, b.lit ? b.base : P.panel2);
+  if (b.off) s += rect(9, 22, 126, bandH, 0, b.off, 'fill-opacity="0.35"');
+  if (b.lv !== null) s += rect(9, 22 + bandH - 3, 126 * b.lv, 3, 0, b.lit ? P.bg : greyOr(b, P.muted), b.lit ? 'fill-opacity="0.35"' : "");
+  if (b.alone) return doc(s + icon(f.icon, 44, 66, 56, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 2, true));
+  if (i.icon) s += icon(f.icon, 17, 22 + bandH / 2 - 9, 18, ic, 2.2);
+  if (st && st.size) s += statSvg(st, f, i.icon ? 42 : 72, 22 + bandH / 2 + st.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, i.icon ? "start" : "middle");
+  const top = 22 + bandH + 6;
+  const ns = nameOf(b, o, 22, 116, 800);
+  const sub = st?.sub ?? "";
+  const roomOk = b.room && ns && ns.lines.length === 1;
+  const extra = (sub ? 17 : 0) + (roomOk ? 16 : 0);
+  const avail = 134 - top;
+  const H = nameH(ns) + extra;
+  let y = top + Math.max(0, (avail - Math.min(H, avail)) / 2);
+  s += linesSvg(ns, 72, y + (ns ? ns.size * 0.74 : 0), "middle", P.text, 800);
+  y += nameH(ns);
+  if (roomOk && y + 16 <= 134) {
+    s += text(72, y + 12, fit(b.room, 12.5, 112, 600), { size: 12.5, weight: 600, fill: P.dim, anchor: "middle" });
+    y += 16;
+  }
+  if (sub && y + 15 <= 138) s += subSvg(sub, 72, y + 14, 112, b.lit ? b.base : P.dim, "middle", 12);
+  s += badges(f, i, DARK, 2, true);
+  return doc(s);
+}
+
+/** Glow: the name itself glows in the accent when on, the status under it in the accent. */
+function glow(f: Face, o: LookOpts): string {
+  const b = nf(f, o), i = b.i;
+  const defs = radial("gw", [[0, b.base, 0.22], [1, b.base, 0]], 0.5, 0.42, 0.6);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  if (b.lit) s += rect(0, 0, 144, 144, 0, "url(#gw)");
+  s += f.online && b.lv !== null ? footBar(b, 30, 137.5, 84, 3) : rect(30, 138, 84, 2, 1, f.online ? (b.lit ? b.c : greyOr(b, P.line)) : P.crit);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 64, b.bw ? 34 : 10, 16, ic, 2.2);
+  const halo = b.lit ? `stroke="${b.base}" stroke-opacity="0.3" stroke-width="4" stroke-linejoin="round"` : "";
+  const top = i.icon ? (b.bw ? 54 : 30) : b.bw ? 34 : 12;
+  const ns = nameOf(b, o, 22, 124, 750);
+  const st = statOf(f, i, [22, 20, 18, 16, 15], 124, 40);
+  const lowerH = st.size ? 8 + st.size * 0.74 + (st.sub ? 18 : 0) : 0;
+  const H = nameH(ns) + lowerH;
+  let y = top + Math.max(0, (132 - top - H) / 2);
+  const ny = y + (ns ? ns.size * 0.74 : 0);
+  if (halo) s += linesSvg(ns, 72, ny, "middle", b.base, 750, undefined, 1.1, halo);
+  s += linesSvg(ns, 72, ny, "middle", b.lit ? X.white : b.off ?? P.text);
+  y += nameH(ns);
+  if (st.size) {
+    const sy = y + 8 + st.size * 0.74;
+    s += statSvg(st, f, 72, sy, ink(f, b, b.base), P.dim, "middle");
+    if (st.sub && sy + 18 <= 140) s += subSvg(st.sub, 72, sy + 17, 124, P.dim, "middle", 12);
+  }
+  s += badges(f, i, DARK, 10, true);
+  return doc(s, defs);
+}
+
 const LOOKS: Record<string, (f: Face, o: LookOpts) => string> = {
   minimal, bigvalue, fill: solid, neon, ring, split, glass, label, dot, light, contrast,
   huge, pill, orb, tile, gauge, bars, wave, aurora, outline, mono,
   diagonal, hex, stripe, switch: toggle, lcd, dial, ticket, bubble, frame: brackets, shadow, line, tube, stamp, pastel, carbon, grid, tab, rise, spot, button,
+  namebar, caption: captionLook, led, tworows, plate, ticker, card, halves, stacked, corner, lined, terminal, marquee, widget, sign, note, pass, glow,
 };
 
 /** A key in one of the looks (not Classic, which render.ts draws as 1.0 did). */

@@ -119,7 +119,7 @@ plugin sám uviděl.
 
 V nastavení každé akce je oddíl **Look**:
 
-- **42 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
+- **60 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
   změny pro dříve nastavená tlačítka), *Minimal* (velká ikona), *Big value* (hodnota co
   největší), *Solid fill* (celé tlačítko se rozsvítí barvou), *Neon* (zářící obrys),
   *Ring gauge* (prstenec, který se plní), *Two-tone* (barevný pruh nad tmavým),
@@ -138,6 +138,19 @@ V nastavení každé akce je oddíl **Look**:
   *Stamp* (obří bledá ikona), *Pastel* (jemná barva, tmavé písmo), *Carbon* (karbon a světelný
   pruh), *Grid* (mřížka kontrolek), *Tab* (složka se jménem na oušku), *Rise* (vycházející
   slunce), *Spot* (reflektor) a *Button* (skutečné tlačítko, zamáčknuté, když je zapnuto).
+  A osmnáct vzhledů, kde má přednost **jméno**: je velké a celé (radši na dva řádky a menší,
+  než aby se uřízlo - podle volby délky jména) a hned u něj **stav** - Zap/Vyp, teplota
+  s jednotkou, příkon ve wattech, jas, poloha, režim, odpočet nebo počet -, takže je obojí
+  čitelné najednou i na malých tlačítkách XL: *Name bar* (jméno na barevném pruhu, stav pod
+  ním), *Caption* (jméno uprostřed, stav v pilulce), *LED* (jméno, kontrolka a stav), *Two rows*
+  (jméno a stav oddělené tenkou čarou), *Plate* (rytý štítek s okénkem stavu), *Ticker* (jméno
+  nad pruhem se stavem), *Card* (jméno nad dlaždicí s ikonou a stavem), *Halves* (jméno nahoře,
+  stav na barevné spodní půlce), *Stacked* (jméno, stav, malá ikona), *Corner* (velké jméno,
+  stav v rohovém štítku), *Lined* (jméno podtržené barvou, když je zapnuto), *Terminal* (konzole:
+  jméno a pod ním `> stav`), *Marquee* (jméno ve věnci žárovek), *Widget* (widget jako v telefonu,
+  jméno dole), *Sign* (dopravní cedule se jménem), *Note* (kartička, stav zvýrazněný
+  zvýrazňovačem), *Pass* (visačka na šňůrce, velké jméno) a *Glow* (jméno samo září, když je
+  zapnuto).
   Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
 - **Barvy** ve dvou záložkách: **On colour** (barva zapnutého tlačítka; *Auto* = podle druhu
   položky) a **Off colour** (barva vypnutého; *Auto* = šedá, jak ji kreslí daný vzhled). Každá je
@@ -187,7 +200,7 @@ Starší ZIGMon přepínač ignoruje.
 
 Deset dalších akcí ukazuje, co ZIGMon 5.59.4 shrnuje za celý dům, a umí s tím pracovat. Každá
 funguje na tlačítkách i na ovladačích Stream Decku + (s vlastním rozvržením dotykové lišty), má
-vlastní kresbu v Classic i všech 42 vzhledů, barvy pro zapnuto / vypnuto, popisek, dlouhá jména
+vlastní kresbu v Classic i všech 60 vzhledů, barvy pro zapnuto / vypnuto, popisek, dlouhá jména
 a volbu, co tlačítko ukazuje - přesně jako akce výše. V jejich nastavení je karta **Now**
 s tím, co se na tlačítko nevejde (všechna otevřená okna, celý text poslední výstrahy, položky
 místnosti...).

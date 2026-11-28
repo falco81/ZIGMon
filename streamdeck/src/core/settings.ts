@@ -118,7 +118,9 @@ const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "unlock", 
   "timer"];
 export const THEME_IDS = ["classic", "minimal", "bigvalue", "fill", "neon", "ring", "split", "glass", "label", "dot", "light", "contrast",
   "huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono",
-  "diagonal", "hex", "stripe", "switch", "lcd", "dial", "ticket", "bubble", "frame", "shadow", "line", "tube", "stamp", "pastel", "carbon", "grid", "tab", "rise", "spot", "button"] as const;
+  "diagonal", "hex", "stripe", "switch", "lcd", "dial", "ticket", "bubble", "frame", "shadow", "line", "tube", "stamp", "pastel", "carbon", "grid", "tab", "rise", "spot", "button",
+  // (1.3) the name-first looks
+  "namebar", "caption", "led", "tworows", "plate", "ticker", "card", "halves", "stacked", "corner", "lined", "terminal", "marquee", "widget", "sign", "note", "pass", "glow"] as const;
 export const ACCENT_IDS = ["blue", "green", "amber", "red", "purple", "orange", "teal", "pink", "yellow", "silver",
   "indigo", "sky", "cyan", "mint", "lime", "gold", "peach", "coral", "rose", "magenta", "lavender", "brown", "slate", "white"] as const;
 
