@@ -668,7 +668,7 @@ function optionsCard(): HTMLElement | null {
       break;
   }
   if (KIND !== "reading" && KIND !== "status") card.append(holdSwitch(it));
-  if (KIND === "control" && it && it.cap === "switch") card.append(byHandSwitch());
+  if ((KIND === "control" || KIND === "dimmer") && it && it.cap === "switch") card.append(byHandSwitch());
   if (card.childElementCount <= 1) return null;
   return card;
 }

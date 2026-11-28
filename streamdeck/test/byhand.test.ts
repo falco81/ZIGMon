@@ -74,6 +74,22 @@ describe("By hand", () => {
     assert.deepEqual(sent[1], { deck: "D", id: "Lampa", action: "on" });
   });
 
+  it("(1.3) the Light action has it too: its press says so, and its key shows it taken over", async () => {
+    const sent: Sent[] = [];
+    const a = key("dimmer", lamp(false), { byHand: true }, sent);
+    a.v.keyDown();
+    a.v.keyUp();
+    const b = key("dimmer", lamp(false), {}, sent);
+    b.v.keyDown();
+    b.v.keyUp();
+    await until(() => sent.length >= 2, 2000, "two commands");
+    assert.equal(sent[0]!.by_hand, true);
+    assert.equal(sent[1]!.by_hand, undefined);
+    const plain = key("dimmer", lamp(false), {}).s.images.at(-1);
+    const held = key("dimmer", lamp(true), {}).s.images.at(-1);
+    assert.notEqual(plain, held, "the Classic Light key does not show it is taken over");
+  });
+
   it("ZIGMon's word that it is taken over is read and drawn in every look", () => {
     assert.equal(parseState({ held: true }).held, true);
     assert.equal(parseState({ held: "yes" }).held, false);

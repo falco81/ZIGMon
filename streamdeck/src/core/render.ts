@@ -320,6 +320,8 @@ export interface DimmerModel {
   online: boolean;
   hold: boolean;
   allowed: boolean;
+  /** (1.3) Taken over by hand: rules and schedules leave it alone. */
+  taken?: boolean;
 }
 
 export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
@@ -333,7 +335,7 @@ export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
     body += `<circle cx="37" cy="37" r="30" fill="url(#halo)" fill-opacity="${n(op * 2.4)}"/>`;
   }
   if (i.icon) body += tile(active ? "bulbOn" : "bulb", A, active);
-  body += badges({ online: m.online, hold: m.hold, allowed: m.allowed });
+  body += badges({ online: m.online, hold: m.hold, allowed: m.allowed, taken: m.taken });
   const big = !m.online ? "Offline" : m.on === false ? "Off" : m.levelText || (m.on ? "On" : "—");
   const bf = fitSize(big, [32, 26, 20], 120, 750);
   if (i.state) body += text(14, 88, bf.text, { size: bf.size, weight: 750, fill: active ? P.text : P.dim });

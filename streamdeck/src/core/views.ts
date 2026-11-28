@@ -494,6 +494,7 @@ export class ActionView implements HubView {
     const m: DimmerModel = {
       name: this.label(it), room: it.room, showRoom: this.showRoom(), on: shown !== null ? shown > (b?.min ?? 0) : st.on, level: f,
       levelText: st.on === false && shown === null ? "Off" : pct, online: st.online, hold: this.needsHold(it), allowed: it.allowed,
+      taken: st.held === true,
     };
     if (this.forced === "on") Object.assign(m, { on: true, online: true, level: f && f > 0 ? f : 0.8, levelText: Math.round((f && f > 0 ? f : 0.8) * 100) + "%" });
     if (this.forced === "off") Object.assign(m, { on: false, online: true, levelText: "Off" });
@@ -955,8 +956,11 @@ export class ActionView implements HubView {
       }
       case "scene":
         return it.actions.includes("run") ? { id: it.id, action: "run" } : it.actions.includes("on") ? { id: it.id, action: "on" } : null;
-      case "dimmer":
-        return { id: it.id, action: it.actions.includes("toggle") ? "toggle" : (this.st?.on ? "off" : "on") };
+      case "dimmer": {
+        const a: ItemAction = it.actions.includes("toggle") ? "toggle" : (this.st?.on ? "off" : "on");
+        // (1.3) "By hand" on the Light action too: a light that is a switch is taken over as a Control key's
+        return this.settings.byHand === true && it.cap === "switch" ? { id: it.id, action: a, by_hand: true } : { id: it.id, action: a };
+      }
       case "blinds":
         return this.blindsPush();
       case "thermostat":

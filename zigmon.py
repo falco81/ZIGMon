@@ -13624,6 +13624,15 @@ class Daemon(object):
         self._deck_setup()
         now = time.monotonic()
         if not force and now - self._deck_refreshed < 0.2:
+            # (5.59.4) never dropped, only put off: a change that came inside the fifth of a second
+            # (the socket's watts a moment after its switching) was lost until the next one - the
+            # key kept "0 W" for as long as the house stayed quiet
+            with self._deck_lock:
+                if getattr(self, '_deck_trailing', None) is None:
+                    t = threading.Timer(max(0.01, 0.2 - (now - self._deck_refreshed)), self._deck_trailing_now)
+                    t.daemon = True
+                    self._deck_trailing = t
+                    t.start()
             return
         self._deck_refreshed = now
         items = self.deck_items(fresh=True)
@@ -13640,6 +13649,11 @@ class Daemon(object):
                 changed = True
             if changed:
                 self._deck_cond.notify_all()
+
+    def _deck_trailing_now(self):
+        with self._deck_lock:
+            self._deck_trailing = None
+        self._deck_refresh_safe()
 
     def _deck_refresh_safe(self):
         try:
