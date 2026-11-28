@@ -15,7 +15,8 @@ and the administrator grants the functions one by one.
 
 - Windows 10 or 11 with the Stream Deck app **7.1 or newer**.
 - ZIGMon **5.59 or newer**, reachable from that computer over **https** (plain http only when
-  ZIGMon runs on the same computer).
+  ZIGMon runs on the same computer). The graphs from ZIGMon's history and the heated rooms'
+  target, mode and thermometer need a ZIGMon **newer than 5.59.0** (with 5.59.0 the rest works as in 1.0).
 - The other Stream Deck models work too (keys only, sized for their grid); the XL and + are
   the ones the plugin is designed for.
 
@@ -23,7 +24,7 @@ and the administrator grants the functions one by one.
 
 1. In ZIGMon, as the administrator: **Settings → Messages → Stream Deck**.
 2. Switch on **Allow Stream Deck control**.
-3. Click **Download ZIGMon for Stream Deck 1.0.0**. Compare the SHA-256 shown there with the
+3. Click **Download ZIGMon for Stream Deck 1.1.0**. Compare the SHA-256 shown there with the
    file if you like (`Get-FileHash ZIGMon.streamDeckPlugin` in PowerShell).
 4. Double-click the downloaded `.streamDeckPlugin`. Stream Deck asks to install it; say yes.
    A **ZIGMon for Stream Deck** category appears in the actions list.
@@ -66,7 +67,7 @@ deck to control are shown with a lock, and a live preview shows the key.
 |---|---|---|
 | **Control** | Any item ZIGMon allows: socket, light, relay, valve, rule... Icon, name, room, On/Off with a glow in the item's colour, its value (e.g. 42 W). A press toggles it (or turns it on / off / runs / opens / closes - your choice). | Push = the press, turn = its main value (brightness, setpoint, position), strip: icon, name, value, slider or state pill. |
 | **Reading** | A reading, big, with its unit, a trend arrow, a sparkline of the latest values, amber/red when outside the thresholds you set. A press refreshes. | Strip: the value over a full-width sparkline. |
-| **Thermostat** | An arc gauge: the current temperature in the middle, the target on the arc, a flame while heating, mode and preset. A press: next mode, next preset or boost (your choice). | Turn = setpoint (0.1 / 0.5 / 1 ° per click), push = next mode/preset, touch = boost. Strip: current, target, mode, the arc and the flame. |
+| **Thermostat** | An arc gauge: the current temperature in the middle, the target on the arc, a flame while heating, mode and preset. A press: next mode, next preset, boost, **show the details** or **set one mode** (your choice). | Turn = setpoint (0.1 / 0.5 / 1 ° per click), push = next mode/preset, touch = boost. Strip: current, target, mode, the arc and the flame. |
 | **Light** | Bulb glowing with the brightness, the percentage and a level bar. A press switches it. | Turn = brightness (1-20 % per click), push = on/off, strip: slider. |
 | **Blinds** | A window with the blind drawn at its position, Open/Closed/percentage, Opening…/Closing…. A press: open/close (by where it is), stop, open or close. | Turn = position, push = stop/open/close, touch = stop. Strip: the window. |
 | **Scene** | Runs a scene, sequence or group of actions. A green tick when done, a red cross when not. | Push or touch = run. |
@@ -75,11 +76,51 @@ deck to control are shown with a lock, and a live preview shows the key.
 Turning a dial moves the value on the strip at once; the clicks are gathered and sent to
 ZIGMon as one change (ZIGMon keeps it within the item's range and step).
 
+### Heating by room (1.1)
+
+**Thermostat** also takes a room of the Heating tab (*Heating in …*), as the dashboard shows it:
+the **target**, the **measured** temperature from the room's own thermometer (the one set for
+the room in ZIGMon), and the **mode** in the dashboard's words - Comfort, Eco, Night, Max, Off,
+Plan, By hand, and **By hand until 14:30** while a hand-set temperature holds. A press can set
+one mode outright or go round all of them (Plan and By hand included); turning the dial sets
+the room by hand exactly as the dashboard's *Set … by hand* slider (the same road in ZIGMon,
+under the *climate* permission and its hold). **Show details (3 s)** makes a press show the
+mode, target, measured temperature and thermometer on the key for three seconds instead.
+
+### Graphs (1.1)
+
+**Reading** and **Thermostat** draw a graph of **ZIGMon's own history** (what its History tab
+draws), sent ready and thinned to about 48 points for the span you choose - **1 h, 6 h, 24 h or
+7 d** - so it is there at once. The plugin appends the live values and asks again every few
+minutes and when the span changes. Optional: min / max labels, and a thermostat's target as a
+dashed line. ZIGMon 5.59.0 sends no history; then the graph grows from what the plugin sees.
+
+### Looks (1.1)
+
+Every action's settings have a **Look** section with live thumbnails of the item as it is now:
+**Classic** (1.0's key - keys set up before 1.1 look exactly as they did), **Minimal**,
+**Big value**, **Solid fill**, **Neon**, **Ring gauge**, **Two-tone**, **Glass**, **Bold label**,
+**Status dot**, **Light** and **High contrast**, with an On / Off pair above them. Then an
+**accent** (Auto by kind, or one of 10 colours), a **label** for every action (40 characters),
+how **long names** are laid out (shrink to fit, two lines breaking at hyphens, or one line cut as
+in 1.0), and **what the key shows**, each on its own: icon, name, room, state / value, the second
+value (W, brightness, target, movement, trend), mode / preset, graph (history, level bar, the
+blind's window) and battery - with *Everything* and *Icon only* shortcuts. Every look honours
+them; offline, the lock, the hand and the hold ring stay readable in all of them. On the
+Stream Deck + the look, accent and choices reach the touch strip as far as its layout allows
+(its paper, the ink of its words, the icon's tile; a hidden part is left empty).
+
 ### Hold to confirm
 
 When the administrator ticks **Hold to confirm** for a function (system actions always have
 it), a short press does nothing but say **Hold to confirm**. Keep the key (or the dial) pressed:
 a ring fills, and after 1.5 s the action runs - you can let go once it says *Confirmed*.
+
+Since 1.1 any key or dial that does something can ask for it too: the **Hold to confirm
+(1.5 s)** switch (the hand) in its settings. A key press, a dial push and a touch then need the
+same hold with the same ring; turning a dial stays free. Where ZIGMon requires the hold the
+switch shows on and locked (*ZIGMon requires it for this item*). The hand is on the key
+whenever a hold applies.
 
 ### What the keys tell you
 

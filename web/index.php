@@ -7209,6 +7209,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card full ot dk-card" data-sec="msg-deck" id="dk-card">
       <div id="dk-host"></div>
     </div>
+    <div class="card full set-card" data-sec="msg-deck" id="dk-set-card">
+      <h2>Settings</h2>
+      <div class="set-host" id="set-host-msg-deck" data-for="msg-deck"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
     <div class="card full ot sbk-card" data-sec="dev-backups" id="sbk-card">
       <div id="sbk-host"></div>
     </div>
@@ -23077,6 +23085,13 @@ var SETTINGS_LAYOUT = [
     ['binding_tries', 'Ask this many times',
      'How many times to ask before saying it will not take it (each try is one waking)'],
   ]],
+  ['Stream Deck', [
+    ['deck_installs_most', 'How many computers may be paired',
+     'How many installations of ZIGMon for Stream Deck - one per Windows account on a computer - may be '
+     + 'paired with this ZIGMon at once. Ten is what it comes as; a pairing request past the limit is '
+     + 'refused until one is revoked. No limit takes away the count, not the checks: every computer is '
+     + 'still paired by a code, approved here, and given only what it is granted.'],
+  ]],
   ['One-tap links', [
     ['|', 'where the links answer from'],
     ['public_url', 'Where the dashboard answers from outside \u2014 used to write out the one-tap links, e.g. https://home.example.net/index.php'],
@@ -24068,7 +24083,7 @@ var SETTINGS_WHERE = {
   'Watching over things': 'dev-health', 'How often the boxes are asked': 'dev-polling',
   'Talking to the boxes': 'dev-polling', 'Mending bindings': 'dev-zigbee',
   'What gets written down': 'sys-data', 'Money and place': 'sys-energy', 'Charts': 'sys-energy',
-  'Heating': 'auto-rooms', 'Weather': 'auto-rooms', 'One-tap links': 'msg-taps',
+  'Heating': 'auto-rooms', 'Weather': 'auto-rooms', 'One-tap links': 'msg-taps', 'Stream Deck': 'msg-deck',
   'The second factor': 'msg-taps', 'Keeping addresses out': 'sec-block',
   'The server that faces the internet': 'sec-front', 'The router that carries the list': 'sec-front',
   'Backups': 'sys-backup', 'Notification channels': 'msg-alerts', 'Signing in': 'sec-access',
@@ -38376,7 +38391,8 @@ function drawDeck() {
   host.appendChild(hero);
   host.appendChild(dkGet(d.plugin));
   var tiles = el('div', 'facts');
-  [['Installations', installs.length + ' of ' + (most.installs || 10)], ['Connected now', String(live)],
+  [['Installations', most.installs === 0 ? installs.length + ' \u00b7 no limit' : installs.length + ' of ' + (most.installs || 10)],
+   ['Connected now', String(live)],
    ['Waiting to pair', String(pairs.length)], ['The address for the plugin', dkAddress()]].forEach(function (f, i) {
     var t = el('div', 'fact' + (i === 3 ? ' wide' : (i === 2 && pairs.length ? ' warn' : (i === 1 && live ? ' ok' : ''))));
     t.appendChild(el('span', 'k', f[0]));

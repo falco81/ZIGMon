@@ -78,6 +78,9 @@ export class FakeZigmon {
   enabled = true;
   items: FakeItem[] = sampleItems();
   boot = 1732700000;
+  /** As a ZIGMon newer than 5.59.0, which sends a reading's recent values when asked (false: as 5.59.0). */
+  withHistory = true;
+  historyAsks: { ids: string[]; span: number; points: number }[] = [];
   seq = 100;
   changes: { seq: number; id: string }[] = [];
   /** sha256(token) -> install */
@@ -232,10 +235,22 @@ export class FakeZigmon {
       case "catalog":
         return send(200, { ok: true, boot: this.boot, seq: this.seq, rooms: [{ id: "1", name: "Obývák" }, { id: "2", name: "Kitchen" }], items: this.items.map(item) });
       case "state": {
-        const ids = (u.searchParams.get("ids") ?? "").split(",");
+        const b = (body && typeof body === "object" ? body : {}) as { ids?: string; history?: { span?: number; points?: number } };
+        const ids = (u.searchParams.get("ids") ?? b.ids ?? "").split(",");
         const items: Record<string, unknown> = {};
         for (const i of this.items) if (ids.includes(i.id)) items[i.id] = i.state;
-        return send(200, { ok: true, boot: this.boot, seq: this.seq, items });
+        if (!b.history || !this.withHistory) return send(200, { ok: true, boot: this.boot, seq: this.seq, items });
+        // as a ZIGMon newer than 5.59.0: the readings' recent values, thinned
+        this.historyAsks.push({ ids, span: Number(b.history.span), points: Number(b.history.points) });
+        const history: Record<string, unknown> = {};
+        const now = Math.floor(Date.now() / 1000);
+        for (const i of this.items) {
+          if (!ids.includes(i.id) || (i.kind !== "reading" && i.kind !== "thermostat")) continue;
+          const v = Number((i.state as Record<string, unknown>).value ?? 20);
+          const n = Math.min(48, Number(b.history.points) || 48), span = Number(b.history.span) || 86400;
+          history[i.id] = { span, points: Array.from({ length: n }, (_, k) => [now - span + Math.round((k * span) / n), Math.round((v + Math.sin(k / 4) * 2) * 100) / 100]) };
+        }
+        return send(200, { ok: true, boot: this.boot, seq: this.seq, items, history });
       }
       case "wait": {
         const after = Number(u.searchParams.get("after"));

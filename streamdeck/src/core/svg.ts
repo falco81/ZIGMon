@@ -71,6 +71,57 @@ export function wrap2(text: string, size: number, maxWidth: number, weight = 600
   return rest ? [first, fit(rest, size, maxWidth, weight)] : [first];
 }
 
+/**
+ * Two lines that break where a name breaks: after a space, a hyphen, an underscore, a dot or a
+ * slash ("Light-Loznice-Main" -> "Light-Loznice-" / "Main"); a word too long for a line is cut
+ * between letters. The second line ends with an ellipsis only when even that does not fit.
+ */
+export function smartWrap(text: string, size: number, maxWidth: number, weight = 600): string[] {
+  if (textWidth(text, size, weight) <= maxWidth) return [text];
+  const tokens = text.split(/(?<=[\s\-_./])/);
+  let first = "";
+  let i = 0;
+  for (; i < tokens.length; i++) {
+    const t = first + tokens[i];
+    if (textWidth(t.trimEnd(), size, weight) > maxWidth) break;
+    first = t;
+  }
+  let rest: string;
+  if (!first) {
+    // one long word: as many letters as fit
+    const chars = [...text];
+    let k = 1;
+    while (k < chars.length && textWidth(chars.slice(0, k + 1).join(""), size, weight) <= maxWidth) k++;
+    first = chars.slice(0, k).join("");
+    rest = chars.slice(k).join("");
+  } else rest = tokens.slice(i).join("");
+  first = first.trimEnd();
+  rest = rest.trim();
+  return rest ? [first, fit(rest, size, maxWidth, weight)] : [first];
+}
+
+export type NameFit = "cut" | "fit" | "wrap";
+
+/**
+ * A name laid out for `maxWidth`: cut = one line with an ellipsis; wrap = up to two lines at
+ * `size`; fit = one line at the largest of a few smaller sizes, else two lines, smaller still if need be.
+ */
+export function nameLines(text: string, mode: NameFit, size: number, maxWidth: number, weight = 650, maxLines = 2): { lines: string[]; size: number } {
+  if (mode === "cut") return { lines: [fit(text, size, maxWidth, weight)], size };
+  if (maxLines < 2) {
+    // one line only: smaller before it is cut
+    for (const f of [1, 0.9, 0.8, 0.72]) if (textWidth(text, size * f, weight) <= maxWidth) return { lines: [text], size: size * f };
+    return { lines: [fit(text, size * 0.72, maxWidth, weight)], size: size * 0.72 };
+  }
+  if (mode === "wrap") return { lines: smartWrap(text, size, maxWidth, weight), size };
+  for (const f of [1, 0.9, 0.8]) if (textWidth(text, size * f, weight) <= maxWidth) return { lines: [text], size: size * f };
+  for (const f of [1, 0.9, 0.8, 0.72]) {
+    const l = smartWrap(text, size * f, maxWidth, weight);
+    if (!l[1] || !l[1].endsWith("…")) return { lines: l, size: size * f };
+  }
+  return { lines: smartWrap(text, size * 0.72, maxWidth, weight), size: size * 0.72 };
+}
+
 export interface TextOpts {
   size: number;
   weight?: number;

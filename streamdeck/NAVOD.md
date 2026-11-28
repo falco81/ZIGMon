@@ -22,7 +22,7 @@ a administrátor povoluje funkce jednu po druhé.
 
 1. V ZIGMonu jako administrátor: **Nastavení → Messages → Stream Deck**.
 2. Zapněte **Povolit ovládání ze Stream Decku**.
-3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.0.0**. Pokud chcete, porovnejte SHA-256
+3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.1.0**. Pokud chcete, porovnejte SHA-256
    zobrazený tamtéž se souborem (`Get-FileHash ZIGMon.streamDeckPlugin` v PowerShellu).
 4. Stažený `.streamDeckPlugin` otevřete dvojklikem. Stream Deck se zeptá na instalaci,
    potvrďte. V seznamu akcí přibude kategorie **ZIGMon for Stream Deck**.
@@ -63,7 +63,7 @@ ovládat nedovolí, mají zámek, a živý náhled ukazuje, jak bude tlačítko 
 |---|---|---|
 | **Control** | Cokoli, co ZIGMon dovolí: zásuvka, světlo, relé, ventil, pravidlo... Ikona, jméno, místnost, Zap/Vyp se zářením v barvě položky, hodnota (např. 42 W). Stisk přepne (nebo zapne / vypne / spustí / otevře / zavře - podle volby). | Stisk = jako tlačítko, otočení = hlavní hodnota (jas, teplota, poloha), lišta: ikona, jméno, hodnota, posuvník nebo stav. |
 | **Reading** | Měření velkým písmem s jednotkou, šipkou trendu, grafem posledních hodnot, oranžově/červeně mimo vámi nastavené meze. Stisk obnoví. | Lišta: hodnota nad grafem přes celou šířku. |
-| **Thermostat** | Oblouk: aktuální teplota uprostřed, požadovaná na oblouku, plamen při topení, režim a předvolba. Stisk: další režim, další předvolba nebo boost (podle volby). | Otočení = požadovaná teplota (0,1 / 0,5 / 1 ° na cvak), stisk = další režim, dotyk = boost. |
+| **Thermostat** | Oblouk: aktuální teplota uprostřed, požadovaná na oblouku, plamen při topení, režim a předvolba. Stisk: další režim, další předvolba, boost, **ukázat podrobnosti** nebo **nastavit jeden režim** (podle volby). | Otočení = požadovaná teplota (0,1 / 0,5 / 1 ° na cvak), stisk = další režim, dotyk = boost. |
 | **Light** | Žárovka svítí podle jasu, procenta a ukazatel. Stisk přepne. | Otočení = jas (1-20 % na cvak), stisk = zap/vyp, lišta: posuvník. |
 | **Blinds** | Okno se žaluzií v její poloze, Otevřeno/Zavřeno/procenta, Otevírá se…/Zavírá se…. Stisk: otevřít/zavřít (podle polohy), stop, otevřít nebo zavřít. | Otočení = poloha, stisk = stop/otevřít/zavřít, dotyk = stop. |
 | **Scene** | Spustí scénu, sekvenci nebo skupinu akcí. Zelená fajfka = hotovo, červený křížek = nepovedlo se. | Stisk nebo dotyk = spustit. |
@@ -72,11 +72,68 @@ ovládat nedovolí, mají zámek, a živý náhled ukazuje, jak bude tlačítko 
 Otáčení ovladačem posune hodnotu na liště okamžitě; cvaky se sečtou a do ZIGMonu odejdou
 jako jedna změna (ZIGMon ji udrží v rozsahu a kroku položky).
 
+### Topení po místnostech (od 1.1)
+
+Akce **Thermostat** umí i místnost z karty Topení (položka *Heating in …*), stejně jako ji
+ukazuje dashboard:
+
+- **cílová teplota** (→ 35,0 °C), **naměřená teplota** z hlavního teploměru místnosti (ten,
+  který je u místnosti v ZIGMonu nastavený, např. Temp-Loznice) a **režim** slovy dashboardu:
+  Comfort, Eco, Night, Max, Off, Plan, By hand - a když je teplota nastavená ručně,
+  **By hand until 14:30** (do dalšího kroku plánu, nebo po dobu `manual_hold_s`);
+- **stisk** může nastavit jeden konkrétní režim (Comfort, Eco, Night, Max, Off, Plan nebo
+  By hand), nebo **Next mode** - dokola všemi režimy včetně Plan a By hand;
+- **otočení ovladačem** nastaví místnost ručně přesně jako posuvník *Set … by hand* v
+  dashboardu (stejnou cestou v ZIGMonu, platí i oprávnění *climate* a podržení);
+- volba **Show details (3 s)**: stisk na 3 sekundy ukáže kartu s režimem, cílovou a naměřenou
+  teplotou a jménem teploměru - nic se nepřepne. Totéž je trvale vidět volbami níže.
+
+### Grafy (od 1.1)
+
+Měření (**Reading**) a topení (**Thermostat**) kreslí graf z **historie, kterou připraví
+ZIGMon** - stejné, ze které kreslí karta Historie: hotovou řadu (zhuštěnou asi na 48 bodů)
+za zvolené období **1 h, 6 h, 24 h nebo 7 dní**. Graf je tak vidět hned po spuštění,
+plugin mezi tím jen přikresluje živé hodnoty a řadu si každých pár minut (a při změně
+období) vyžádá znovu. Volitelně: **min / max** u grafu a u topení **cílová teplota
+čárkovaně**. Starší ZIGMon (5.59.0) historii neposílá - pak graf roste jen z hodnot, které
+plugin sám uviděl.
+
+### Vzhled tlačítek (od 1.1)
+
+V nastavení každé akce je oddíl **Look**:
+
+- **12 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
+  změny pro dříve nastavená tlačítka), *Minimal* (velká ikona), *Big value* (hodnota co
+  největší), *Solid fill* (celé tlačítko se rozsvítí barvou), *Neon* (zářící obrys),
+  *Ring gauge* (prstenec, který se plní), *Two-tone* (barevný pruh nad tmavým),
+  *Glass* (matné sklo se zářením), *Bold label* (velký nápis), *Status dot* (kontrolka a
+  čisté písmo), *Light* (světlé tlačítko s tmavým písmem) a *High contrast* (černobílé,
+  silné čáry). Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
+- **Barva**: *Auto* (podle druhu položky) nebo jedna z 10 barev.
+- **Popisek**: vlastní text místo jména položky (nejvýš 40 znaků) - u všech akcí.
+- **Dlouhá jména**: *Shrink to fit* (zmenšit, případně na dva řádky), *Two lines* (dva řádky,
+  zlom i u pomlček - „Light-Loznice-" / „Main") nebo *One line* (jeden řádek se třemi
+  tečkami, jako v 1.0).
+- **Co je na tlačítku vidět** - každé zvlášť: ikona, jméno, místnost, stav / hodnota, druhá
+  hodnota (W, jas %, cílová teplota, pohyb žaluzie, trend), režim / předvolba, graf (historie,
+  ukazatel úrovně, okno žaluzie), baterie. Tlačítka *Everything* a *Icon only* je nastaví
+  najednou. Každý vzhled tyto volby respektuje; offline, zámek (nepovoleno), ruka i kroužek
+  podržení zůstávají čitelné ve všech.
+
+Na **Stream Decku +** se vzhled, barva a volby promítnou i do dotykové lišty, kam to rozvržení
+dovolí: podklad lišty, barvy písma, dlaždice ikony, skryté části zůstanou prázdné.
+
 ### Potvrzení podržením
 
 Když administrátor u funkce zaškrtne **Potvrdit podržením** (systémové akce ho mají vždy),
 krátký stisk nic neudělá, jen napíše **Hold to confirm**. Držte tlačítko (nebo ovladač):
 plní se kroužek a po 1,5 s se akce provede - pustit můžete, jakmile se objeví *Confirmed*.
+
+**Od 1.1 i na vlastní přání**: v nastavení každé akce, která něco dělá (všechny kromě
+Reading a ZIGMon status), je přepínač s rukou **Hold to confirm (1.5 s)**. Zapnutý = stisk
+tlačítka, stisk ovladače i dotyk lišty vyžadují stejné podržení s kroužkem; otáčení
+ovladačem zůstává volné. Když podržení vyžaduje ZIGMon, přepínač je zapnutý a zamčený
+(*ZIGMon requires it for this item*). Ruka je na tlačítku vždy, když se podržení uplatní.
 
 ### Co tlačítka říkají
 

@@ -31,7 +31,7 @@ command line for testing:
 """
 
 # Bumped by hand with every change to this file.
-__version__ = '5.59.0'
+__version__ = '5.59.1'
 # (5.44) the level of the system parts this version needs install.sh to have
 # put in - the same number as SYSTEM_LEVEL in install.sh, which writes it to
 # /etc/zigmon-system.json. Raised by a release whose system parts must be put
@@ -437,6 +437,8 @@ DEFAULTS = {
     'proxy_watch': 0,             # 1 = read it and weigh what is in it
     'proxy_every': '2',           # minutes between readings
     'notifier_keys_most': '20',   # (5.59.1) desktop app keys at most: 20, 50, 100, or 0 = no limit
+    # (for Stream Deck 1.1) how many computers may be paired with ZIGMon for Stream Deck; '0' = no limit
+    'deck_installs_most': '10',
     # The same list carried to a router, so the packets stop before they
     # arrive. Only the one address list named here is ever touched.
     'mikrotik_host': '',          # the router's address, empty = not in use
@@ -12889,6 +12891,25 @@ class Daemon(object):
             self._deck_thread = None
 
     # -- what is kept --
+    def deck_installs_most(self):
+        """(for Stream Deck 1.1) How many Stream Deck installations may be paired: Settings' deck_installs_most,
+        0 = no limit. Anything else than its choices counts as the 10 it comes with."""
+        raw = str(CONFIG.get('deck_installs_most') if CONFIG.get('deck_installs_most') is not None else '10').strip()
+        return int(raw) if raw in ('0', '10', '20', '50', '100') else self.DECK_INSTALLS_MOST
+
+    def deck_installs_full(self, installs, install=None):
+        most = self.deck_installs_most()
+        return bool(most) and len(installs) >= most and not any(r['id'] == install for r in installs)
+
+    # the long polls held at once: eight per installation (a plugin keeps one; the ones it gave
+    # up on end as soon as its next one arrives), never fewer than DECK_WAITERS_MOST in all
+    DECK_WAITERS_PER_INSTALL = 8
+    DECK_WAITERS_CEILING = 1000
+
+    def deck_waiters_most(self):
+        most = self.deck_installs_most() or max(len(self.deck_installs()), self.DECK_INSTALLS_MOST)
+        return max(self.DECK_WAITERS_MOST, min(self.DECK_WAITERS_CEILING, self.DECK_WAITERS_PER_INSTALL * most))
+
     def deck_enabled(self):
         return str(self.store.get_meta('deck_enabled') or '') == '1'
 
@@ -13231,7 +13252,16 @@ class Daemon(object):
                 extra['temperature'] = temp
             wanted = r.get('wanted_c') if isinstance(r.get('wanted_c'), (int, float)) else None
             extra['target'] = wanted
+            # (for Stream Deck 1.1) what the dashboard's Heating tab says beside the room: why it holds what it
+            # holds ("by hand", "comfort", "a window is open"...), until when a hand-set
+            # temperature holds, and the thermometer it goes by - additive, the plugin may ignore them
+            extra['why'] = str(r.get('why') or '')[:60]
+            extra['by_hand'] = r.get('why') == 'by hand'
+            extra['hold_until'] = (int(r['hold_until']) if r.get('why') == 'by hand'
+                                   and isinstance(r.get('hold_until'), (int, float)) else None)
+            extra['thermometer'] = self._deck_room_thermometer(r)[1]
             measured = extra.get('temperature')
+            modes = ['plan', 'comfort', 'eco', 'night', 'max', 'off', 'manual']
             # (5.59) a room as a thermostat: the temperature it measures as its value, the one it
             # wants under "target" (the dial's), its mode beside it (set through heat:room:<id>)
             add('heat:temp:%s' % r['id'], 'Temperature in %s' % r['name'], 'thermostat', 'thermostat', 'climate',
@@ -13239,15 +13269,18 @@ class Daemon(object):
                 attrs=[{'key': 'target', 'label': 'Wanted temperature', 'type': 'number', 'unit': '\u00b0C',
                         'min': 5, 'max': 30, 'step': 0.5},
                        {'key': 'mode', 'label': 'Mode', 'type': 'enum',
-                        'values': ['plan', 'comfort', 'eco', 'night', 'max', 'off'], 'via': 'heat:room:%s' % r['id']}],
+                        'values': modes, 'via': 'heat:room:%s' % r['id']}],
                 value=measured, vtext=(self._ntf_vtext(measured, '\u00b0C') if measured is not None else
                                        ('\u2192 %s' % self._ntf_vtext(wanted, '\u00b0C')) if wanted is not None else None),
                 extra=extra)
+            # (for Stream Deck 1.1) the room's own key: its mode, and the temperature it wants as "target" too -
+            # turned through heat:temp:<id>, the same road as the dashboard's "Set <room> by hand"
             add('heat:room:%s' % r['id'], 'Heating in %s' % r['name'], 'thermostat', 'heat', 'climate',
                 ['set', 'toggle', 'on', 'off'], room=r['name'],
-                attrs=[{'key': 'mode', 'label': 'Mode', 'type': 'enum',
-                        'values': ['plan', 'comfort', 'eco', 'night', 'max', 'off']}],
-                on=r.get('mode') != 'off', value=r.get('mode'), vtext=r.get('mode'), extra=extra)
+                attrs=[{'key': 'mode', 'label': 'Mode', 'type': 'enum', 'values': modes},
+                       {'key': 'target', 'label': 'Wanted temperature', 'type': 'number', 'unit': '\u00b0C',
+                        'min': 5, 'max': 30, 'step': 0.5, 'via': 'heat:temp:%s' % r['id']}],
+                on=r.get('mode') != 'off', value=r.get('mode'), vtext=r.get('mode'), extra=dict(extra))
         for sc in self.scenes() or []:
             if sc.get('id'):
                 add('scene:%s' % sc['id'], str(sc.get('name') or sc['id']), 'scene', 'scene', 'scenes', ['run'])
@@ -13350,6 +13383,69 @@ class Daemon(object):
                             'state': {'on': on, 'value': value, 'value_text': self._ntf_vtext(value, unit),
                                       'attrs': {}, 'online': online, 'battery': battery, 'at': at},
                             '_target': None, '_device': name})
+        return out
+
+    def _deck_room_thermometer(self, room):
+        """(device id, name) of the thermometer a heated room goes by: the one chosen for it, else
+        the first of its own that reads a temperature - ('', '') when it has none."""
+        chosen = str(room.get('thermometer') or '')
+        if chosen:
+            dev_id = self.store.resolve(chosen) or chosen
+            dev = self.store.device(dev_id) or {}
+            return dev_id, str(dev.get('alias') or dev.get('name') or chosen)[:60]
+        try:
+            members = self.room_member_ids(room['id'])
+        except Exception:                                     # noqa: BLE001
+            members = []
+        for dev_id in members:
+            payload = (self.live.get(dev_id) or {}).get('payload') or {}
+            if isinstance(payload.get('temperature'), (int, float)):
+                dev = self.store.device(dev_id) or {}
+                return dev_id, str(dev.get('alias') or dev.get('name') or dev_id)[:60]
+        return '', ''
+
+    DECK_SPANS = (3600, 6 * 3600, 24 * 3600, 7 * 86400)
+
+    def deck_history(self, items, ids, span, points):
+        """(for Stream Deck 1.1) The recent values of readings and thermostats, from the same store the History
+        tab draws from, thinned to `points`: {id: {span, points: [[ts, value], ...]}}. A room's
+        thermostat gives its thermometer's temperature, a head its own measured temperature."""
+        span = min(self.DECK_SPANS, key=lambda s: abs(s - span))
+        points = max(8, min(96, int(points)))
+        by_id = {it['id']: it for it in items}
+        rooms = None
+        out = {}
+        for item_id in ids[:40]:
+            it = by_id.get(item_id)
+            if it is None:
+                continue
+            dev, key = None, None
+            if item_id.startswith('read:'):
+                a = (it.get('attrs') or [{}])[0]
+                if a.get('type') == 'number':
+                    dev, key = item_id[5:].rsplit(':', 1)[0], a['key']
+            elif item_id.startswith('heat:temp:') or item_id.startswith('heat:room:'):
+                if rooms is None:
+                    try:
+                        rooms = {r['id']: r for r in self.heating_state().get('rooms') or []}
+                    except Exception:                         # noqa: BLE001
+                        rooms = {}
+                r = rooms.get(item_id.split(':', 2)[2])
+                if r is not None:
+                    dev, key = self._deck_room_thermometer(r)[0] or None, 'temperature'
+            elif item_id.startswith('zb:') and it.get('kind') == 'thermostat':
+                dev, key = item_id[3:].rsplit(':', 1)[0], 'local_temperature'
+            if not dev:
+                continue
+            try:
+                rows = self.store.history(dev, [key], span, points)
+            except Exception as e:                            # noqa: BLE001
+                log('the Stream Deck history of %s: %s' % (item_id, e), 'debug')
+                continue
+            pts = [[int(r['ts']), round(float(r[key]), 3)] for r in rows
+                   if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool)
+                   and math.isfinite(r[key])]
+            out[item_id] = {'span': span, 'points': pts[-points:]}
         return out
 
     @staticmethod
@@ -13658,16 +13754,25 @@ class Daemon(object):
                 ids.append(x)
         return ids[:500]
 
-    def deck_state(self, inst, ids):
+    def deck_state(self, inst, ids, history=None):
         self._deck_setup()
         self._deck_refresh()
         caps = inst.get('caps') or self.deck_default_caps()
         want = set(ids or [])
         out = {}
+        shown = []
         for it in self.deck_items():
             if (not want or it['id'] in want) and self.deck_visible(caps, it):
                 out[it['id']] = dict(it['state'])
-        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq, 'items': out}
+                shown.append(it)
+        answer = {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq, 'items': out}
+        if isinstance(history, dict) and want:
+            # (for Stream Deck 1.1) asked for {"history": {"span": seconds, "points": n}}: the series too
+            span, points = numeric(history.get('span')), numeric(history.get('points'))
+            answer['history'] = self.deck_history(shown, [i for i in ids if i in out],
+                                                  span if span and span > 0 else 86400,
+                                                  points if points and points > 0 else 48)
+        return answer
 
     def deck_wait(self, inst, after, boot, ids, timeout=None):
         """The states that changed after `after`, latest only, for the ids asked (or every
@@ -13677,6 +13782,15 @@ class Daemon(object):
         deadline = time.monotonic() + timeout
         iid = inst['id']
         want = set(ids or [])
+        # (for Stream Deck 1.1) a plugin keeps one wait: the one before it was given up (the keys it watches
+        # changed) and is let go now, instead of holding a place until its time is up
+        with self._deck_cond:
+            gens = getattr(self, '_deck_wait_gen', None)
+            if gens is None:
+                gens = self._deck_wait_gen = {}
+            my = gens.get(iid, 0) + 1
+            gens[iid] = my
+            self._deck_cond.notify_all()
         self._deck_refresh()
         visible = None
         with self._deck_cond:
@@ -13690,6 +13804,8 @@ class Daemon(object):
                     # another start of ZIGMon, or this installation's permissions or decks changed:
                     # the plugin fetches hello and the catalogue again
                     return {'ok': True, 'boot': mine, 'seq': seq, 'reset': True, 'changes': []}
+                if self._deck_wait_gen.get(iid) != my:
+                    return {'ok': True, 'boot': mine, 'seq': after, 'reset': False, 'changes': []}
                 if visible is None or visible[0] != json.dumps(inst.get('caps'), sort_keys=True):
                     caps = inst.get('caps') or self.deck_default_caps()
                     visible = (json.dumps(inst.get('caps'), sort_keys=True),
@@ -13847,6 +13963,17 @@ class Daemon(object):
         if attr is not None and body.get('attr'):
             attr = next((a for a in item['attrs'] if a.get('key') == body.get('attr')), attr)
         now = (item['state'].get('attrs') or {}).get(attr['key'], item['state'].get('value')) if attr else None
+        if attr is not None and attr.get('via') and str(attr['via']).startswith('heat:'):
+            # (for Stream Deck 1.1) a room's mode asked of its temperature key, its temperature of its mode key:
+            # set where it lives, as the dashboard sets it
+            target = attr['via']
+            if attr['type'] == 'number' and body.get('delta') is not None and \
+                    (isinstance(now, bool) or not isinstance(now, (int, float))):
+                d = body.get('delta')
+                if isinstance(d, bool) or not isinstance(d, (int, float)) or not math.isfinite(d) or abs(d) > 100:
+                    return None, 'delta must be a number', None
+                # nothing held yet (by hand on the head): from what the room's level would hold
+                return 'set:%+g' % d, 'set %s %+g \u00b0C' % (name, d), target
         if item['kind'] == 'cover' and target.endswith(':state'):
             # the blind's position, asked of the key that shows the blind
             attr = next((a for a in item['attrs'] if a.get('key') == 'position'), None)
@@ -13949,9 +14076,9 @@ class Daemon(object):
             if c and not any(x['id'] == c['id'] for x in clean):
                 clean.append(c)
         installs = self.deck_installs()
-        if len(installs) >= self.DECK_INSTALLS_MOST and not any(r['id'] == install for r in installs):
+        if self.deck_installs_full(installs, install):
             return 403, {'ok': False, 'error': 'ZIGMon has %d Stream Deck installations already - an administrator '
-                         'revokes one first' % self.DECK_INSTALLS_MOST}
+                         'revokes one first, or allows more in Settings' % self.deck_installs_most()}
         code = ''.join(secrets.choice(self.DECK_CODE_LETTERS) for _ in range(6))
         code = code[:3] + '-' + code[3:]
         secret = 'zsp_' + secrets.token_urlsafe(30)
@@ -14055,7 +14182,7 @@ class Daemon(object):
         self._deck_setup()
         out = {'ok': True, 'enabled': self.deck_enabled(), 'installs': self.deck_installs_view(),
                'pairs': self.deck_pairs_view(),
-               'most': {'installs': self.DECK_INSTALLS_MOST, 'decks': self.DECK_DECKS_MOST,
+               'most': {'installs': self.deck_installs_most(), 'decks': self.DECK_DECKS_MOST,
                         'pairs': self.DECK_PAIRS_MOST},
                'plugin': self.deck_plugin_short(), 'caps': list(self.DECK_CAPS), 'cap_words': dict(self.DECK_CAP_WORDS),
                'default_caps': self.deck_default_caps(),
@@ -14096,8 +14223,9 @@ class Daemon(object):
                     return {'message': "the request of '%s' is refused" % pair['computer']}
             rows = self.deck_installs()
             old = next((r for r in rows if r['id'] == pair['install']), None)
-            if old is None and len(rows) >= self.DECK_INSTALLS_MOST:
-                raise ValueError('at most %d Stream Deck installations - revoke one first' % self.DECK_INSTALLS_MOST)
+            if old is None and self.deck_installs_full(rows):
+                raise ValueError('at most %d Stream Deck installations - revoke one first, or allow more in Settings'
+                                 % self.deck_installs_most())
             name = self._deck_clean_name(body.get('name') if body.get('name') not in (None, '') else pair['computer'],
                                          'a name')
             caps = self._deck_clean_caps(body['caps']) if body.get('caps') is not None else self.deck_default_caps()
@@ -14686,7 +14814,7 @@ class Daemon(object):
         'ntfy_full_log': 'str',
         'suricata_watch': (0, 1), 'suricata_log': 'str', 'suricata_least': (1, 3),
         'suricata_rules': 'str', 'suricata_tls': (0, 1), 'tls_spread_bar': (2, 500), 'tls_faces_bar': (4, 200),
-        'proxy_watch': (0, 1), 'proxy_every': 'str', 'notifier_keys_most': 'str',
+        'proxy_watch': (0, 1), 'proxy_every': 'str', 'notifier_keys_most': 'str', 'deck_installs_most': 'str',
         'never_block': 'str', 'debug_secrets': (0, 1),
         'block_minutes_serious': (0, 525600), 'block_repeat': (0, 1), 'block_ladder': 'str',
         'block_max_minutes': (0, 525600), 'block_over_max': 'str', 'sample_anchor_s': (0, 86400), 'retain_presses_days': (1, 3650),
@@ -15225,6 +15353,8 @@ class Daemon(object):
                        ('password', 'with a password')],
         'notifier_keys_most': [('20', 'up to 20 computers'), ('50', 'up to 50 computers'),
                                ('100', 'up to 100 computers'), ('0', 'no limit')],
+        'deck_installs_most': [('10', 'ten computers'), ('20', 'twenty'), ('50', 'fifty'), ('100', 'a hundred'),
+                               ('0', 'no limit')],
         'proxy_every': [('0.5', 'every half a minute'), ('1', 'read it every minute'), ('2', 'every two minutes'),
                         ('5', 'every five minutes'), ('15', 'every quarter of an hour')],
         'mikrotik_auth': [('key', 'with a key this daemon holds'),
@@ -50094,7 +50224,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 d.tap_went_wrong(who)
                 d.note_anomaly(who, 'bad-secret', hashlib.sha256(given.encode('utf-8')).hexdigest()[:10])
                 return self._error(401, 'this pairing request is not known here - it may have run out: pair again')
-            return self._deck_held(d, lambda: d.deck_pair_wait(pair))
+            return self._deck_held(d, lambda: d.deck_pair_wait(pair), who='pair:' + pair.get('install', ''))
         given = str(self.headers.get('X-Zigmon-Deck') or '').strip()
         inst, revoked = d.deck_find(given)
         if inst is None:
@@ -50121,7 +50251,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         if which == 'catalog':
             return self._send(200, d.deck_catalog(inst))
         if which == 'state':
-            return self._send(200, d.deck_state(inst, d._deck_ids(q.get('ids') or body.get('ids'))))
+            return self._send(200, d.deck_state(inst, d._deck_ids(q.get('ids') or body.get('ids')),
+                                                body.get('history') if method == 'POST' else None))
         if which == 'update':
             return self._send(200, d.deck_update())
         if which == 'download':
@@ -50134,7 +50265,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not re.match(r'^\d{1,18}$', after):
             return self._error(400, 'after is the number of the last change heard')
         ids = d._deck_ids(q.get('ids') or body.get('ids'))
-        out = self._deck_held(d, lambda: d.deck_wait(inst, int(after), boot, ids), raw=True)
+        out = self._deck_held(d, lambda: d.deck_wait(inst, int(after), boot, ids), raw=True, who=inst['id'])
         if out is None:
             return self._send(401, {'ok': False, 'error': 'this Stream Deck installation was revoked in ZIGMon '
                                                           '- pair it again', 'revoked': True})
@@ -50142,12 +50273,19 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._error(503, 'too many waiting already - ask again in a while')
         return self._send(200, out)
 
-    def _deck_held(self, d, fn, raw=False):
-        """A long poll, at most DECK_WAITERS_MOST of them at once."""
+    def _deck_held(self, d, fn, raw=False, who=''):
+        """A long poll: at most deck_waiters_most() of them at once (it grows with how many
+        installations may be paired), and at most DECK_WAITERS_PER_INSTALL for one installation."""
+        most = d.deck_waiters_most()
         with d._deck_cond:
-            busy = d._deck_waiting >= d.DECK_WAITERS_MOST
+            mine = getattr(d, '_deck_waiting_by', None)
+            if mine is None:
+                mine = d._deck_waiting_by = {}
+            busy = d._deck_waiting >= most or (who and mine.get(who, 0) >= d.DECK_WAITERS_PER_INSTALL)
             if not busy:
                 d._deck_waiting += 1
+                if who:
+                    mine[who] = mine.get(who, 0) + 1
         if busy:
             if raw:
                 return {'_busy': True}
@@ -50157,6 +50295,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         finally:
             with d._deck_cond:
                 d._deck_waiting = max(0, d._deck_waiting - 1)
+                if who:
+                    left = d._deck_waiting_by.get(who, 1) - 1
+                    if left > 0:
+                        d._deck_waiting_by[who] = left
+                    else:
+                        d._deck_waiting_by.pop(who, None)
         if raw:
             return out
         return self._send(200, out)

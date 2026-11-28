@@ -81,7 +81,7 @@ for _p in (API_PORT, PHP_PORT, CTL_PORT):
         print('port %d stays busy' % _p)
         sys.exit(2)
 
-# ---- a throwaway release key, and the plugin as ZIGMon offers it (1.0.1, newer than the plugin) ----
+# ---- a throwaway release key, and the plugin as ZIGMon offers it (one newer than the plugin) ----
 KEY, PUB = W / 'release.key', W / 'release.pub'
 if sh(['openssl', 'genpkey', '-algorithm', 'ed25519', '-out', str(KEY)]).returncode != 0:
     skip('openssl has no Ed25519 here')
@@ -90,10 +90,12 @@ raw_pub = subprocess.run(['openssl', 'pkey', '-pubin', '-in', str(PUB), '-outfor
                          stdin=subprocess.DEVNULL).stdout[-32:].hex()
 DIST = W / 'dist'
 DIST.mkdir()
-PLUGIN = b'PK\x03\x04' + os.urandom(64 * 1024) + b'a made-up ZIGMon for Stream Deck 1.0.1'
+_have = [int(x) for x in json.loads((SD / 'package.json').read_text())['version'].split('.')]
+OFFER = '%d.%d.%d' % (_have[0], _have[1], _have[2] + 1)
+PLUGIN = b'PK\x03\x04' + os.urandom(64 * 1024) + ('a made-up ZIGMon for Stream Deck ' + OFFER).encode()
 (DIST / 'com.zigmon.streamdeck.streamDeckPlugin').write_bytes(PLUGIN)
 (DIST / 'plugin.json').write_bytes((json.dumps({
-    'product': 'ZIGMon for Stream Deck', 'file': 'com.zigmon.streamdeck.streamDeckPlugin', 'version': '1.0.1',
+    'product': 'ZIGMon for Stream Deck', 'file': 'com.zigmon.streamdeck.streamDeckPlugin', 'version': OFFER,
     'size': len(PLUGIN), 'sha256': hashlib.sha256(PLUGIN).hexdigest(), 'requires': 'Stream Deck 7.1, Windows 10/11'},
     separators=(',', ':')) + '\n').encode())
 sh(['openssl', 'pkeyutl', '-sign', '-inkey', str(KEY), '-rawin', '-in', str(DIST / 'plugin.json'),
@@ -255,6 +257,12 @@ try:
     d.store.set_meta('scenes', json.dumps([{'id': 'sc1', 'name': 'Večer', 'actions': [{'target': 'Lampa', 'do': 'on'}]}]))
     d.store.set_meta('active_alerts', json.dumps([{'id': 'a1', 'ts': int(time.time()), 'text': 'Leak in the bathroom'}]))
     d.store.set_meta('deck_enabled', '1')
+    # (for Stream Deck 1.1) a day of the thermometer's history, for the graphs
+    _now = int(time.time())
+    with d.store.lock:
+        d.store.db.executemany('INSERT OR REPLACE INTO samples (ts, device, key, value) VALUES (?, ?, ?, ?)',
+                               [(_now - 86000 + i * 900, TEMP, 'temperature', 19 + (i % 9) * 0.4) for i in range(95)])
+        d.store.db.commit()
 
     # ---- the real relay ------------------------------------------------------------------------
     shutil.copytree(HERE / 'web', W / 'web')
@@ -276,7 +284,7 @@ try:
     job = {'relay': 'http://127.0.0.1:%d' % PHP_PORT, 'daemon': 'http://127.0.0.1:%d' % API_PORT, 'token': d.token,
            'session': SESSION, 'control': 'http://127.0.0.1:%d' % CTL_PORT, 'core': str(SD / 'out'), 'shots': str(SHOTS),
            'releaseKey': raw_pub, 'plugin_sha': hashlib.sha256(PLUGIN).hexdigest(), 'plugin_size': len(PLUGIN),
-           'bulb': BULB, 'thermo': THERMO, 'blind': BLIND, 'temp': TEMP, 'tmp': str(W)}
+           'bulb': BULB, 'thermo': THERMO, 'blind': BLIND, 'temp': TEMP, 'tmp': str(W), 'offer': OFFER}
     npm_root = sh(['npm', 'root', '-g']).stdout.strip()
     run = subprocess.run(['node', str(HERE / 'test' / 'review559_deck_plugin.mjs')], stdin=subprocess.DEVNULL,
                          env=dict(os.environ, DECK_JOB=json.dumps(job), NODE_PATH=npm_root), timeout=900)

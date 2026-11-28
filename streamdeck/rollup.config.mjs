@@ -35,6 +35,6 @@ export default [
   {
     input: "src/pi/pi.ts",
     output: { file: `${sdPlugin}/ui/pi.js`, format: "iife", name: "ZigmonPI", sourcemap: false },
-    plugins: [typescript({ tsconfig: "./tsconfig.json", include: ["src/pi/**/*.ts", "src/core/icons.ts", "src/core/palette.ts", "src/core/svg.ts", "src/core/render.ts"] }), nodeResolve({ browser: true })],
+    plugins: [typescript({ tsconfig: "./tsconfig.json", include: ["src/pi/**/*.ts", "src/core/icons.ts", "src/core/palette.ts", "src/core/svg.ts", "src/core/render.ts", "src/core/themes.ts"] }), nodeResolve({ browser: true })],
   },
 ];

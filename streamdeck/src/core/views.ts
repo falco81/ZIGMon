@@ -8,19 +8,21 @@ import type { Command } from "./client.js";
 import { boolAttr, decimalsOf, dialAttr, DialAccumulator, enumAttr, fraction } from "./dial.js";
 import { HoldPress } from "./hold.js";
 import type { CommandResult, Hub, HubView } from "./hub.js";
-import type { LAYOUTS } from "./layouts.js";
-import { P } from "./palette.js";
+import { LAYOUTS } from "./layouts.js";
+import { ACCENTS, P, X } from "./palette.js";
 import type { Attr, Item, ItemAction, ItemState } from "./protocol.js";
 import {
-  lookFor, readingAccent, renderBlinds, renderControl, renderDimmer, renderHold, renderNotice, renderPair, renderReading, renderScene,
-  renderStatus, renderThermostat, renderToast, type BlindsModel, type ControlModel, type DimmerModel, type NoticeModel, type ReadingModel,
+  fmtTemp, lookFor, readingAccent, renderBlinds, renderControl, renderDimmer, renderHold, renderNotice, renderPair, renderReading, renderScene,
+  renderStatus, renderThermostat, renderToast, type BlindsModel, type ClassicOpts, type ControlModel, type DimmerModel, type NoticeModel, type ReadingModel,
   type StatusModel, type ThermoModel,
 } from "./render.js";
-import { normalizeAction, type ActionSettings } from "./settings.js";
+import { normalizeAction, ROOM_MODES, type ActionSettings } from "./settings.js";
+import { ALL_INFO, renderDetails, renderLook, THEMES, type Face, type Info } from "./themes.js";
+import type { NameFit } from "./svg.js";
 import {
   blindsFeedback, controlFeedback, iconPix, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
 } from "./strip.js";
-import { dataUri } from "./svg.js";
+import { dataUri, svgDoc } from "./svg.js";
 
 export type ActionKind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status";
 
@@ -76,6 +78,25 @@ const STATUS_LOOK: Record<string, { label: string; icon: string; count: "crit" |
   "status:gateway": { label: "Zigbee gateway", icon: "router", count: null },
 };
 
+/** The modes of a heated room as the dashboard words them. */
+export const MODE_WORDS: Record<string, string> = {
+  plan: "Plan", comfort: "Comfort", eco: "Eco", night: "Night", max: "Max", off: "Off", manual: "By hand",
+};
+
+/** How long a press that shows a thermostat's details keeps them on the key. */
+export const DETAILS_MS = 3000;
+
+/** The actions that do something - the hold switch is theirs; Reading and ZIGMon status only look. */
+export function acts(kind: ActionKind): boolean {
+  return kind !== "reading" && kind !== "status";
+}
+
+/** "14:30" for a unix time, on this computer's clock. */
+export function clockOf(unix: number): string {
+  const d = new Date(unix * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
 export function formatNumber(v: number, decimals: number): string {
   return decimals >= 0 ? v.toFixed(decimals) : String(Math.round(v * 100) / 100);
 }
@@ -92,6 +113,14 @@ export class ActionView implements HubView {
   private lastImage = "";
   private lastFeedback = "";
   private disposed = false;
+  /** (1.1) The details card a press shows on a thermostat, until then. */
+  private detailsUntil = 0;
+  private detailsTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The previews draw the key as another look, or lit / unlit. */
+  private themeOverride: string | null = null;
+  private forced: "on" | "off" | null = null;
+  /** A look other than Classic was drawn on this dial's strip: Classic must put its colours back. */
+  private styledStrip = false;
 
   constructor(
     readonly kind: ActionKind,
@@ -119,7 +148,8 @@ export class ActionView implements HubView {
     const before = this.settings.item;
     this.settings = normalizeAction(s);
     this.dial.cancel();
-    if (before !== this.settings.item) this.hub.resubscribe();
+    // a new item, or a graph of another span: the hub asks again (it only restarts the wait for a new item)
+    if (before !== this.settings.item || this.series().length) this.hub.resubscribe();
     if (this.surface.controller === "Encoder") void this.surface.setTriggerDescription?.(this.triggers());
     this.draw(true);
   }
@@ -130,6 +160,18 @@ export class ActionView implements HubView {
     this.dial.cancel();
     if (this.toastTimer) clearTimeout(this.toastTimer);
     if (this.flashTimer) clearTimeout(this.flashTimer);
+    if (this.detailsTimer) clearTimeout(this.detailsTimer);
+  }
+
+  /** (1.1) The series this key draws, for the hub to ask ZIGMon for. */
+  series(): { id: string; span: number }[] {
+    const id = this.settings.item;
+    if (!id || (this.kind !== "reading" && this.kind !== "thermostat")) return [];
+    return this.info().graph ? [{ id, span: this.span() }] : [];
+  }
+
+  span(): number {
+    return this.settings.span ?? 86400;
   }
 
   // ------------------------------------------------------------------ the item
@@ -142,8 +184,46 @@ export class ActionView implements HubView {
     return this.hub.state(this.settings.item);
   }
 
-  private needsHold(it: Item | undefined): boolean {
-    return !!it && it.hold;
+  /** Hold to confirm: when ZIGMon asks for it, or when this key's own switch says so. */
+  needsHold(it: Item | undefined): boolean {
+    return !!it && (it.hold || (this.settings.hold === true && acts(this.kind)));
+  }
+
+  // ------------------------------------------------------------------ the look
+
+  get theme(): string {
+    return this.themeOverride ?? this.settings.theme ?? "classic";
+  }
+
+  /** What this key shows (each choice on unless switched off; a thermostat's graph off unless switched on). */
+  info(): Info {
+    const s = this.settings;
+    return {
+      icon: s.showIcon ?? true, name: s.showName ?? true, room: s.showRoom ?? true, state: s.showState ?? true, detail: s.showDetail ?? true,
+      mode: s.showMode ?? true, graph: s.showGraph ?? this.kind !== "thermostat", battery: s.showBattery ?? true,
+      scale: s.showScale ?? false, target: s.showTarget ?? ALL_INFO.target,
+    };
+  }
+
+  /** Nothing chosen beyond 1.0's settings: Classic draws exactly as 1.0 did. */
+  private plain(): boolean {
+    const s = this.settings;
+    if (this.theme !== "classic" || s.accent || s.nameFit || s.span) return false;
+    for (const k of ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget"]) if (s[k] !== undefined) return false;
+    return !(s.label && this.kind !== "reading");
+  }
+
+  private classicOpts(): ClassicOpts {
+    if (this.plain()) return {};
+    return { info: this.info(), accent: this.accentOverride(), fit: (this.settings.nameFit as NameFit | undefined) ?? "cut" };
+  }
+
+  private accentOverride(): string | undefined {
+    return this.settings.accent ? ACCENTS[this.settings.accent]?.colour : undefined;
+  }
+
+  private nameFit(): NameFit {
+    return (this.settings.nameFit as NameFit | undefined) ?? (this.theme === "classic" ? "cut" : "fit");
   }
 
   // ------------------------------------------------------------------ drawing
@@ -191,6 +271,13 @@ export class ActionView implements HubView {
       if (n && "pair" in n) fb = pairFeedback(layout, n.pair);
       else if (n) fb = noticeFeedback(layout, n.title, n.lines.join(" "), n.tone === "ok" ? "info" : n.tone);
       else fb = this.feedback();
+      if (!n) fb = this.styleStrip(fb, layout);
+      else if (this.styledStrip) fb = this.unstyleStrip(fb, layout);
+      if (!n && this.detailsUntil > Date.now() && this.kind === "thermostat") {
+        const d = this.detailRows();
+        fb = { ...fb, value: { value: d[0]![1], color: P.text } };
+        if ("name" in fb) fb.name = { value: d.slice(1, 3).map((r) => r[1]).filter((v) => v && v !== "—").join(" · ") };
+      }
       if (this.toast && this.toast.until > Date.now()) {
         fb = { ...fb, value: { value: this.toast.title, color: this.toast.tone === "ok" ? P.ok : this.toast.tone === "warn" ? P.warn : P.crit } };
         if ("name" in fb) fb.name = { value: this.toast.line };
@@ -212,6 +299,7 @@ export class ActionView implements HubView {
     if (n && "pair" in n) svg = renderPair(n.pair);
     else if (n) svg = renderNotice(n);
     else svg = this.keyImage();
+    if (!n && this.detailsUntil > Date.now() && this.kind === "thermostat") svg = renderDetails(this.item?.name ?? "", this.detailRows(), this.accent());
     if (this.holdProgress !== null) svg = renderHold(svg, this.holdProgress, this.accent());
     else if (this.toast && this.toast.until > Date.now()) svg = renderToast(svg, this.toast.title, this.toast.line, this.toast.tone);
     const img = dataUri(svg);
@@ -227,8 +315,34 @@ export class ActionView implements HubView {
     return dataUri(n && "pair" in n ? renderPair(n.pair) : n ? renderNotice(n) : this.keyImage());
   }
 
+  /**
+   * (1.1) The property inspector's Look section: this key drawn now in every look, and lit and
+   * unlit in its own - all from the item's real state, by the same code that draws the key.
+   */
+  previewSet(): { themes: { id: string; name: string; image: string }[]; on: string; off: string; words: [string, string] } | null {
+    if (this.notice()) return null;
+    const keep = [this.themeOverride, this.forced] as const;
+    try {
+      const themes = THEMES.map((t) => {
+        this.themeOverride = t.id;
+        return { id: t.id, name: t.name, image: dataUri(this.keyImage()) };
+      });
+      this.themeOverride = keep[0];
+      this.forced = "on";
+      const on = dataUri(this.keyImage());
+      this.forced = "off";
+      const off = dataUri(this.keyImage());
+      return { themes, on, off, words: ON_OFF_WORDS[this.kind] };
+    } finally {
+      this.themeOverride = keep[0];
+      this.forced = keep[1];
+    }
+  }
+
   private accent(): string {
     const it = this.item;
+    const o = this.accentOverride();
+    if (o) return o;
     if (this.kind === "dimmer") return P.warn;
     if (this.kind === "thermostat") return P.orange;
     if (this.kind === "blinds") return P.purple;
@@ -239,12 +353,21 @@ export class ActionView implements HubView {
     return this.settings.showRoom !== false;
   }
 
+  private label(it: Item): string {
+    return this.settings.label || it.name;
+  }
+
   controlModel(): ControlModel {
     const it = this.item!, st = this.st ?? it.state;
-    return {
-      name: it.name, room: it.room, showRoom: this.showRoom(), kind: it.kind, icon: it.icon,
-      on: st.on, valueText: st.valueText, online: st.online, battery: st.battery, hold: it.hold, allowed: it.allowed,
+    const m: ControlModel = {
+      name: this.label(it), room: it.room, showRoom: this.showRoom(), kind: it.kind, icon: it.icon,
+      on: st.on, valueText: st.valueText, online: st.online, battery: st.battery, hold: this.needsHold(it), allowed: it.allowed,
     };
+    if (this.forced) {
+      m.on = this.forced === "on";
+      m.online = true;
+    }
+    return m;
   }
 
   readingModel(): ReadingModel {
@@ -254,8 +377,10 @@ export class ActionView implements HubView {
     const look = readingAccent(attr?.key ?? it.id, unit || st.valueText);
     const v = st.value;
     const s = this.settings;
+    look.accent = this.accentOverride() ?? look.accent;
     let colour = look.accent;
-    if (v !== null) {
+    if (this.forced) colour = this.forced === "on" ? P.crit : look.accent;
+    else if (v !== null) {
       if ((s.critAbove !== undefined && s.critAbove !== null && v >= s.critAbove) || (s.critBelow !== undefined && s.critBelow !== null && v <= s.critBelow)) colour = P.crit;
       else if ((s.warnAbove !== undefined && s.warnAbove !== null && v >= s.warnAbove) || (s.warnBelow !== undefined && s.warnBelow !== null && v <= s.warnBelow)) colour = P.warn;
     }
@@ -264,7 +389,7 @@ export class ActionView implements HubView {
     else if (st.valueText) value = unit && st.valueText.endsWith(unit) ? st.valueText.slice(0, -unit.length).trim() : st.valueText;
     else value = v !== null ? formatNumber(v, -1) : st.on === true ? "On" : st.on === false ? "Off" : "";
     const showUnit = unit && !value.endsWith(unit) ? unit : "";
-    const h = this.hub.history(it.id);
+    const h = this.historyOf(it.id);
     let trend: ReadingModel["trend"] = null;
     if (h.length >= 3 && v !== null) {
       const ref = h[Math.max(0, h.length - 6)]!;
@@ -273,8 +398,15 @@ export class ActionView implements HubView {
       trend = Math.abs(d) <= Math.max(1e-9, span * 0.08) ? "flat" : d > 0 ? "up" : "down";
     }
     return {
-      label: s.label || it.name, value, unit: showUnit, colour, accent: look.accent, icon: look.icon, trend, history: h, online: st.online,
+      label: s.label || it.name, value, unit: showUnit, colour, accent: look.accent, icon: look.icon, trend, history: h, online: this.forced ? true : st.online,
     };
+  }
+
+  /** The values to draw: the series ZIGMon sent (with live values since), else the few this plugin saw. */
+  private historyOf(id: string): number[] {
+    const hub = this.hub as Hub & { series?: Hub["series"] };
+    const se = typeof hub.series === "function" ? hub.series(id, this.span()) : null;
+    return se && se.length >= 2 ? se : this.hub.history(id);
   }
 
   private setpointAttr(): Attr | null {
@@ -290,11 +422,48 @@ export class ActionView implements HubView {
     const mode = enumAttr(it, /mode/i), preset = enumAttr(it, /preset/i);
     const run = Object.entries(st.attrs).find(([k]) => /running|heating|demand|valve/i.test(k));
     const heating = run ? run[1] === true || run[1] === "heat" || run[1] === "heating" || (typeof run[1] === "number" && run[1] > 0) : st.on === true;
-    const modeText = [mode ? strOf(st.attrs[mode.key]) : "", preset ? strOf(st.attrs[preset.key]) : ""].filter(Boolean).join(" · ");
-    return {
-      name: it.name, current, target, unit: sp?.unit || "°C", mode: modeText, heating: heating && st.online,
-      min: sp?.min ?? 5, max: sp?.max ?? 30, online: st.online, hold: it.hold, allowed: it.allowed,
+    let modeText = [mode ? strOf(st.attrs[mode.key]) : "", preset ? strOf(st.attrs[preset.key]) : ""].filter(Boolean).join(" · ");
+    const room = this.isRoom();
+    if (room) modeText = this.roomModeWord();
+    const m: ThermoModel = {
+      name: this.label(it), current, target, unit: sp?.unit || "°C", mode: modeText, heating: heating && st.online,
+      min: sp?.min ?? 5, max: sp?.max ?? 30, online: st.online, hold: this.needsHold(it), allowed: it.allowed,
     };
+    if (room) m.modeFirst = true;
+    if (this.info().graph) m.history = this.historyOf(it.id);
+    const src = st.attrs.thermometer;
+    if (typeof src === "string" && src) m.source = src;
+    if (this.forced) {
+      m.heating = this.forced === "on";
+      m.online = true;
+    }
+    return m;
+  }
+
+  /** A heated room of ZIGMon's (heat:room / heat:temp), which says why it holds what it holds. */
+  private isRoom(): boolean {
+    const st = this.st;
+    return !!st && typeof st.attrs.why === "string" && typeof st.attrs.mode === "string";
+  }
+
+  /** Comfort, Eco, Plan... and "By hand until 14:30" while a hand-set temperature holds. */
+  private roomModeWord(): string {
+    const a = this.st?.attrs ?? {};
+    if (a.by_hand === true) return typeof a.hold_until === "number" && a.hold_until > 0 ? "By hand until " + clockOf(a.hold_until) : "By hand";
+    const m = strOf(a.mode);
+    return MODE_WORDS[m] ?? m;
+  }
+
+  /** The details card: mode, target, what it measures, and where. */
+  detailRows(): [string, string][] {
+    const m = this.thermoModel();
+    const u = m.unit ? " " + m.unit : "";
+    return [
+      ["Mode", m.mode || "—"],
+      ["Target", m.target !== null ? fmtTemp(m.target) + u : "—"],
+      ["Measured", m.current !== null ? fmtTemp(m.current) + u : "—"],
+      ["Thermometer", m.source ?? ""],
+    ];
   }
 
   private brightnessAttr(): Attr | null {
@@ -308,10 +477,13 @@ export class ActionView implements HubView {
     const raw = shown ?? (b ? numOf(st.attrs[b.key]) : null);
     const f = raw === null || !b ? (st.on === true ? 1 : st.on === false ? 0 : null) : fraction(raw, b.min ?? 0, b.max ?? 100);
     const pct = f === null ? "" : Math.round(f * 100) + "%";
-    return {
-      name: it.name, room: it.room, showRoom: this.showRoom(), on: shown !== null ? shown > (b?.min ?? 0) : st.on, level: f,
-      levelText: st.on === false && shown === null ? "Off" : pct, online: st.online, hold: it.hold, allowed: it.allowed,
+    const m: DimmerModel = {
+      name: this.label(it), room: it.room, showRoom: this.showRoom(), on: shown !== null ? shown > (b?.min ?? 0) : st.on, level: f,
+      levelText: st.on === false && shown === null ? "Off" : pct, online: st.online, hold: this.needsHold(it), allowed: it.allowed,
     };
+    if (this.forced === "on") Object.assign(m, { on: true, online: true, level: f && f > 0 ? f : 0.8, levelText: Math.round((f && f > 0 ? f : 0.8) * 100) + "%" });
+    if (this.forced === "off") Object.assign(m, { on: false, online: true, levelText: "Off" });
+    return m;
   }
 
   private positionAttr(): Attr | null {
@@ -328,7 +500,9 @@ export class ActionView implements HubView {
     if (pos === null && st.on !== null) pos = st.on ? 100 : 0;
     const mv = Object.entries(st.attrs).find(([k]) => /moving|motor|running|state/i.test(k))?.[1];
     const moving = mv === "opening" || mv === "up" ? "up" : mv === "closing" || mv === "down" ? "down" : null;
-    return { name: it.name, room: it.room, showRoom: this.showRoom(), position: pos, moving, online: st.online, hold: it.hold, allowed: it.allowed };
+    const m: BlindsModel = { name: this.label(it), room: it.room, showRoom: this.showRoom(), position: pos, moving, online: st.online, hold: this.needsHold(it), allowed: it.allowed };
+    if (this.forced) Object.assign(m, { position: this.forced === "on" ? 100 : 0, moving: null, online: true });
+    return m;
   }
 
   statusModel(): StatusModel {
@@ -350,28 +524,191 @@ export class ActionView implements HubView {
         value = level === "ok" ? "OK" : level === "crit" ? "Down" : "—";
       } else detail = level === "ok" ? "all good" : level === "crit" ? "needs a look" : "";
     }
-    return { label: it.id in STATUS_LOOK ? look.label : it.name, value, detail, level, icon: look.icon };
+    if (this.forced) {
+      level = this.forced === "on" ? "crit" : "ok";
+      if (!look.count) value = level === "ok" ? "OK" : "Down";
+    }
+    return { label: this.settings.label || (it.id in STATUS_LOOK ? look.label : it.name), value, detail, level, icon: look.icon };
+  }
+
+  private sceneFlash(): "ok" | "fail" | null {
+    return this.forced === "on" ? "ok" : this.forced === "off" ? null : this.flash;
   }
 
   private keyImage(): string {
+    if (this.theme !== "classic") return renderLook(this.theme, this.face(), { info: this.info(), fit: this.nameFit() });
+    const o = this.classicOpts();
     switch (this.kind) {
       case "control":
-        return renderControl(this.controlModel());
+        return renderControl(this.controlModel(), o);
       case "reading":
-        return renderReading(this.readingModel());
+        return renderReading(this.readingModel(), o);
       case "thermostat":
-        return renderThermostat(this.thermoModel());
+        return renderThermostat(this.thermoModel(), o);
       case "dimmer":
-        return renderDimmer(this.dimmerModel());
+        return renderDimmer(this.dimmerModel(), o);
       case "blinds":
-        return renderBlinds(this.blindsModel());
+        return renderBlinds(this.blindsModel(), o);
       case "scene": {
         const it = this.item!;
-        return renderScene({ name: it.name, room: it.room, kind: it.kind, icon: it.icon, flash: this.flash, hold: it.hold, allowed: it.allowed });
+        return renderScene({ name: this.label(it), room: it.room, kind: it.kind, icon: it.icon, flash: this.sceneFlash(), hold: this.needsHold(it), allowed: it.allowed }, o);
       }
       case "status":
-        return renderStatus(this.statusModel());
+        return renderStatus(this.statusModel(), o);
     }
+  }
+
+  /** (1.1) What the key has to say, for the looks other than Classic. */
+  face(): Face {
+    const it = this.item!;
+    const st = this.st ?? it.state;
+    const base = {
+      kind: this.kind as string, room: it.room, unit: "", stateColour: null as string | null, detail: "", mode: "", level: null as number | null,
+      series: [] as number[], target: null as number | null, battery: st.battery, allowed: it.allowed, hold: this.needsHold(it),
+    };
+    const acc = this.accentOverride();
+    switch (this.kind) {
+      case "control": {
+        const m = this.controlModel();
+        const look = lookFor(it.kind, it.icon, m.on);
+        const a = dialAttr(it, "control");
+        const raw = this.dial.shown ?? (a ? numOf(st.attrs[a.key]) : null);
+        return {
+          ...base, name: m.name, icon: look.icon, accent: acc ?? look.accent, active: m.on === true && m.online, online: m.online,
+          state: m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—", detail: m.on !== null ? m.valueText : "",
+          level: a && raw !== null ? fraction(raw, a.min, a.max) : null,
+        };
+      }
+      case "reading": {
+        const m = this.readingModel();
+        const t = m.trend === "up" ? "↑ rising" : m.trend === "down" ? "↓ falling" : m.trend === "flat" ? "→ steady" : "";
+        return {
+          ...base, name: m.label, icon: m.icon, accent: m.accent, active: m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
+          stateColour: m.colour, detail: t, series: m.history,
+        };
+      }
+      case "thermostat": {
+        const m = this.thermoModel();
+        const u = m.unit ? " " + m.unit : "";
+        const span = Math.max(0.5, m.max - m.min);
+        return {
+          ...base, name: m.name, icon: m.heating ? "flame" : "thermostat", accent: acc ?? (m.heating ? P.orange : P.info), active: m.heating, online: m.online,
+          state: fmtTemp(m.current), unit: m.current !== null ? m.unit : "", detail: m.target !== null ? "→ " + fmtTemp(m.target) + u : "", mode: m.mode,
+          level: m.target !== null ? Math.max(0, Math.min(1, (m.target - m.min) / span)) : null, series: m.history ?? [], target: m.target,
+        };
+      }
+      case "dimmer": {
+        const m = this.dimmerModel();
+        const on = m.on === true && m.online;
+        return {
+          ...base, name: m.name, icon: on ? "bulbOn" : "bulb", accent: acc ?? P.warn, active: on, online: m.online,
+          state: m.on === true ? "On" : m.on === false ? "Off" : "—", detail: m.on === true && m.levelText !== "Off" ? m.levelText : "", level: m.level,
+        };
+      }
+      case "blinds": {
+        const m = this.blindsModel();
+        const p = m.position;
+        const word = p === null ? "—" : p >= 99.5 ? "Open" : p <= 0.5 ? "Closed" : Math.round(p) + "%";
+        return {
+          ...base, name: m.name, icon: m.moving === "up" ? "blindsUp" : m.moving === "down" ? "blindsDown" : "blinds", accent: acc ?? P.purple,
+          active: (p !== null && p > 0.5) || m.moving !== null, online: m.online, state: word,
+          detail: m.moving === "up" ? "Opening…" : m.moving === "down" ? "Closing…" : p !== null && word !== Math.round(p) + "%" ? "" : "",
+          level: p === null ? null : p / 100,
+        };
+      }
+      case "scene": {
+        const look = lookFor(it.kind, it.icon);
+        const f = this.sceneFlash();
+        return {
+          ...base, name: this.label(it), icon: f === "ok" ? "check" : f === "fail" ? "close" : look.icon, accent: f === "fail" ? P.crit : f === "ok" ? P.ok : acc ?? look.accent,
+          active: f === "ok", online: true, state: f === "ok" ? "Done" : f === "fail" ? "Failed" : "Run", stateColour: f === "fail" ? P.crit : null,
+        };
+      }
+      case "status": {
+        const m = this.statusModel();
+        const c = m.level === "ok" ? acc ?? P.ok : m.level === "warn" ? P.warn : m.level === "crit" ? P.crit : P.dim;
+        return {
+          ...base, name: m.label, room: null, icon: m.icon, accent: c, active: m.level === "warn" || m.level === "crit", online: true,
+          state: m.value, stateColour: c, detail: m.detail,
+        };
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ the look on the touch strip
+
+  /**
+   * The choices on a dial's strip, as far as its layout goes: what is shown (a hidden part is
+   * left empty), the accent (given to the feedback builders), and the look's paper behind it all,
+   * its ink on the words and its tile round the icon.
+   */
+  private styleStrip(fb: Feedback, layout: keyof typeof LAYOUTS): Feedback {
+    if (this.plain()) return this.styledStrip ? this.unstyleStrip(fb, layout) : fb;
+    const i = this.info();
+    const f = this.face();
+    const blank = dataUri(svgDoc(4, 4, ""));
+    const out: Feedback = { ...fb };
+    const val = (k: string) => {
+      const v = out[k];
+      return typeof v === "object" && v !== null ? v : { value: v as string | number };
+    };
+    if (!i.name && "name" in out) out.name = { ...val("name"), value: !i.room || !f.room || this.kind === "reading" ? "" : f.room };
+    else if ("name" in out && (this.kind === "control" || this.kind === "dimmer" || this.kind === "blinds")) {
+      out.name = { ...val("name"), value: f.name + (i.room && f.room && this.showRoom() ? " · " + f.room : "") };
+    }
+    if (!i.state && "value" in out) {
+      const alt = [i.detail ? f.detail : "", i.mode ? f.mode : ""].filter(Boolean).join(" · ");
+      out.value = { ...val("value"), value: this.kind === "thermostat" ? "" : alt };
+    } else if (!i.detail && this.kind === "control" && "value" in out) out.value = { ...val("value"), value: f.online && f.allowed ? f.state : String(val("value").value ?? "") };
+    if (!i.detail && "target" in out) out.target = { ...val("target"), value: "" };
+    if (!i.detail && "sub" in out) out.sub = { ...val("sub"), value: "" };
+    if (!i.mode && "mode" in out) out.mode = { ...val("mode"), value: "" };
+    if (!i.icon && "icon" in out) out.icon = blank;
+    if (!i.graph && "art" in out && this.kind !== "thermostat") out.art = blank;
+    const t = this.theme;
+    if (t === "classic") {
+      if (this.styledStrip) {
+        out.bg = blank;
+        this.recolour(out, layout, (c) => c);
+      }
+      return out;
+    }
+    this.styledStrip = true;
+    const lit = f.active && f.online;
+    const c = f.online ? f.accent : P.crit;
+    const paperInk = t === "light" || (t === "contrast" && lit) || (t === "fill" && lit);
+    const inkOf = (col: string) => {
+      if (t === "light") return col === P.text ? X.ink : col === P.dim ? X.inkDim : col === P.crit ? X.inkCrit : col === P.muted ? X.inkMuted : col;
+      if (paperInk) return col === P.crit ? P.bg : t === "fill" ? P.bg : X.black;
+      if (t === "contrast") return col === P.dim || col === P.muted ? X.white : col === P.crit ? X.hcRed : col;
+      return col;
+    };
+    this.recolour(out, layout, inkOf);
+    out.bg = dataUri(stripPaper(t, lit, c));
+    if (i.icon && "icon" in out) {
+      const size = layout === "dimmer" ? 36 : layout === "reading" ? 22 : 40;
+      out.icon = paperInk || t === "light"
+        ? iconPix(f.icon, t === "light" ? (lit ? c : X.inkDim) : P.bg, size, t === "light" && lit ? c : undefined)
+        : t === "contrast" ? iconPix(f.icon, X.white, size) : t === "minimal" ? iconPix(f.icon, lit ? c : P.muted, size) : iconPix(f.icon, lit ? c : P.dim, size, lit ? c : undefined);
+    }
+    return out;
+  }
+
+  /** The text items given a colour each: their own (or the layout's), passed through the look's ink. */
+  private recolour(out: Feedback, layout: keyof typeof LAYOUTS, ink: (c: string) => string): void {
+    for (const it of LAYOUTS[layout]!.items) {
+      if (it.type !== "text" || !(it.key in out)) continue;
+      const v = out[it.key];
+      const o = typeof v === "object" && v !== null ? v : { value: v as string | number };
+      out[it.key] = { ...o, color: ink(o.color ?? it.color ?? P.text) };
+    }
+  }
+
+  /** Back to the layout's own colours and no paper, after a look had changed them. */
+  private unstyleStrip(fb: Feedback, layout: keyof typeof LAYOUTS): Feedback {
+    const out: Feedback = { ...fb, bg: dataUri(svgDoc(4, 4, "")) };
+    this.recolour(out, layout, (c) => c);
+    return out;
   }
 
   private feedback(): Feedback {
@@ -385,23 +722,23 @@ export class ActionView implements HubView {
         const txt = a && raw !== null ? formatNumber(raw, decimalsOf(a.step ?? 1)) + (a.unit ? " " + a.unit : "") : "";
         const pa = this.pressAction();
         const hint = !m.allowed ? "Not allowed" : !m.online ? "Offline" : pa === "toggle" ? (m.on ? "Push to turn off" : "Push to turn on") : pa ? "Push: " + pressWord(pa).toLowerCase() : "";
-        return controlFeedback(m, f, txt, hint);
+        return controlFeedback(m, f, txt, hint, this.accentOverride());
       }
       case "reading":
-        return readingFeedback(this.readingModel());
+        return readingFeedback(this.readingModel(), this.plain() ? undefined : this.info());
       case "thermostat": {
         const m = this.thermoModel();
         if (this.dial.shown !== null) m.target = this.dial.shown;
-        return thermoFeedback(m);
+        return thermoFeedback(m, this.accentOverride(), this.plain() ? undefined : this.info());
       }
       case "dimmer":
-        return dimmerFeedback(this.dimmerModel());
+        return dimmerFeedback(this.dimmerModel(), this.accentOverride());
       case "blinds":
-        return blindsFeedback(this.blindsModel());
+        return blindsFeedback(this.blindsModel(), this.accentOverride());
       case "scene": {
         const it = this.item!;
-        const fb = controlFeedback({ ...this.controlModel(), on: null, valueText: this.flash === "ok" ? "Done" : this.flash === "fail" ? "Failed" : "Push to run" }, null, "");
-        fb.value = { value: this.flash === "ok" ? "Done ✓" : this.flash === "fail" ? "Failed" : it.name, color: this.flash === "ok" ? P.ok : this.flash === "fail" ? P.crit : P.text };
+        const fb = controlFeedback({ ...this.controlModel(), on: null, valueText: this.flash === "ok" ? "Done" : this.flash === "fail" ? "Failed" : "Push to run" }, null, "", "", this.accentOverride());
+        fb.value = { value: this.flash === "ok" ? "Done ✓" : this.flash === "fail" ? "Failed" : this.label(it), color: this.flash === "ok" ? P.ok : this.flash === "fail" ? P.crit : P.text };
         fb.name = { value: it.room ?? "Scene" };
         return fb;
       }
@@ -425,8 +762,11 @@ export class ActionView implements HubView {
         return { push: pressWord(this.pressAction()), rotate: "Adjust", touch: pressWord(this.pressAction()) };
       case "reading":
         return { push: "Refresh", touch: "Refresh" };
-      case "thermostat":
-        return { push: "Mode / preset", rotate: "Setpoint", touch: "Boost" };
+      case "thermostat": {
+        const p = this.settings.press ?? "mode";
+        const push = p === "details" ? "Details" : p.startsWith("set:") ? MODE_WORDS[p.slice(4)] ?? "Mode" : p === "boost" ? "Boost" : p === "preset" ? "Next preset" : "Next mode";
+        return { push: (this.needsHold(this.item) ? "Hold: " : "") + push, rotate: "Setpoint", touch: "Boost" };
+      }
       case "dimmer":
         return { push: "On / off", rotate: "Brightness", touch: "On / off" };
       case "blinds":
@@ -507,6 +847,10 @@ export class ActionView implements HubView {
       void this.surface.showOk?.();
       return;
     }
+    if (this.kind === "thermostat" && this.settings.press === "details" && !this.notice()) {
+      this.showDetails();
+      return;
+    }
     const it = this.guard();
     if (!it) return;
     const cmd = what();
@@ -537,6 +881,17 @@ export class ActionView implements HubView {
 
   private pressEnd(): void {
     this.press?.up();
+  }
+
+  /** A thermostat's mode, target, measured temperature and thermometer, on the key for DETAILS_MS. */
+  showDetails(): void {
+    this.detailsUntil = Date.now() + DETAILS_MS;
+    if (this.detailsTimer) clearTimeout(this.detailsTimer);
+    this.detailsTimer = setTimeout(() => {
+      this.detailsUntil = 0;
+      this.draw();
+    }, DETAILS_MS);
+    this.draw();
   }
 
   private pressAction(): ItemAction | null {
@@ -582,6 +937,13 @@ export class ActionView implements HubView {
   private thermoPush(what: string): Omit<Command, "deck"> | null {
     const it = this.item!;
     const st = this.st ?? it.state;
+    if (what.startsWith("set:")) {
+      // one mode outright: Comfort, Eco, Night, Max, Off, Plan or By hand
+      const want = what.slice(4);
+      const e = enumAttr(it, /mode/i);
+      if (!e || !e.values.includes(want) || !(ROOM_MODES as readonly string[]).includes(want)) return null;
+      return { id: it.id, action: "set", attr: e.key, value: want };
+    }
     if (what === "boost") {
       const b = boolAttr(it, /boost/i);
       if (b) return { id: it.id, action: "set", attr: b.key, value: st.attrs[b.key] !== true };
@@ -620,18 +982,18 @@ export class ActionView implements HubView {
       if (!this.guard()) return;
       const cmd = this.thermoPush("boost");
       if (!cmd) return this.showToast("No boost", "this thermostat has none", "warn");
-      if (it.hold) return this.showToast("Hold the dial", "to confirm", "warn");
+      if (this.needsHold(it)) return this.showToast("Hold the dial", "to confirm", "warn");
       void this.run(cmd);
       return;
     }
     if (this.kind === "blinds" && it) {
       if (!this.guard()) return;
-      if (it.hold) return this.showToast("Hold the dial", "to confirm", "warn");
+      if (this.needsHold(it)) return this.showToast("Hold the dial", "to confirm", "warn");
       if (it.actions.includes("stop")) void this.run({ id: it.id, action: "stop" });
       return;
     }
     // elsewhere a touch is a quick press (a hold needs the dial itself held down)
-    if (it && it.hold && this.kind !== "reading" && this.kind !== "status") return this.showToast("Hold the dial", "to confirm", "warn");
+    if (it && this.needsHold(it) && acts(this.kind)) return this.showToast("Hold the dial", "to confirm", "warn");
     this.pressStart(() => this.keyCommand());
     this.pressEnd();
   }
@@ -675,6 +1037,43 @@ export class ActionView implements HubView {
     const action: ItemAction = it.actions.includes("set") ? "set" : "step";
     await this.run({ id: it.id, action, attr: a.key, delta });
     this.draw();
+  }
+}
+
+const ON_OFF_WORDS: Record<ActionKind, [string, string]> = {
+  control: ["On", "Off"], reading: ["Alert", "Normal"], thermostat: ["Heating", "Idle"], dimmer: ["On", "Off"], blinds: ["Open", "Closed"],
+  scene: ["Done", "Ready"], status: ["Problem", "All good"],
+};
+
+/** The look's paper behind a dial's strip (200 x 100). */
+function stripPaper(theme: string, lit: boolean, c: string): string {
+  const g = (id: string, a: string, oa: number, b: string, ob: number) =>
+    `<linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}" stop-opacity="${oa}"/><stop offset="1" stop-color="${b}" stop-opacity="${ob}"/></linearGradient>`;
+  switch (theme) {
+    case "fill":
+      return svgDoc(200, 100, `<rect width="200" height="100" rx="10" fill="${lit ? "url(#p)" : P.panel2}"/>`, g("p", c, 1, c, 0.72));
+    case "neon":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit
+        ? `<rect x="5" y="5" width="190" height="90" rx="14" fill="none" stroke="${c}" stroke-opacity="0.15" stroke-width="8"/><rect x="5" y="5" width="190" height="90" rx="14" fill="none" stroke="${c}" stroke-width="2"/>`
+        : `<rect x="5" y="5" width="190" height="90" rx="14" fill="none" stroke="${P.muted}" stroke-opacity="0.5" stroke-width="1.4"/>`));
+    case "split":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect width="200" height="8" fill="${lit ? c : P.panel2}"/>`);
+    case "glass":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="url(#p)"/><circle cx="30" cy="20" r="80" fill="${c}" fill-opacity="${lit ? 0.22 : 0.06}"/><rect x="3" y="3" width="194" height="94" rx="14" fill="${X.white}" fill-opacity="0.05" stroke="${X.white}" stroke-opacity="0.18"/>`, g("p", P.panel2, 1, X.night, 1));
+    case "light":
+      return svgDoc(200, 100, `<rect width="200" height="100" rx="10" fill="${X.paper}"/>` + (lit ? `<rect width="200" height="5" fill="${c}"/>` : ""));
+    case "contrast":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${lit ? X.white : X.black}"/><rect x="3" y="3" width="194" height="94" rx="10" fill="none" stroke="${lit ? X.black : X.white}" stroke-width="4"/>`);
+    case "dot":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel}"/><circle cx="192" cy="8" r="5" fill="${lit ? c : P.muted}"/>`);
+    case "ring":
+    case "bigvalue":
+    case "label":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/>` + (lit ? `<rect x="0" y="97" width="200" height="3" fill="${c}"/>` : ""));
+    case "minimal":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>`);
+    default:
+      return svgDoc(4, 4, "");
   }
 }
 

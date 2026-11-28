@@ -727,6 +727,144 @@ try:
     code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r1', 'action': 'set', 'attr': 'target', 'delta': -1})
     check(code == 200 and out.get('said') == 'set Temperature in Obývák to 21.5 °C', 'a dial on the room: %s %r' % (code, out))
 
+    # (for Stream Deck 1.1) the room's own key carries what it wants, its mode in the dashboard's words and the
+    # thermometer it goes by; its dial and its "by hand" go the dashboard's road (heat:temp:<id>)
+    print('a heated room on its own key')
+    d._heat_state_cache = None
+    d._deck_items_kept = None
+    code, out = deck('state?ids=heat:room:r2,heat:temp:r2,heat:room:r1')
+    r2 = (out.get('items') or {}).get('heat:room:r2') or {}
+    a2 = r2.get('attrs') or {}
+    check(code == 200 and isinstance(a2.get('target'), (int, float)) and a2.get('mode') == 'plan'
+          and a2.get('thermometer') == 'Teplomer' and a2.get('temperature') == 21.5 and a2.get('by_hand') is False
+          and a2.get('why') and a2.get('hold_until') is None, 'the room\'s key: %r' % r2)
+    code, out = deck('catalog')
+    room_item = next((x for x in out.get('items') or [] if x['id'] == 'heat:room:r2'), {})
+    tgt = next((a for a in room_item.get('attrs') or [] if a['key'] == 'target'), {})
+    modes = next((a for a in room_item.get('attrs') or [] if a['key'] == 'mode'), {})
+    check(tgt.get('type') == 'number' and tgt.get('via') == 'heat:temp:r2' and tgt.get('min') == 5 and tgt.get('step') == 0.5
+          and modes.get('values') == ['plan', 'comfort', 'eco', 'night', 'max', 'off', 'manual'],
+          'the room\'s attributes: %r' % room_item.get('attrs'))
+    code, out = deck('do', {'deck': XL['id'], 'id': 'heat:room:r2', 'action': 'set', 'attr': 'target', 'value': 23})
+    time.sleep(0.6)
+    d._heat_state_cache = None
+    d._deck_items_kept = None
+    st = next((r for r in d.heating_state()['rooms'] if r['id'] == 'r2'), {})
+    check(code == 200 and st.get('hold_c') == 23.0 and st.get('why') == 'by hand' and st.get('wanted_c') == 23.0,
+          'the room set by hand from its key: %s %r %r' % (code, out, {k: st.get(k) for k in ('hold_c', 'why', 'wanted_c')}))
+    code, out = deck('state?ids=heat:room:r2')
+    a2 = ((out.get('items') or {}).get('heat:room:r2') or {}).get('attrs') or {}
+    check(a2.get('by_hand') is True and a2.get('target') == 23.0 and isinstance(a2.get('hold_until'), int),
+          'by hand, until: %r' % a2)
+    code, out = deck('do', {'deck': XL['id'], 'id': 'heat:room:r2', 'action': 'set', 'attr': 'target', 'delta': 0.5})
+    time.sleep(0.6)
+    d._heat_state_cache = None
+    st = next((r for r in d.heating_state()['rooms'] if r['id'] == 'r2'), {})
+    check(code == 200 and st.get('hold_c') == 23.5, 'the room\'s dial: %s %r %r' % (code, out, st.get('hold_c')))
+    for mode in ('max', 'manual', 'plan'):
+        code, out = deck('do', {'deck': XL['id'], 'id': 'heat:room:r2', 'action': 'set', 'attr': 'mode', 'value': mode})
+        time.sleep(0.5)
+        check(code == 200 and (d.heating_config()['rooms'].get('r2') or {}).get('mode') == mode,
+              'the room to %s: %s %r' % (mode, code, out))
+    # the mode asked of the temperature key goes to the room (it went to heat:temp and did nothing)
+    code, out = deck('do', {'deck': XL['id'], 'id': 'heat:temp:r2', 'action': 'set', 'attr': 'mode', 'value': 'eco'})
+    time.sleep(0.5)
+    check(code == 200 and (d.heating_config()['rooms'].get('r2') or {}).get('mode') == 'eco',
+          'the mode through the temperature key: %s %r %r' % (code, out, d.heating_config()['rooms'].get('r2')))
+    deck('do', {'deck': XL['id'], 'id': 'heat:room:r2', 'action': 'set', 'attr': 'mode', 'value': 'plan'})
+    time.sleep(0.3)
+
+    # (for Stream Deck 1.1) the recent history of a reading and of a room, from the store the History tab reads
+    print('the history for the graphs')
+    now = int(time.time())
+    with d.store.lock:
+        d.store.db.executemany('INSERT OR REPLACE INTO samples (ts, device, key, value) VALUES (?, ?, ?, ?)',
+                               [(now - 3600 * 20 + i * 600, TEMP, 'temperature', 20 + (i % 7) * 0.25) for i in range(120)])
+        d.store.db.commit()
+    RID = 'read:%s:temperature' % TEMP
+    code, out = deck('state', {'ids': RID + ',heat:room:r2,Lampa', 'history': {'span': 86400, 'points': 48}})
+    h = out.get('history') or {}
+    pts = (h.get(RID) or {}).get('points') or []
+    check(code == 200 and (h.get(RID) or {}).get('span') == 86400 and 20 <= len(pts) <= 48
+          and all(isinstance(p, list) and len(p) == 2 and p[0] >= now - 86400 - 60 for p in pts)
+          and pts == sorted(pts) and RID in (out.get('items') or {}), 'a reading\'s history: %s %r' % (code, h.get(RID)))
+    check(len(((h.get('heat:room:r2') or {}).get('points') or [])) >= 20 and 'Lampa' not in h,
+          'the room\'s history (its thermometer): %r' % sorted(h))
+    code, out = deck('state', {'ids': RID, 'history': {'span': 3000, 'points': 500}})
+    hh = (out.get('history') or {}).get(RID) or {}
+    check(hh.get('span') == 3600 and len(hh.get('points') or []) <= 96, 'a span is one of 1 h, 6 h, 24 h, 7 d: %r' % hh)
+    code, out = deck('state?ids=' + RID)
+    check(code == 200 and 'history' not in out, 'history only when asked: %r' % list(out))
+
+    # (for Stream Deck 1.1) how many installations: Settings' deck_installs_most, 0 = no limit
+    print('how many installations')
+    check(zigmon.CONFIG.get('deck_installs_most') == '10' and zigmon.ApiHandler is not None
+          and [c[0] for c in zigmon.Daemon.TUNABLE_CHOICES['deck_installs_most']] == ['10', '20', '50', '100', '0'],
+          'the setting: %r' % zigmon.Daemon.TUNABLE_CHOICES.get('deck_installs_most'))
+    kept = d.deck_installs()
+    fake_rows = [dict(kept[0], id='%032x' % (900 + i), name='PC-%d' % i) for i in range(10 - len(kept))]
+    d._deck_put(kept + fake_rows)
+    body11 = dict(PAIR_BODY, install='%032x' % 999, computer='ELEVENTH')
+    code, out = d.deck_pair_start(body11, '192.168.40.111')
+    check(code == 403 and 'allows more in Settings' in out.get('error', ''), 'the eleventh at 10: %s %r' % (code, out))
+    code, out = call('/api/deck/admin', session=S)
+    check((out.get('most') or {}).get('installs') == 10, 'the admin view: %r' % out.get('most'))
+    check(d.deck_waiters_most() == 80, 'the waits at 10: %r' % d.deck_waiters_most())
+    zigmon.CONFIG['deck_installs_most'] = '20'
+    code, out = d.deck_pair_start(dict(body11, install='%032x' % 998), '192.168.40.112')
+    check(code == 200 and d.deck_waiters_most() == 160, 'twenty: %s %r %r' % (code, out, d.deck_waiters_most()))
+    zigmon.CONFIG['deck_installs_most'] = '0'
+    d._deck_put(kept + [dict(kept[0], id='%032x' % (700 + i), name='PC-%d' % i) for i in range(150)])
+    code, out = d.deck_pair_start(dict(body11, install='%032x' % 997), '192.168.40.113')
+    code2, out2 = call('/api/deck/admin', session=S)
+    check(code == 200 and (out2.get('most') or {}).get('installs') == 0 and d.deck_waiters_most() == min(1000, 8 * (len(kept) + 150)),
+          'no limit: %s %r %r %r' % (code, out, out2.get('most'), d.deck_waiters_most()))
+    zigmon.CONFIG['deck_installs_most'] = 'lots'
+    check(d.deck_installs_most() == 10, 'a value not among the choices counts as ten')
+    zigmon.CONFIG['deck_installs_most'] = '10'
+    d._deck_put(kept)
+    # one installation holds at most eight waits at once, however many may wait in all
+    held = []
+    gate = threading.Event()
+
+    class _H:
+        def _send(self, code, out):
+            held.append(code)
+            return code
+
+        def _error(self, code, msg):
+            held.append(code)
+            return code
+
+    hh = _H()
+    ths = [threading.Thread(target=lambda: zigmon.ApiHandler._deck_held(hh, d, lambda: gate.wait(5) and {'ok': True}, who='I1'))
+           for _ in range(8)]
+    for t in ths:
+        t.start()
+    time.sleep(0.3)
+    fifth = zigmon.ApiHandler._deck_held(hh, d, lambda: {'ok': True}, who='I1')
+    other = zigmon.ApiHandler._deck_held(hh, d, lambda: {'ok': True}, who='I2')
+    gate.set()
+    for t in ths:
+        t.join(5)
+    check(fifth == 503 and other == 200 and d._deck_waiting == 0 and not d._deck_waiting_by,
+          'eight waits per installation: %r %r %r %r' % (fifth, other, d._deck_waiting, d._deck_waiting_by))
+    # a new wait of an installation lets its older one go at once (the plugin gave up on it)
+    gone = {}
+
+    def older():
+        t0 = time.time()
+        gone['r'] = d.deck_wait(d.deck_installs()[0], d._deck_seq, d.deck_boot_for(d.deck_installs()[0]), ['Lampa'], 20)
+        gone['s'] = time.time() - t0
+
+    th = threading.Thread(target=older)
+    th.start()
+    time.sleep(0.4)
+    newer = d.deck_wait(d.deck_installs()[0], d._deck_seq, d.deck_boot_for(d.deck_installs()[0]), ['Lampa'], 0.3)
+    th.join(5)
+    check(gone.get('s', 99) < 3 and gone['r'].get('changes') == [] and newer.get('changes') == [],
+          'the older wait let go: %r' % gone)
+
     # ---- the rate -----------------------------------------------------------------------------
     print('the rate')
     caps(switch={'on': True, 'all': True})

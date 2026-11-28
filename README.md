@@ -2083,7 +2083,34 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.59.0**
+Current version: **5.59.1**
+
+5.59.1 — Looks for the Stream Deck keys, the heating room on a key, graphs from ZIGMon, and a master switch for the desktop app.
+
+* ZIGMon for Stream Deck 1.1.0: twelve looks for every key (Classic, Minimal,
+  Big value, Solid fill, Neon, Ring gauge, Two-tone, Glass, Bold label, Status
+  dot, Light, High contrast), each with on and off, chosen per key from live
+  thumbnails. What a key shows is chosen piece by piece - icon, name, room,
+  state, a second value, mode, graph, battery - or icon only; an accent colour,
+  a label of your own, and long names fitted or on two lines. Classic draws
+  exactly what 1.0.0 drew. The + touch strip follows the look.
+* Hold to confirm (1.5 s) can be switched on for any key or dial that does
+  something; where ZIGMon asks for the hold it cannot be switched off.
+* The heating room's key shows the mode (Comfort, Eco, Night, Max, Off, Plan,
+  By hand - "until HH:MM" when held), the target and the room thermometer's
+  temperature; a press sets a mode or goes through all of them, the dial sets
+  the room by hand as the dashboard's slider does, and a press can show the
+  details for three seconds instead. The target missing ("→ — °C") is mended.
+* Graphs come ready from ZIGMon - the same history the History tab draws, for
+  1 h, 6 h, 24 h or 7 days - so a key has its graph the moment it is placed.
+* How many computers may be paired with Stream Deck is a setting: 10, 20, 50,
+  100 or no limit. A newer long poll of an installation ends its older one, so
+  quick page flips no longer pile up waiting questions.
+* Desktop app: a master switch, as the Stream Deck has. Off, every computer is
+  refused (the keys and conditions are kept, and what happened meanwhile is not
+  brought up later). A new server comes with it off; a server that already had
+  keys keeps it on. How many computers may have a key is a setting: 20, 50, 100
+  or no limit.
 
 5.59.0 — ZIGMon for Stream Deck: the house on the keys and dials of a Stream Deck XL and Stream Deck +.
 
