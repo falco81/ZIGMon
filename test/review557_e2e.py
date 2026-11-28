@@ -113,6 +113,8 @@ try:
     d.store.set_meta('room_of', json.dumps({PIR: 'r1'}))
     report('PIR-Chodba', {'occupancy': False, 'battery': 87})
     report('Dvere-Vchod', {'contact': True, 'battery': 64})
+    # (5.59.1) the desktop app comes switched off: an administrator switches it on first
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Office PC', 'devices': []}, session=S)
     KEY = out.get('key') or ''
     check(code == 200 and KEY.startswith('zmn_'), 'no key made: %s %r' % (code, out))

@@ -207,6 +207,8 @@ try:
     check(S and SO, 'could not sign in')
     d.store.upsert_device({'id': '0x00158d0001a2b3c4', 'name': 'PIR-Chodba', 'source': 'zigbee', 'kind': 'EndDevice',
                            'exposes': {'occupancy': {}}})
+    # (5.59.1) the desktop app comes switched off: an administrator switches it on first
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Office PC', 'devices': []}, session=S)
     KEY = out.get('key') or ''
     check(code == 200 and KEY.startswith('zmn_'), 'the key: %s %r' % (code, out))

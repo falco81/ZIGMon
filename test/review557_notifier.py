@@ -139,6 +139,8 @@ try:
     check(code == 403, 'nobody reads the keys: %s %r' % (code, out))
     code, out = call('/api/notifier/keys', session=SO)
     check(code == 403, 'an operator reads the keys: %s %r' % (code, out))
+    # (5.59.1) the desktop app comes switched off: an administrator switches it on first
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Sneaky'}, session=SO)
     check(code == 403, 'an operator makes a key: %s %r' % (code, out))
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Sneaky'})

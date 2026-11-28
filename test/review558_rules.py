@@ -153,6 +153,8 @@ try:
                                'current_heating_setpoint': 21, 'battery': 70})
     report('Dvere-Vchod', {'contact': True, 'battery': 64})
 
+    # (5.59.1) the desktop app comes switched off: an administrator switches it on first
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Office PC', 'devices': []}, session=S)
     KEY, KID = out.get('key') or '', out.get('id')
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Hall tablet', 'devices': []}, session=S)

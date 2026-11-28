@@ -7197,6 +7197,14 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
     <div class="card full ot ntf-card" data-sec="msg-desktop" id="ntf-card">
       <div id="ntf-host"></div>
     </div>
+    <div class="card full set-card" data-sec="msg-desktop" data-old="system">
+      <h2>Settings</h2>
+      <div class="set-host" id="set-host-msg-desktop" data-for="msg-desktop"></div>
+      <div class="btnrow set-bar">
+        <button class="btn cmd primary set-save-alt" type="button">Save settings</button>
+        <span class="muted small set-note-alt"></span>
+      </div>
+    </div>
     <!-- Settings - Messages - Stream Deck (5.59): the master switch, the pairing requests, the installations -->
     <div class="card full ot dk-card" data-sec="msg-deck" id="dk-card">
       <div id="dk-host"></div>
@@ -23575,6 +23583,12 @@ var SETTINGS_LAYOUT = [
     ['binding_debounce_ms', 'A button\u2019s second report of the same press (ms)',
      'A BLU button arrives through more than one gateway, or repeats itself: one button here sent 985 \u201csingle\u201d actions, 278 of them in the same second as the one before \u2014 and with a toggle behind it the strip went on and straight back off, so the press looked like it had done nothing. A second report of the SAME action within this long is the same press. Short on purpose: above a radio duplicate, well below a person pressing again. 0 switches it off'],
   ]],
+  ['The desktop app', [
+    ['notifier_keys_most', 'How many computers may have a key',
+     'How many desktop app keys can be made \u2014 one for each computer. Twenty is what it comes as; '
+     + 'more costs nothing much: a computer that is connected keeps one question waiting here, and a '
+     + 'key that is not used costs nothing at all. No limit takes the cap away altogether.'],
+  ]],
 ];
 // A setting's label is short; the long word waits under the pointer. What is
 // worth saying there: what it does, an example where one helps, the key it has
@@ -24063,7 +24077,8 @@ var SETTINGS_WHERE = {
   'Looking for new versions': 'sys-upgrade', 'Settings': 'sys-acme', 'On a schedule': 'sys-osup',
   'Certificates from acme': 'sys-certs',
   'When, how many, and the password': 'sys-backup-rb',
-  'The performance meter in the header': 'sys-about'
+  'The performance meter in the header': 'sys-about',
+  'The desktop app': 'msg-desktop'
 };
 function settingsHosts() {
   var out = [];
@@ -37832,7 +37847,8 @@ function ntfAsk(body, b) {
   if (b) zbusy(b, true);
   return post('notifier-keys', body).then(function (x) {
     if (b) zbusy(b, false);
-    NTF.d = Object.assign({}, NTF.d || {}, {keys: x.keys || []});
+    NTF.d = Object.assign({}, NTF.d || {}, {keys: x.keys || []},
+                          typeof x.enabled === 'boolean' ? {enabled: x.enabled} : {});
     drawNtf();
     return x;
   }, function (e) { if (b) zbusy(b, false); throw e; });
@@ -37846,6 +37862,60 @@ function ntfState(k) {
   if (k.last_at) p.title = 'Last asked ' + stamp(k.last_at) + (k.last_from ? ' from ' + k.last_from : '');
   return p;
 }
+/* (5.59.1) The hero, as the Stream Deck has it: a drawing, what the app is, the master switch.
+   Off, every computer is refused (its keys and conditions are kept). */
+function ntfHeroArt(on) {
+  var d = el('div', 'dk-hero-art ntf-hero-art' + (on ? ' on' : ''));
+  d.innerHTML = '<svg viewBox="0 0 196 156" aria-hidden="true"><defs><linearGradient id="ntfg" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0" stop-color="#2a3140"/><stop offset="1" stop-color="#151a22"/></linearGradient></defs>'
+    + '<rect x="8" y="8" width="180" height="112" rx="10" fill="url(#ntfg)" class="hb"/>'
+    + '<rect x="16" y="16" width="164" height="88" rx="5" class="hk"/>'
+    + '<rect x="84" y="128" width="28" height="12" rx="2" class="hs"/><rect x="62" y="140" width="72" height="6" rx="3" class="hs"/>'
+    + '<g class="ntf-pop"><rect x="92" y="44" width="80" height="52" rx="8" class="hk hk0"/>'
+    + '<circle cx="108" cy="62" r="8" class="hsf"/><rect x="122" y="56" width="42" height="6" rx="3" class="hd"/>'
+    + '<rect x="122" y="67" width="30" height="5" rx="2.5" class="hd2"/>'
+    + '<rect x="100" y="80" width="30" height="9" rx="4" class="hk hk2"/><rect x="134" y="80" width="30" height="9" rx="4" class="hk hk1"/></g>'
+    + '<rect x="16" y="96" width="164" height="8" class="hs"/><circle cx="168" cy="100" r="2.5" class="hsf"/></svg>';
+  return d;
+}
+function ntfHero(d, keys) {
+  var on = !!d.enabled;
+  var hero = el('div', 'dk-hero' + (on ? ' on' : ''));
+  hero.id = 'ntf-hero';
+  hero.appendChild(ntfHeroArt(on));
+  var hm = el('div', 'dk-hero-main');
+  hm.appendChild(el('div', 'dk-hero-title', 'ZIGMon Notifier'));
+  hm.appendChild(el('p', 'dk-hero-lede', 'A small app for Windows. It sits by the clock and brings an alert to the front of '
+    + 'the screen the moment a sensor is triggered - motion, a door opened, water on the floor, smoke, a button pressed - or '
+    + 'a condition of yours comes true. It signs in with a key made here, one for each computer. A key is read-only: it '
+    + 'hears what the sensors it was given do, and cannot switch, change or read anything else. The key is shown once, when '
+    + 'it is made - only its fingerprint is kept here. Nothing reaches any computer until it is switched on here.'));
+  var swr = el('div', 'dk-master');
+  var sw = makeSwitch(on, function (want, box) {
+    box.checked = !want;
+    if (want) {
+      ntfAsk({action: 'enable'}, null).then(function (x) { toast(x.message || 'on', true); }, zoops);
+      return;
+    }
+    zconfirm('Switch the desktop app off?', 'Every computer is refused from its next question on, and shows that it is '
+      + 'switched off here. The keys and their conditions are kept: switched on again, they carry on.', 'Switch it off',
+      function () { ntfAsk({action: 'disable'}, null).then(function (x) { toast(x.message || 'off', true); }, zoops); });
+  });
+  sw.id = 'ntf-switch';
+  sw.input.id = 'ntf-switch-input';
+  swr.appendChild(sw);
+  var swt = el('label', 'dk-master-t');
+  swt.htmlFor = 'ntf-switch-input';
+  swt.appendChild(el('b', '', 'Allow the desktop app'));
+  var live = keys.filter(function (k) { return k.last_at && Date.now() / 1000 - k.last_at < 600; }).length;
+  swt.appendChild(el('span', 'dk-state', on
+    ? 'On \u00b7 ' + keys.length + ' key' + (keys.length === 1 ? '' : 's') + ' \u00b7 ' + live + ' connected now'
+    : 'Off - every computer is refused'));
+  swr.appendChild(swt);
+  hm.appendChild(swr);
+  hero.appendChild(hm);
+  return hero;
+}
 function drawNtf() {
   var host = $('ntf-host');
   if (!host || !NTF.d || host.dataset.locked === '1') return;
@@ -37856,21 +37926,17 @@ function drawNtf() {
   var top = el('span', 'ntf-top');
   var add = cmdButton('New key', 'add', 'small primary');
   add.id = 'ntf-new';
-  add.disabled = keys.length >= most;
-  if (add.disabled) add.title = 'At most ' + most + ' keys - take one away first';
+  add.disabled = !!most && keys.length >= most;
+  if (add.disabled) add.title = 'At most ' + most + ' keys - take one away first, or allow more under Settings below';
   add.onclick = function () { ntfEdit(null); };
   top.appendChild(add);
   h.appendChild(top);
   host.appendChild(h);
-  host.appendChild(el('p', 'note ntf-lede', 'ZIGMon Notifier is a small app for Windows. It sits by the clock and brings an alert '
-    + 'to the front of the screen the moment a sensor is triggered - motion, a door opened, water on the floor, smoke, a '
-    + 'button pressed. It signs in with a key made here, one for each computer. A key is read-only: it lists the sensors '
-    + 'it was given and hears what they do, and it cannot switch, change or read anything else. The key is shown once, '
-    + 'when it is made - only its fingerprint is kept here. Taken away, the computer holding it is refused at once.'));
+  host.appendChild(ntfHero(d, keys));
   host.appendChild(ntfGet(d.app));
   var tiles = el('div', 'facts');
   var live = keys.filter(function (k) { return k.last_at && Date.now() / 1000 - k.last_at < 600; }).length;
-  [['Keys', keys.length + ' of ' + most, keys.length ? '' : 'dim'], ['Connected now', String(live), live ? 'ok' : 'dim'],
+  [['Keys', most ? keys.length + ' of ' + most : keys.length + ' \u00b7 no limit', keys.length ? '' : 'dim'], ['Connected now', String(live), live ? 'ok' : 'dim'],
    ['Sensors that can trigger', String(sensors.length), sensors.length ? '' : 'dim'],
    ['The address for the app', ntfAddress(), 'mono']].forEach(function (f, i) {
     var t = el('div', 'fact ' + (i === 3 ? 'wide' : f[2]));

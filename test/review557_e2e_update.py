@@ -117,6 +117,8 @@ try:
     check(built.returncode == 0, built.stdout[-800:])
     d.account_add('owner', 'admin', 'owner pass 12', must_change=False, quiet=True)
     S = call('/api/auth/login', {'name': 'owner', 'password': 'owner pass 12'})[1].get('token') or ''
+    # (5.59.1) the desktop app comes switched off: an administrator switches it on first
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
     code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Office PC', 'devices': []}, session=S)
     KEY = out.get('key') or ''
     shutil.copytree(HERE / 'web', W / 'web')

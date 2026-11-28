@@ -436,6 +436,7 @@ DEFAULTS = {
     'tls_faces_bar': 6,           # ...and this many fingerprints in a minute, from one address
     'proxy_watch': 0,             # 1 = read it and weigh what is in it
     'proxy_every': '2',           # minutes between readings
+    'notifier_keys_most': '20',   # (5.59.1) desktop app keys at most: 20, 50, 100, or 0 = no limit
     # The same list carried to a router, so the packets stop before they
     # arrive. Only the one address list named here is ever touched.
     'mikrotik_host': '',          # the router's address, empty = not in use
@@ -10272,6 +10273,10 @@ class Daemon(object):
         self._intel_worker = None
         self._change = threading.Condition()
         self._ntf_setup()                # (5.57) the desktop notifier's ring and its boot
+        try:
+            self.notifier_enabled()      # (5.59.1) the switch decided once: on where keys were before
+        except Exception as e:
+            log('the desktop app switch: %s' % e, 'warn')
         self.client = None
         self._stop = threading.Event()
         # Friendly name -> id, prefilled from the database so a report or a
@@ -12413,6 +12418,42 @@ class Daemon(object):
             return []
         return [dict(r) for r in rows if isinstance(r, dict) and r.get('id') and r.get('hash')]
 
+    def notifier_most(self):
+        """(5.59.1) How many keys may be made: the setting, 0 for no limit."""
+        v = str(CONFIG.get('notifier_keys_most') or '').strip()
+        return int(v) if v in ('0', '20', '50', '100') else self.NOTIFIER_MOST
+
+    def notifier_waiters_most(self):
+        """Polls that may wait at once: never fewer than before, two for each key beyond."""
+        return max(self.NOTIFIER_WAITERS_MOST, 2 * len(self.notifier_keys()))
+
+    def notifier_enabled(self):
+        """(5.59.1) The desktop app's master switch, as the Stream Deck has one. Off on a new
+        server; on a server that already had keys when the switch came it starts on, so an app
+        that worked goes on working. Decided once and kept; then held in memory too, since
+        every waiting poll looks at it each second."""
+        on = self.__dict__.get('_ntf_on')
+        if on is None:
+            v = str(self.store.get_meta('notifier_enabled') or '')
+            if v not in ('0', '1'):
+                v = '1' if self.notifier_keys() else '0'
+                self.store.set_meta('notifier_enabled', v)
+            on = self._ntf_on = v == '1'
+        return on
+
+    def notifier_set_enabled(self, on, by):
+        self._ntf_setup()
+        self.store.set_meta('notifier_enabled', '1' if on else '0')
+        with self._ntf_cond:
+            self._ntf_on = bool(on)
+            # a new start for the apps: what happened while it was off is not brought up later
+            self.notifier_boot = secrets.token_hex(6)
+            self._ntf_ring.clear()
+            self._ntf_cond.notify_all()        # a poll waiting now ends at once
+        self.store.add_event('control', '%s %s the desktop app' % (by or 'somebody', 'switched on' if on else 'switched off'),
+                             'info')
+        return {'message': 'The desktop app is %s' % ('on' if on else 'off')}
+
     def _ntf_put(self, rows):
         self.store.set_meta('notifier_keys', json.dumps(rows))
         self._ntf_index = None            # (5.58) the rules' index is built again
@@ -12473,6 +12514,8 @@ class Daemon(object):
         """create / update / delete - an administrator's, asked for the PIN before this."""
         self._ntf_setup()
         act = str(body.get('action') or '')
+        if act in ('enable', 'disable'):                                   # (5.59.1)
+            return self.notifier_set_enabled(act == 'enable', by)
         rows = self.notifier_keys()
         known = {s['id'] for s in self.notifier_sensors()}
 
@@ -12504,8 +12547,10 @@ class Daemon(object):
             return 'every sensor' if not devs else ('%d sensor%s' % (len(devs), '' if len(devs) == 1 else 's'))
 
         if act == 'create':
-            if len(rows) >= self.NOTIFIER_MOST:
-                raise ValueError('at most %d keys - take one away first' % self.NOTIFIER_MOST)
+            most = self.notifier_most()
+            if most and len(rows) >= most:
+                raise ValueError('at most %d keys - take one away first, or allow more under '
+                                 'Settings - Messages - Desktop app' % most)
             name = clean_name(body.get('name'))
             devs = clean_devices(body.get('devices'))
             key = 'zmn_' + secrets.token_urlsafe(30)
@@ -12543,7 +12588,8 @@ class Daemon(object):
             self.store.add_event('control', "%s changed the desktop notifier key '%s' (%s)"
                                  % (by or 'somebody', mine['name'], said(mine['devices'])), 'info')
             return {'message': "the key '%s' is saved" % mine['name']}
-        raise ValueError('what with the key? (create, update, delete, rule_add, rule_update, rule_delete)')
+        raise ValueError('what with the key? (create, update, delete, rule_add, rule_update, rule_delete; '
+                         'enable or disable the desktop app)')
 
     # -- what a key sees --
     def _ntf_rooms(self):
@@ -12735,6 +12781,8 @@ class Daemon(object):
         kid = key['id']
         with self._ntf_cond:
             while True:
+                if not self.notifier_enabled():
+                    return {'ok': False, 'off': True}      # (5.59.1) switched off meanwhile
                 seq = self._ntf_seq
                 first = self._ntf_ring[0][0] if self._ntf_ring else seq + 1
                 if boot != self.notifier_boot or after > seq or after < first - 1:
@@ -14638,7 +14686,7 @@ class Daemon(object):
         'ntfy_full_log': 'str',
         'suricata_watch': (0, 1), 'suricata_log': 'str', 'suricata_least': (1, 3),
         'suricata_rules': 'str', 'suricata_tls': (0, 1), 'tls_spread_bar': (2, 500), 'tls_faces_bar': (4, 200),
-        'proxy_watch': (0, 1), 'proxy_every': 'str',
+        'proxy_watch': (0, 1), 'proxy_every': 'str', 'notifier_keys_most': 'str',
         'never_block': 'str', 'debug_secrets': (0, 1),
         'block_minutes_serious': (0, 525600), 'block_repeat': (0, 1), 'block_ladder': 'str',
         'block_max_minutes': (0, 525600), 'block_over_max': 'str', 'sample_anchor_s': (0, 86400), 'retain_presses_days': (1, 3650),
@@ -14893,6 +14941,8 @@ class Daemon(object):
                     raise ValueError('rbackup_every is daily or weekly')
                 if key == 'rbackup_verify' and value not in ('off', 'after', 'weekly'):
                     raise ValueError('rbackup_verify is off, after or weekly')
+                if key == 'notifier_keys_most' and value not in ('20', '50', '100', '0'):
+                    raise ValueError('notifier_keys_most is 20, 50, 100 or 0 (no limit)')
                 if key == 'rbackup_password':
                     # what root locks the copy with wants eight at least; the
                     # whole of it is the only way into every backup sent
@@ -15173,6 +15223,8 @@ class Daemon(object):
                               ('hmac-sha1', 'hmac-sha1'), ('hmac-md5', 'hmac-md5')],
         'proxy_auth': [('key', 'with a key this daemon holds'),
                        ('password', 'with a password')],
+        'notifier_keys_most': [('20', 'up to 20 computers'), ('50', 'up to 50 computers'),
+                               ('100', 'up to 100 computers'), ('0', 'no limit')],
         'proxy_every': [('0.5', 'every half a minute'), ('1', 'read it every minute'), ('2', 'every two minutes'),
                         ('5', 'every five minutes'), ('15', 'every quarter of an hour')],
         'mikrotik_auth': [('key', 'with a key this daemon holds'),
@@ -50118,6 +50170,10 @@ class ApiHandler(BaseHTTPRequestHandler):
         who = self._caller()
         if which not in ('hello', 'sensors', 'wait', 'update', 'download'):
             return self._error(400, 'hello, sensors, wait, update or download')
+        if not d.notifier_enabled():
+            # (5.59.1) switched off: every road says so, the app's own update too
+            return self._send(403, {'ok': False, 'off': True,
+                                    'error': 'the desktop app is switched off in ZIGMon (Settings - Messages - Desktop app)'})
         if not d.tap_may_try(who):
             d.note_anomaly(who, 'too-many', 'past the limit')
             return self._error(429, 'too many tries')
@@ -50141,7 +50197,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not re.match(r'^\d{1,18}$', after):
             return self._error(400, 'after is the number of the last event heard')
         with d._ntf_cond:
-            if d._ntf_waiting >= d.NOTIFIER_WAITERS_MOST:
+            if d._ntf_waiting >= d.notifier_waiters_most():
                 busy = True
             else:
                 busy = False
@@ -50155,6 +50211,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 d._ntf_waiting = max(0, d._ntf_waiting - 1)
         if out is None:
             return self._error(401, 'this notifier key has been taken away')
+        if out.get('off'):
+            return self._send(403, {'ok': False, 'off': True,
+                                    'error': 'the desktop app is switched off in ZIGMon (Settings - Messages - Desktop app)'})
         return self._send(200, out)
 
     def _authorised(self):
@@ -50990,7 +51049,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 # the address the app is to use, where one is set for outside
                 where = re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip())
                 return self._send(200, {'ok': True, 'keys': d.notifier_keys_view(),
-                                        'sensors': d.notifier_sensors(), 'most': d.NOTIFIER_MOST,
+                                        'enabled': d.notifier_enabled(),           # (5.59.1)
+                                        'sensors': d.notifier_sensors(), 'most': d.notifier_most(),
                                         'address': where, 'app': d.notifier_app_short(),
                                         # (5.58) every device a condition may be about
                                         'rule_devices': d.notifier_rule_devices(),
@@ -52834,7 +52894,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     out = d.notifier_post(body, by)
                 except ValueError as e:
                     return self._error(400, str(e)[:300])
-                out.update(ok=True, keys=d.notifier_keys_view())
+                out.update(ok=True, keys=d.notifier_keys_view(), enabled=d.notifier_enabled())
                 return self._send(200, out)
             if path == '/api/osup':
                 # the updates of the system (5.34): an administrator's, every action
