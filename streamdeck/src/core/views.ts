@@ -27,8 +27,15 @@ import { dataUri, svgDoc } from "./svg.js";
 import { factsOf, faceOfSummary, recipientWord, summaryOf, type Member, type Summary } from "./extra.js";
 import { extraFeedback, renderExtra } from "./extra-render.js";
 import { countdown, isNewKind, itemFor, NEEDS_ZIGMON, needs, POWER_SPANS, spanWord, stepMinutes, type NewKind } from "./kinds.js";
+import { CALC_NEEDS, calcFacts, calcLook } from "./calc.js";
 
-export type ActionKind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind;
+/** (1.3, ZIGMon 5.59.4) "computed": a value ZIGMon computes over the house, shown as a Reading is (PROTOCOL-CALC.md). */
+export type ActionKind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind | "computed";
+
+/** (1.3) Reading and Computed: one face, one model, one strip - a computed value is drawn exactly as a reading. */
+export function readsLike(kind: ActionKind): boolean {
+  return kind === "reading" || kind === "computed";
+}
 
 /** (1.3) The summaries' kinds: they only tell, so a Control key is not offered them. */
 const SUMMARY_KINDS = new Set(["power", "security", "heatgroup", "openings", "batteries", "zigbee", "room", "sms"]);
@@ -44,13 +51,14 @@ export interface Surface {
 }
 
 /** Which items fit which action, for the property inspector's picker. */
-export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions" | "attrs" | "state">): boolean {
+export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions" | "attrs" | "state" | "calc">): boolean {
   switch (kind) {
     case "control":
       return it.actions.length > 0 && it.kind !== "status" && !SUMMARY_KINDS.has(it.kind);
     case "reading":
       // (1.3) and what is on or off: a scene (as it leaves things, or not), a rule, a group, a switch
-      return it.kind !== "status" && (it.state.value !== null || it.state.on !== null || it.kind === "scene" || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"));
+      // (1.3) a computed value is Computed's, picked by its builder, not one of hundreds in this list
+      return it.kind !== "status" && it.kind !== "calc" && (it.state.value !== null || it.state.on !== null || it.kind === "scene" || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"));
     case "thermostat":
       return it.kind === "thermostat" || it.cap === "climate";
     case "dimmer":
@@ -74,6 +82,8 @@ export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions"
       return it.kind === kind;
     case "timer":
       return it.cap === "switch" && (it.actions.includes("timer") || it.actions.includes("toggle"));
+    case "computed":
+      return it.kind === "calc" && !!it.calc;
   }
 }
 
@@ -88,12 +98,13 @@ const NOT_CHOSEN: Record<ActionKind, string> = {
   power: "", security: "", heatgroup: "", away: "", openings: "", batteries: "", zigbee: "", sms: "",
   timer: "Pick a switch",
   room: "Pick a room",
+  computed: "Pick a value",
 };
 
 const LAYOUT_OF: Record<ActionKind, keyof typeof LAYOUTS> = {
   control: "control", reading: "reading", thermostat: "thermostat", dimmer: "dimmer", blinds: "blinds", scene: "control", status: "control",
   power: "power", security: "summary", heatgroup: "summary", away: "summary", openings: "summary", batteries: "summary", zigbee: "summary",
-  timer: "timer", room: "room", sms: "summary",
+  timer: "timer", room: "room", sms: "summary", computed: "reading",
 };
 
 /** (1.3) A summary ZIGMon has none of here: why, in its words. */
@@ -103,6 +114,7 @@ const NONE_HERE: Partial<Record<ActionKind, string[]>> = {
   openings: ["no window or door", "sensor reports yet"],
   batteries: ["no device", "reports a battery"],
   sms: ["SMS is not set up", "or not allowed here"],
+  computed: ["ZIGMon computes", "no such value now"],
 };
 
 const STATUS_LOOK: Record<string, { label: string; icon: string; count: "crit" | "warn" | null }> = {
@@ -127,7 +139,7 @@ export const DETAILS_MS = 3000;
 
 /** The actions that do something - the hold switch is theirs; Reading and ZIGMon status only look. */
 export function acts(kind: ActionKind): boolean {
-  return kind !== "reading" && kind !== "status" && kind !== "power" && kind !== "openings" && kind !== "batteries" && kind !== "zigbee";
+  return !readsLike(kind) && kind !== "status" && kind !== "power" && kind !== "openings" && kind !== "batteries" && kind !== "zigbee";
 }
 
 /** (1.3) The new actions that only look: a press asks again, as a Reading's does. */
@@ -256,7 +268,7 @@ export class ActionView implements HubView {
   /** (1.1) The series this key draws, for the hub to ask ZIGMon for. */
   series(): { id: string; span: number }[] {
     const id = this.itemId();
-    if (!id || (this.kind !== "reading" && this.kind !== "thermostat" && this.kind !== "power")) return [];
+    if (!id || (!readsLike(this.kind) && this.kind !== "thermostat" && this.kind !== "power")) return [];
     return this.info().graph ? [{ id, span: this.span() }] : [];
   }
 
@@ -304,7 +316,7 @@ export class ActionView implements HubView {
     const s = this.settings;
     if (this.theme !== "classic" || s.accent || s.accentOff || s.nameFit || s.span) return false;
     for (const k of ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget"]) if (s[k] !== undefined) return false;
-    return !(s.label && this.kind !== "reading");
+    return !(s.label && !readsLike(this.kind));
   }
 
   private classicOpts(): ClassicOpts {
@@ -361,6 +373,10 @@ export class ActionView implements HubView {
     // (1.3) the new actions need a ZIGMon that offers them; an older one is never asked
     if (isNewKind(this.kind) && ph === "online" && this.hub.supports) {
       for (const f of needs(this.kind)) if (this.hub.supports(f) === false) return { icon: "download", title: "Needs ZIGMon", lines: [NEEDS_ZIGMON + " or newer"], tone: "warn" };
+    }
+    // (1.3) Computed, likewise: a ZIGMon whose hello does not say "calc" computes nothing
+    if (this.kind === "computed" && ph === "online" && this.hub.supports) {
+      for (const f of CALC_NEEDS) if (this.hub.supports(f) === false) return { icon: "download", title: "Needs ZIGMon", lines: [NEEDS_ZIGMON + " or newer"], tone: "warn" };
     }
     if (!this.itemId()) return { icon: "search", title: "Choose", lines: [NOT_CHOSEN[this.kind]], tone: "muted" };
     if (!this.item) return { icon: "search", title: "Not found", lines: NONE_HERE[this.kind] ?? ["ZIGMon does not", "show it to this deck"], tone: "muted" };
@@ -505,7 +521,8 @@ export class ActionView implements HubView {
     const it = this.item!, st = this.st ?? it.state;
     const attr = it.attrs.find((a) => a.type === "number");
     const unit = attr?.unit ?? "";
-    const look = readingAccent(attr?.key ?? it.id, unit || st.valueText);
+    // (1.3) a computed value looks like the reading of its metric
+    const look = this.kind === "computed" ? calcLook(it.calc) : readingAccent(attr?.key ?? it.id, unit || st.valueText);
     const v = st.value;
     const s = this.settings;
     look.accent = this.accentOverride() ?? look.accent;
@@ -703,6 +720,7 @@ export class ActionView implements HubView {
       case "control":
         return renderControl(this.controlModel(), o);
       case "reading":
+      case "computed":
         return renderReading(this.readingModel(), o);
       case "thermostat":
         return renderThermostat(this.thermoModel(), o);
@@ -801,6 +819,7 @@ export class ActionView implements HubView {
 
   /** (1.3) The inspector's "Now": what the item says beyond the key (every window open, the whole latest alert...). */
   facts(): [string, string][] | null {
+    if (this.kind === "computed" && !this.notice()) return calcFacts(this.item!, this.st ?? this.item!.state);
     if (!isNewKind(this.kind) || this.notice()) return null;
     const it = this.item!;
     const s = this.summary();
@@ -929,11 +948,13 @@ export class ActionView implements HubView {
           level: a && raw !== null ? levelIn(raw, a.min, a.max) ?? (a.unit === "%" ? levelIn(raw, 0, 100) : null) : null,
         };
       }
-      case "reading": {
+      case "reading":
+      case "computed": {
         const m = this.readingModel();
         const t = m.trend === "up" ? "↑ rising" : m.trend === "down" ? "↓ falling" : m.trend === "flat" ? "→ steady" : "";
         return {
-          ...base, name: m.label, icon: m.icon, accent: m.accent, active: m.lit ?? m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
+          // (1.3) the looks draw a computed value as the reading it is
+          ...base, kind: "reading", name: m.label, icon: m.icon, accent: m.accent, active: m.lit ?? m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
           stateColour: m.colour, detail: m.note ?? t, series: m.history, scale: m.scale ?? null, level: m.level ?? null,
         };
       }
@@ -1009,7 +1030,7 @@ export class ActionView implements HubView {
     // (1.3) a Room dial's "name" is the member it shows; its own name is on the top line
     if (this.kind === "room" && !i.name && "top" in out) out.top = { ...val("top"), value: "" };
     else if (this.kind === "room") { /* the member stays */ }
-    else if (!i.name && "name" in out) out.name = { ...val("name"), value: !i.room || !f.room || this.kind === "reading" ? "" : f.room };
+    else if (!i.name && "name" in out) out.name = { ...val("name"), value: !i.room || !f.room || readsLike(this.kind) ? "" : f.room };
     else if ("name" in out && (this.kind === "control" || this.kind === "dimmer" || this.kind === "blinds")) {
       out.name = { ...val("name"), value: f.name + (i.room && f.room && this.showRoom() ? " · " + f.room : "") };
     }
@@ -1085,6 +1106,7 @@ export class ActionView implements HubView {
         return controlFeedback(m, f, txt, hint, this.accentOverride(), this.offOverride());
       }
       case "reading":
+      case "computed":
         return readingFeedback(this.readingModel(), this.plain() ? undefined : this.info());
       case "thermostat": {
         const m = this.thermoModel();
@@ -1121,6 +1143,7 @@ export class ActionView implements HubView {
       case "control":
         return { push: pressWord(this.pressAction()), rotate: "Adjust", touch: pressWord(this.pressAction()) };
       case "reading":
+      case "computed":
         return { push: "Refresh", touch: "Refresh" };
       case "thermostat": {
         const p = this.settings.press ?? "mode";
@@ -1235,7 +1258,7 @@ export class ActionView implements HubView {
 
   /** A press of the key or the dial: what it does, through the hold ring when ZIGMon asks for it. */
   private pressStart(what: () => Omit<Command, "deck"> | null): void {
-    if (this.kind === "reading" || this.kind === "status" || looksOnly(this.kind) || (this.kind === "room" && this.surface.controller === "Keypad")) {
+    if (readsLike(this.kind) || this.kind === "status" || looksOnly(this.kind) || (this.kind === "room" && this.surface.controller === "Keypad")) {
       this.hub.resubscribe();
       if (this.hub.currentPhase !== "online") this.hub.retryNow();
       // (1.3) no Stream Deck green tick over the key any more: it covered it and looked out of place
@@ -1501,7 +1524,7 @@ export class ActionView implements HubView {
 
   /** One turn of the dial: the value moves at once; ZIGMon gets the sum as a `delta`. */
   rotate(ticks: number): void {
-    if (this.kind === "reading" || this.kind === "status" || this.kind === "scene") return;
+    if (readsLike(this.kind) || this.kind === "status" || this.kind === "scene") return;
     if (isNewKind(this.kind)) return this.rotateNew(ticks);
     const it = this.guard();
     if (!it) return;
@@ -1594,6 +1617,7 @@ const ON_OFF_WORDS: Record<ActionKind, [string, string]> = {
   scene: ["Done", "Ready"], status: ["Problem", "All good"],
   power: ["Using power", "Nothing on"], security: ["Alerts", "Quiet"], heatgroup: ["Heating", "Idle"], away: ["Away", "Home"], openings: ["Open", "Closed"],
   batteries: ["Low", "All OK"], zigbee: ["Offline", "All online"], timer: ["Running", "Idle"], room: ["Heating / on", "Quiet"], sms: ["Unread", "Read"],
+  computed: ["Alert", "Normal"],
 };
 const SMS_WORDS: Record<"last" | "compose" | "status", [string, string]> = { last: ["Unread", "Read"], compose: ["Pressed", "Ready"], status: ["Muted", "Listening"] };
 

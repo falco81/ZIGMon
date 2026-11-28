@@ -84,6 +84,7 @@ deck to control are shown with a lock, and a live preview shows the key.
 | **Timer** *(1.3)* | A switch on for N minutes with a live countdown; press again = off. | Turn = minutes, push = start / cancel. |
 | **Room** *(1.3)* | Temperature, humidity, what is on, its heating. | Turn = through its items, push = switch the one shown. |
 | **SMS** *(1.3)* | Show the latest / write a new one in the desktop app, or the SMS status with mute (held). | Push = the same. |
+| **Computed** *(1.3)* | A value ZIGMon computes over the house - total power, lights on, the coldest room... - shown as a Reading; picked with a What / How / Where builder or one of the Popular ones. | Strip: as a Reading's. |
 
 Turning a dial moves the value on the strip at once; the clicks are gathered and sent to
 ZIGMon as one change (ZIGMon keeps it within the item's range and step).
@@ -285,6 +286,38 @@ One action, three modes:
 *Show latest* and *Write new* need the **sms** permission, and ZIGMon hands them to a desktop app
 linked to this Stream Deck installation (ZIGMon → Settings → Messages → Stream Deck). When none is
 running the key says **No desktop app running** - *link one in ZIGMon*.
+
+### Computed (1.3, ZIGMon 5.59.4)
+
+A value **ZIGMon computes over the house**, shown exactly like a Reading: the big value with its
+unit, the trend, the graph over 1 h / 6 h / 24 h / 7 d, your amber and red thresholds, the
+decimals and your label, in every look and colour, with the same honest scales. For example the
+total power of everything, the power of the lights only, how many lights are on, the average
+temperature inside, the coldest room, the windows open, the devices offline, the lowest battery or
+today's energy.
+
+Instead of a list of hundreds of items, the settings have a **builder**:
+
+1. **What** - Power, Energy today, Energy total, Temperature, Humidity, Pressure, Light level, CO₂,
+   Battery, Signal, On / off, Open or Online.
+2. **How** - Sum, Average, Min, Max, Count, On, Off, % on or Spread (the highest minus the lowest),
+   only those that make sense for it: there is no sum of temperatures.
+3. **Where** - All, Inside or Outside; or one kind (lights, sockets, switches, dimmers,
+   thermostats, sensors, blinds) and/or one room.
+
+Only what ZIGMon really computes in your house can be picked; the rest is greyed out (no
+"Pressure" without a barometer, no "coldest outside" with one thermometer outside). Each choice
+moves the others to the nearest value there is, and the settings show its name and the value now.
+**Popular** above it picks one in one click: total power, power of lights, power of sockets, lights
+on, average inside, coldest room, windows open, devices offline, lowest battery, energy today.
+*Now* names the room or device at the extreme (the coldest room's name, the lowest battery's
+device) and how many of the members had a value.
+
+A press refreshes. The values need **ZIGMon 5.59.4** with computed values (its hello says `calc`);
+an older one makes the key say **Needs ZIGMon 5.59.4 or newer**. The administrator grants them under
+**view**: with *every thing*, all of them; with *only these*, each one by name (listed under
+*Computed*). A granted value is always computed over all its members, even those this deck may not
+see one by one.
 
 ### What the keys tell you
 

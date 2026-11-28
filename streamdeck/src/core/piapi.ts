@@ -30,6 +30,8 @@ export function catalogMessage(hub: Hub, kind: ActionKind): PiReply {
     return {
       id: i.id, name: i.name, room: i.room, kind: i.kind, icon: i.icon, cap: i.cap, allowed: i.allowed, hold: i.hold,
       actions: i.actions, attrs: i.attrs, valueText: st.valueText, on: st.on, online: st.online, ...(i.act ? { act: i.act } : {}),
+      // (1.3) a computed value: what over what, for the Computed builder
+      ...(i.calc ? { calc: { ...i.calc } } : {}),
     };
   });
   const msg: PiReply = { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };

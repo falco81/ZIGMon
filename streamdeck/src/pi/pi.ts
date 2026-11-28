@@ -11,8 +11,12 @@ import { lookFor } from "../core/render.js";
 import { THEMES } from "../core/themes.js";
 import { cleanRecipient, FIXED_ITEM, isNewKind, itemFor, NEEDS_ZIGMON, NEW_TITLES, needs, type NewKind } from "../core/kinds.js";
 import { chosenOf, fold, parseSmsBook, searchBook, SMS_TO_MOST, toggled, typedNumber, type SmsBook } from "../core/smsbook.js";
+import {
+  builderView, CALC_NEEDS, CALC_PRESETS, calcEntries, calcLook, choiceOf, fnWord, KIND_WORDS, METRIC_WORDS, NO_CHOICE, parseCalcId, pick, PLACE_WORDS,
+  presetId, scopeWords, type CalcChoice, type CalcEntry,
+} from "../core/calc.js";
 
-type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind;
+type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status" | NewKind | "computed";
 
 interface PiAttr { key: string; label: string; type: string; unit: string; min: number | null; max: number | null; step: number | null; values: string[] }
 interface PiItem {
@@ -20,6 +24,8 @@ interface PiItem {
   actions: string[]; attrs: PiAttr[]; valueText: string; on: boolean | null; online: boolean;
   /** (1.3) An action granted under a capability of its own (ack / mute / unmute under system). */
   act?: Record<string, { cap: string; allowed: boolean; hold: boolean }> | null;
+  /** (1.3) A computed value's block (checked again by calcEntries: the id must say the same). */
+  calc?: unknown;
 }
 /** (1.3) A switch an Away key may turn off as well. */
 interface PiExtra { id: string; name: string; room: string | null; kind: string; icon: string; cap: string; allowed: boolean; hold: boolean }
@@ -207,9 +213,10 @@ function currentId(): string | undefined {
 
 /** (1.3) This ZIGMon is too old for a new action: what it is, or "" when it offers what is needed. */
 function tooOld(): string {
-  if (!isNewKind(KIND) || !status || status.phase !== "online") return "";
+  if ((!isNewKind(KIND) && KIND !== "computed") || !status || status.phase !== "online") return "";
   const f = status.features ?? [];
-  return needs(KIND).every((x) => f.includes(x)) ? "" : status.zigmon || "older";
+  const need: readonly string[] = KIND === "computed" ? CALC_NEEDS : needs(KIND as NewKind);
+  return need.every((x) => f.includes(x)) ? "" : status.zigmon || "older";
 }
 
 /** Only pictures we drew (data:image/svg+xml) and our own look names get onto the page. */
@@ -280,6 +287,7 @@ const TITLES: Record<Kind, [string, string]> = {
   timer: ["The switch to time", "Press: on for the minutes · again: off · dial: turn for the minutes"],
   room: ["The room", "Temperature, humidity, what is on · dial: its items one by one"],
   sms: ["SMS", "In the desktop app linked to this Stream Deck"],
+  computed: ["The value to compute", "What, how and where - ZIGMon adds it up over the house"],
 };
 
 // ------------------------------------------------------------------ the deck pictures
@@ -609,6 +617,7 @@ function grantNotes(card: HTMLElement, it: PiItem): void {
 
 function picker(): HTMLElement {
   if (FIXED_ITEM[KIND as NewKind] || KIND === "sms") return fixedCard();
+  if (KIND === "computed") return builderCard();
   const card = h("div", "card");
   const [title, lede] = TITLES[KIND];
   const old = tooOld();
@@ -717,6 +726,150 @@ function renderList(): void {
   }
 }
 
+// ------------------------------------------------------------------ (1.3) Computed: the builder
+
+/** The builder's choice while nothing that exists is picked yet (once one is, the key's item says it). */
+let calcDraft: CalcChoice = NO_CHOICE;
+
+/** The computed values ZIGMon offers this deck. */
+function calcItems(): CalcEntry[] {
+  return calcEntries(items);
+}
+
+/** What the builder shows as chosen: the key's item, else the choice so far. */
+function calcChoice(entries: CalcEntry[]): CalcChoice {
+  const cur = typeof settings.item === "string" ? entries.find((e) => e.id === settings.item) : undefined;
+  return cur ? choiceOf(cur) : calcDraft;
+}
+
+/** A choice made: the nearest item that exists becomes the key's. */
+function calcPick(entries: CalcEntry[], patch: Partial<CalcChoice>): void {
+  const next = pick(entries, calcChoice(entries), patch);
+  calcDraft = next;
+  const e = entries.find((x) => x.metric === next.metric && x.fn === next.fn && x.scope.place === next.place && x.scope.kind === next.kind && x.scope.room === next.room);
+  if (e && e.id !== settings.item) {
+    preview = "";
+    saveSettings({ item: e.id });
+  } else render();
+}
+
+/** A chip of the builder: on when chosen, greyed out and not pressable when the catalogue has nothing for it. */
+function bchip(word: string, iconName: string | null, on: boolean, enabled: boolean, click: () => void, key: string): HTMLButtonElement {
+  const c = h("button", "chip" + (on ? " on" : "") + (enabled ? "" : " off"), [iconName ? ic(iconName, "sm") : null, word]);
+  c.type = "button";
+  c.dataset.key = key;
+  c.disabled = !enabled;
+  c.setAttribute("aria-pressed", on ? "true" : "false");
+  if (!enabled) c.title = "ZIGMon computes no such value here";
+  c.addEventListener("click", click);
+  return c;
+}
+
+function builderCard(): HTMLElement {
+  const card = h("div", "card builder");
+  const [title, lede] = TITLES.computed;
+  const old = tooOld();
+  const entries = catalogLoaded ? calcItems() : [];
+  card.append(h("h2", "", [ic("sigma", "sm"), title, entries.length ? h("span", "count", [String(entries.length)]) : h("span", "count", ["1.3"])]));
+  const st = status;
+  if (!st || st.phase !== "online") {
+    card.append(h("div", "empty", [ic("link"), st && (st.phase === "offline" || st.phase === "connecting") ? "Waiting for ZIGMon…" : "Connect to ZIGMon above to choose."]));
+    return card;
+  }
+  if (old) {
+    card.append(h("div", "note warn", [ic("download", "sm"), h("span", "", ["Needs ", h("b", "", ["ZIGMon " + NEEDS_ZIGMON]), " or newer, which computes these values. This one is " + old + ": the key says so until ZIGMon is updated."])]));
+    return card;
+  }
+  if (!entries.length) {
+    card.append(h("div", "note", [ic("search", "sm"), catalogLoaded
+      ? "ZIGMon offers this deck no computed values: none can be made from what the house has, or the administrator has not granted them (Settings → Stream Deck → Permissions → Computed)."
+      : "Asking ZIGMon what it computes…"]));
+    return card;
+  }
+  card.append(h("p", "muted small", [lede]));
+  const c = calcChoice(entries);
+  const v = builderView(entries, c);
+  // Popular: one click
+  card.append(h("label", "f", ["Popular"]));
+  const pop = h("div", "presets");
+  for (const p of CALC_PRESETS) {
+    const id = presetId(entries, p);
+    const e = id ? entries.find((x) => x.id === id) : undefined;
+    const b = h("button", "preset" + (id && id === settings.item ? " on" : "") + (id ? "" : " off"), [
+      ic(p.icon, "pi"), h("span", "pn", [p.name]),
+    ]);
+    b.style.setProperty("--c", id ? calcLook(e).accent : P.muted);
+    b.type = "button";
+    b.dataset.key = "preset:" + p.key;
+    b.disabled = !id;
+    b.title = id ? e!.name : "ZIGMon computes no such value here";
+    b.addEventListener("click", () => {
+      if (!e) return;
+      calcDraft = choiceOf(e);
+      preview = "";
+      saveSettings({ item: e.id });
+    });
+    pop.append(b);
+  }
+  card.append(pop);
+  card.append(h("div", "sep"));
+  // What
+  card.append(h("label", "f", [h("span", "step", ["1"]), "What"]));
+  const mg = h("div", "metrics");
+  for (const m of v.metrics) {
+    const w = METRIC_WORDS[m.id];
+    const on = c.metric === m.id;
+    const b = h("button", "metric" + (on ? " on" : "") + (m.enabled ? "" : " off"), [ic(w.icon), h("span", "", [w.word])]);
+    b.type = "button";
+    b.dataset.key = "metric:" + m.id;
+    b.disabled = !m.enabled;
+    b.style.setProperty("--c", w.accent);
+    b.style.setProperty("--cb", rgba(w.accent, 0.14));
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    if (!m.enabled) b.title = "Nothing in the house reports it";
+    b.addEventListener("click", () => calcPick(entries, { metric: m.id }));
+    mg.append(b);
+  }
+  card.append(mg);
+  if (c.metric) {
+    // How
+    card.append(h("label", "f", [h("span", "step", ["2"]), "How"]));
+    card.append(h("div", "chips", v.fns.map((f) => bchip(fnWord(f.id, c.metric), null, c.fn === f.id, f.enabled, () => calcPick(entries, { fn: f.id }), "fn:" + f.id))));
+    // Where
+    card.append(h("label", "f", [h("span", "step", ["3"]), "Where"]));
+    const scoped = c.kind !== null || c.room !== null;
+    card.append(h("div", "chips", v.places.map((p) => bchip(PLACE_WORDS[p.id].word, PLACE_WORDS[p.id].icon, !scoped && c.place === p.id, p.enabled, () => calcPick(entries, { place: p.id }), "place:" + p.id))));
+    const kinds = v.kinds.filter((k) => k.id === null || k.enabled);
+    if (kinds.length > 1) {
+      card.append(h("label", "f lv2", ["Of what kind"]));
+      card.append(h("div", "chips", v.kinds.map((k) => bchip(k.id ? KIND_WORDS[k.id].word : "Any kind", k.id ? KIND_WORDS[k.id].icon : null, c.kind === k.id && (k.id !== null || c.room !== null), k.enabled, () => calcPick(entries, { kind: k.id }), "kind:" + (k.id ?? "any")))));
+    }
+    const rooms = v.rooms.filter((r) => r.id !== null);
+    if (rooms.length) {
+      card.append(h("label", "f lv2", ["In which room"]));
+      card.append(h("div", "chips", v.rooms.map((r) => bchip(r.name, r.id ? "door" : null, c.room === r.id && (r.id !== null || c.kind !== null), r.enabled, () => calcPick(entries, { room: r.id }), "room:" + (r.id ?? "any")))));
+    }
+  }
+  // the result: the item it is, and what it says now
+  const it = items.find((i) => i.id === settings.item);
+  const e = v.item ?? (it ? entries.find((x) => x.id === it.id) ?? null : null);
+  card.append(h("div", "sep"));
+  if (e && it) {
+    const look = calcLook(e);
+    card.append(h("div", "picked result", [
+      tile(look.icon, look.accent),
+      h("div", "grow", [h("div", "n", [it.name]), h("div", "s", [fnWord(e.fn, e.metric) + " · " + METRIC_WORDS[e.metric].word + " · " + scopeWords(e.scope, e.room)])]),
+      h("span", "st on big", [it.online ? it.valueText || "—" : "no value"]),
+    ]));
+    if (preview) card.append(h("div", "preview", [picture(preview, "", "preview"), h("div", "muted small", ["The key, live. Look, colours, thresholds and decimals are below, as for a Reading."])]));
+  } else if (typeof settings.item === "string" && settings.item) {
+    card.append(h("div", "note", [ic("search", "sm"), "ZIGMon no longer offers " + settings.item + " to this deck. Choose again above."]));
+  } else {
+    card.append(h("div", "note", [ic("sigma", "sm"), "Pick a popular one, or what to compute: the choices that ZIGMon cannot make here are greyed out."]));
+  }
+  return card;
+}
+
 // ------------------------------------------------------------------ per-action options
 
 const NUMERIC = new Set(["span", "step", "decimals", "minutes", "muteMinutes"]);
@@ -793,7 +946,8 @@ function optionsCard(): HTMLElement | null {
       if (it?.attrs.some((a) => a.type === "number")) card.append(numberField("Dial: change per click (empty = automatic)", "step", "auto"));
       break;
     }
-    case "reading": {
+    case "reading":
+    case "computed": {
       card.append(...chips("Decimals", [["-1", "As ZIGMon"], ["0", "0"], ["1", "0.0"], ["2", "0.00"]], String(settings.decimals ?? -1), "decimals"));
       card.append(h("label", "f", ["Colours: amber and red outside these"]));
       card.append(h("div", "grid2", [numberField("Amber below", "warnBelow", "—"), numberField("Amber above", "warnAbove", "—"), numberField("Red below", "critBelow", "—"), numberField("Red above", "critAbove", "—")]));
@@ -867,7 +1021,7 @@ function optionsCard(): HTMLElement | null {
       break;
     }
   }
-  if (KIND !== "reading" && KIND !== "status" && KIND !== "power" && KIND !== "openings" && KIND !== "batteries" && KIND !== "zigbee" && !(KIND === "security" || (KIND === "sms" && settings.smsMode === "status"))) card.append(holdSwitch(it));
+  if (KIND !== "reading" && KIND !== "computed" && KIND !== "status" && KIND !== "power" && KIND !== "openings" && KIND !== "batteries" && KIND !== "zigbee" && !(KIND === "security" || (KIND === "sms" && settings.smsMode === "status"))) card.append(holdSwitch(it));
   if ((KIND === "control" || KIND === "dimmer" || KIND === "timer") && it && it.cap === "switch") card.append(byHandSwitch());
   if (card.childElementCount <= 1) return null;
   return card;
@@ -1109,7 +1263,7 @@ function initials(name: string): string {
 
 /** (1.3) "Now": what the item says beyond the key - every window open, the whole latest alert, the room's items. */
 function factsCard(): HTMLElement | null {
-  if (!isNewKind(KIND) || !facts.length) return null;
+  if ((!isNewKind(KIND) && KIND !== "computed") || !facts.length) return null;
   const card = h("div", "card");
   card.append(h("h2", "", [ic("pulse", "sm"), "Now"]));
   const kv = h("dl", "kv");
@@ -1152,6 +1306,7 @@ const INFO: Record<Kind, [string, string, string][]> = {
   timer: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Countdown", "stopwatch"], ["showDetail", "Off at", "clock"], ["showGraph", "Ring", "dial"], ["showBattery", "Battery", "battery"]],
   room: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Temperature", "thermo"], ["showDetail", "Humidity & on", "drop"], ["showMode", "Heating", "flame"]],
   sms: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Count / word", "message"], ["showDetail", "From / to", "person"], ["showMode", "Unread", "inbox"]],
+  computed: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Value", "sigma"], ["showDetail", "Trend", "trendUp"], ["showGraph", "Graph", "pulse"]],
 };
 const SPAN_WORDS: [number, string][] = [[3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [604800, "7 d"]];
 
@@ -1221,7 +1376,7 @@ function lookCard(): HTMLElement {
     btn("Everything", "ghost", "grid", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showGraph" && KIND === "thermostat" ? true : undefined])))),
     btn("Icon only", "ghost", "sparkle", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showIcon"])))),
   ]));
-  if ((KIND === "reading" || KIND === "thermostat" || KIND === "power") && shown("showGraph")) {
+  if ((KIND === "reading" || KIND === "computed" || KIND === "thermostat" || KIND === "power") && shown("showGraph")) {
     card.append(...chips("Graph over the last", SPAN_WORDS.map(([v, w]) => [String(v), w] as [string, string]), String(settings.span ?? 86400), "span"));
     card.append(toggle("Min / max on the graph", "showScale", false));
     if (KIND === "thermostat") card.append(toggle("The target as a dashed line", "showTarget", true));
@@ -1267,6 +1422,7 @@ function autoColour(tab: ColourTab, it: PiItem | undefined): string {
   if (KIND === "thermostat") return P.orange;
   if (KIND === "blinds") return P.purple;
   if (KIND === "reading") return P.water;
+  if (KIND === "computed") return calcLook(it && typeof it.calc === "object" ? parseCalcId(it.id) ?? undefined : undefined).accent;
   if (KIND === "status") return P.ok;
   // (1.3) the new actions' own colours, as their keys draw them
   const own: Partial<Record<Kind, string>> = {
@@ -1616,7 +1772,7 @@ function colourSection(it: PiItem | undefined): HTMLElement {
     syncHsv(tab, it);
     panel.append(ownPicker(tab));
   }
-  const noOnOff = KIND === "reading" || KIND === "scene" || KIND === "status";
+  const noOnOff = KIND === "reading" || KIND === "computed" || KIND === "scene" || KIND === "status";
   panel.append(h("p", "muted small chint", [tab === "on"
     ? "Lit, on, heating, open: the key in this colour."
     : noOnOff

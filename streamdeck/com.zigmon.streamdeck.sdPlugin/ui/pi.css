@@ -340,3 +340,29 @@ label.f .count { margin-left: 6px; color: var(--info); font-weight: 700; }
 .opt .fv { display: inline-flex; color: var(--warn); }
 .opt .fv svg { fill: rgba(210, 153, 34, .3); }
 .empty.small { padding: 8px 12px; font-size: 11.5px; }
+
+/* (1.3) Computed: the builder - Popular, then What, How and Where; what cannot be made here is greyed out */
+.builder label.f { display: flex; align-items: center; gap: 7px; }
+.builder label.f .step { display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10.5px; font-weight: 800;
+  color: var(--info); background: rgba(88, 166, 255, .14); border: 1px solid rgba(88, 166, 255, .4); }
+.builder label.f.lv2 { margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.chip.off, .chip[disabled] { opacity: .38; cursor: not-allowed; border-style: dashed; }
+.chip.off:hover { color: var(--dim); border-color: var(--line); }
+.presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.preset { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 10px; cursor: pointer; text-align: left;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--text); font-weight: 600; font-size: 12px; transition: all .15s; min-width: 0; }
+.preset svg.i.pi { width: 16px; height: 16px; color: var(--c); }
+.preset .pn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset:hover { border-color: #39404d; background: #212833; }
+.preset.on { border-color: var(--info); background: rgba(88, 166, 255, .14); box-shadow: inset 0 0 0 1px rgba(88, 166, 255, .35); }
+.preset.off, .preset[disabled] { opacity: .38; cursor: not-allowed; }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.metric { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px 6px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--dim); font-size: 11px; font-weight: 600; line-height: 1.15; text-align: center; transition: all .15s; }
+.metric svg.i { width: 20px; height: 20px; color: var(--c); }
+.metric:hover { color: var(--text); border-color: #39404d; }
+.metric.on { color: var(--text); border-color: var(--c); background: var(--cb); box-shadow: inset 0 0 0 1px var(--c); }
+.metric.off, .metric[disabled] { opacity: .32; cursor: not-allowed; }
+.metric.off svg.i { color: var(--muted); }
+.picked.result { margin-bottom: 10px; border-color: rgba(88, 166, 255, .35); }
+.picked.result .st.big { font-size: 15px; font-weight: 750; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }

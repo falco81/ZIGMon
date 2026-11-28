@@ -23,6 +23,8 @@ export interface FakeItem {
   /** (5.59.4, extended catalogue only) */
   act?: Record<string, { cap: string; allowed: boolean; hold: boolean }>;
   members?: string[];
+  /** (5.59.4, PROTOCOL-CALC.md) a computed value's block */
+  calc?: Record<string, unknown>;
 }
 
 export interface Seen {
@@ -137,6 +139,70 @@ export function extendedItems(now = Math.floor(Date.now() / 1000)): FakeItem[] {
   ];
 }
 
+/**
+ * (5.59.4, PROTOCOL-CALC.md) Values computed over the house, as an extended catalogue of a ZIGMon whose
+ * hello says "calc" has them. Rooms: r1 Obývák, r2 Ložnice, r3 Kitchen. No pressure or light level here.
+ */
+export function calcItems(): FakeItem[] {
+  const UNIT: Record<string, string> = { power: "W", energy_today: "kWh", energy_total: "kWh", temperature: "°C", humidity: "%", co2: "ppm", battery: "%", linkquality: "" };
+  const ICON: Record<string, string> = { power: "bolt", energy_today: "bolt", energy_total: "bolt", temperature: "thermo", humidity: "drop", co2: "leaf", battery: "battery", linkquality: "wifi", state: "bulbOn", open: "windowOpen", online: "mesh" };
+  const ROOMS: Record<string, string> = { r1: "Obývák", r2: "Ložnice", r3: "Kitchen" };
+  const c = (fn: string, metric: string, scope: string, name: string, value: number | null, members: number, o: { known?: number; min_of?: string; max_of?: string; max?: number } = {}): FakeItem => {
+    const counts = ["count", "on", "off"].includes(fn);
+    const unit = fn === "pct_on" ? "%" : counts ? "" : UNIT[metric] ?? "";
+    const room = /^room=(r\d)/.exec(scope)?.[1];
+    const pct = unit === "%";
+    const text = value === null ? "" : (Number.isInteger(value) ? String(value) : value.toFixed(1)) + (unit ? " " + unit : "");
+    return {
+      id: `calc:${fn}:${metric}:${scope}`, name, room: room ? ROOMS[room]! : null, kind: "calc", icon: ICON[metric] ?? "gauge", cap: "view", actions: [],
+      attrs: [{ key: "value", label: "Value", type: "number", unit, ...(pct ? { min: 0, max: 100 } : o.max !== undefined ? { min: 0, max: o.max } : {}) }],
+      allowed: true, hold: false,
+      state: { on: null, value, value_text: text, online: value !== null, battery: null, at: null,
+        attrs: { value, members, known: o.known ?? (value === null ? 0 : members), ...(o.min_of ? { min_of: o.min_of } : {}), ...(o.max_of ? { max_of: o.max_of } : {}) } },
+      calc: { fn, metric, scope, members, unit },
+    };
+  };
+  return [
+    c("sum", "power", "all", "Power · everything", 412.5, 9, { known: 8, max: 3680 }),
+    c("sum", "power", "kind=light", "Power · all lights", 64, 4, { max: 240 }),
+    c("sum", "power", "kind=socket", "Power · all sockets", 348.5, 5, { known: 4, max: 3440 }),
+    c("sum", "power", "room=r1", "Power · Obývák", 186, 3),
+    c("sum", "power", "room=r1,kind=light", "Power · lights · Obývák", 42, 2),
+    c("sum", "power", "room=r3", "Power · Kitchen", 120, 2),
+    c("avg", "power", "kind=socket", "Average power · sockets", 87.1, 5, { known: 4 }),
+    c("max", "power", "all", "Highest power", 1840, 9, { max_of: "Heat pump" }),
+    c("sum", "energy_today", "all", "Energy today · everything", 12.4, 6),
+    c("sum", "energy_today", "kind=socket", "Energy today · sockets", 11.1, 5),
+    c("sum", "energy_total", "all", "Energy total · everything", 1843.2, 6),
+    c("avg", "temperature", "inside", "Average temperature · inside", 21.3, 4),
+    c("avg", "temperature", "all", "Average temperature · everything", 17.5, 5),
+    c("avg", "temperature", "outside", "Temperature · outside", 7.3, 1),
+    c("avg", "temperature", "room=r2", "Average temperature · Ložnice", 19.4, 2),
+    c("min", "temperature", "inside", "Coldest · inside", 18.5, 4, { min_of: "Ložnice" }),
+    c("max", "temperature", "inside", "Warmest · inside", 23.1, 4, { max_of: "Obývák" }),
+    c("min", "temperature", "all", "Coldest · everything", 7.3, 5, { min_of: "Outdoor temperature" }),
+    c("spread", "temperature", "inside", "Temperature spread · inside", 4.6, 4),
+    c("avg", "humidity", "inside", "Average humidity · inside", 48, 3),
+    c("max", "humidity", "inside", "Most humid · inside", 61, 3, { max_of: "Koupelna" }),
+    c("max", "co2", "inside", "Highest CO₂ · inside", 1320, 1, { max_of: "Office CO₂" }),
+    c("min", "battery", "all", "Lowest battery", 5, 11, { min_of: "Dveře" }),
+    c("avg", "battery", "all", "Average battery", 71, 11),
+    c("min", "linkquality", "all", "Weakest signal", 38, 24, { min_of: "Hlavice" }),
+    c("on", "state", "kind=light", "Lights on", 3, 4),
+    c("off", "state", "kind=light", "Lights off", 1, 4),
+    c("pct_on", "state", "kind=light", "Lights on · %", 75, 4),
+    c("count", "state", "kind=light", "Lights", 4, 4),
+    c("on", "state", "kind=socket", "Sockets on", 2, 5),
+    c("on", "state", "room=r1", "On · Obývák", 2, 3),
+    c("on", "state", "room=r1,kind=light", "Lights on · Obývák", 1, 2),
+    c("on", "open", "all", "Windows and doors open", 2, 6),
+    c("count", "open", "all", "Windows and doors", 6, 6),
+    c("off", "online", "all", "Devices offline", 1, 24),
+    c("on", "online", "all", "Devices online", 23, 24),
+    c("count", "online", "all", "Devices", 24, 24),
+  ];
+}
+
 /** (PROTOCOL-SMS.md 3) An address book as the extended catalogue carries it: names and groups, no numbers. */
 export function sampleBook(): { sms_contacts: { id: string; name: string; group: string | null; favourite: boolean }[]; sms_groups: string[] } {
   return {
@@ -161,6 +227,8 @@ export class FakeZigmon {
   features: string[] = [];
   /** (5.59.4) The summaries, seen only by an extended question (or by naming them in ids). */
   extended: FakeItem[] = extendedItems();
+  /** (5.59.4) The computed values, in an extended catalogue when hello's features say "calc" too. */
+  calc: FakeItem[] = calcItems();
   /** (PROTOCOL-SMS.md 3) whether a desktop app linked to this Stream Deck is running. */
   desktopApp = false;
   /** (PROTOCOL-SMS.md 3) whether the linked app's key may (false: 409 not_allowed). */
@@ -237,7 +305,7 @@ export class FakeZigmon {
   }
 
   setState(id: string, patch: Record<string, unknown>): void {
-    const it = [...this.items, ...this.extended].find((i) => i.id === id)!;
+    const it = [...this.items, ...this.extended, ...this.calc].find((i) => i.id === id)!;
     const attrs: Record<string, unknown> = { ...(it.state.attrs as object), ...((patch.attrs as object) ?? {}) };
     for (const [k, v] of Object.entries(attrs)) if (v === undefined) delete attrs[k];
     it.state = { ...it.state, ...patch, attrs };
@@ -330,7 +398,7 @@ export class FakeZigmon {
       }
       return o;
     };
-    const all = () => [...this.items, ...(this.features.includes("extended") ? this.extended : [])];
+    const all = () => [...this.items, ...(this.features.includes("extended") ? this.extended : []), ...(this.features.includes("extended") && this.features.includes("calc") ? this.calc : [])];
     switch (what) {
       case "hello":
         return send(200, {
@@ -357,7 +425,7 @@ export class FakeZigmon {
         const history: Record<string, unknown> = {};
         const now = Math.floor(Date.now() / 1000);
         for (const i of all()) {
-          if (!ids.includes(i.id) || (i.kind !== "reading" && i.kind !== "thermostat" && i.kind !== "power")) continue;
+          if (!ids.includes(i.id) || (i.kind !== "reading" && i.kind !== "thermostat" && i.kind !== "power" && i.kind !== "calc")) continue;
           const v = Number((i.state as Record<string, unknown>).value ?? 20);
           const n = Math.min(48, Number(b.history.points) || 48), span = Number(b.history.span) || 86400;
           history[i.id] = { span, points: Array.from({ length: n }, (_, k) => [now - span + Math.round((k * span) / n), Math.round((v + Math.sin(k / 4) * 2) * 100) / 100]) };
@@ -369,7 +437,7 @@ export class FakeZigmon {
         const boot = u.searchParams.get("boot") ?? (b0.boot === undefined ? null : String(b0.boot));
         if (String(this.boot) !== boot) return send(200, { ok: true, boot: this.boot, seq: this.seq, reset: true, changes: [] });
         const ids = (u.searchParams.get("ids") ?? (typeof b0.ids === "string" ? b0.ids : null))?.split(",");
-        const summary = new Set(this.extended.map((i) => i.id));
+        const summary = new Set([...this.extended, ...this.calc].map((i) => i.id));
         const relevant = () => this.changes.filter((c) => c.seq > after && (ids ? ids.includes(c.id) : ext || !summary.has(c.id)));
         await this.hold(this.waitMs, () => relevant().length > 0 || t.revoked);
         if (t.revoked) return send(401, { ok: false, error: "revoked", revoked: true });

@@ -3,7 +3,7 @@
   "Name": "ZIGMon for Stream Deck",
   "Version": "1.3.0.0",
   "Author": "ZIGMon",
-  "Description": "Control and watch your ZIGMon home from a Stream Deck XL or Stream Deck +: switches, lights, heating, blinds, scenes, readings, the house's power, security, windows, batteries, rooms, timers, SMS and ZIGMon's own status - only what ZIGMon's administrator allowed for this very deck.",
+  "Description": "Control and watch your ZIGMon home from a Stream Deck XL or Stream Deck +: switches, lights, heating, blinds, scenes, readings, values computed over the house, the house's power, security, windows, batteries, rooms, timers, SMS and ZIGMon's own status - only what ZIGMon's administrator allowed for this very deck.",
   "UUID": "com.zigmon.streamdeck",
   "Icon": "imgs/plugin/marketplace",
   "Category": "ZIGMon for Stream Deck",
@@ -73,6 +73,33 @@
       "Encoder": {
         "layout": "layouts/reading.json",
         "Icon": "imgs/actions/reading/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Computed",
+      "UUID": "com.zigmon.streamdeck.computed",
+      "Icon": "imgs/actions/computed/icon",
+      "Tooltip": "A value ZIGMon computes over the house, shown big like a Reading: the total power of everything or of the lights only, the lights on, the average temperature inside, the coldest room, windows open, devices offline. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/computed.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/computed/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/reading.json",
+        "Icon": "imgs/actions/computed/encoder",
         "TriggerDescription": {
           "Push": "Refresh",
           "Touch": "Refresh"

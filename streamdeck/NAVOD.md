@@ -79,6 +79,7 @@ ovládat nedovolí, mají zámek, a živý náhled ukazuje, jak bude tlačítko 
 | **Timer** *(1.3)* | Vypínač zapnutý na N minut s živým odpočtem; další stisk = vypnout. | Otočení = minuty, stisk = spustit / zrušit. |
 | **Room** *(1.3)* | Teplota, vlhkost, co je zapnuté, topení. | Otočení = položky místnosti, stisk = přepnout vybranou. |
 | **SMS** *(1.3)* | Ukázat poslední / napsat novou v desktopové aplikaci, nebo stav SMS se ztlumením (podržení). | Stisk = totéž. |
+| **Computed** *(1.3)* | Hodnota spočítaná ZIGMonem přes dům - celkový příkon, svítící světla, nejchladnější místnost... - ukázaná jako Reading; vybraná skládačkou Co / Jak / Kde nebo jednou z Popular. | Lišta: jako u Reading. |
 
 Otáčení ovladačem posune hodnotu na liště okamžitě; cvaky se sečtou a do ZIGMonu odejdou
 jako jedna změna (ZIGMon ji udrží v rozsahu a kroku položky).
@@ -297,6 +298,38 @@ Jedna akce, tři režimy:
 *Show latest* a *Write new* potřebují oprávnění **sms** a ZIGMon je předá desktopové aplikaci
 propojené s touto instalací Stream Decku (ZIGMon → Nastavení → Messages → Stream Deck). Když žádná
 neběží, tlačítko napíše **No desktop app running** - *link one in ZIGMon*.
+
+### Computed - spočítané hodnoty (1.3, ZIGMon 5.59.4)
+
+Hodnota, kterou **ZIGMon spočítá přes celý dům**, ukázaná přesně jako Reading: velká hodnota
+s jednotkou, trend, graf za 1 h / 6 h / 24 h / 7 dní, vaše žluté a červené meze, počet desetinných
+míst i vlastní popisek, ve všech vzhledech a barvách a se stejnými poctivými stupnicemi. Například
+celkový příkon všeho, příkon jen světel, kolik světel svítí, průměrná teplota uvnitř, nejchladnější
+místnost, otevřená okna, zařízení offline, nejslabší baterie nebo dnešní spotřeba.
+
+Místo seznamu stovek položek má nastavení **skládačku**:
+
+1. **What (co)** - Power (příkon), Energy today (spotřeba dnes), Energy total (spotřeba celkem),
+   Temperature, Humidity, Pressure, Light level (osvětlení), CO₂, Battery, Signal, On / off, Open
+   (otevřeno) nebo Online.
+2. **How (jak)** - Sum (součet), Average (průměr), Min, Max, Count (počet), On, Off, % on nebo
+   Spread (rozpětí: nejvyšší mínus nejnižší), jen ty, které pro danou veličinu dávají smysl:
+   součet teplot není.
+3. **Where (kde)** - All (vše), Inside (uvnitř) nebo Outside (venku); nebo jeden druh (světla,
+   zásuvky, vypínače, stmívače, termostaty, čidla, žaluzie) a/nebo jedna místnost.
+
+Vybrat jde jen to, co ZIGMon ve vašem domě opravdu počítá; ostatní je zašedlé (bez barometru žádný
+tlak, s jedním venkovním teploměrem žádné „nejchladnější venku“). Každá volba posune ty ostatní
+na nejbližší hodnotu, která existuje, a nastavení ukáže její název a hodnotu teď. Řada **Popular**
+nad tím vybere jedním klepnutím: celkový příkon, příkon světel, příkon zásuvek, svítící světla,
+průměr uvnitř, nejchladnější místnost, otevřená okna, zařízení offline, nejslabší baterii, dnešní
+spotřebu. *Now* jmenuje místnost nebo zařízení s krajní hodnotou (nejchladnější místnost, zařízení
+s nejslabší baterií) a kolik členů hodnotu mělo.
+
+Stisk obnoví. Hodnoty potřebují **ZIGMon 5.59.4** se spočítanými hodnotami (jeho hello říká
+`calc`); u staršího tlačítko napíše **Needs ZIGMon 5.59.4 or newer**. Správce je povoluje pod
+**view**: s *every thing* všechny, s *only these* každou jmenovitě (ve skupině *Computed*). Povolená
+hodnota se vždy počítá ze všech svých členů, i těch, které tento deck jednotlivě vidět nesmí.
 
 ### Co tlačítka říkají
 

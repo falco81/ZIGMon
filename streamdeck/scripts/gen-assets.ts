@@ -28,6 +28,8 @@ function write(rel: string, content: string): void {
 export const ACTIONS: { id: string; icon: string; accent: string; title: string; line: string }[] = [
   { id: "control", icon: "power", accent: P.ok, title: "Control", line: "any item" },
   { id: "reading", icon: "gauge", accent: P.water, title: "Reading", line: "value & trend" },
+  // (1.3, ZIGMon 5.59.4) a value computed over the house: a sum sign
+  { id: "computed", icon: "sigma", accent: P.info, title: "Computed", line: "sum · average" },
   { id: "thermostat", icon: "thermostat", accent: P.orange, title: "Thermostat", line: "setpoint" },
   { id: "dimmer", icon: "bulbOn", accent: P.warn, title: "Light", line: "brightness" },
   { id: "blinds", icon: "blinds", accent: P.purple, title: "Blinds", line: "position" },

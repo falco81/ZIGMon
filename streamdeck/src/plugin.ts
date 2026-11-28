@@ -1,12 +1,12 @@
 /**
- * ZIGMon for Stream Deck - the plugin's entry point. Registers the seventeen actions, connects to
+ * ZIGMon for Stream Deck - the plugin's entry point. Registers the eighteen actions, connects to
  * the Stream Deck app, then starts the one shared connection to ZIGMon (core/hub.ts).
  */
 import streamDeck from "@elgato/streamdeck";
 import { spawn } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
 import {
-  AwayAction, BatteriesAction, BlindsAction, ControlAction, DimmerAction, HeatGroupAction, OpeningsAction, PowerAction, ReadingAction, RoomAction,
+  AwayAction, BatteriesAction, BlindsAction, ComputedAction, ControlAction, DimmerAction, HeatGroupAction, OpeningsAction, PowerAction, ReadingAction, RoomAction,
   SceneAction, SecurityAction, SmsAction, StatusAction, ThermostatAction, TimerAction, ZigbeeAction,
 } from "./actions/index.js";
 import { useHub } from "./actions/base.js";
@@ -66,7 +66,7 @@ streamDeck.actions.registerAction(new SceneAction());
 streamDeck.actions.registerAction(new StatusAction());
 // (1.3, ZIGMon 5.59.4)
 for (const a of [new PowerAction(), new SecurityAction(), new HeatGroupAction(), new AwayAction(), new OpeningsAction(), new BatteriesAction(),
-  new ZigbeeAction(), new TimerAction(), new RoomAction(), new SmsAction()]) streamDeck.actions.registerAction(a);
+  new ZigbeeAction(), new TimerAction(), new RoomAction(), new SmsAction(), new ComputedAction()]) streamDeck.actions.registerAction(a);
 
 streamDeck.system.onSystemDidWakeUp(() => hub.retryNow());
 streamDeck.devices.onDeviceDidConnect(() => hub.resubscribe());

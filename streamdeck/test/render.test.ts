@@ -169,7 +169,7 @@ describe("touch-strip layouts", () => {
     assert.equal(m.Version, "1.3.0.0");
     assert.equal(m.SDKVersion, 3);
     assert.equal(m.Nodejs.Version, "24");
-    assert.equal(m.Actions.length, 17);
+    assert.equal(m.Actions.length, 18);
     for (const a of m.Actions) {
       readFileSync(join(sd, a.PropertyInspectorPath));
       readFileSync(join(sd, a.Icon + ".svg"));

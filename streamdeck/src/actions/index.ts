@@ -104,3 +104,9 @@ export class RoomAction extends ZigmonAction {
 export class SmsAction extends ZigmonAction {
   readonly kind = "sms" as const;
 }
+
+/** 18. A value ZIGMon computes over the house (the total power, the lights on, the coldest room...), shown as a Reading. */
+@action({ UUID: "com.zigmon.streamdeck.computed" })
+export class ComputedAction extends ZigmonAction {
+  readonly kind = "computed" as const;
+}

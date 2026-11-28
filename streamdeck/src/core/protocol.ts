@@ -3,8 +3,10 @@
  * field, text is cleaned and shortened, and anything unexpected becomes a ProtocolError.
  * Nothing the server sends is trusted to be well-formed; the renderers escape it again.
  */
+import { CALC_MOST, parseCalc, type CalcInfo } from "./calc.js";
 import { parseSmsBook, type SmsBook } from "./smsbook.js";
 
+export type { CalcInfo } from "./calc.js";
 export { parseSmsBook, type SmsBook, type SmsContact } from "./smsbook.js";
 
 export class ProtocolError extends Error {
@@ -28,6 +30,8 @@ export const KINDS = [
   "power", "security", "heatgroup", "away", "openings", "batteries", "zigbee", "room", "sms",
   // (1.3) an ESP32 gateway's lock
   "lock",
+  // (1.3, ZIGMon 5.59.4) a value computed over the house (PROTOCOL-CALC.md)
+  "calc",
 ] as const;
 export type Kind = (typeof KINDS)[number];
 
@@ -89,6 +93,8 @@ export interface Item {
   act?: Partial<Record<ItemAction, ActGrant>>;
   /** (1.3, ZIGMon 5.59.4, extended catalogue) A room's items this deck may see, in catalogue order. */
   members?: string[];
+  /** (1.3, ZIGMon 5.59.4, extended catalogue) A computed value: what over what (PROTOCOL-CALC.md). */
+  calc?: CalcInfo;
 }
 
 export interface ActGrant {
@@ -365,6 +371,8 @@ export function parseItem(v: unknown): Item {
   const attrs = arr(o.attrs, "attrs", 24).map(parseAttr).filter((a): a is Attr => a !== null);
   const act = parseAct(o.act);
   const members = o.members === undefined || o.members === null ? undefined : parseMembers(o.members);
+  // (1.3) a computed value's block, strictly: it must agree with the id, else the item is not one
+  const calc = kind === "calc" ? parseCalc(o.calc, id) : null;
   return {
     id,
     name: str(o.name, 80) || id,
@@ -379,6 +387,7 @@ export function parseItem(v: unknown): Item {
     state: parseState(o.state),
     ...(act ? { act } : {}),
     ...(members ? { members } : {}),
+    ...(calc ? { calc } : {}),
   };
 }
 
@@ -455,6 +464,7 @@ export function parseCatalog(v: unknown): Catalog {
   }).filter((r) => r.name.length > 0);
   const seen = new Set<string>();
   const items: Item[] = [];
+  let calcs = 0;
   for (const raw of arr(o.items, "items", 5000)) {
     let it: Item;
     try {
@@ -463,6 +473,8 @@ export function parseCatalog(v: unknown): Catalog {
       continue; // one bad item does not hide the rest
     }
     if (seen.has(it.id)) continue;
+    // (1.3) at most CALC_MOST computed values, so they never crowd out the rest
+    if (it.kind === "calc" && ++calcs > CALC_MOST) continue;
     seen.add(it.id);
     items.push(it);
   }

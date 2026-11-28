@@ -95,6 +95,8 @@ export const ICONS: Readonly<Record<string, string>> = {
   windowOpen: '<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M4 3l8.5 3.2v15.6L4 21"/><path d="M10 13.5v1.5"/>',
   batteryLow: '<rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10.5v3"/><path d="M6.5 10v4"/>',
   sofa: '<path d="M5 11V8.2A2.2 2.2 0 0 1 7.2 6h9.6A2.2 2.2 0 0 1 19 8.2V11"/><path d="M3.8 11.2A1.6 1.6 0 0 1 5.4 12.8v1.7h13.2v-1.7a1.6 1.6 0 0 1 3.2 0V18H2.2v-5.2a1.6 1.6 0 0 1 1.6-1.6z"/><path d="M5 18v2M19 18v2"/>',
+  // (1.3) Computed: a sum sign
+  sigma: '<path d="M17.5 6.5V4h-11l6.2 8-6.2 8h11v-2.5"/>',
   inbox: '<path d="M3.5 13.5 6 5h12l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19z"/><path d="M3.5 13.5h5l1.2 2.2h4.6l1.2-2.2h5"/>',
 };
 
@@ -110,6 +112,7 @@ const ALIASES: Readonly<Record<string, string>> = {
   sms: "message", notify: "bell", tell: "message", mail: "message",
   system: "gear", sys: "gear", settings: "gear", reboot: "refresh", reset: "refresh",
   reading: "gauge", meter: "gauge", humidity: "drop", water: "drop", leak: "drop",
+  calc: "sigma", sum: "sigma", computed: "sigma",
   energy: "bolt", power_meter: "bolt", zb: "bolt",
   contact: "door", smoke: "flame", gas: "flame", co: "alert", vibration: "pulse",
   button: "hand", status: "heart", health: "heart", alerts: "bell", blocked: "wall",
