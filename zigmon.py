@@ -4121,6 +4121,8 @@ def valid_action(do):
     do = str(do or '').strip()
     if do.lower() in BINDING_ACTIONS or do.lower() in PLUG_EXTRA_ACTIONS:
         return do.lower()
+    if do.lower() in ESP_ACTION_WORDS:          # (5.59.4) an ESP32 gateway's entity: its own action
+        return do.lower()
     if do.lower().startswith('set:') and 1 <= len(do[4:].strip()) <= 40:
         return 'set:' + do[4:].strip()
     for word in ('for:', 'off-for:'):
@@ -4195,7 +4197,8 @@ EVENTS_ADMIN_ONLY = ('security', 'audit')
 OPERATOR_ROADS = frozenset((
     '/api/plug/switch', '/api/scene/run', '/api/sequence/advance', '/api/sequence/reset',
     '/api/target/set', '/api/hold/release', '/api/alerts/clear', '/api/rule/dryrun',
-    '/api/what-if', '/api/plug/diagnose', '/api/energy/monthly'))
+    '/api/what-if', '/api/plug/diagnose', '/api/energy/monthly',
+    '/api/esp/command'))     # (5.59.4) a lock or a switch of an ESP32 gateway, from the dashboard
 # What somebody who still has to change their first password may do.
 MUST_CHANGE_ROADS = ('/api/auth/password', '/api/auth/logout', '/api/auth/whoami')
 ACCOUNT_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$')
@@ -10088,7 +10091,1124 @@ BATTERY_LOOK_DAYS = 365
 MDNS_ANSWER_FROM = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', 'fe80::/10', 'fc00::/7')
 
 
-class Daemon(object):
+# ---------------------------------------------------------------------------
+# (5.59.4) ESP32 gateways: esp32/PROTOCOL.md, protocol v1
+# ---------------------------------------------------------------------------
+# An ESP32 on the home Wi-Fi, paired with ZIGMon, whose modules (the first:
+# Yeelock locks over BLE) expose ENTITIES. ZIGMon learns them by "describe" and
+# makes each a device of its own, esp:<gateway id>:<entity id>, read and
+# controlled by its TYPE alone (lock, switch, sensor, binary_sensor, button,
+# cover, number, select, text): nothing here knows what a Yeelock is beyond a
+# word and an icon on the page.
+#
+# How it is guarded:
+#   * HTTPS only, the gateway's self-signed certificate PINNED by its SHA-256
+#     when it is paired (the CA is not asked; a different certificate is
+#     refused before a byte is sent, and the page offers to pair again);
+#   * every request signed with the device key (HMAC-SHA256 over the method,
+#     the path with its query, the time, a fresh nonce and the body's hash),
+#     every answer signed back over our nonce - an answer not signed with the
+#     key, or signed for another request, is thrown away;
+#   * the device key is ZIGMon's own, 32 random bytes made at pairing and
+#     handed over with a proof of the 6-digit code shown on the gateway; it is
+#     never written into the log, an event or an answer of the API ("set", and
+#     its last two characters, is all anyone is shown).
+ESP_V = 1
+ESP_BASE = '/zigmon/v1'
+ESP_TYPES = ('lock', 'switch', 'sensor', 'binary_sensor', 'button', 'cover', 'number', 'select', 'text')
+ESP_ID_RE = re.compile(r'^[0-9a-f]{12}$')
+ESP_ENTITY_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+ESP_ACTION_RE = re.compile(r'^[a-z][a-z0-9_]{0,23}$')
+ESP_ATTR_RE = re.compile(r'^[a-z][a-z0-9_]{0,31}$')
+ESP_FP_RE = re.compile(r'^[0-9a-f]{64}$')
+ESP_CODE_RE = re.compile(r'^[0-9]{6}$')
+ESP_BODY_MOST = 256 * 1024
+# the words valid_action takes beside its own: what the protocol's types do, and every action a
+# paired gateway has described (each checked against ESP_ACTION_RE as it is learned)
+ESP_ACTION_WORDS = set(('open', 'unlock', 'lock', 'refresh', 'press', 'close', 'stop'))
+# what a payload key of an entity may not be: the keys the rest of ZIGMon reads a meaning into
+ESP_RESERVED_KEYS = frozenset(('action', 'last_seen', 'linkquality', 'update', 'update_available', 'elapsed'))
+ESP_DONE = {'open': 'opened', 'unlock': 'unlocked', 'lock': 'locked', 'refresh': 'refreshed', 'press': 'pressed',
+            'on': 'switched on', 'off': 'switched off', 'toggle': 'toggled', 'close': 'closed', 'stop': 'stopped',
+            'battery': 'read the battery of'}
+
+
+class EspError(Exception):
+    """A gateway that could not be spoken to, in words: kind is net, tls, cert (not the pinned
+    certificate), sig (an answer not signed with the key), auth (the key refused), http, bad."""
+
+    def __init__(self, kind, words, status=None):
+        Exception.__init__(self, words)
+        self.kind, self.words, self.status = kind, words, status
+
+
+def esp_words(text, most=120):
+    """What a gateway says, as it may be shown: one line, no control characters, cut short."""
+    text = re.sub(r'[\x00-\x1f\x7f]+', ' ', str(text if text is not None else ''))
+    return re.sub(r'\s+', ' ', text).strip()[:most]
+
+
+def esp_hash(body):
+    return hashlib.sha256(body or b'').hexdigest()
+
+
+def esp_sign(key, method, path, ts, nonce, body):
+    """The request signature (PROTOCOL.md section 2) - key is the device key's 32 bytes."""
+    msg = '%s\n%s\n%s\n%s\n%s' % (method, path, ts, nonce, esp_hash(body))
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_answer_sig(key, nonce, status, body):
+    """X-Gw-Sig: the answer's signature over our nonce, its status code and its body."""
+    msg = 'resp\n%s\n%d\n%s' % (nonce, int(status), esp_hash(body))
+    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_pair_proof(code, fingerprint, nonce):
+    """The proof of the 6-digit code: HMAC-SHA256 keyed with its digits as ASCII."""
+    msg = 'zigmon-pair-v1\n%s\n%s' % (fingerprint, nonce)
+    return hmac.new(str(code).encode('ascii'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def esp_address(text):
+    """(host, port, canonical) of what was typed - "192.168.1.40", "zigmon-gw-a1b2c3.local",
+    "[fd00::5]:8443", even "https://..../" - or ValueError in words."""
+    text = str(text or '').strip()
+    text = re.sub(r'^https://', '', text, flags=re.I)
+    if re.match(r'^[a-z][a-z0-9+.-]*://', text, re.I):
+        raise ValueError('the gateway speaks HTTPS only: give its address, like 192.168.1.40')
+    text = text.split('/', 1)[0]
+    if not text or len(text) > 260:
+        raise ValueError('the address of the gateway is needed, like 192.168.1.40 or zigmon-gw-a1b2c3.local')
+    m = re.match(r'^\[([0-9A-Fa-f:.%]{2,64})\](?::(\d{1,5}))?$', text)
+    if m:
+        host, port = m.group(1), m.group(2)
+        try:
+            ipaddress.ip_address(host.split('%', 1)[0])
+        except ValueError:
+            raise ValueError('%s is not an IPv6 address' % esp_words(host, 60))
+    else:
+        m = re.match(r'^([A-Za-z0-9.-]{1,253})(?::(\d{1,5}))?$', text)
+        if not m:
+            raise ValueError('%s is not an address: a name or an IP, with :port if it is not 443' % esp_words(text, 60))
+        host, port = m.group(1).rstrip('.').lower(), m.group(2)
+        labels = host.split('.')
+        if not host or any(not l or len(l) > 63 or l.startswith('-') or l.endswith('-') for l in labels):
+            raise ValueError('%s is not a host name' % esp_words(host, 60))
+    port = int(port) if port else 443
+    if not 0 < port < 65536:
+        raise ValueError('the port is a number from 1 to 65535')
+    shown = ('[%s]' % host) if ':' in host else host
+    return host, port, shown if port == 443 else '%s:%d' % (shown, port)
+
+
+class _EspHTTPS(http.client.HTTPSConnection):
+    """HTTPS to one gateway: its certificate is not checked against any CA - it is self-signed -
+    but its SHA-256 must be the one pinned, or the connection ends before a request is sent."""
+
+    def __init__(self, host, port, pin, timeout):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        except (AttributeError, ValueError):
+            pass
+        http.client.HTTPSConnection.__init__(self, host, port, timeout=timeout, context=ctx)
+        self._pin = pin
+        self.seen = None
+
+    def connect(self):
+        http.client.HTTPSConnection.connect(self)
+        der = self.sock.getpeercert(binary_form=True) or b''
+        self.seen = hashlib.sha256(der).hexdigest()
+        if self._pin is not None and not hmac.compare_digest(self.seen, str(self._pin)):
+            try:
+                self.sock.close()
+            finally:
+                self.sock = None
+            raise EspError('cert', 'its certificate is not the one paired with - refused (pair it again '
+                                   'only if you know why it changed)')
+
+
+def esp_https(host, port, method, path, body=b'', headers=None, pin=None, timeout=10.0):
+    """(status, headers in lower case, body) of one request - or EspError."""
+    conn = _EspHTTPS(host, port, pin, timeout)
+    try:
+        conn.request(method, path, body=body or None, headers=dict(headers or {}))
+        r = conn.getresponse()
+        raw = r.read(ESP_BODY_MOST + 1)
+        if len(raw) > ESP_BODY_MOST:
+            raise EspError('bad', 'the gateway answered with more than %d kB' % (ESP_BODY_MOST // 1024))
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, raw
+    except EspError:
+        raise
+    except ssl.SSLError as e:
+        raise EspError('tls', 'TLS failed (%s)' % esp_words(getattr(e, 'reason', None) or e, 80))
+    except (socket.timeout, TimeoutError):
+        raise EspError('net', 'no answer within %d s' % int(timeout))
+    except ConnectionRefusedError:
+        raise EspError('net', 'nothing listens on %s port %d' % (host, port))
+    except (http.client.HTTPException, ValueError) as e:
+        raise EspError('net', 'a broken answer (%s)' % esp_words(type(e).__name__, 40))
+    except OSError as e:
+        raise EspError('net', 'not reachable (%s)' % esp_words(getattr(e, 'strerror', None) or e, 80))
+    finally:
+        conn.close()
+
+
+def esp_fingerprint(host, port, timeout=8.0):
+    """The SHA-256 of the certificate the gateway shows, as 64 lower-case hex - pinned nothing."""
+    conn = _EspHTTPS(host, port, None, timeout)
+    try:
+        conn.connect()
+        return conn.seen
+    except EspError:
+        raise
+    except ssl.SSLError as e:
+        raise EspError('tls', 'TLS failed (%s)' % esp_words(getattr(e, 'reason', None) or e, 80))
+    except (socket.timeout, TimeoutError):
+        raise EspError('net', 'no answer within %d s' % int(timeout))
+    except ConnectionRefusedError:
+        raise EspError('net', 'nothing listens on %s port %d - is it the gateway, on HTTPS?' % (host, port))
+    except OSError as e:
+        raise EspError('net', 'not reachable (%s)' % esp_words(getattr(e, 'strerror', None) or e, 80))
+    finally:
+        conn.close()
+
+
+def esp_signed(host, port, pin, key_hex, method, path, obj=None, timeout=10.0):
+    """One signed request, its answer's signature checked: (status, the answer's JSON object)."""
+    raw = b'' if obj is None else json.dumps(obj, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    key = bytes.fromhex(key_hex)
+    ts, nonce = str(int(time.time())), secrets.token_hex(16)
+    headers = {'X-Zigmon-Ts': ts, 'X-Zigmon-Nonce': nonce, 'X-Zigmon-Sig': esp_sign(key, method, path, ts, nonce, raw),
+               'Accept': 'application/json'}
+    if raw:
+        headers['Content-Type'] = 'application/json'
+    status, heads, body = esp_https(host, port, method, path, raw, headers, pin=pin, timeout=timeout)
+    got = str(heads.get('x-gw-sig') or '').strip().lower()
+    signed = bool(got) and hmac.compare_digest(esp_answer_sig(key, nonce, status, body), got)
+    if not signed:
+        if 200 <= status < 300:
+            raise EspError('sig', 'its answer was not signed with the device key - refused', status)
+        if status in (401, 403):
+            raise EspError('auth', 'it refused the signature (HTTP %d) - is it still paired with this ZIGMon?'
+                           % status, status)
+        raise EspError('http', 'it answered HTTP %d' % status, status)
+    try:
+        data = json.loads(body.decode('utf-8')) if body else {}
+    except (ValueError, UnicodeDecodeError):
+        raise EspError('bad', 'its answer is not JSON', status)
+    if not isinstance(data, dict):
+        raise EspError('bad', 'its answer is not a JSON object', status)
+    if status >= 300:
+        raise EspError('http', esp_words(data.get('error')) or 'it answered HTTP %d' % status, status)
+    return status, data
+
+
+def esp_clean_entity(module, raw):
+    """One ENTITY as the gateway described it, checked field by field - or None."""
+    if not isinstance(raw, dict):
+        return None
+    eid = str(raw.get('id') or '')
+    if not ESP_ENTITY_RE.match(eid):
+        return None
+    kind = str(raw.get('type') or '')
+    kind = kind if kind in ESP_TYPES else 'unknown'
+    actions = []
+    for a in raw.get('actions') or []:
+        a = str(a or '')
+        if ESP_ACTION_RE.match(a) and a not in actions:
+            actions.append(a)
+    actions = actions[:12] if kind != 'unknown' else []           # an unknown type is shown read-only
+    attrs = []
+    for a in (raw.get('attrs') or [])[:16]:
+        if not isinstance(a, dict):
+            continue
+        key = str(a.get('key') or '')
+        if not ESP_ATTR_RE.match(key) or key in ESP_RESERVED_KEYS or key in ('state', 'value', 'busy'):
+            continue
+        one = {'key': key, 'label': esp_words(a.get('label') or key.replace('_', ' ').capitalize(), 40),
+               'type': a.get('type') if a.get('type') in ('number', 'string', 'bool', 'enum') else 'string',
+               'unit': esp_words(a.get('unit') or '', 8)}
+        for lim in ('min', 'max'):
+            v = a.get(lim)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                one[lim] = v
+        attrs.append(one)
+    options = [esp_words(o, 40) for o in (raw.get('options') or [])[:40]
+               if isinstance(o, (str, int, float)) and not isinstance(o, bool)]
+    out = {'id': eid, 'module': module, 'type': kind, 'name': esp_words(raw.get('name') or eid, 60) or eid,
+           'actions': actions, 'attrs': attrs,
+           'confirm': [a for a in (raw.get('confirm') or []) if a in actions]}
+    if options:
+        out['options'] = options
+    unit = esp_words(raw.get('unit') or '', 8)
+    if unit:
+        out['unit'] = unit
+    for lim in ('min', 'max', 'step'):
+        v = raw.get(lim)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            out[lim] = v
+    return out
+
+
+def esp_clean_state(raw):
+    """One STATE, checked: what is not of the shape the contract gives is left out."""
+    raw = raw if isinstance(raw, dict) else {}
+    value = raw.get('value')
+    if isinstance(value, str):
+        value = esp_words(value, 60)
+    elif isinstance(value, float) and not math.isfinite(value):
+        value = None
+    elif not isinstance(value, (bool, int, float)):
+        value = None
+    attrs = {}
+    for k, v in ((raw.get('attrs') or {}) if isinstance(raw.get('attrs'), dict) else {}).items():
+        if not ESP_ATTR_RE.match(str(k)) or k in ESP_RESERVED_KEYS or len(attrs) >= 16:
+            continue
+        if isinstance(v, str):
+            attrs[k] = esp_words(v, 60)
+        elif isinstance(v, (bool, int)) or (isinstance(v, float) and math.isfinite(v)):
+            attrs[k] = v
+    last = None
+    lr = raw.get('last')
+    if isinstance(lr, dict) and lr.get('action'):
+        at = lr.get('at')
+        last = {'action': esp_words(lr.get('action'), 24), 'ok': lr.get('ok') is True,
+                'at': int(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None,
+                'msg': esp_words(lr.get('msg') or '', 80)}
+    return {'available': raw.get('available') is not False, 'value': value, 'busy': raw.get('busy') is True,
+            'attrs': attrs, 'last': last}
+
+
+class EspGateways(object):
+    """The ESP32 gateways, mixed into the Daemon: kept in meta esp_gateways, one thread each."""
+    ESP_WAIT_S = 25                 # the long poll the gateway holds (the contract's most)
+    ESP_TIMEOUT_S = 10.0            # an ordinary request
+    ESP_BACKOFF_S = (2.0, 60.0)     # after a failure: from, to (doubled each time)
+    ESP_CERT_BACKOFF_S = 300.0      # a certificate that is not the pinned one: asked again only this often
+    ESP_HELLO_S = 300               # hello (its signal, its uptime) asked again this often
+    ESP_RESULT_S = 45               # a command's result awaited this long, then "no answer"
+    ESP_MOST = 16
+
+    # -- what is kept --
+    def _esp_init(self):
+        if self.__dict__.get('_esp_lock') is None:
+            self.__dict__['_esp_lock'] = threading.RLock()
+            self._esp_rt = {}            # gateway id -> what the thread knows, in memory only
+            self._esp_gen = 0
+
+    def esp_rows(self):
+        try:
+            rows = json.loads(self.store.get_meta('esp_gateways') or '[]')
+        except ValueError:
+            rows = []
+        return [dict(r) for r in rows if isinstance(r, dict) and ESP_ID_RE.match(str(r.get('id') or ''))] \
+            if isinstance(rows, list) else []
+
+    def esp_row(self, gwid):
+        return next((r for r in self.esp_rows() if r['id'] == gwid), None)
+
+    def _esp_put(self, rows):
+        self.store.set_meta('esp_gateways', json.dumps(rows))
+
+    def _esp_change(self, gwid, **fields):
+        self._esp_init()
+        with self._esp_lock:
+            rows = self.esp_rows()
+            for r in rows:
+                if r['id'] == gwid:
+                    r.update(fields)
+                    self._esp_put(rows)
+                    return r
+        return None
+
+    def _esp_rt_of(self, gwid):
+        self._esp_init()
+        with self._esp_lock:
+            return self._esp_rt.setdefault(gwid, {'online': None, 'error': '', 'kind': '', 'states': {}, 'hello': {},
+                                                  'pending': {}, 'gen': 0, 'last_ok': 0, 'since': 0})
+
+    @staticmethod
+    def esp_entities(row):
+        out = []
+        for m in ((row or {}).get('described') or {}).get('modules') or []:
+            out.extend(m.get('entities') or [])
+        return out
+
+    def esp_used(self, row):
+        use = (row or {}).get('use') or {}
+        return [e for e in self.esp_entities(row) if use.get(e['id'], True)]
+
+    @staticmethod
+    def esp_device_id(gwid, eid=None):
+        return 'esp:%s' % gwid if eid is None else 'esp:%s:%s' % (gwid, eid)
+
+    @staticmethod
+    def esp_split(spec):
+        """(gateway id, entity id) of esp:<gw>:<entity>, or None."""
+        m = re.match(r'^esp:([0-9a-f]{12}):([A-Za-z0-9_.-]{1,64})$', str(spec or ''))
+        return (m.group(1), m.group(2)) if m else None
+
+    def _esp_learn_words(self, rows=None):
+        for r in rows if rows is not None else self.esp_rows():
+            for e in self.esp_entities(r):
+                for a in e.get('actions') or []:
+                    if ESP_ACTION_RE.match(a) and a not in BINDING_ACTIONS:
+                        ESP_ACTION_WORDS.add(a)
+
+    def _esp_call(self, row, method, path, obj=None, timeout=None):
+        host, port, _ = esp_address(row['address'])
+        return esp_signed(host, port, row['fingerprint'], row['key'], method, ESP_BASE + path, obj,
+                          timeout or self.ESP_TIMEOUT_S)
+
+    def _esp_name_of(self, row, ent):
+        dev = self.store.device(self.esp_device_id(row['id'], ent['id'])) or {}
+        return dev.get('alias') or ent.get('name') or ent['id']
+
+    # -- the views --
+    def esp_admin_view(self):
+        """Every gateway for Settings: never the key - "set" and its last two characters."""
+        out = []
+        for r in self.esp_rows():
+            rt = self._esp_rt_of(r['id'])
+            key = str(r.get('key') or '')
+            states = rt.get('states') or {}
+            modules = []
+            for m in (r.get('described') or {}).get('modules') or []:
+                modules.append({'id': m.get('id'), 'name': m.get('name'), 'version': m.get('version'),
+                                'entities': [dict(e, used=(r.get('use') or {}).get(e['id'], True),
+                                                  device=self.esp_device_id(r['id'], e['id']),
+                                                  shown=self._esp_name_of(r, e),
+                                                  state=states.get(e['id']))
+                                             for e in m.get('entities') or []]})
+            hello = dict(r.get('hello') or {}, **(rt.get('hello') or {}))
+            out.append({'id': r['id'], 'name': r.get('name') or r['id'], 'address': r.get('address'),
+                        'fingerprint': r.get('fingerprint'), 'key_set': bool(key), 'key_hint': key[-2:] if key else '',
+                        'paired_at': r.get('paired_at'), 'paired_by': r.get('paired_by') or '',
+                        'enabled': r.get('enabled', True) is not False, 'described_at': (r.get('described') or {}).get('at'),
+                        'modules': modules, 'entities': len(self.esp_entities(r)), 'used': len(self.esp_used(r)),
+                        'hello': {k: hello.get(k) for k in ('fw', 'model', 'mac_tail', 'rssi', 'uptime', 'time_set', 'name')
+                                  if k in hello},
+                        'online': rt.get('online'), 'error': rt.get('error') or '', 'cert_bad': rt.get('kind') == 'cert',
+                        'since': rt.get('since') or None, 'last_ok': rt.get('last_ok') or None, 'boot': r.get('boot') or ''})
+        return {'ok': True, 'gateways': out, 'most': self.ESP_MOST, 'types': list(ESP_TYPES)}
+
+    def esp_dashboard(self):
+        """The gateways and the entities in use, for every page: no key, no fingerprint, no address."""
+        gws, ents = [], []
+        for r in self.esp_rows():
+            rt = self._esp_rt_of(r['id'])
+            hello = dict(r.get('hello') or {}, **(rt.get('hello') or {}))
+            used = self.esp_used(r) if r.get('enabled', True) is not False else []
+            on = bool(rt.get('online')) and r.get('enabled', True) is not False
+            gws.append({'id': r['id'], 'name': r.get('name') or r['id'], 'online': on,
+                        'enabled': r.get('enabled', True) is not False,
+                        'fw': hello.get('fw'), 'rssi': hello.get('rssi'), 'entities': len(used),
+                        'modules': [m.get('name') or m.get('id') for m in (r.get('described') or {}).get('modules') or []]})
+            for e in used:
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                ents.append({'id': self.esp_device_id(r['id'], e['id']), 'gw': r['id'], 'gw_name': r.get('name') or r['id'],
+                             'entity': e['id'], 'module': e.get('module'), 'type': e['type'],
+                             'name': self._esp_name_of(r, e), 'actions': e.get('actions') or [],
+                             'confirm': e.get('confirm') or [], 'attrs': e.get('attrs') or [],
+                             'options': e.get('options'), 'unit': e.get('unit'),
+                             'value': st.get('value'), 'busy': bool(st.get('busy')),
+                             'available': on and st.get('available', True) is not False, 'gw_online': on,
+                             'values': st.get('attrs') or {}, 'last': st.get('last'),
+                             'asked': {a: p['at'] for a, p in ((rt.get('pending') or {}).get(e['id']) or {}).items()}})
+        return {'gateways': gws, 'entities': ents}
+
+    def esp_targets(self):
+        """Every entity that does something, as the editors offer targets (switch_targets)."""
+        out = []
+        for r in self.esp_rows():
+            if r.get('enabled', True) is False:
+                continue
+            rt = self._esp_rt_of(r['id'])
+            for e in self.esp_used(r):
+                if not e.get('actions'):
+                    continue
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                kind = 'number' if e['type'] == 'number' else 'enum' if e['type'] == 'select' and e.get('options') \
+                    else 'switch'
+                out.append({'value': self.esp_device_id(r['id'], e['id']), 'id': self.esp_device_id(r['id'], e['id']),
+                            'key': 'state', 'name': self._esp_name_of(r, e), 'kind': kind,
+                            'online': bool(rt.get('online')), 'state': st.get('value'), 'unit': e.get('unit'),
+                            'values': e.get('options'), 'min': e.get('min'), 'max': e.get('max'),
+                            'esp': {'type': e['type'], 'actions': e['actions'], 'confirm': e.get('confirm') or []}})
+        return out
+
+    # -- pairing --
+    def esp_probe(self, address):
+        host, port, shown = esp_address(address)
+        fp = esp_fingerprint(host, port)
+        known = next((r for r in self.esp_rows() if r.get('fingerprint') == fp), None)
+        return {'ok': True, 'address': shown, 'fingerprint': fp,
+                'groups': [fp[i:i + 4] for i in range(0, 64, 4)],
+                'known': {'id': known['id'], 'name': known.get('name')} if known else None}
+
+    def esp_pair(self, address, code, fingerprint, confirmed, by='', name=''):
+        """Pair: the certificate the person compared with the gateway's is the one shown now, the
+        code's proof and a new device key go over HTTPS pinned to it, and a signed hello must
+        then come back signed with that key - only then is anything kept."""
+        self._esp_init()
+        host, port, shown = esp_address(address)
+        code = re.sub(r'\s+', '', str(code or ''))
+        if not ESP_CODE_RE.match(code):
+            raise ValueError('the code is the 6 digits the gateway shows')
+        fingerprint = re.sub(r'[\s:]', '', str(fingerprint or '')).lower()
+        if confirmed is not True or not ESP_FP_RE.match(fingerprint):
+            raise ValueError('compare the fingerprint with the one the gateway shows, and confirm it first')
+        if len(self.esp_rows()) >= self.ESP_MOST and not any(r.get('fingerprint') == fingerprint for r in self.esp_rows()):
+            raise ValueError('at most %d gateways' % self.ESP_MOST)
+        seen = esp_fingerprint(host, port)
+        if not hmac.compare_digest(seen, fingerprint):
+            self.store.add_event('security', 'ESP32 gateway at %s: its certificate is not the one confirmed - '
+                                 'pairing refused' % shown, 'warn')
+            raise EspError('cert', 'the gateway now shows a different certificate from the one you confirmed - '
+                                   'nothing was sent. Compare again.')
+        nonce = secrets.token_hex(16)
+        key = secrets.token_hex(32)
+        me = 'ZIGMon on %s' % (socket.gethostname().split('.')[0] or 'zigmon')
+        body = json.dumps({'v': ESP_V, 'nonce': nonce, 'proof': esp_pair_proof(code, fingerprint, nonce),
+                           'zigmon': me, 'key': key}, separators=(',', ':')).encode('utf-8')
+        status, _h, raw = esp_https(host, port, 'POST', ESP_BASE + '/pair', body,
+                                    {'Content-Type': 'application/json', 'Accept': 'application/json'},
+                                    pin=fingerprint, timeout=self.ESP_TIMEOUT_S)
+        try:
+            data = json.loads(raw.decode('utf-8')) if raw else {}
+        except (ValueError, UnicodeDecodeError):
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        if status != 200 or data.get('ok') is not True:
+            said = esp_words(data.get('error'), 100)
+            if status in (423, 429) or 'lock' in said.lower():
+                words = 'pairing is locked on the gateway after too many wrong codes - wait, then make a new code there'
+            elif status in (400, 401, 403):
+                words = 'the gateway did not take the code - make a new one there (each code is used once) and try again'
+            else:
+                words = 'the gateway refused the pairing (HTTP %d)' % status
+            self.store.add_event('security', 'ESP32 gateway at %s: pairing refused (%s)' % (shown, said or 'HTTP %d' % status),
+                                 'warn')
+            raise EspError('auth', words + ('' if not said else ' - it says: %s' % said), status)
+        gwid = str(data.get('id') or '').lower()
+        if not ESP_ID_RE.match(gwid):
+            raise EspError('bad', 'the gateway answered without its id')
+        row = {'id': gwid, 'address': shown, 'fingerprint': fingerprint, 'key': key}
+        # the key must work both ways before it is kept: our signature taken, its answer signed
+        _s, hello = esp_signed(host, port, fingerprint, key, 'GET', ESP_BASE + '/hello', None, self.ESP_TIMEOUT_S)
+        if str(hello.get('id') or '').lower() not in ('', gwid):
+            raise EspError('bad', 'the gateway says it is %s, after pairing as %s' % (esp_words(hello.get('id'), 20), gwid))
+        with self._esp_lock:
+            rows = self.esp_rows()
+            old = next((r for r in rows if r['id'] == gwid), None)
+            label = esp_words(name, 40) or (old or {}).get('name') or esp_words(data.get('name') or hello.get('name'), 40) \
+                or 'ESP32 gateway %s' % gwid[-6:]
+            new = dict(old or {}, id=gwid, name=label, address=shown, fingerprint=fingerprint, key=key,
+                       paired_at=int(time.time()), paired_by=esp_words(by, 60), enabled=True,
+                       hello=self._esp_hello_clean(hello, data))
+            new.setdefault('use', {})
+            new.setdefault('described', None)
+            rows = [r for r in rows if r['id'] != gwid] + [new]
+            self._esp_put(rows)
+        self.store.add_event('security', 'ESP32 gateway %s (%s) paired%s%s' % (
+            label, shown, ' again' if old else '', (' by %s' % esp_words(by, 60)) if by else ''), 'info')
+        log('ESP32 gateway %s paired at %s (certificate %s…)' % (label, shown, fingerprint[:12]))
+        self.esp_restart(gwid)
+        return {'ok': True, 'id': gwid, 'name': label, 'again': bool(old), 'fw': esp_words(data.get('fw'), 20)}
+
+    @staticmethod
+    def _esp_hello_clean(hello, extra=None):
+        h = dict(extra or {}, **(hello or {}))
+        out = {}
+        for k in ('fw', 'model', 'mac_tail', 'name'):
+            if h.get(k) is not None:
+                out[k] = esp_words(h.get(k), 40)
+        for k in ('rssi', 'uptime'):
+            v = h.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+                out[k] = int(v)
+        if 'time_set' in h:
+            out['time_set'] = h.get('time_set') is True
+        out['at'] = int(time.time())
+        return out
+
+    # -- detecting what it has --
+    def esp_detect(self, gwid, quiet=False, by=''):
+        """describe: its modules and their entities, each made (or kept) a device of ZIGMon's."""
+        row = self.esp_row(gwid)
+        if row is None:
+            raise ValueError('no such gateway')
+        _s, d = self._esp_call(row, 'GET', '/describe')
+        modules = []
+        seen = set()
+        for m in (d.get('modules') or [])[:16]:
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get('id') or '')
+            if not ESP_ENTITY_RE.match(mid):
+                continue
+            ents = []
+            for raw in (m.get('entities') or [])[:64]:
+                e = esp_clean_entity(mid, raw)
+                if e is None or e['id'] in seen:
+                    continue
+                seen.add(e['id'])
+                ents.append(e)
+            modules.append({'id': mid, 'name': esp_words(m.get('name') or mid, 40), 'version': esp_words(m.get('version'), 20),
+                            'entities': ents})
+        with self._esp_lock:
+            rows = self.esp_rows()
+            row = next((r for r in rows if r['id'] == gwid), None)
+            if row is None:
+                raise ValueError('the gateway was taken away meanwhile')
+            before = {e['id']: e for e in self.esp_entities(row)}
+            row['described'] = {'at': int(time.time()), 'modules': modules}
+            use = dict(row.get('use') or {})
+            for eid in list(use):
+                if eid not in seen:
+                    use.pop(eid, None)
+            row['use'] = use
+            self._esp_put(rows)
+        self._esp_learn_words([row])
+        self._esp_sync_devices(row)
+        new = [e for e in self.esp_entities(row) if e['id'] not in before]
+        gone = [e for eid, e in before.items() if eid not in seen]
+        if not quiet or new or gone:
+            bits = ['%d module(s), %d entit%s' % (len(modules), len(seen), 'y' if len(seen) == 1 else 'ies')]
+            if new and before:
+                bits.append('new: ' + ', '.join(e['name'] for e in new[:6]))
+            if gone:
+                bits.append('gone: ' + ', '.join(e['name'] for e in gone[:6]))
+            self.store.add_event('device', 'ESP32 gateway %s: %s%s' % (row.get('name'), '; '.join(bits),
+                                                                    (' (%s)' % esp_words(by, 60)) if by else ''),
+                                 'info', self.esp_device_id(gwid))
+        try:
+            self._esp_full_state(row)
+        except EspError as e:
+            log('ESP32 gateway %s: its state after describing: %s' % (row.get('name'), e.words), 'debug')
+        self.bump()
+        return {'ok': True, 'id': gwid, 'modules': modules, 'use': row['use'],
+                'entities': len(seen), 'new': [e['id'] for e in new], 'gone': [e['id'] for e in gone]}
+
+    def esp_use(self, gwid, use, by=''):
+        """Which entities are used: those left out are not devices of the house (their history kept)."""
+        if not isinstance(use, dict):
+            raise ValueError('use is an object: entity id -> true or false')
+        with self._esp_lock:
+            rows = self.esp_rows()
+            row = next((r for r in rows if r['id'] == gwid), None)
+            if row is None:
+                raise ValueError('no such gateway')
+            known = {e['id'] for e in self.esp_entities(row)}
+            kept = dict(row.get('use') or {})
+            for eid, on in use.items():
+                if eid in known and isinstance(on, bool):
+                    kept[eid] = on
+            row['use'] = kept
+            self._esp_put(rows)
+        self._esp_sync_devices(row)
+        try:
+            self._esp_full_state(row)
+        except EspError:
+            pass
+        n = len(self.esp_used(row))
+        self.store.add_event('device', 'ESP32 gateway %s: %d of %d entities used%s' % (
+            row.get('name'), n, len(known), (' (%s)' % esp_words(by, 60)) if by else ''), 'info', self.esp_device_id(gwid))
+        self.bump()
+        return {'ok': True, 'used': n}
+
+    def _esp_sync_devices(self, row):
+        """The gateway and every entity in use, devices of the house; what is not used any more, not."""
+        gwid = row['id']
+        self.store.upsert_device({'id': self.esp_device_id(gwid), 'name': row.get('name') or gwid, 'source': 'esp',
+                                  'kind': 'ESP32 gateway', 'vendor': 'ESP32', 'model': (row.get('hello') or {}).get('model')
+                                  or 'ESP32', 'last_seen': int(time.time())})
+        used = {e['id'] for e in self.esp_used(row)} if row.get('enabled', True) is not False else set()
+        for e in self.esp_entities(row):
+            dev_id = self.esp_device_id(gwid, e['id'])
+            if e['id'] not in used:
+                if self.store.device(dev_id):
+                    self.store.mark_removed(dev_id)
+                self.live.pop(dev_id, None)
+                continue
+            exposes = {'state': {'label': {'lock': 'Lock', 'switch': 'State', 'cover': 'Position',
+                                           'binary_sensor': 'State', 'select': 'Choice', 'text': 'Text',
+                                           'button': 'Last press', 'number': 'Value'}.get(e['type'], 'State'),
+                                 'unit': e.get('unit') or ''}}
+            if e.get('options'):
+                exposes['state']['values'] = list(e['options'])
+            for a in e.get('attrs') or []:
+                exposes[a['key']] = {'label': a['label'], 'unit': a.get('unit') or ''}
+            exposes['busy'] = {'label': 'Busy'}
+            exposes['last_result'] = {'label': 'Last result'}
+            self.store.upsert_device({'id': dev_id, 'name': e['name'], 'source': 'esp',
+                                      'kind': e['type'].replace('_', ' ').capitalize(),
+                                      'vendor': row.get('name') or 'ESP32 gateway',
+                                      'model': next((m.get('name') for m in (row.get('described') or {}).get('modules') or []
+                                                     if m.get('id') == e.get('module')), None) or e.get('module'),
+                                      'description': 'on the ESP32 gateway %s' % (row.get('name') or gwid),
+                                      'exposes': exposes})
+
+    # -- the state flowing in --
+    def _esp_full_state(self, row):
+        _s, st = self._esp_call(row, 'GET', '/state')
+        ents = st.get('entities') if isinstance(st.get('entities'), dict) else {}
+        for eid, raw in list(ents.items())[:128]:
+            self._esp_apply(row, str(eid), raw)
+        seq = st.get('seq')
+        return int(seq) if isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0 else 0
+
+    def _esp_apply(self, row, eid, raw, what=None):
+        """One entity's STATE into the house: its device's payload (history, rules, the pages) and
+        what is in memory for the dashboard; a command's result said as an event."""
+        gwid = row['id']
+        ent = next((e for e in self.esp_used(row) if e['id'] == eid), None)
+        if ent is None or row.get('enabled', True) is False:
+            return
+        st = esp_clean_state(raw)
+        rt = self._esp_rt_of(gwid)
+        known = eid in rt['states']        # the first sight since a start is not news of a command
+        before = (rt['states'].get(eid) or {})
+        rt['states'][eid] = st
+        dev_id = self.esp_device_id(gwid, eid)
+        name = self._esp_name_of(row, ent)
+        payload = {'state': st['value'], 'busy': st['busy']}
+        for k, v in st['attrs'].items():
+            payload[k] = v
+        if st['last']:
+            payload['last_result'] = '%s %s' % (st['last']['action'], 'ok' if st['last']['ok'] else 'failed')
+        if not st['available']:
+            # out of its reach (a lock out of BLE range): said once, its readings left as they were
+            if (self.live.get(dev_id) or {}).get('availability') != 'offline':
+                self.set_availability(dev_id, 'offline', name)
+        else:
+            self.record(dev_id, name, payload)
+        last, was = st['last'], before.get('last')
+        if last and last != was and known:
+            self._esp_result(row, ent, name, last)
+
+    def _esp_result(self, row, ent, name, last):
+        rt = self._esp_rt_of(row['id'])
+        mine = rt['pending'].get(ent['id']) or {}
+        asked = mine.pop(last['action'], None)
+        origin = (asked or {}).get('origin')
+        if asked is None and not last.get('ok'):
+            origin = 'the gateway itself'
+        if asked is None and last.get('ok'):
+            return                  # done on the gateway's own page or its CLI, or said once already
+        dev_id = self.esp_device_id(row['id'], ent['id'])
+        how = self._esp_by(origin)
+        if last.get('ok'):
+            self.store.add_event('control', '%s: %s %s' % (name, ESP_DONE.get(last['action'], 'did ' + last['action']), how),
+                                 'info', dev_id)
+        else:
+            self.store.add_event('control', '%s: could not %s%s %s' % (
+                name, last['action'], (' (%s)' % last['msg']) if last.get('msg') else '', how), 'warn', dev_id)
+
+    @staticmethod
+    def _esp_by(origin):
+        origin = esp_words(origin or '', 80)
+        if not origin:
+            return ''
+        return ('from ' + origin) if origin.startswith('the ') else ('by ' + origin)
+
+    # -- commands --
+    def esp_command(self, gwid, eid, do, origin='the dashboard', args=None):
+        """One command: (ok, words). do is the entity's action, or set:<value> (action set)."""
+        row = self.esp_row(gwid)
+        if row is None:
+            return False, 'no such gateway'
+        if row.get('enabled', True) is False:
+            return False, '%s is switched off in ZIGMon' % (row.get('name') or gwid)
+        ent = next((e for e in self.esp_used(row) if e['id'] == eid), None)
+        if ent is None:
+            return False, 'no such thing on %s' % (row.get('name') or gwid)
+        name = self._esp_name_of(row, ent)
+        do = str(do or '').strip()
+        args = dict(args) if isinstance(args, dict) else {}
+        action = do.lower()
+        if action.startswith('set:'):
+            value = do[4:].strip()
+            num = numeric(value)
+            args['value'] = num if num is not None and ent['type'] == 'number' else value
+            action = 'set'
+        elif action == 'pulse' and 'press' in ent['actions']:
+            action = 'press'
+        if action not in ent['actions']:
+            return False, '%s takes %s' % (name, ', '.join(ent['actions']) or 'nothing - it is only read')
+        rt = self._esp_rt_of(gwid)
+        try:
+            status, data = self._esp_call(row, 'POST', '/command', {'entity': eid, 'action': action, 'args': args})
+        except EspError as e:
+            if e.status == 409:
+                words = '%s is busy - try again in a moment' % name
+            elif e.status == 404:
+                words = '%s does not know %s any more - Detect it again' % (row.get('name') or gwid, name)
+            else:
+                words = '%s: %s' % (row.get('name') or gwid, e.words)
+            self.store.add_event('control', '%s: %s was not sent %s (%s)' % (name, action, self._esp_by(origin), e.words[:100]),
+                                 'warn', self.esp_device_id(gwid, eid))
+            return False, words
+        rt['pending'].setdefault(eid, {})[action] = {'at': time.time(), 'origin': origin,
+                                                     'job': esp_words(data.get('job'), 24)}
+        log('%s: %s asked %s' % (name, action, self._esp_by(origin)), 'debug')
+        t = threading.Timer(self.ESP_RESULT_S, self._esp_no_result, args=(gwid, eid, action))
+        t.daemon = True
+        t.start()
+        self.bump()
+        return True, '%s: %s asked' % (name, action)
+
+    def _esp_no_result(self, gwid, eid, action):
+        rt = self._esp_rt_of(gwid)
+        mine = rt['pending'].get(eid) or {}
+        asked = mine.get(action)
+        if not asked or time.time() - asked['at'] < self.ESP_RESULT_S - 1:
+            return
+        mine.pop(action, None)
+        row = self.esp_row(gwid)
+        ent = next((e for e in self.esp_used(row or {}) if e['id'] == eid), None) if row else None
+        if ent is None:
+            return
+        self.store.add_event('control', '%s: no result for %s %s within %d s' % (
+            self._esp_name_of(row, ent), action, self._esp_by(asked.get('origin')), self.ESP_RESULT_S), 'warn',
+            self.esp_device_id(gwid, eid))
+        self.bump()
+
+    # -- the threads --
+    def esp_start(self):
+        self._esp_init()
+        rows = self.esp_rows()
+        self._esp_learn_words(rows)
+        for r in rows:
+            try:
+                self._esp_sync_devices(r)
+            except Exception as e:                       # noqa: BLE001
+                log('ESP32 gateway %s: %s' % (r.get('name'), e), 'warn')
+            if r.get('enabled', True) is not False:
+                self.esp_restart(r['id'])
+
+    def esp_restart(self, gwid):
+        """The gateway's thread started afresh (the old one ends at its next turn)."""
+        self._esp_init()
+        with self._esp_lock:
+            self._esp_gen += 1
+            rt = self._esp_rt_of(gwid)
+            rt['gen'] = self._esp_gen
+            gen = rt['gen']
+            wake = rt.get('wake')
+            if wake is not None:
+                wake.set()
+            rt['wake'] = threading.Event()
+        row = self.esp_row(gwid)
+        if row is None or row.get('enabled', True) is False:
+            return
+        threading.Thread(target=self._esp_loop, args=(gwid, gen), name='esp-%s' % gwid[-6:], daemon=True).start()
+
+    def _esp_current(self, gwid, gen):
+        rt = self._esp_rt_of(gwid)
+        return rt.get('gen') == gen and not self._stop.is_set()
+
+    def _esp_mark(self, row, online, error='', kind=''):
+        rt = self._esp_rt_of(row['id'])
+        was, was_kind = rt.get('online'), rt.get('kind')
+        rt['error'], rt['kind'] = error, kind
+        if was == online:
+            if not online and kind == 'cert' and was_kind != 'cert':
+                # offline already, and now another certificate where it was: that is news of its own
+                self.store.add_event('security', 'ESP32 gateway %s: %s' % (row.get('name') or row['id'], error), 'crit',
+                                     self.esp_device_id(row['id']))
+                log('ESP32 gateway %s: %s' % (row.get('name') or row['id'], error), 'warn')
+                self.bump()
+            return
+        rt['online'] = online
+        rt['since'] = int(time.time())
+        gw_dev = self.esp_device_id(row['id'])
+        name = row.get('name') or row['id']
+        state = 'online' if online else 'offline'
+        for e in self.esp_used(row):
+            dev_id = self.esp_device_id(row['id'], e['id'])
+            entry = self.live.setdefault(dev_id, {'payload': {}, 'ts': None, 'availability': None})
+            if online and not ((rt['states'].get(e['id']) or {}).get('available', True)):
+                continue
+            entry['availability'] = state
+            try:
+                self.store.store_snapshot(dev_id, entry.get('ts') or int(time.time()), {}, state)
+            except Exception:                            # noqa: BLE001
+                pass
+        if was is None and online:
+            self.live.setdefault(gw_dev, {'payload': {}, 'ts': None, 'availability': None})['availability'] = 'online'
+        elif self.store.device(gw_dev):
+            self.set_availability(gw_dev, state, name)
+        if not online:
+            self.store.add_event('device', 'ESP32 gateway %s is offline: %s' % (name, error or 'no answer'),
+                                 'crit' if kind == 'cert' else 'warn', gw_dev)
+            log('ESP32 gateway %s is offline: %s' % (name, error), 'warn')
+        elif was is False:
+            self.store.add_event('device', 'ESP32 gateway %s is back' % name, 'info', gw_dev)
+            log('ESP32 gateway %s is back' % name)
+        self.bump()
+
+    def _esp_loop(self, gwid, gen):
+        after = None
+        hello_at = 0.0
+        backoff = 0.0
+        rt = self._esp_rt_of(gwid)
+        while self._esp_current(gwid, gen):
+            row = self.esp_row(gwid)
+            if row is None or row.get('enabled', True) is False:
+                return
+            try:
+                if after is None or time.time() - hello_at > self.ESP_HELLO_S:
+                    _s, hello = self._esp_call(row, 'GET', '/hello')
+                    rt['hello'] = self._esp_hello_clean(hello)
+                    hello_at = time.time()
+                    self._esp_mark(row, True)
+                    self._esp_gw_record(row, rt['hello'])
+                    if after is None:
+                        after = self._esp_full_state(row)
+                if not self._esp_current(gwid, gen):
+                    return
+                _s, ev = self._esp_call(row, 'GET', '/events?after=%d&wait=%d' % (after, self.ESP_WAIT_S),
+                                        timeout=self.ESP_WAIT_S + self.ESP_TIMEOUT_S)
+                if not self._esp_current(gwid, gen):
+                    return
+                boot = esp_words(ev.get('boot'), 16)
+                kept = row.get('boot') or ''
+                self._esp_mark(row, True)
+                rt['last_ok'] = int(time.time())
+                backoff = 0.0
+                if boot and boot != kept:
+                    self._esp_change(gwid, boot=boot)
+                    if kept:
+                        # it started again: what it has may have changed - described again, all its state read again
+                        log('ESP32 gateway %s restarted (boot %s): describing it again' % (row.get('name'), boot))
+                        self.store.add_event('device', 'ESP32 gateway %s restarted - its modules read again'
+                                             % row.get('name'), 'info', self.esp_device_id(gwid))
+                        self.esp_detect(gwid, quiet=True)
+                        after = None
+                        continue
+                seq = ev.get('seq')
+                for one in (ev.get('events') or [])[:200]:
+                    if isinstance(one, dict) and isinstance(one.get('entity'), str):
+                        self._esp_apply(row, one['entity'], one.get('state'), one.get('what'))
+                if isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0:
+                    after = None if seq < after else seq
+            except EspError as e:
+                if not self._esp_current(gwid, gen):
+                    return
+                after = None
+                row = self.esp_row(gwid) or row
+                self._esp_mark(row, False, e.words, e.kind)
+                if e.kind == 'cert':
+                    wait = self.ESP_CERT_BACKOFF_S
+                else:
+                    lo, hi = self.ESP_BACKOFF_S
+                    backoff = min(hi, max(lo, backoff * 2))
+                    wait = backoff
+                rt['wake'].wait(wait)
+            except Exception as e:                       # noqa: BLE001 - the thread stays
+                if not self._esp_current(gwid, gen):
+                    return
+                after = None
+                log('ESP32 gateway %s: %s%s' % (gwid, type(e).__name__, fault_where(e)), 'warn')
+                rt['wake'].wait(self.ESP_BACKOFF_S[1])
+
+    def _esp_gw_record(self, row, hello):
+        """The gateway itself, a device of the house: its signal and its uptime as readings."""
+        vals = {k: hello[k] for k in ('rssi', 'uptime') if isinstance(hello.get(k), int)}
+        if 'fw' in hello:
+            vals['firmware'] = hello['fw']
+        vals['entities'] = len(self.esp_used(row))
+        if self.store.device(self.esp_device_id(row['id'])) is None:
+            self._esp_sync_devices(row)
+        self.record(self.esp_device_id(row['id']), row.get('name') or row['id'], vals)
+
+    # -- Settings: the administrator's --
+    def esp_admin_post(self, body, by):
+        act = str(body.get('action') or '').strip().lower()
+        gwid = str(body.get('id') or '').strip().lower()
+        if act == 'probe':
+            return self.esp_probe(body.get('address'))
+        if act == 'pair':
+            return self.esp_pair(body.get('address'), body.get('code'), body.get('fingerprint'),
+                                 body.get('confirmed'), by=by, name=body.get('name') or '')
+        row = self.esp_row(gwid) if ESP_ID_RE.match(gwid) else None
+        if row is None:
+            raise ValueError('no such gateway')
+        name = row.get('name') or gwid
+        if act == 'detect':
+            out = self.esp_detect(gwid, by=by)
+            if isinstance(body.get('use'), dict):
+                self.esp_use(gwid, body['use'], by)
+                out['use'] = (self.esp_row(gwid) or {}).get('use') or {}
+            return out
+        if act == 'use':
+            return self.esp_use(gwid, body.get('use'), by)
+        if act == 'rename':
+            label = esp_words(body.get('name'), 40)
+            if not label:
+                raise ValueError('a name is needed')
+            self._esp_change(gwid, name=label)
+            self._esp_sync_devices(self.esp_row(gwid))
+            self.store.add_event('device', 'ESP32 gateway %s is now called %s (%s)' % (name, label, by or 'the dashboard'),
+                                 'info', self.esp_device_id(gwid))
+            self.bump()
+            return {'ok': True, 'message': 'renamed to %s' % label}
+        if act in ('enable', 'disable'):
+            on = act == 'enable'
+            self._esp_change(gwid, enabled=on)
+            row = self.esp_row(gwid)
+            self._esp_sync_devices(row)
+            rt = self._esp_rt_of(gwid)
+            if on:
+                rt['online'] = None
+                self.esp_restart(gwid)
+            else:
+                with self._esp_lock:
+                    rt['gen'] = -1
+                    if rt.get('wake'):
+                        rt['wake'].set()
+                rt['online'], rt['error'] = None, ''
+            self.store.add_event('device', 'ESP32 gateway %s %s (%s)' % (name, 'switched on' if on else 'switched off',
+                                                                         by or 'the dashboard'), 'info', self.esp_device_id(gwid))
+            self.bump()
+            return {'ok': True, 'message': '%s %s' % (name, 'switched on' if on else 'switched off')}
+        if act == 'unpair':
+            said = ''
+            try:
+                self._esp_call(row, 'POST', '/unpair', {})
+            except EspError as e:
+                if body.get('force') is not True:
+                    raise ValueError('%s could not be told (%s) - Forget it to take it away here only' % (name, e.words))
+                said = ' (it could not be told: %s)' % e.words
+            self._esp_forget(row, 'unpaired%s' % said, by)
+            return {'ok': True, 'message': '%s unpaired%s' % (name, said)}
+        if act == 'delete':
+            self._esp_forget(row, 'forgotten here (the gateway still holds its key until it is unpaired there)', by)
+            return {'ok': True, 'message': '%s forgotten' % name}
+        if act == 'reconnect':
+            self._esp_rt_of(gwid)['online'] = None
+            self.esp_restart(gwid)
+            return {'ok': True, 'message': 'asking %s again' % name}
+        raise ValueError('action is one of probe, pair, detect, use, rename, enable, disable, unpair, delete')
+
+    def _esp_forget(self, row, why, by):
+        gwid = row['id']
+        with self._esp_lock:
+            rows = [r for r in self.esp_rows() if r['id'] != gwid]
+            self._esp_put(rows)
+            rt = self._esp_rt_of(gwid)
+            rt['gen'] = -1
+            if rt.get('wake'):
+                rt['wake'].set()
+            self._esp_rt.pop(gwid, None)
+        for e in self.esp_entities(row):
+            dev_id = self.esp_device_id(gwid, e['id'])
+            if self.store.device(dev_id):
+                self.store.mark_removed(dev_id)
+            self.live.pop(dev_id, None)
+        if self.store.device(self.esp_device_id(gwid)):
+            self.store.mark_removed(self.esp_device_id(gwid))
+        self.live.pop(self.esp_device_id(gwid), None)
+        self.store.add_event('security', 'ESP32 gateway %s %s (%s)' % (row.get('name') or gwid, why, by or 'the dashboard'),
+                             'info')
+        self.bump()
+
+    def esp_dashboard_command(self, body, who):
+        """POST /api/esp/command: {id: esp:<gw>:<entity>, action, args?, confirmed?} from the page."""
+        got = self.esp_split(body.get('id') or body.get('target'))
+        if got is None:
+            raise ValueError('id is esp:<gateway>:<entity>')
+        row = self.esp_row(got[0])
+        ent = next((e for e in self.esp_used(row or {}) if e['id'] == got[1]), None) if row else None
+        if ent is None:
+            return 404, {'ok': False, 'error': 'there is no such thing to control'}
+        action = str(body.get('action') or '').strip()
+        if action.lower() in (ent.get('confirm') or []) and body.get('confirmed') is not True:
+            return 409, {'ok': False, 'error': '%s asks to be confirmed' % action, 'confirm': True}
+        ok, words = self.esp_command(got[0], got[1], action, 'the dashboard (%s)' % (who or 'somebody'),
+                                     body.get('args') if isinstance(body.get('args'), dict) else None)
+        return (202 if ok else 502), {'ok': ok, 'message' if ok else 'error': words}
+
+    # -- the Stream Deck --
+    def _deck_esp_items(self, rooms):
+        """(5.59.4) Every entity in use, an item: a lock under "locks" (off until granted, held by
+        default, and its sensitive actions always held), what switches under "switch", a blind
+        under "cover", what is only read under "view"."""
+        out = []
+        for r in self.esp_rows():
+            if r.get('enabled', True) is False:
+                continue
+            rt = self._esp_rt_of(r['id'])
+            for e in self.esp_used(r):
+                st = (rt.get('states') or {}).get(e['id']) or {}
+                dev_id = self.esp_device_id(r['id'], e['id'])
+                online = bool(rt.get('online')) and st.get('available', True) is not False
+                attrs_v = dict(st.get('attrs') or {})
+                battery = attrs_v.get('battery')
+                battery = int(round(battery)) if isinstance(battery, (int, float)) and not isinstance(battery, bool) else None
+                num_attrs = [{'key': a['key'], 'label': a['label'], 'type': 'number', 'unit': a.get('unit') or None,
+                              'min': a.get('min'), 'max': a.get('max'), 'step': 1, 'readonly': True}
+                             for a in e.get('attrs') or [] if a.get('type') == 'number']
+                value = st.get('value')
+                acts = list(e.get('actions') or [])
+                kind, cap, icon, on, attrs = e['type'], 'view', 'sensor', None, []
+                if e['type'] == 'lock':
+                    cap, icon = 'locks', 'lock'
+                    on = None if value not in ('locked', 'unlocked') else value == 'unlocked'
+                elif e['type'] == 'switch':
+                    cap, icon = 'switch', 'switch'
+                    acts = [a for a in ('toggle', 'on', 'off') if a in acts] + [a for a in acts if a not in ('toggle', 'on', 'off')]
+                    on = None if value is None else str(value).lower() in ('on', 'true', '1')
+                elif e['type'] == 'button':
+                    cap, icon = 'switch', 'button'
+                elif e['type'] == 'cover':
+                    cap, icon = 'cover', 'blinds'
+                elif e['type'] == 'number' and 'set' in acts:
+                    cap, icon = 'switch', 'dial'
+                    attrs = [{'key': 'value', 'label': e['name'], 'type': 'number', 'unit': e.get('unit') or None,
+                              'min': e.get('min'), 'max': e.get('max'), 'step': e.get('step') or 1}]
+                elif e['type'] == 'select' and 'set' in acts and e.get('options'):
+                    cap, icon = 'switch', 'list'
+                    attrs = [{'key': 'value', 'label': e['name'], 'type': 'enum', 'values': list(e['options'])}]
+                else:
+                    acts = []
+                    icon = 'contact' if e['type'] == 'binary_sensor' else 'sensor'
+                    on = value if isinstance(value, bool) else None
+                vtext = None
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    vtext = self._ntf_vtext(value, e.get('unit') or '')
+                elif isinstance(value, str) and value:
+                    vtext = value
+                if st.get('busy'):
+                    vtext = 'busy…'
+                extra = dict(attrs_v)
+                if st.get('last'):
+                    extra['last_action'] = st['last'].get('action')
+                    extra['last_ok'] = st['last'].get('ok')
+                    extra['last_at'] = st['last'].get('at')
+                extra['value'] = value
+                out.append({'id': dev_id, 'name': self._esp_name_of(r, e), 'room': rooms.get(dev_id), 'kind': kind,
+                            'icon': icon, 'cap': cap, 'actions': acts, 'attrs': attrs + num_attrs,
+                            'state': {'on': on, 'value': value if not isinstance(value, str) else None,
+                                      'value_text': vtext, 'attrs': extra, 'online': online, 'battery': battery,
+                                      'at': (self.live.get(dev_id) or {}).get('ts')},
+                            '_target': dev_id, '_esp': True, '_confirm': list(e.get('confirm') or [])})
+        return out
+
+    def _deck_esp_command(self, item, action, body):
+        """(do, words, target) of a gateway's item: its action as it is; set as the executor's set:."""
+        if action in ('set', 'step'):
+            return None
+        verb = {'open': 'opened', 'unlock': 'unlocked', 'lock': 'locked'}.get(action, self.DECK_SAID.get(action, action))
+        return action, '%s %s' % (verb, item['name']), item['_target']
+
+
+class Daemon(EspGateways):
     def __init__(self, storage=None):
         open_log()
         # every line from here on is written by a thread of its own, so that
@@ -12874,13 +13994,15 @@ class Daemon(object):
     DECK_RATE_S, DECK_RATE_MIN = 10, 300
     DECK_REVOKED_KEPT = 50
     DECK_CAPS = ('view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system',
-                 'status')
+                 'status', 'locks')
     DECK_CAP_WORDS = {'view': 'see states and readings', 'switch': 'switch sockets, lights and relays',
                       'dim': 'dim lights and set their colour', 'climate': 'set the heating and thermostats',
                       'cover': 'move the blinds', 'scenes': 'run scenes, sequences and groups',
                       'automations': 'switch rules, schedules and groups on and off',
                       'messages': 'send the reports and messages', 'system': 'run the system actions',
-                      'status': 'see ZIGMon’s own health'}
+                      'status': 'see ZIGMon’s own health',
+                      # (5.59.4) the locks of the ESP32 gateways: off until granted, held by default
+                      'locks': 'open, unlock and lock the locks'}
     DECK_TYPES = {0: ('Stream Deck', 'Stream Deck'), 1: ('Stream Deck Mini', 'Mini'), 2: ('Stream Deck XL', 'XL'),
                   3: ('Stream Deck Mobile', 'Mobile'), 4: ('Corsair G-Keys', 'G-Keys'), 5: ('Stream Deck Pedal', 'Pedal'),
                   6: ('Corsair Voyager', 'Voyager'), 7: ('Stream Deck +', '+'), 8: ('SCUF controller', 'SCUF'),
@@ -13019,7 +14141,7 @@ class Daemon(object):
             elif c == 'view':
                 out[c] = {'on': True, 'all': True, 'targets': []}
             else:
-                out[c] = {'on': False, 'all': False, 'targets': [], 'hold': c == 'system'}
+                out[c] = {'on': False, 'all': False, 'targets': [], 'hold': c in ('system', 'locks')}
         return out
 
     def _deck_clean_caps(self, given, was=None):
@@ -13971,7 +15093,7 @@ class Daemon(object):
             return kept[1]
         rooms = self._ntf_rooms()
         out = []
-        for part in (self._deck_house_items, self._deck_zb_items, self._deck_reading_items):
+        for part in (self._deck_house_items, self._deck_zb_items, self._deck_reading_items, self._deck_esp_items):
             try:
                 out.extend(part(rooms))
             except Exception as e:                           # noqa: BLE001
@@ -14062,8 +15184,8 @@ class Daemon(object):
         out = {'id': item['id'], 'name': item['name'], 'room': item['room'], 'kind': item['kind'],
                'icon': item['icon'], 'cap': item['cap'], 'actions': list(item['actions']),
                'attrs': [dict(a) for a in item['attrs']], 'allowed': allowed,
-               'hold': bool(((caps or {}).get(item['cap']) or {}).get('hold')) if item['cap'] not in ('view', 'status')
-               else False,
+               'hold': (bool(((caps or {}).get(item['cap']) or {}).get('hold')) or bool(item.get('_confirm')))
+               if item['cap'] not in ('view', 'status') else False,
                'state': self.deck_state_view(item['id'], item['state'], visible_ids)}
         if extended:
             # (5.59.4) told only to a plugin that asks for the summaries: a switch takes "timer" too,
@@ -14484,7 +15606,9 @@ class Daemon(object):
             if not (action in ('open', 'close') and 'set' in item['actions'] and item['kind'] == 'cover') \
                     and not (action == 'timer' and self.deck_timer_ok(item)):
                 return 400, {'ok': False, 'error': '%s takes %s' % (item['name'], ', '.join(item['actions']))}
-        if (caps.get(item['cap']) or {}).get('hold'):
+        # (5.59.4) what a gateway's entity names as sensitive (a lock's open, unlock) is held
+        # whatever its capability says
+        if (caps.get(item['cap']) or {}).get('hold') or action in (item.get('_confirm') or ()):
             held = body.get('held_ms')
             if not (isinstance(held, (int, float)) and not isinstance(held, bool) and held >= self.DECK_HOLD_MS):
                 return 409, {'ok': False, 'error': 'Hold the key to confirm', 'hold': True}
@@ -14669,6 +15793,10 @@ class Daemon(object):
         """(do, words, target) for the executor - or (None, why, None)."""
         name = item['name']
         target = item['_target']
+        if item.get('_esp'):
+            got = self._deck_esp_command(item, action, body)      # (5.59.4)
+            if got is not None:
+                return got
         if action == 'timer':
             # (5.59.4) on now, off after the minutes: "on for N" of the executor - kept with the
             # house's other timers, taken up again after a restart (the overdue go off at once)
@@ -38058,6 +39186,12 @@ class Daemon(object):
             return spec if self.sequence_by_id(spec[9:]) else None
         if spec.startswith('seq:'):
             return spec if self.sequence_by_id(spec[4:]) else None
+        if spec.startswith('esp:'):
+            # (5.59.4) an entity of an ESP32 gateway: esp:<gateway>:<entity>, one that does something
+            got = self.esp_split(spec)
+            row = self.esp_row(got[0]) if got else None
+            ent = next((e for e in self.esp_used(row) if e['id'] == got[1]), None) if row else None
+            return spec if ent is not None and ent.get('actions') else None
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             if len(pieces) < 3:
@@ -38382,6 +39516,11 @@ class Daemon(object):
         if spec.startswith('script:'):
             x = next((y for y in self.scripts() if str(y.get('id')) == spec[7:]), None)
             return ('the script "%s"' % x['name']) if x else 'a script that is gone'
+        if spec.startswith('esp:'):
+            got = self.esp_split(spec)                       # (5.59.4)
+            row = self.esp_row(got[0]) if got else None
+            ent = next((e for e in self.esp_entities(row) if e['id'] == got[1]), None) if row else None
+            return self._esp_name_of(row, ent) if ent else 'a gateway\u2019s thing that is gone'
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             dev = self.store.device(':'.join(pieces[1:-1]))
@@ -38456,6 +39595,9 @@ class Daemon(object):
             return [('seqreset', spec[9:])]
         if spec.startswith('seq:'):
             return [('seq', spec[4:])]
+        if spec.startswith('esp:'):
+            got = self.esp_split(spec)                       # (5.59.4)
+            return [('esp', got[0], got[1])] if got else []
         if spec.startswith('zb:'):
             pieces = spec.split(':')
             return [('zb', ':'.join(pieces[1:-1]), pieces[-1])]
@@ -38623,6 +39765,11 @@ class Daemon(object):
                     self.set_binding_group_enabled(ident, act, origin)
             threading.Thread(target=switched, name='switchable', daemon=True).start()
             return
+        if target[0] == 'esp':
+            # (5.59.4) an ESP32 gateway's entity: its action, signed, over HTTPS pinned to it
+            threading.Thread(target=self.esp_command, args=(target[1], target[2], do, origin),
+                             name='esp-command', daemon=True).start()
+            return
         if target[0] == 'plug':
             threading.Thread(target=self._run_binding, args=(target[1], do, origin, pulse_ms, stagger),
                              name='binding', daemon=True).start()
@@ -38643,8 +39790,8 @@ class Daemon(object):
         """One name per thing that can be switched, whichever way it was named."""
         if target[0] == 'plug':
             return 'plug:' + str(getattr(target[1], 'name', target[1]))
-        if target[0] == 'zb':
-            return 'zb:%s:%s' % (target[1], target[2])
+        if target[0] in ('zb', 'esp'):
+            return '%s:%s:%s' % (target[0], target[1], target[2])
         return '%s:%s' % (target[0], target[1] if len(target) > 1 else '')
 
     CLOCK_STEP_S = 1.0
@@ -47513,7 +48660,9 @@ class Daemon(object):
             reasons.append('battery low flag')
         stale_warn = int(CONFIG.get('stale_warn_min') or 0) * 60
         stale_crit = int(CONFIG.get('stale_crit_min') or 0) * 60
-        if dev['source'] == 'plug':
+        if dev['source'] in ('plug', 'esp'):
+            # (5.59.4) an ESP32 gateway's entity says something only when it changes: whether
+            # it is there is its gateway's long poll, said as its availability
             stale_warn, stale_crit = 0, 0
         elif dev['source'] == 'gateway' or dev.get('kind') == 'Coordinator':
             # The coordinator is the radio, not a device that reports: it
@@ -47744,7 +48893,9 @@ class Daemon(object):
             'rule_ops': RULE_OPS,
             # what is on trial, so the editors can mark it: {section: {id: file}}
             'trial_ids': self.trial_marks(),
-            'switch_targets': self.zigbee_targets() + self.heating_targets(),
+            'switch_targets': self.zigbee_targets() + self.heating_targets() + self.esp_targets(),
+            # (5.59.4) the ESP32 gateways and what they carry: no key, address or fingerprint
+            'esp': self.esp_dashboard(),
             'presence': self.presence_state(),
             # a message may be sent to a number rather than a name: hidden
             # here like every other number (see mask_phone)
@@ -49009,6 +50160,10 @@ class Daemon(object):
         threading.Thread(target=self.timer_loop, name='timers', daemon=True).start()
         threading.Thread(target=self.rule_worker, name='rules', daemon=True).start()
         threading.Thread(target=self.rule_worker, args=(True,), name='rules-presence', daemon=True).start()
+        try:
+            self.esp_start()                    # (5.59.4) a thread for each ESP32 gateway
+        except Exception as e:                  # noqa: BLE001
+            log('the ESP32 gateways: %s' % e, 'warn')
         if self.plugs or self.sensors:
             self._plug_thread = threading.Thread(target=self.plug_loop, name='plugs', daemon=True)
             self._plug_thread.start()
@@ -50463,7 +51618,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                      '/api/notifier/attrs',
                      # (5.59) the Stream Deck installations, their requests and permissions,
                      # and the plugin itself for an administrator to take to a computer
-                     '/api/deck/admin', '/api/deck/plugin')
+                     '/api/deck/admin', '/api/deck/plugin',
+                     # (5.59.4) the ESP32 gateways: their addresses, certificates and pairing
+                     '/api/esp')
     # /api/perf (5.43) is no longer here (5.43.1): whoever may see the
     # dashboard sees how busy the machine is; its insides are cut out below
 
@@ -51954,6 +53111,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
                     return self._error(403, 'view locked \u2014 this one is for an administrator')
                 return self._send(200, d.deck_admin_view())
+            if path == '/api/esp':
+                # (5.59.4) the ESP32 gateways for Settings: an administrator's (ALWAYS_LOCKED), asked
+                # again here. Never a device key - "set" and its last two characters
+                if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
+                    return self._error(403, 'view locked \u2014 this one is for an administrator')
+                return self._send(200, d.esp_admin_view())
             if path == '/api/deck/plugin':
                 # (5.59) the plugin itself, as a download for the page: an administrator's
                 if not (REQUEST_CALLER.cli or d.may(self.headers.get('X-Zigmon-Session') or '', 'admin')):
@@ -53751,6 +54914,40 @@ class ApiHandler(BaseHTTPRequestHandler):
                 except (ValueError, sqlite3.Error) as e:
                     return self._error(400, str(e)[:600])
                 return self._send(200, out)
+            if path == '/api/esp':
+                # (5.59.4) the ESP32 gateways: probe, pair, detect, use, rename, switch on and off,
+                # unpair, forget - an administrator's, the sign-in and the role both asked
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                if not (REQUEST_CALLER.cli or d.may(body.get('session') or self.headers.get('X-Zigmon-Session') or '',
+                                                    'admin')):
+                    return self._error(403, 'only an administrator pairs and changes the ESP32 gateways')
+                me = d.session_get(body.get('session')) or {}
+                by = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False)
+                                        else self._caller())
+                try:
+                    out = d.esp_admin_post(body, by)
+                except EspError as e:
+                    return self._error(502 if e.kind in ('net', 'tls') else 409, e.words[:300])
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                view = d.esp_admin_view()
+                out = dict(out, ok=out.get('ok', True), gateways=view['gateways'])
+                return self._send(200, out)
+            if path == '/api/esp/command':
+                # (5.59.4) a gateway's lock, switch or button from the dashboard: an operator's
+                # (OPERATOR_ROADS); what the entity names as sensitive must come confirmed
+                err = d.check_pin(body.get('pin'), body.get('session'))
+                if err:
+                    return self._error(403, err)
+                me = d.session_get(body.get('session')) or {}
+                who = me.get('name') or ('the command line' if getattr(REQUEST_CALLER, 'cli', False) else '')
+                try:
+                    code, out = d.esp_dashboard_command(body, who)
+                except ValueError as e:
+                    return self._error(400, str(e)[:300])
+                return self._send(code, out)
             if path == '/api/deck/admin':
                 # (5.59) the Stream Deck integration: an administrator's, every action - the
                 # sign-in and the role both asked. A token goes only to the plugin, once
