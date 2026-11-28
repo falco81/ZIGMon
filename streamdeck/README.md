@@ -115,8 +115,17 @@ brackets), **Shadow** (a card with a coloured shadow), **Line** (the value on on
 **Tube** (a thermometer tube), **Stamp** (a giant faint icon), **Pastel** (soft colour, dark
 type), **Carbon** (carbon weave and a light strip), **Grid** (a grid of lamps), **Tab** (a
 folder with the name on its tab), **Rise** (a rising sun), **Spot** (a spotlight) and
-**Button** (a real key, pressed when on) - with an On / Off pair above them. Then an
-**accent** (Auto by kind, or one of 10 colours), a **label** for every action (40 characters),
+**Button** (a real key, pressed when on) - with an On / Off pair above them. Then the
+**colours**, in two tabs: the **On colour** (Auto by kind) and the **Off colour** (Auto keeps the
+look's own grey). Each is one of 24 named colours (the first ten as in 1.1, plus indigo, sky,
+cyan, mint, lime, gold, peach, coral, rose, magenta, lavender, brown, slate and white) or a colour
+of your own: the *Custom* swatch opens a picker - a saturation / brightness square, a hue bar and a
+`#RRGGBB` field checked as you type - and the key, the On / Off pair and the thumbnails follow as
+you drag. An off key is drawn in the Off colour where its look would be grey (border, icon, state,
+tile - as fits each look, Classic and the touch strip too); items that are never on or off (a
+reading, a scene, a status) take the On colour as their colour and the Off colour while idle. The
+settings keep a colour's name or exactly `#RRGGBB`; anything else is dropped, and no colour ever
+comes from ZIGMon. Then a **label** for every action (40 characters),
 how **long names** are laid out (shrink to fit, two lines breaking at hyphens, or one line cut as
 in 1.0), and **what the key shows**, each on its own: icon, name, room, state / value, the second
 value (W, brightness, target, movement, trend), mode / preset, graph (history, level bar, the

@@ -126,7 +126,17 @@ V nastavení každé akce je oddíl **Look**:
   pruh), *Grid* (mřížka kontrolek), *Tab* (složka se jménem na oušku), *Rise* (vycházející
   slunce), *Spot* (reflektor) a *Button* (skutečné tlačítko, zamáčknuté, když je zapnuto).
   Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
-- **Barva**: *Auto* (podle druhu položky) nebo jedna z 10 barev.
+- **Barvy** ve dvou záložkách: **On colour** (barva zapnutého tlačítka; *Auto* = podle druhu
+  položky) a **Off colour** (barva vypnutého; *Auto* = šedá, jak ji kreslí daný vzhled). Každá je
+  jednou z 24 pojmenovaných barev (prvních deset jako v 1.1, k nim indigo, nebeská, azurová,
+  mátová, limetková, zlatá, broskvová, korálová, růžová, purpurová, levandulová, hnědá, břidlicová
+  a bílá) nebo vlastní: dlaždice *Custom* otevře výběr - čtverec sytosti a jasu, pruh odstínu a
+  pole `#RRGGBB`, které se kontroluje už při psaní. Tlačítko, dvojice zapnuto / vypnuto i náhledy
+  vzhledů se mění, jak táhnete. Vypnuté tlačítko se kreslí barvou Off všude, kde by vzhled použil
+  šedou (okraj, ikona, stav, dlaždice - podle vzhledu, i v Classic a na dotykové liště). Položky
+  bez zapnuto / vypnuto (měření, scéna, stav) mají barvu On jako svou a barvu Off v klidu.
+  Nastavení si pamatuje jméno barvy nebo přesně `#RRGGBB`; cokoli jiného zahodí a žádná barva
+  nikdy nepřichází ze ZIGMonu.
 - **Popisek**: vlastní text místo jména položky (nejvýš 40 znaků) - u všech akcí.
 - **Dlouhá jména**: *Shrink to fit* (zmenšit, případně na dva řádky), *Two lines* (dva řádky,
   zlom i u pomlček - „Light-Loznice-" / „Main") nebo *One line* (jeden řádek se třemi

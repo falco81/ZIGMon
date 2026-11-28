@@ -17,6 +17,8 @@ export interface ClassicOpts {
   info?: Info;
   accent?: string;
   fit?: NameFit;
+  /** (1.3) The colour an off key is drawn in (its tile, icon, dot, edge); none = grey, as before. */
+  offAccent?: string;
 }
 const SHOW_ALL: Info = { icon: true, name: true, room: true, state: true, detail: true, mode: true, graph: true, battery: true, scale: false, target: false };
 
@@ -71,20 +73,26 @@ export function readingAccent(key: string, unit: string): { accent: string; icon
 const BG_DEFS =
   `<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${P.panel2}"/><stop offset="1" stop-color="${P.bg}"/></linearGradient>`;
 
-/** The frame every key is drawn in: the panel and its fine line; `glow` tints the top with the accent. */
-export function keySvg(body: string, glow?: string, extraDefs = ""): string {
+/** The frame every key is drawn in: the panel and its fine line; `glow` tints the top with the accent.
+ * (1.3) `edge`: the fine line in that colour instead (an off key's Off colour), when there is no glow. */
+export function keySvg(body: string, glow?: string, extraDefs = "", edge?: string): string {
   const defs = BG_DEFS
     + (glow ? `<linearGradient id="glow" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${glow}" stop-opacity="0.26"/><stop offset="0.6" stop-color="${glow}" stop-opacity="0"/></linearGradient>` : "")
     + extraDefs;
   return svgDoc(KEY, KEY,
     `<rect width="144" height="144" fill="url(#bg)"/>`
     + (glow ? `<rect width="144" height="144" fill="url(#glow)"/>` : "")
-    + `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${glow ?? P.line}" stroke-opacity="${glow ? 0.55 : 1}" stroke-width="2"/>`
+    + `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${glow ?? edge ?? P.line}" stroke-opacity="${glow ? 0.55 : edge ? 0.45 : 1}" stroke-width="2"/>`
     + body, defs);
 }
 
 /** The icon tile at the top left: tinted with the accent when active. */
-function tile(iconName: string, accent: string, active: boolean, x = 14, y = 14, size = 46): string {
+function tile(iconName: string, accent: string, active: boolean, x = 14, y = 14, size = 46, off?: string): string {
+  // (1.3) off, in the user's Off colour: tinted like a lit tile, only fainter
+  if (!active && off) {
+    return rect(x, y, size, size, 14, off, `fill-opacity="0.1" stroke="${off}" stroke-opacity="0.45" stroke-width="1.5"`)
+      + icon(iconName, x + (size - 28) / 2, y + (size - 28) / 2, 28, off, 1.9);
+  }
   return rect(x, y, size, size, 14, active ? accent : P.panel, `fill-opacity="${active ? 0.18 : 1}" stroke="${active ? accent : P.line}" stroke-opacity="${active ? 0.5 : 1}" stroke-width="1.5"`)
     + icon(iconName, x + (size - 28) / 2, y + (size - 28) / 2, 28, active ? accent : P.dim, 1.9);
 }
@@ -147,29 +155,30 @@ export interface ControlModel {
   taken?: boolean;
 }
 
-export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: string; glow?: string } {
+export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: string; glow?: string; edge?: string } {
   const i = o.info ?? SHOW_ALL;
   const l0 = lookFor(m.kind, m.icon, m.on);
   const look = { ...l0, accent: o.accent ?? l0.accent };
   const active = m.on === true && m.online;
   const word = !m.online ? "Offline" : m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—";
   const value = i.detail && m.on !== null && m.valueText && m.online ? m.valueText : "";
-  let body = (i.icon ? tile(look.icon, look.accent, active) : "") + badges({ online: m.online, battery: m.battery, hold: m.hold, allowed: m.allowed, taken: m.taken }, i.battery);
+  const off = !active && m.online ? o.offAccent : undefined;
+  let body = (i.icon ? tile(look.icon, look.accent, active, 14, 14, 46, off) : "") + badges({ online: m.online, battery: m.battery, hold: m.hold, allowed: m.allowed, taken: m.taken }, i.battery);
   // the state: a pill with a dot, then the value if there is one
   if (i.state || value) {
     const both = !!value && i.state;
     const wordFit = fitSize(i.state ? word : value, [26, 22, 18], 116, 750);
-    body += `<circle cx="20" cy="${both ? 76 : 82}" r="5" fill="${active ? look.accent : !m.online ? P.crit : P.muted}"/>`;
+    body += `<circle cx="20" cy="${both ? 76 : 82}" r="5" fill="${active ? look.accent : !m.online ? P.crit : off ?? P.muted}"/>`;
     body += text(32, both ? 84 : 90, wordFit.text, { size: wordFit.size, weight: 750, fill: active ? P.text : P.dim });
-    if (both) body += text(32 + Math.min(70, wordFit.text.length * wordFit.size * 0.62) + 6, 84, fit(value, 15, 60, 600), { size: 15, weight: 600, fill: active ? look.accent : P.muted });
+    if (both) body += text(32 + Math.min(70, wordFit.text.length * wordFit.size * 0.62) + 6, 84, fit(value, 15, 60, 600), { size: 15, weight: 600, fill: active ? look.accent : off ?? P.muted });
   }
   body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name);
-  return { body, glow: active ? look.accent : undefined };
+  return { body, glow: active ? look.accent : undefined, edge: off };
 }
 
 export function renderControl(m: ControlModel, o: ClassicOpts = {}): string {
   const b = controlBody(m, o);
-  return keySvg(b.body, b.glow);
+  return keySvg(b.body, b.glow, "", b.edge);
 }
 
 // ------------------------------------------------------------------ Reading
@@ -274,7 +283,8 @@ export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
   const span = Math.max(0.5, m.max - m.min);
   const f = (v: number | null) => (v === null ? 0 : Math.max(0, Math.min(1, (v - m.min) / span)));
   const a0 = -135, a1 = 135;
-  const accent = m.heating ? heat : P.info;
+  const off = !m.heating && m.online ? o.offAccent : undefined;
+  const accent = m.heating ? heat : off ?? P.info;
   let body = `<path d="${arcPath(cx, cy, r, a0, a1)}" fill="none" stroke="${P.line}" stroke-width="9" stroke-linecap="round"/>`;
   if (m.target !== null && m.online) {
     body += `<path d="${arcPath(cx, cy, r, a0, a0 + (a1 - a0) * f(m.target))}" fill="none" stroke="url(#arc)" stroke-width="9" stroke-linecap="round"/>`;
@@ -285,14 +295,14 @@ export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
     const ang = ((a0 + (a1 - a0) * f(m.current) - 90) * Math.PI) / 180;
     body += `<circle cx="${n(cx + (r - 15) * Math.cos(ang))}" cy="${n(cy + (r - 15) * Math.sin(ang))}" r="2.6" fill="${P.dim}"/>`;
   }
-  if (i.icon) body += m.heating ? icon("flame", 62, 26, 20, heat, 2) : icon("thermo", 62, 26, 20, P.muted, 2);
+  if (i.icon) body += m.heating ? icon("flame", 62, 26, 20, heat, 2) : icon("thermo", 62, 26, 20, off ?? P.muted, 2);
   const big = m.online ? fmtTemp(m.current) : "Offline";
   const bf = fitSize(big, [34, 28, 22], 86, 750);
   if (i.state) body += text(cx, 80, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit, anchor: "middle", spacing: -0.5 });
   if (m.online && i.detail) body += text(cx, 99, "→ " + fmtTemp(m.target) + (m.unit ? " " + m.unit : ""), { size: 14, weight: 700, fill: accent, anchor: "middle" });
   let gdefs = "";
   if (graphed) {
-    const g = graph(seriesFace(m.history!, m.target), i, 34, 104, 76, 14, m.heating ? heat : P.water, CLASSIC_INK, "hist");
+    const g = graph(seriesFace(m.history!, m.target), i, 34, 104, 76, 14, m.heating ? heat : off ?? P.water, CLASSIC_INK, "hist");
     body += g.body;
     gdefs = g.defs;
   }
@@ -304,8 +314,8 @@ export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
   }
   if (bottom) body += text(cx, 134, fit(bottom, 13, 124, 600), { size: 13, weight: 600, fill: P.dim, anchor: "middle" });
   body += badges({ hold: m.hold, allowed: m.allowed });
-  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${P.info}"/><stop offset="1" stop-color="${m.heating ? heat : P.water}"/></linearGradient>` + gdefs;
-  return keySvg(body, m.heating && m.online ? heat : undefined, defs);
+  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${off ?? P.info}"/><stop offset="1" stop-color="${m.heating ? heat : off ?? P.water}"/></linearGradient>` + gdefs;
+  return keySvg(body, m.heating && m.online ? heat : undefined, defs, off);
 }
 
 // ------------------------------------------------------------------ Dimmer / light
@@ -334,7 +344,8 @@ export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
     const op = 0.12 + 0.3 * (m.level ?? 1);
     body += `<circle cx="37" cy="37" r="30" fill="url(#halo)" fill-opacity="${n(op * 2.4)}"/>`;
   }
-  if (i.icon) body += tile(active ? "bulbOn" : "bulb", A, active);
+  const off = !active && m.online ? o.offAccent : undefined;
+  if (i.icon) body += tile(active ? "bulbOn" : "bulb", A, active, 14, 14, 46, off);
   body += badges({ online: m.online, hold: m.hold, allowed: m.allowed, taken: m.taken });
   const big = !m.online ? "Offline" : m.on === false ? "Off" : m.levelText || (m.on ? "On" : "—");
   const bf = fitSize(big, [32, 26, 20], 120, 750);
@@ -343,7 +354,7 @@ export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
   const w = 116;
   if (i.graph) {
     body += rect(14, 97, w, 7, 3.5, P.line);
-    if (m.level !== null && m.online) body += rect(14, 97, Math.max(7, w * m.level), 7, 3.5, active ? "url(#lvl)" : P.muted);
+    if (m.level !== null && m.online) body += rect(14, 97, Math.max(7, w * m.level), 7, 3.5, active ? "url(#lvl)" : off ?? P.muted);
   }
   const nm = [i.name ? m.name : "", m.room && m.showRoom && i.room ? m.room : ""].filter(Boolean).join(" · ");
   if (nm) {
@@ -354,7 +365,7 @@ export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
   }
   const defs = `<radialGradient id="halo"><stop offset="0" stop-color="${A}" stop-opacity="0.55"/><stop offset="1" stop-color="${A}" stop-opacity="0"/></radialGradient>`
     + `<linearGradient id="lvl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${o.accent ?? P.orange}"/><stop offset="1" stop-color="${o.accent ?? "#F2CC60"}"/></linearGradient>`;
-  return keySvg(body, active ? A : undefined, defs);
+  return keySvg(body, active ? A : undefined, defs, off);
 }
 
 // ------------------------------------------------------------------ Blinds
@@ -390,16 +401,17 @@ export function blindsArt(x: number, y: number, w: number, h: number, position: 
 export function renderBlinds(m: BlindsModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
   const accent = o.accent ?? P.purple;
+  const off = m.online && !m.moving && m.position !== null && m.position <= 0.5 ? o.offAccent : undefined;
   let body = `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F3A5F"/><stop offset="1" stop-color="#2D4F6E"/></linearGradient></defs>`;
-  if (i.graph) body += blindsArt(84, 18, 44, 64, m.online ? m.position : null, accent);
-  if (i.icon) body += icon(m.moving === "up" ? "up" : m.moving === "down" ? "down" : "blinds", 14, 16, 24, m.moving ? accent : P.dim, 2);
+  if (i.graph) body += blindsArt(84, 18, 44, 64, m.online ? m.position : null, off ?? accent);
+  if (i.icon) body += icon(m.moving === "up" ? "up" : m.moving === "down" ? "down" : "blinds", 14, 16, 24, m.moving ? accent : off ?? P.dim, 2);
   const big = !m.online ? "Offline" : m.position === null ? "—" : m.position >= 99.5 ? "Open" : m.position <= 0.5 ? "Closed" : Math.round(m.position) + "%";
   const bf = fitSize(big, [30, 24, 18], i.graph ? 70 : 116, 750);
   if (i.state) body += text(14, 76, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit });
   if (m.moving && i.detail) body += text(14, 96, m.moving === "up" ? "Opening…" : "Closing…", { size: 12.5, weight: 600, fill: accent });
   body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name).replace(/y="113"/, 'y="115"');
   body += badges({ hold: m.hold, allowed: m.allowed });
-  return keySvg(body, m.moving ? accent : undefined);
+  return keySvg(body, m.moving ? accent : undefined, "", off);
 }
 
 // ------------------------------------------------------------------ Scene

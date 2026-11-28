@@ -1,3 +1,5 @@
+import { cleanHex } from "./colour.js";
+
 /** ZIGMon's dashboard palette (web/index.php :root), so the deck looks like part of ZIGMon. */
 export const P = {
   bg: "#0D1117",
@@ -45,7 +47,28 @@ export const X = {
   hcGrey: "#BDBDBD",
 } as const;
 
-/** The accent colours a key may be given (besides Auto, the item's own). Settings keep the name, never a colour. */
+/** (1.3) The named colours added to 1.1's ten, chosen to read well on the dark keys. */
+export const A = {
+  indigo: "#7C8CF8",
+  sky: "#7DD3FC",
+  cyan: "#22D3EE",
+  mint: "#6EE7B7",
+  lime: "#A3E635",
+  gold: "#E3B341",
+  peach: "#FDBA74",
+  coral: "#FF8A65",
+  rose: "#FB7185",
+  magenta: "#E879F9",
+  lavender: "#C4B5FD",
+  brown: "#B08968",
+  slate: "#94A3B8",
+} as const;
+
+/**
+ * The accent colours a key may be given by name (besides Auto, the item's own, and since 1.3
+ * a colour of the user's own, "#RRGGBB"). Settings keep the name, never the colour. The first
+ * ten are 1.1's, unchanged, so keys set up then look the same.
+ */
 export const ACCENTS: Readonly<Record<string, { name: string; colour: string }>> = {
   blue: { name: "Blue", colour: P.info },
   green: { name: "Green", colour: P.ok },
@@ -57,7 +80,31 @@ export const ACCENTS: Readonly<Record<string, { name: string; colour: string }>>
   pink: { name: "Pink", colour: P.pink },
   yellow: { name: "Yellow", colour: X.yellow },
   silver: { name: "Silver", colour: X.silver },
+  indigo: { name: "Indigo", colour: A.indigo },
+  sky: { name: "Sky", colour: A.sky },
+  cyan: { name: "Cyan", colour: A.cyan },
+  mint: { name: "Mint", colour: A.mint },
+  lime: { name: "Lime", colour: A.lime },
+  gold: { name: "Gold", colour: A.gold },
+  peach: { name: "Peach", colour: A.peach },
+  coral: { name: "Coral", colour: A.coral },
+  rose: { name: "Rose", colour: A.rose },
+  magenta: { name: "Magenta", colour: A.magenta },
+  lavender: { name: "Lavender", colour: A.lavender },
+  brown: { name: "Brown", colour: A.brown },
+  slate: { name: "Slate", colour: A.slate },
+  white: { name: "White", colour: X.white },
 };
 
-/** Every colour that may appear in what the plugin draws: our own tables, nothing from the server. */
-export const ALLOWED_COLOURS: ReadonlySet<string> = new Set([...Object.values(P), ...Object.values(X)].map((c) => c.toUpperCase()));
+/** (1.3) The colour a key's setting names: one of ACCENTS by name, or the user's own "#RRGGBB" (uppercased); else none. */
+export function colourOf(setting: unknown): string | undefined {
+  if (typeof setting !== "string") return undefined;
+  if (Object.prototype.hasOwnProperty.call(ACCENTS, setting)) return ACCENTS[setting]!.colour;
+  return cleanHex(setting) ?? undefined;
+}
+
+/**
+ * Every colour that may appear in what the plugin draws: our own tables, nothing from the server.
+ * (1.3) Besides these, only a "#RRGGBB" the user put in a key's own settings (see colourOf).
+ */
+export const ALLOWED_COLOURS: ReadonlySet<string> = new Set([...Object.values(P), ...Object.values(X), ...Object.values(A)].map((c) => c.toUpperCase()));

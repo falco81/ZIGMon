@@ -19,24 +19,27 @@ export function iconPix(name: string, colour: string, size: number, tint?: strin
   return dataUri(svgDoc(size, size, body));
 }
 
-/** A slider: track, fill, knob - for brightness and positions. */
-export function sliderArt(w: number, h: number, f: number | null, colour: string, active: boolean, label = ""): string {
+/** A slider: track, fill, knob - for brightness and positions. (1.3) `off`: the user's Off colour for an unlit one. */
+export function sliderArt(w: number, h: number, f: number | null, colour: string, active: boolean, label = "", off?: string): string {
   const y = h / 2;
+  const grey = !active && off ? off : P.muted;
   let s = rect(0, y - 4, w, 8, 4, P.line);
   if (f !== null) {
     const x = Math.max(8, w * f);
-    s += rect(0, y - 4, x, 8, 4, active ? "url(#fill)" : P.muted);
-    s += `<circle cx="${n(Math.min(w - 9, Math.max(9, x)))}" cy="${n(y)}" r="9" fill="${P.text}" stroke="${active ? colour : P.muted}" stroke-width="3"/>`;
+    s += rect(0, y - 4, x, 8, 4, active ? "url(#fill)" : grey);
+    s += `<circle cx="${n(Math.min(w - 9, Math.max(9, x)))}" cy="${n(y)}" r="9" fill="${P.text}" stroke="${active ? colour : grey}" stroke-width="3"/>`;
   }
   if (label) s += text(w, y - 9, label, { size: 10, weight: 600, fill: P.dim, anchor: "end" });
   const defs = `<linearGradient id="fill" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${colour}" stop-opacity="0.55"/><stop offset="1" stop-color="${colour}"/></linearGradient>`;
   return dataUri(svgDoc(w, h, s, defs));
 }
 
-/** On/off as a pill: a dot and the word, tinted. */
-export function pillArt(w: number, h: number, word: string, colour: string, active: boolean): string {
-  const s = rect(0, 2, w, h - 4, (h - 4) / 2, active ? colour : P.panel2, `fill-opacity="${active ? 0.2 : 1}" stroke="${active ? colour : P.line}" stroke-width="1.5"`)
-    + `<circle cx="${n(h / 2 + 4)}" cy="${n(h / 2)}" r="5" fill="${active ? colour : P.muted}"/>`
+/** On/off as a pill: a dot and the word, tinted. (1.3) `off`: an unlit pill tinted with the user's Off colour. */
+export function pillArt(w: number, h: number, word: string, colour: string, active: boolean, off?: string): string {
+  const o = !active && off ? off : undefined;
+  const s = (o ? rect(0, 2, w, h - 4, (h - 4) / 2, o, `fill-opacity="0.12" stroke="${o}" stroke-opacity="0.6" stroke-width="1.5"`)
+    : rect(0, 2, w, h - 4, (h - 4) / 2, active ? colour : P.panel2, `fill-opacity="${active ? 0.2 : 1}" stroke="${active ? colour : P.line}" stroke-width="1.5"`))
+    + `<circle cx="${n(h / 2 + 4)}" cy="${n(h / 2)}" r="5" fill="${active ? colour : o ?? P.muted}"/>`
     + text(h / 2 + 16, h / 2 + 5, word, { size: 14, weight: 700, fill: active ? P.text : P.dim });
   return dataUri(svgDoc(w, h, s));
 }
@@ -49,16 +52,17 @@ export function holdArt(w: number, h: number, p: number, colour: string): string
   return dataUri(svgDoc(w, h, s));
 }
 
-export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string, hint = "", accent?: string): Feedback {
+export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string, hint = "", accent?: string, offAccent?: string): Feedback {
   const l0 = lookFor(m.kind, m.icon, m.on);
   const look = { ...l0, accent: accent ?? l0.accent };
   const active = m.on === true && m.online;
+  const off = !active && m.online ? offAccent : undefined;
   const word = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—";
   return {
-    icon: iconPix(look.icon, active ? look.accent : P.dim, 40, active ? look.accent : undefined),
+    icon: iconPix(look.icon, active ? look.accent : off ?? P.dim, 40, active ? look.accent : off),
     name: { value: m.name + (m.room && m.showRoom ? " · " + m.room : "") },
     value: { value: mainText || (m.valueText && m.on !== null && m.online && m.allowed ? word + " \u00b7 " + m.valueText : word), color: !m.online || !m.allowed ? P.crit : active ? P.text : P.dim },
-    art: mainFraction !== null ? sliderArt(176, 30, mainFraction, look.accent, active || m.on === null, "") : pillArt(176, 30, hint || word, look.accent, active),
+    art: mainFraction !== null ? sliderArt(176, 30, mainFraction, look.accent, active || m.on === null, "", off) : pillArt(176, 30, hint || word, look.accent, active, off),
   };
 }
 
@@ -85,18 +89,19 @@ function seriesFace(series: number[], target: number | null): Face {
   };
 }
 
-export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info): Feedback {
+export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info, offAccent?: string): Feedback {
   const cx = 158, cy = 54, r = 32;
   const span = Math.max(0.5, m.max - m.min);
   const f = (v: number | null) => (v === null ? 0 : Math.max(0, Math.min(1, (v - m.min) / span)));
   const a0 = -135, a1 = 135;
   const heat = accent ?? P.orange;
-  accent = m.heating ? heat : P.info;
+  const off = !m.heating && m.online ? offAccent : undefined;
+  accent = m.heating ? heat : off ?? P.info;
   let s = "";
   let gdefs = "";
   if (info?.graph && (m.history?.length ?? 0) >= 2) {
     // the measured temperature behind the words, the target dashed across it
-    const g = graph(seriesFace(m.history!, m.target), info, 4, 62, 116, 34, m.heating ? heat : P.water, STRIP_INK, "hist");
+    const g = graph(seriesFace(m.history!, m.target), info, 4, 62, 116, 34, m.heating ? heat : off ?? P.water, STRIP_INK, "hist");
     s += `<g opacity="0.55">${g.body}</g>`;
     gdefs = g.defs;
   }
@@ -106,8 +111,8 @@ export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info): Fe
     const ang = ((a0 + (a1 - a0) * f(m.target) - 90) * Math.PI) / 180;
     s += `<circle cx="${n(cx + r * Math.cos(ang))}" cy="${n(cy + r * Math.sin(ang))}" r="6" fill="${P.text}" stroke="${accent}" stroke-width="2.5"/>`;
   }
-  if (info?.icon !== false) s += m.heating ? icon("flame", cx - 12, cy - 13, 24, heat, 2) : icon("thermo", cx - 11, cy - 12, 22, P.muted, 2);
-  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${P.info}"/><stop offset="1" stop-color="${m.heating ? heat : P.water}"/></linearGradient>` + gdefs;
+  if (info?.icon !== false) s += m.heating ? icon("flame", cx - 12, cy - 13, 24, heat, 2) : icon("thermo", cx - 11, cy - 12, 22, off ?? P.muted, 2);
+  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${off ?? P.info}"/><stop offset="1" stop-color="${m.heating ? heat : off ?? P.water}"/></linearGradient>` + gdefs;
   return {
     art: dataUri(svgDoc(200, 100, s, defs)),
     name: { value: m.name },
@@ -117,18 +122,21 @@ export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info): Fe
   };
 }
 
-export function dimmerFeedback(m: DimmerModel, accent: string = P.warn): Feedback {
+export function dimmerFeedback(m: DimmerModel, accent: string = P.warn, offAccent?: string): Feedback {
   const active = m.on === true && m.online;
+  const off = !active && m.online ? offAccent : undefined;
   const big = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.on === false ? "Off" : m.levelText || (m.on ? "On" : "—");
   return {
-    icon: iconPix(active ? "bulbOn" : "bulb", active ? accent : P.dim, 36, active ? accent : undefined),
+    icon: iconPix(active ? "bulbOn" : "bulb", active ? accent : off ?? P.dim, 36, active ? accent : off),
     name: { value: m.name },
     value: { value: big, color: !m.online || !m.allowed ? P.crit : active ? P.text : P.dim },
-    art: sliderArt(176, 32, m.level, accent, active),
+    art: sliderArt(176, 32, m.level, accent, active, "", off),
   };
 }
 
-export function blindsFeedback(m: BlindsModel, accent: string = P.purple): Feedback {
+export function blindsFeedback(m: BlindsModel, accent: string = P.purple, offAccent?: string): Feedback {
+  // (1.3) closed and still: the blind in the user's Off colour
+  if (offAccent && m.online && !m.moving && m.position !== null && m.position <= 0.5) accent = offAccent;
   const body = `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F3A5F"/><stop offset="1" stop-color="#2D4F6E"/></linearGradient></defs>`
     + blindsArt(4, 6, 44, 74, m.online ? m.position : null, accent);
   const big = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.position === null ? "—" : m.position >= 99.5 ? "Open" : m.position <= 0.5 ? "Closed" : Math.round(m.position) + "%";
