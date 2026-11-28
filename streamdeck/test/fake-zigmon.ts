@@ -20,6 +20,9 @@ export interface FakeItem {
   allowed: boolean;
   hold: boolean;
   state: Record<string, unknown>;
+  /** (5.59.4, extended catalogue only) */
+  act?: Record<string, { cap: string; allowed: boolean; hold: boolean }>;
+  members?: string[];
 }
 
 export interface Seen {
@@ -74,9 +77,77 @@ export function sampleItems(): FakeItem[] {
   ];
 }
 
+/**
+ * (5.59.4) The summaries of PROTOCOL-5.59.4.md as an extended catalogue has them, and the deck SMS keys of
+ * windows/PROTOCOL-SMS.md 3. Only an extended question sees these; `timer` is in the switches' actions only then.
+ */
+export function extendedItems(now = Math.floor(Date.now() / 1000)): FakeItem[] {
+  const st = (o: Record<string, unknown>) => ({ on: null, value: null, value_text: "", attrs: {}, online: true, battery: null, at: null, ...o });
+  const sys = (a: string[]) => Object.fromEntries(a.map((x) => [x, { cap: "system", allowed: true, hold: true }]));
+  return [
+    {
+      id: "house:power", name: "House power", room: null, kind: "power", icon: "bolt", cap: "view", actions: [],
+      attrs: [{ key: "power", label: "Power", type: "number", unit: "W", min: 0, max: null }], allowed: true, hold: false,
+      state: st({ value: 1842.5, value_text: "1842.5 W", attrs: { power: 1842.5, kwh_today: 12.4, sockets_w: 1702.5, lights_w: 140, sockets_on: 4, lights_on: 3 } }),
+    },
+    {
+      id: "status:security", name: "Network security", room: null, kind: "security", icon: "shield", cap: "status", actions: ["ack"], attrs: [], allowed: true, hold: false,
+      act: sys(["ack"]),
+      state: st({ on: false, value: 2, value_text: "2 standing", attrs: { level: "crit", alerts: 2, alerts_24h: 1, blocked: 14, blocked_24h: 37, guarding: true, latest: "Suricata: … scanned … from … (…), call …456 at 12:30:45", latest_at: now - 600 } }),
+    },
+    {
+      id: "heat:group:all", name: "Heating in every room", room: null, kind: "heatgroup", icon: "heat", cap: "climate", actions: ["set"],
+      attrs: [{ key: "mode", label: "Mode", type: "enum", values: ["plan", "comfort", "eco", "night", "max", "off", "manual"] }], allowed: true, hold: false,
+      state: st({ on: true, value: "mixed", value_text: "mixed", attrs: { mode: "mixed", rooms: 4, calling: 1, min_temperature: 18.5, max_temperature: 21.0 } }),
+    },
+    {
+      id: "house:away", name: "Away / Home", room: null, kind: "away", icon: "home", cap: "climate", actions: ["toggle", "on", "off"], attrs: [], allowed: true, hold: false,
+      state: st({ on: false, value_text: "home", attrs: { away: false, away_now: false, lights_on: 3, sockets_on: 2, rooms_heating: 1 } }),
+    },
+    {
+      id: "house:openings", name: "Windows and doors", room: null, kind: "openings", icon: "contact", cap: "view", actions: [], attrs: [], allowed: true, hold: false,
+      state: st({ on: false, value: 2, value_text: "2 open", attrs: { open: 2, sensors: 6, names: ["Okno ložnice", "Balkónové dveře"], heating_loss: true } }),
+    },
+    {
+      id: "house:batteries", name: "Batteries", room: null, kind: "batteries", icon: "battery", cap: "view", actions: [], attrs: [], allowed: true, hold: false,
+      state: st({ on: false, value: 5, value_text: "5 %", attrs: { level: "crit", below_20: 2, below_10: 1, lowest_name: "Dveře", lowest_pct: 5 } }),
+    },
+    {
+      id: "status:zigbee", name: "Zigbee network", room: null, kind: "zigbee", icon: "router", cap: "status", actions: [], attrs: [], allowed: true, hold: false,
+      state: st({ on: false, value: 23, value_text: "23 online, 1 offline", attrs: { level: "warn", online_n: 23, offline_n: 1, dropped_name: "Hlavice", dropped_at: now - 3000 } }),
+    },
+    {
+      id: "room:r2", name: "Ložnice", room: "Ložnice", kind: "room", icon: "room", cap: "view", actions: [], attrs: [], allowed: true, hold: false,
+      members: ["Lampa", "zb:0xa1:state_l1", "zb:0xc3:trv", "read:0xe5:temperature", "Garage"],
+      state: st({ on: true, value: 20.5, value_text: "20.5 °C", attrs: { temperature: 20.5, humidity: 48, switches_on: 1, switches: 3, lights_on: 0, lights: 1, heated: true, heat_mode: "comfort", heat_target: 21, calling: true, members_n: 5 } }),
+    },
+    {
+      id: "status:sms", name: "Text messages", room: null, kind: "sms", icon: "message", cap: "status", actions: ["mute", "unmute"], attrs: [], allowed: true, hold: false,
+      act: sys(["mute", "unmute"]),
+      state: st({ on: true, value: 3, value_text: "3 today", attrs: { level: "ok", modem_online: true, today: 3, last_from: "…123", last_person: "Jana", last_text: "Ahoj, router … is down", last_at: now - 900, muted_until: null } }),
+    },
+    {
+      id: "sms:last", name: "Latest SMS", room: null, kind: "sms", icon: "message", cap: "sms", actions: ["run"], attrs: [], allowed: true, hold: false,
+      state: st({ value: 3, value_text: "3 today", attrs: { last_from: "Jana Nováková", last_at: now - 900, unread: 2 } }),
+    },
+    {
+      id: "sms:compose", name: "New SMS", room: null, kind: "sms", icon: "message", cap: "sms", actions: ["run"], attrs: [], allowed: true, hold: false,
+      state: st({ value: 3, value_text: "3 today", attrs: { last_from: "…123", last_at: now - 900, unread: 0 } }),
+    },
+  ];
+}
+
 export class FakeZigmon {
   enabled = true;
   items: FakeItem[] = sampleItems();
+  /** (5.59.4) hello's features; [] = a ZIGMon before 5.59.4, which knows nothing of `extended`. */
+  features: string[] = [];
+  /** (5.59.4) The summaries, seen only by an extended question (or by naming them in ids). */
+  extended: FakeItem[] = extendedItems();
+  /** (PROTOCOL-SMS.md 3) whether a desktop app linked to this Stream Deck is running. */
+  desktopApp = false;
+  /** Every question's road and whether it asked for the summaries. */
+  asked: { do: string; method: string; extended: boolean }[] = [];
   boot = 1732700000;
   /** As a ZIGMon newer than 5.59.0, which sends a reading's recent values when asked (false: as 5.59.0). */
   withHistory = true;
@@ -145,8 +216,10 @@ export class FakeZigmon {
   }
 
   setState(id: string, patch: Record<string, unknown>): void {
-    const it = this.items.find((i) => i.id === id)!;
-    it.state = { ...it.state, ...patch, attrs: { ...(it.state.attrs as object), ...((patch.attrs as object) ?? {}) } };
+    const it = [...this.items, ...this.extended].find((i) => i.id === id)!;
+    const attrs: Record<string, unknown> = { ...(it.state.attrs as object), ...((patch.attrs as object) ?? {}) };
+    for (const [k, v] of Object.entries(attrs)) if (v === undefined) delete attrs[k];
+    it.state = { ...it.state, ...patch, attrs };
     this.seq++;
     this.changes.push({ seq: this.seq, id });
     this.wake();
@@ -223,29 +296,43 @@ export class FakeZigmon {
     if (t.install !== inst) return send(401, { ok: false, error: "This Stream Deck is not known to ZIGMon" });
     for (const id of (u.searchParams.get("decks") ?? "").split(",").filter(Boolean)) if (!t.decks.has(id)) t.decks.set(id, false);
 
-    const item = (i: FakeItem) => ({ ...i });
+    const b0 = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    // (5.59.4) asked through the relay as a POST body, or straight with ?extended=1
+    const ext = this.features.includes("extended") && (b0.extended === true || u.searchParams.get("extended") === "1");
+    this.asked.push({ do: what, method: req.method ?? "", extended: b0.extended === true || u.searchParams.get("extended") === "1" });
+    const switchActions = (i: FakeItem) => (ext && i.cap === "switch" && i.actions.includes("toggle") ? [...i.actions, "timer"] : i.actions);
+    const item = (i: FakeItem) => {
+      const o: Record<string, unknown> = { ...i, actions: switchActions(i) };
+      if (!ext) {
+        delete o.act;
+        delete o.members;
+      }
+      return o;
+    };
+    const all = () => [...this.items, ...(this.features.includes("extended") ? this.extended : [])];
     switch (what) {
       case "hello":
         return send(200, {
-          ok: true, api: 1, server: "zigmon", version: "5.59.0", house: "Chalupa", boot: this.boot, seq: this.seq,
+          ok: true, api: 1, server: "zigmon", version: this.features.length ? "5.59.4" : "5.59.0", house: "Chalupa", boot: this.boot, seq: this.seq,
+          ...(this.features.length ? { features: this.features } : {}),
           install: { id: t.install, name: "OFFICE-PC", hint: "x9", caps: { view: { on: true, all: true, targets: [] }, switch: { on: true, all: false, targets: ["Lampa", "Garage"], hold: true }, dim: { on: true, all: true, targets: [], hold: false }, climate: { on: true, all: true, targets: [], hold: false }, status: { on: true } } },
           decks: [...t.decks.entries()].map(([id, approved]) => ({ id, type: 2, name: "Deck", approved })),
           plugin: this.plugin,
         });
       case "catalog":
-        return send(200, { ok: true, boot: this.boot, seq: this.seq, rooms: [{ id: "1", name: "Obývák" }, { id: "2", name: "Kitchen" }], items: this.items.map(item) });
+        return send(200, { ok: true, boot: this.boot, seq: this.seq, rooms: [{ id: "1", name: "Obývák" }, { id: "2", name: "Kitchen" }], items: (ext ? all() : this.items).map(item) });
       case "state": {
         const b = (body && typeof body === "object" ? body : {}) as { ids?: string; history?: { span?: number; points?: number } };
         const ids = (u.searchParams.get("ids") ?? b.ids ?? "").split(",");
         const items: Record<string, unknown> = {};
-        for (const i of this.items) if (ids.includes(i.id)) items[i.id] = i.state;
+        for (const i of all()) if (ids.includes(i.id)) items[i.id] = i.state;
         if (!b.history || !this.withHistory) return send(200, { ok: true, boot: this.boot, seq: this.seq, items });
         // as a ZIGMon newer than 5.59.0: the readings' recent values, thinned
         this.historyAsks.push({ ids, span: Number(b.history.span), points: Number(b.history.points) });
         const history: Record<string, unknown> = {};
         const now = Math.floor(Date.now() / 1000);
-        for (const i of this.items) {
-          if (!ids.includes(i.id) || (i.kind !== "reading" && i.kind !== "thermostat")) continue;
+        for (const i of all()) {
+          if (!ids.includes(i.id) || (i.kind !== "reading" && i.kind !== "thermostat" && i.kind !== "power")) continue;
           const v = Number((i.state as Record<string, unknown>).value ?? 20);
           const n = Math.min(48, Number(b.history.points) || 48), span = Number(b.history.span) || 86400;
           history[i.id] = { span, points: Array.from({ length: n }, (_, k) => [now - span + Math.round((k * span) / n), Math.round((v + Math.sin(k / 4) * 2) * 100) / 100]) };
@@ -253,18 +340,19 @@ export class FakeZigmon {
         return send(200, { ok: true, boot: this.boot, seq: this.seq, items, history });
       }
       case "wait": {
-        const after = Number(u.searchParams.get("after"));
-        const boot = u.searchParams.get("boot");
+        const after = Number(u.searchParams.get("after") ?? b0.after);
+        const boot = u.searchParams.get("boot") ?? (b0.boot === undefined ? null : String(b0.boot));
         if (String(this.boot) !== boot) return send(200, { ok: true, boot: this.boot, seq: this.seq, reset: true, changes: [] });
-        const ids = u.searchParams.get("ids")?.split(",");
-        const relevant = () => this.changes.filter((c) => c.seq > after && (!ids || ids.includes(c.id)));
+        const ids = (u.searchParams.get("ids") ?? (typeof b0.ids === "string" ? b0.ids : null))?.split(",");
+        const summary = new Set(this.extended.map((i) => i.id));
+        const relevant = () => this.changes.filter((c) => c.seq > after && (ids ? ids.includes(c.id) : ext || !summary.has(c.id)));
         await this.hold(this.waitMs, () => relevant().length > 0 || t.revoked);
         if (t.revoked) return send(401, { ok: false, error: "revoked", revoked: true });
         const latest = new Map<string, number>();
         for (const c of relevant()) latest.set(c.id, c.seq);
         return send(200, {
           ok: true, boot: this.boot, seq: this.seq, reset: false,
-          changes: [...latest.entries()].map(([id, seq]) => ({ seq, id, state: this.items.find((i) => i.id === id)!.state })),
+          changes: [...latest.entries()].map(([id, seq]) => ({ seq, id, state: all().find((i) => i.id === id)!.state })),
         });
       }
       case "do": {
@@ -275,14 +363,36 @@ export class FakeZigmon {
           t.decks.set(deck, false);
           return send(403, { ok: false, error: "This Stream Deck is not approved in ZIGMon yet", deck_pending: true });
         }
-        const it = this.items.find((i) => i.id === b.id);
-        if (!it || !it.allowed) return send(403, { ok: false, error: "Not allowed for this Stream Deck" });
-        if (it.hold && !(typeof b.held_ms === "number" && b.held_ms >= 1500)) return send(409, { ok: false, error: "Hold the key to confirm", hold: true });
+        const it = all().find((i) => i.id === b.id);
+        if (!it) return send(404, { ok: false, error: "No such item" });
         const a = String(b.action);
-        if (!it.actions.includes(a)) return send(400, { ok: false, error: "That item cannot " + a });
+        // (5.59.4) an action with a capability of its own: its own grant, and always held
+        const g = it.act?.[a];
+        if (g ? !g.allowed : !it.allowed) return send(403, g ? { ok: false, error: "Not allowed for this Stream Deck", allowed: false, cap: g.cap } : { ok: false, error: "Not allowed for this Stream Deck" });
+        if ((g ? g.hold : it.hold) && !(typeof b.held_ms === "number" && b.held_ms >= 1500)) return send(409, { ok: false, error: "Hold the key to confirm", hold: true });
+        const timerOk = a === "timer" && it.cap === "switch" && it.actions.includes("toggle");
+        if (!it.actions.includes(a) && !timerOk) return send(400, { ok: false, error: "That item cannot " + a });
         const s = it.state as Record<string, unknown>;
-        if (a === "toggle") this.setState(it.id, { on: !s.on });
-        else if (a === "on" || a === "off") this.setState(it.id, { on: a === "on" });
+        const attrsOf = () => ({ ...(s.attrs as Record<string, unknown>) });
+        if (a === "timer") {
+          if (typeof b.minutes !== "number" || !Number.isInteger(b.minutes) || b.minutes < 1 || b.minutes > 720) return send(400, { ok: false, error: "minutes must be 1-720" });
+          this.setState(it.id, { on: true, attrs: { off_at: Math.ceil(Date.now() / 1000) + b.minutes * 60 } });
+        } else if (a === "ack") {
+          const n = Number((s.attrs as Record<string, unknown>).alerts ?? 0);
+          if (n <= 0) return send(409, { ok: false, error: "there is no alert standing" });
+          this.setState(it.id, { value: n - 1, on: n - 1 === 0, attrs: { alerts: n - 1, level: n - 1 ? "crit" : "ok" } });
+        } else if (a === "mute") {
+          if (typeof b.minutes !== "number" || !Number.isInteger(b.minutes) || b.minutes < 15 || b.minutes > 240) return send(400, { ok: false, error: "minutes must be 15-240" });
+          this.setState(it.id, { attrs: { muted_until: Math.floor(Date.now() / 1000) + b.minutes * 60 } });
+        } else if (a === "unmute") this.setState(it.id, { attrs: { muted_until: null } });
+        else if (a === "run" && it.cap === "sms") {
+          if (!this.desktopApp) return send(409, { ok: false, error: "no desktop app linked to this Stream Deck is running" });
+          this.setState(it.id, {});
+        } else if (a === "toggle" && it.id === "house:away") {
+          const away = !(s.attrs as Record<string, unknown>).away;
+          this.setState(it.id, { on: away, value_text: away ? "away" : "home", attrs: { away } });
+        } else if (a === "toggle") this.setState(it.id, { on: !s.on, attrs: s.on ? { ...attrsOf(), off_at: undefined } : {} });
+        else if (a === "on" || a === "off") this.setState(it.id, { on: a === "on", ...(a === "off" ? { attrs: { off_at: undefined } } : {}) });
         else if (a === "set") {
           const attr = it.attrs.find((x) => x.key === b.attr);
           if (!attr) return send(400, { ok: false, error: "no such attribute" });

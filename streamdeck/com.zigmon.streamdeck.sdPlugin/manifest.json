@@ -1,9 +1,9 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "ZIGMon for Stream Deck",
-  "Version": "1.2.0.0",
+  "Version": "1.3.0.0",
   "Author": "ZIGMon",
-  "Description": "Control and watch your ZIGMon home from a Stream Deck XL or Stream Deck +: switches, lights, heating, blinds, scenes, readings and ZIGMon's own status - only what ZIGMon's administrator allowed for this very deck.",
+  "Description": "Control and watch your ZIGMon home from a Stream Deck XL or Stream Deck +: switches, lights, heating, blinds, scenes, readings, the house's power, security, windows, batteries, rooms, timers, SMS and ZIGMon's own status - only what ZIGMon's administrator allowed for this very deck.",
   "UUID": "com.zigmon.streamdeck",
   "Icon": "imgs/plugin/marketplace",
   "Category": "ZIGMon for Stream Deck",
@@ -198,6 +198,280 @@
       ],
       "UserTitleEnabled": false,
       "SupportedInMultiActions": false
+    },
+    {
+      "Name": "House power",
+      "UUID": "com.zigmon.streamdeck.power",
+      "Icon": "imgs/actions/power/icon",
+      "Tooltip": "The house's power now, today's kWh and a graph over 1 h, 6 h, 24 h or 7 days. On a dial: turn for the span. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/power.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/power/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/power.json",
+        "Icon": "imgs/actions/power/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Rotate": "Span",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Network security",
+      "UUID": "com.zigmon.streamdeck.security",
+      "Icon": "imgs/actions/security/icon",
+      "Tooltip": "The alerts standing and the addresses kept out; the shield turns red on an alert. Hold to acknowledge the latest alert. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/security.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/security/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/security/encoder",
+        "TriggerDescription": {
+          "Push": "Hold: acknowledge",
+          "Touch": "Hold the dial"
+        }
+      }
+    },
+    {
+      "Name": "Heating everywhere",
+      "UUID": "com.zigmon.streamdeck.heatgroup",
+      "Icon": "imgs/actions/heatgroup/icon",
+      "Tooltip": "How many rooms heat, their common mode and their temperatures. Press for the next mode in every room, or one mode for all. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/heatgroup.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/heatgroup/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/heatgroup/encoder",
+        "TriggerDescription": {
+          "Push": "Next mode",
+          "Rotate": "Mode",
+          "Touch": "Next mode"
+        }
+      }
+    },
+    {
+      "Name": "Away / Home",
+      "UUID": "com.zigmon.streamdeck.away",
+      "Icon": "imgs/actions/away/icon",
+      "Tooltip": "Away or home, the lights on and the rooms heating. Press to switch away, and turn off the switches you chose. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/away.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/away/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/away/encoder",
+        "TriggerDescription": {
+          "Push": "Away / home",
+          "Touch": "Away / home"
+        }
+      }
+    },
+    {
+      "Name": "Windows & doors",
+      "UUID": "com.zigmon.streamdeck.openings",
+      "Icon": "imgs/actions/openings/icon",
+      "Tooltip": "How many windows and doors are open, and which; red when one lets out the heat. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/openings.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/openings/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/openings/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Batteries",
+      "UUID": "com.zigmon.streamdeck.batteries",
+      "Icon": "imgs/actions/batteries/icon",
+      "Tooltip": "How many batteries are low, and the lowest one. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/batteries.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/batteries/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/batteries/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Zigbee network",
+      "UUID": "com.zigmon.streamdeck.zigbee",
+      "Icon": "imgs/actions/zigbee/icon",
+      "Tooltip": "The Zigbee devices online and offline, and the one that dropped off last. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/zigbee.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/zigbee/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/zigbee/encoder",
+        "TriggerDescription": {
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      }
+    },
+    {
+      "Name": "Timer",
+      "UUID": "com.zigmon.streamdeck.timer",
+      "Icon": "imgs/actions/timer/icon",
+      "Tooltip": "Turn a switch on for 5, 10, 30 minutes or as long as you like; press again to cancel. A countdown on the key. On a dial: turn for the minutes. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/timer.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/timer/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/timer.json",
+        "Icon": "imgs/actions/timer/encoder",
+        "TriggerDescription": {
+          "Push": "Start / cancel",
+          "Rotate": "Minutes",
+          "Touch": "Start / cancel"
+        }
+      }
+    },
+    {
+      "Name": "Room",
+      "UUID": "com.zigmon.streamdeck.room",
+      "Icon": "imgs/actions/room/icon",
+      "Tooltip": "A room at a glance: temperature, humidity, what is on, its heating. On a dial: turn through its items, push to switch one. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/room.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/room/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/room.json",
+        "Icon": "imgs/actions/room/encoder",
+        "TriggerDescription": {
+          "Push": "Switch it",
+          "Rotate": "Scroll",
+          "Touch": "Switch it"
+        }
+      }
+    },
+    {
+      "Name": "SMS",
+      "UUID": "com.zigmon.streamdeck.sms",
+      "Icon": "imgs/actions/sms/icon",
+      "Tooltip": "The latest SMS or a new one in the desktop app, or the SMS status with mute. Needs ZIGMon 5.59.4.",
+      "PropertyInspectorPath": "ui/sms.html",
+      "Controllers": [
+        "Keypad",
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/sms/key",
+          "ShowTitle": false
+        }
+      ],
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": true,
+      "Encoder": {
+        "layout": "layouts/summary.json",
+        "Icon": "imgs/actions/sms/encoder",
+        "TriggerDescription": {
+          "Push": "Show / write",
+          "Touch": "Show / write"
+        }
+      }
     }
   ]
 }

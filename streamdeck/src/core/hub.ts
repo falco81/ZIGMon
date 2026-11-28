@@ -61,7 +61,10 @@ export interface HubDeps {
 
 export type CommandResult =
   | { ok: true; said: string; state: ItemState | null }
-  | { ok: false; why: "hold" | "deck" | "denied" | "off" | "revoked" | "invalid" | "rate" | "net" | "offline"; message: string };
+  | { ok: false; why: "hold" | "deck" | "denied" | "off" | "revoked" | "invalid" | "rate" | "net" | "offline" | "noapp"; message: string };
+
+/** (1.3) 409 from a deck SMS key: no desktop app linked to this Stream Deck is running (windows/PROTOCOL-SMS.md 3). */
+export const NO_APP_RE = /desktop app/i;
 
 export interface Status {
   phase: Phase;
@@ -70,6 +73,8 @@ export interface Status {
   address: string;
   house: string;
   zigmon: string;
+  /** (1.3) What this ZIGMon offers beyond 5.59.3 (hello's features); empty for an older one or before hello. */
+  features: string[];
   install: { name: string; hint: string; caps: Caps } | null;
   decks: { id: string; name: string; type: number; cols: number; rows: number; approved: boolean | null }[];
   pair: { code: string; expires: number } | null;
@@ -134,6 +139,8 @@ export class Hub {
   private seriesKept = new Map<string, Series & { fetchedAt: number }>();
   private seriesTimer: ReturnType<typeof setInterval> | null = null;
   private seriesBusy = false;
+  /** (1.3) When a room's changed members last made the catalogue be fetched again. */
+  private membersAskedAt = 0;
 
   constructor(private readonly d: HubDeps) {
     this.now = d.now ?? Date.now;
@@ -255,6 +262,16 @@ export class Hub {
     return this.message;
   }
 
+  /** (1.3) Whether this ZIGMon offers a feature of 5.59.4 ("extended", "timer"): null before its hello. */
+  supports(feature: string): boolean | null {
+    return this.helloInfo ? this.helloInfo.features.includes(feature) : null;
+  }
+
+  /** (1.3) Ask for the summaries only of a ZIGMon that offers them; never of an older one. */
+  private ask(): { extended?: boolean } {
+    return this.helloInfo?.features.includes("extended") ? { extended: true } : {};
+  }
+
   /** The last values of an item (for sparklines and trends), oldest first. */
   history(id: string | undefined): number[] {
     return id ? this.hist.get(id) ?? [] : [];
@@ -277,6 +294,13 @@ export class Hub {
   private setState(id: string, st: ItemState): void {
     this.states.set(id, st);
     this.record(id, st);
+    // (1.3) a room's items changed (a device moved): its members are in the catalogue, so fetch that again
+    const it = this.items.get(id);
+    const mn = st.attrs.members_n;
+    if (it?.members && typeof mn === "number" && mn <= 200 && mn !== it.members.length && this.now() - this.membersAskedAt > 60_000) {
+      this.membersAskedAt = this.now();
+      this.catalogAt = 0;
+    }
     if (st.value === null) return;
     // a live value between two fetches goes on the end of the series ZIGMon sent
     const t = Math.round((st.at && st.at > 1e9 ? st.at : this.now() / 1000));
@@ -327,7 +351,7 @@ export class Hub {
           const part = due.slice(i, i + 40);
           let ans;
           try {
-            ans = await this.client.history(creds, part, span, SERIES_POINTS, this.d.decks());
+            ans = await this.client.history(creds, part, span, SERIES_POINTS, this.d.decks(), this.ask());
           } catch {
             break; // the next round tries again
           }
@@ -389,6 +413,7 @@ export class Hub {
       address: a?.base ?? this.g.address ?? "",
       house: this.helloInfo?.house ?? "",
       zigmon: this.helloInfo?.version ?? "",
+      features: this.helloInfo?.features ?? [],
       install: this.helloInfo ? { name: this.helloInfo.install.name, hint: this.helloInfo.install.hint, caps: this.helloInfo.install.caps } : null,
       decks: this.d.decks().map((x) => ({ id: x.id, name: x.name, type: x.type, cols: x.cols, rows: x.rows, approved: this.deckIsApproved(x.id) })),
       pair: pv.code ? { code: pv.code, expires: pv.expires! } : null,
@@ -435,7 +460,7 @@ export class Hub {
         this.watchedKey = ids.join(",");
         let answer;
         try {
-          answer = await this.client.wait(creds, this.seq, this.boot, ids, this.d.decks(), AbortSignal.any([wa.signal, signal]));
+          answer = await this.client.wait(creds, this.seq, this.boot, ids, this.d.decks(), AbortSignal.any([wa.signal, signal]), this.ask());
         } catch (e) {
           if (wa.signal.aborted && !signal.aborted) {
             // the watched list changed: fetch the new ones' states, then wait again at once
@@ -476,7 +501,7 @@ export class Hub {
     const h = await client.hello(creds, decks);
     this.helloInfo = h;
     this.deckApproved = new Map(h.decks.map((x) => [x.id, x.approved]));
-    const c = await client.catalog(creds, decks);
+    const c = await client.catalog(creds, decks, this.ask());
     this.items = new Map(c.items.map((i) => [i.id, i]));
     this.states = new Map();
     for (const i of c.items) this.setState(i.id, i.state);
@@ -493,7 +518,7 @@ export class Hub {
   private async fetchStates(creds: Credentials, ids: string[]): Promise<void> {
     if (!this.client || ids.length === 0) return;
     try {
-      const s = await this.client.state(creds, ids, this.d.decks());
+      const s = await this.client.state(creds, ids, this.d.decks(), this.ask());
       const changed = new Set<string>();
       for (const [id, st] of s.items) {
         this.setState(id, st);
@@ -706,12 +731,18 @@ export class Hub {
         const b = e.body;
         if (e.status === 409 && b.hold === true) {
           const it = this.items.get(cmd.id);
-          if (it && !it.hold) {
+          // (1.3) an action granted under a capability of its own holds by its own grant, not the item's
+          const g = it?.act?.[cmd.action];
+          if (g && !g.hold) {
+            g.hold = true;
+            this.redrawIds(new Set([cmd.id]));
+          } else if (it && !g && !it.hold) {
             it.hold = true;
             this.redrawIds(new Set([cmd.id]));
           }
           return { ok: false, why: "hold", message: "Hold the key to confirm" };
         }
+        if (e.status === 409 && NO_APP_RE.test(e.message)) return { ok: false, why: "noapp", message: e.message };
         if (e.status === 403 && b.deck_pending === true) {
           this.deckApproved.set(cmd.deck, false);
           this.redrawAll();
@@ -723,7 +754,14 @@ export class Hub {
         }
         if (e.status === 403) {
           const it = this.items.get(cmd.id);
-          if (it && it.allowed) {
+          const g = it?.act?.[cmd.action];
+          if (g) {
+            // (1.3) the item is still seen: only that action is not granted (e.g. no system capability)
+            if (g.allowed) {
+              g.allowed = false;
+              this.redrawIds(new Set([cmd.id]));
+            }
+          } else if (it && it.allowed) {
             it.allowed = false;
             this.redrawIds(new Set([cmd.id]));
           }
