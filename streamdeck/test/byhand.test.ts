@@ -8,7 +8,7 @@ import type { Hub } from "../src/core/hub.js";
 import { parseItem, parseState, type Item } from "../src/core/protocol.js";
 import { normalizeAction } from "../src/core/settings.js";
 import { THEMES } from "../src/core/themes.js";
-import { ActionView, CYCLE_SETTLE_MS, type ActionKind } from "../src/core/views.js";
+import { ActionView, CYCLE_SETTLE_MS, fits, type ActionKind } from "../src/core/views.js";
 import { MockSurface, sampleItems, until } from "./fake-zigmon.js";
 
 const cleanups: (() => unknown)[] = [];
@@ -155,5 +155,45 @@ describe("(1.3) a thermostat heats when it says so", () => {
     };
     assert.equal(key("thermostat", calling(true), {}).v.thermoModel().heating, true);
     assert.equal(key("thermostat", calling(false), {}).v.thermoModel().heating, false);
+  });
+});
+
+describe("(1.3) a scene's state, on its keys and on a Reading", () => {
+  function scene(on: boolean | null, actions = ["run", "toggle", "on", "off"]): Item {
+    return parseItem({
+      id: "scene:9", name: "Movie night", room: "Obývák", kind: "scene", icon: "scene", cap: "scenes", actions, attrs: [], allowed: true, hold: false,
+      state: { on, value: null, value_text: on === null ? null : on ? "on" : "off", attrs: { members: 3, as_set: on ? 3 : 1 }, online: true },
+    });
+  }
+  it("a Scene key draws on and off differently, and as before when ZIGMon says nothing", () => {
+    const on = key("scene", scene(true), {}).s.images.at(-1);
+    const off = key("scene", scene(false), {}).s.images.at(-1);
+    const old = key("scene", scene(null, ["run"]), {}).s.images.at(-1);
+    assert.notEqual(on, off);
+    assert.equal(off, old, "an off scene is not drawn as 1.2 drew a scene");
+    for (const t of THEMES.slice(1)) {
+      const a = key("scene", scene(true), { theme: t.id }).v.face();
+      assert.equal(a.state, "On", t.id);
+      assert.equal(a.active, true, t.id);
+    }
+  });
+  it("a press runs it unless Toggle / On / Off is chosen; Control on a scene runs it too unless chosen", async () => {
+    const sent: Sent[] = [];
+    for (const [kind, press] of [["scene", undefined], ["scene", "toggle"], ["scene", "off"], ["control", undefined], ["control", "toggle"]] as const) {
+      const k = key(kind, scene(true), press ? { press } : {}, sent);
+      k.v.keyDown();
+      k.v.keyUp();
+    }
+    await until(() => sent.length >= 5, 3000, "five commands");
+    assert.deepEqual(sent.map((c) => c.action), ["run", "toggle", "off", "run", "toggle"]);
+  });
+  it("a Reading takes a scene and says its state and how much is as it leaves it", () => {
+    const m = key("reading", scene(true), {}).v.readingModel();
+    assert.equal(m.value, "On");
+    assert.equal(m.note, "3/3 as set");
+    assert.equal(fits("reading", scene(true)), true, "a Reading does not offer a scene");
+    assert.equal(key("reading", scene(false), {}).v.readingModel().value, "Off");
+    const img = key("reading", scene(false), {}).s.svg;
+    assert.ok(img.includes("1/3 as set"), "the Classic Reading does not say it");
   });
 });

@@ -42,7 +42,8 @@ export function fits(kind: ActionKind, it: Pick<Item, "kind" | "cap" | "actions"
     case "control":
       return it.actions.length > 0 && it.kind !== "status";
     case "reading":
-      return it.kind !== "status" && (it.state.value !== null || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"));
+      // (1.3) and what is on or off: a scene (as it leaves things, or not), a rule, a group, a switch
+      return it.kind !== "status" && (it.state.value !== null || it.state.on !== null || it.kind === "scene" || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"));
     case "thermostat":
       return it.kind === "thermostat" || it.cap === "climate";
     case "dimmer":
@@ -409,6 +410,18 @@ export class ActionView implements HubView {
     else if (st.valueText) value = unit && st.valueText.endsWith(unit) ? st.valueText.slice(0, -unit.length).trim() : st.valueText;
     else value = v !== null ? formatNumber(v, -1) : st.on === true ? "On" : st.on === false ? "Off" : "";
     const showUnit = unit && !value.endsWith(unit) ? unit : "";
+    // (1.3) a thing with no number - a scene, a rule, a group: its state as the value, a word under it
+    if (v === null && !attr && (st.on !== null || it.kind === "scene")) {
+      const lk = lookFor(it.kind, it.icon);
+      const acc = this.accentOverride() ?? lk.accent;
+      const n = numOf(st.attrs.members), k = numOf(st.attrs.as_set);
+      const note = it.kind === "scene" && n !== null && n > 0 && k !== null ? `${k}/${n} as set` : st.valueText && !/^(on|off)$/i.test(st.valueText) ? st.valueText : "";
+      return {
+        label: s.label || it.name, value: st.on === true ? "On" : st.on === false ? "Off" : "—", unit: "",
+        colour: this.forced === "off" || (!this.forced && st.on !== true) ? P.dim : acc, accent: acc, icon: lk.icon, trend: null, history: [],
+        online: this.forced ? true : st.online, lit: this.forced ? this.forced === "on" : st.on === true, ...(note ? { note } : {}),
+      };
+    }
     const h = this.historyOf(it.id);
     let trend: ReadingModel["trend"] = null;
     if (h.length >= 3 && v !== null) {
@@ -577,7 +590,9 @@ export class ActionView implements HubView {
         return renderBlinds(this.blindsModel(), o);
       case "scene": {
         const it = this.item!;
-        return renderScene({ name: this.label(it), room: it.room, kind: it.kind, icon: it.icon, flash: this.sceneFlash(), hold: this.needsHold(it), allowed: it.allowed }, o);
+        const on = it.kind !== "scene" ? null : this.forced ? this.forced === "on" : (this.st ?? it.state).on;
+        return renderScene({ name: this.label(it), room: it.room, kind: it.kind, icon: it.icon, flash: this.sceneFlash(), hold: this.needsHold(it), allowed: it.allowed,
+          ...(on === true || on === false ? { on } : {}) }, o);
       }
       case "status":
         return renderStatus(this.statusModel(), o);
@@ -610,8 +625,8 @@ export class ActionView implements HubView {
         const m = this.readingModel();
         const t = m.trend === "up" ? "↑ rising" : m.trend === "down" ? "↓ falling" : m.trend === "flat" ? "→ steady" : "";
         return {
-          ...base, name: m.label, icon: m.icon, accent: m.accent, active: m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
-          stateColour: m.colour, detail: t, series: m.history,
+          ...base, name: m.label, icon: m.icon, accent: m.accent, active: m.lit ?? m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
+          stateColour: m.colour, detail: m.note ?? t, series: m.history,
         };
       }
       case "thermostat": {
@@ -646,9 +661,11 @@ export class ActionView implements HubView {
       case "scene": {
         const look = lookFor(it.kind, it.icon);
         const f = this.sceneFlash();
+        const sceneOn = it.kind !== "scene" ? null : this.forced ? this.forced === "on" : st.on;  // (1.3) a scene says whether all is as it leaves it
         return {
           ...base, name: this.label(it), icon: f === "ok" ? "check" : f === "fail" ? "close" : look.icon, accent: f === "fail" ? P.crit : f === "ok" ? P.ok : acc ?? look.accent,
-          active: f === "ok", online: true, state: f === "ok" ? "Done" : f === "fail" ? "Failed" : "Run", stateColour: f === "fail" ? P.crit : null,
+          active: f === "ok" || (!f && sceneOn === true), online: true,
+          state: f === "ok" ? "Done" : f === "fail" ? "Failed" : sceneOn === true ? "On" : sceneOn === false ? "Off" : "Run", stateColour: f === "fail" ? P.crit : null,
         };
       }
       case "status": {
@@ -951,7 +968,8 @@ export class ActionView implements HubView {
     const want = this.settings.press;
     if (!it) return (want as ItemAction) ?? "toggle";
     if (want && it.actions.includes(want as ItemAction)) return want as ItemAction;
-    for (const a of ["toggle", "run", "on"] as const) if (it.actions.includes(a)) return a;
+    // (1.3) a scene now takes toggle / on / off as well: unless chosen, a press still runs it
+    for (const a of (it.actions.includes("run") ? ["run", "toggle", "on"] : ["toggle", "run", "on"]) as readonly ItemAction[]) if (it.actions.includes(a)) return a;
     return it.actions[0] ?? null;
   }
 
@@ -966,8 +984,12 @@ export class ActionView implements HubView {
         return this.settings.byHand === true && it.cap === "switch" && (a === "toggle" || a === "on" || a === "off")
           ? { id: it.id, action: a, by_hand: true } : { id: it.id, action: a };
       }
-      case "scene":
+      case "scene": {
+        // (1.3) a scene may be switched as a switch: Toggle, On or Off, if chosen; Run otherwise, as before
+        const want = this.settings.press;
+        if ((want === "toggle" || want === "on" || want === "off") && it.actions.includes(want)) return { id: it.id, action: want };
         return it.actions.includes("run") ? { id: it.id, action: "run" } : it.actions.includes("on") ? { id: it.id, action: "on" } : null;
+      }
       case "dimmer": {
         const a: ItemAction = it.actions.includes("toggle") ? "toggle" : (this.st?.on ? "off" : "on");
         // (1.3) "By hand" on the Light action too: a light that is a switch is taken over as a Control key's

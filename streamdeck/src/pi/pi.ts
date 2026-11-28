@@ -673,6 +673,11 @@ function optionsCard(): HTMLElement | null {
       card.append(...chips("Position per click", [["5", "5%"], ["10", "10%"], ["20", "20%"], ["25", "25%"]], String(settings.step ?? "10"), "step"));
       break;
     case "scene":
+      // (1.3) ZIGMon 5.59.4: a scene is switched as a switch too
+      if (it && it.actions.includes("toggle"))
+        card.append(...chips("A press of the key / dial", [["run", "Run", "play"], ["toggle", "Toggle", "switch"], ["on", "Turn on", "power"], ["off", "Turn off", "power"]],
+          press ?? "run", "press"));
+      break;
     case "status":
       break;
   }

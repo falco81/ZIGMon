@@ -32,6 +32,8 @@ export function goldenCases(): { name: string; hash: string }[] {
       const it = parseItem(r);
       for (const kind of KINDS) {
         if (!fits(kind, it)) continue;
+        // (1.3) a Reading takes what is on or off as well; 1.0 drew only these
+        if (kind === "reading" && !(it.state.value !== null || it.kind === "reading" || it.kind === "sensor" || it.attrs.some((a) => a.type === "number"))) continue;
         OLD_SETTINGS.forEach((s, si) => {
           const hub = goldenHub([it]);
           const key = new MockSurface("Keypad", "D");

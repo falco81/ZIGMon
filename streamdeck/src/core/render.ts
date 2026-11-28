@@ -193,6 +193,10 @@ export interface ReadingModel {
   trend: "up" | "down" | "flat" | null;
   history: number[];
   online: boolean;
+  /** (1.3) A word under the value for what has no number: a scene's "2/3 as set", a rule's "enabled". */
+  note?: string;
+  /** (1.3) For a thing that is on or off: whether it is - the looks draw it lit. */
+  lit?: boolean;
 }
 
 /** A sparkline of the last values, filled underneath. */
@@ -230,6 +234,10 @@ export function renderReading(m: ReadingModel, o: ClassicOpts = {}): string {
   if (m.trend && m.online) {
     const t = m.trend === "up" ? "trendUp" : m.trend === "down" ? "trendDown" : "trendFlat";
     body += icon(t, 110, 13, 20, m.trend === "flat" ? P.muted : m.colour, 2.2);
+  }
+  if (m.note && m.online && i.detail) {
+    body += text(14, 116, fit(m.note, 14, 116, 600), { size: 14, weight: 600, fill: P.dim });
+    return keySvg(body);
   }
   if (!i.graph) return keySvg(body);
   if (i.scale) {
@@ -424,21 +432,24 @@ export interface SceneModel {
   flash: "ok" | "fail" | null;
   hold: boolean;
   allowed: boolean;
+  /** (1.3) A scene's state: everything as it leaves it (true), not (false), nothing to tell (null). */
+  on?: boolean | null;
 }
 
 export function renderScene(m: SceneModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
   const look = lookFor(m.kind, m.icon);
   const accent = m.flash === "fail" ? P.crit : m.flash === "ok" ? P.ok : o.accent ?? look.accent;
-  let body = `<circle cx="72" cy="56" r="34" fill="${accent}" fill-opacity="${m.flash ? 0.22 : 0.13}" stroke="${accent}" stroke-opacity="0.55" stroke-width="2"/>`;
+  const lit = !m.flash && m.on === true;
+  let body = `<circle cx="72" cy="56" r="34" fill="${accent}" fill-opacity="${m.flash ? 0.22 : lit ? 0.32 : 0.13}" stroke="${accent}" stroke-opacity="${lit ? 0.95 : 0.55}" stroke-width="${lit ? 3 : 2}"/>`;
   if (m.flash === "ok") body += icon("check", 52, 36, 40, P.ok, 2.4);
   else if (m.flash === "fail") body += icon("close", 52, 36, 40, P.crit, 2.4);
   else if (i.icon) body += icon(look.icon, 52, 36, 40, accent, 1.9);
-  if (!m.flash && i.state) body += `<circle cx="98" cy="82" r="11" fill="${P.bg}" stroke="${accent}" stroke-width="1.8"/>` + icon("play", 92.2, 76.2, 11.6, accent, 2);
+  if (!m.flash && i.state) body += `<circle cx="98" cy="82" r="11" fill="${lit ? accent : P.bg}" stroke="${accent}" stroke-width="1.8"/>` + icon(lit ? "check" : "play", 92.2, 76.2, 11.6, lit ? P.bg : accent, 2);
   if (!i.name) {
     if (m.room && i.room) body += text(72, 128, fit(m.room, 13, 124, 500), { size: 13, weight: 500, fill: P.dim, anchor: "middle" });
     body += badges({ hold: m.hold, allowed: m.allowed });
-    return keySvg(body, m.flash ? accent : undefined);
+    return keySvg(body, m.flash || lit ? accent : undefined);
   }
   const lines = o.fit && o.fit !== "cut" ? nameLines(m.name, o.fit, 15.5, 124, 650, 2).lines : wrap2(m.name, 15.5, 124, 650);
   if (lines.length === 2) {
@@ -449,7 +460,7 @@ export function renderScene(m: SceneModel, o: ClassicOpts = {}): string {
     if (m.room && i.room) body += text(72, 137, fit(m.room, 12, 124, 500), { size: 12, weight: 500, fill: P.dim, anchor: "middle" });
   }
   body += badges({ hold: m.hold, allowed: m.allowed });
-  return keySvg(body, m.flash ? accent : undefined);
+  return keySvg(body, m.flash || lit ? accent : undefined);
 }
 
 // ------------------------------------------------------------------ ZIGMon status
