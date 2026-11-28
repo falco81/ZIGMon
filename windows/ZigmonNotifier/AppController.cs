@@ -33,6 +33,10 @@ internal sealed class AppController : IDisposable
     private ConnectionWindow? _connectionWindow;
     private SensorsWindow? _sensorsWindow;
     private AlertSettingsWindow? _alertSettingsWindow;
+    private MessagesWindow? _messagesWindow;
+    private SmsPermissions _sms = SmsPermissions.None;
+    /// <summary>Thread key → SMS that came in there since it was last looked at.</summary>
+    private readonly Dictionary<string, int> _unread = new(StringComparer.Ordinal);
     private TrayMenu? _menu;
     private bool _disposed;
 
@@ -45,6 +49,8 @@ internal sealed class AppController : IDisposable
     public event Action? StatusChanged;
     public event Action? SensorsChanged;
     public event Action? ExitRequested;
+    /// <summary>(1.4.0) The SMS list, the contacts, the unread ones or the SMS permissions changed.</summary>
+    public event Action? SmsChanged;
 
     public AppController(Dispatcher ui)
     {
@@ -119,6 +125,10 @@ internal sealed class AppController : IDisposable
 
     public void Stop()
     {
+        SmsMessages = Array.Empty<SmsMessage>();
+        Contacts = ContactBook.Empty;
+        _unread.Clear();
+        _sms = SmsPermissions.None;
         var cts = _cts;
         _cts = null;
         _service = null;
@@ -133,6 +143,7 @@ internal sealed class AppController : IDisposable
         {
             _lastHello = hello;
             OnHello(hello);
+            SetSmsPermissions(hello.Sms, fresh: true);
         }
         if (s.Hello is { } h && h.House.Length > 0 && h.House != Settings.House)
         {
@@ -159,9 +170,256 @@ internal sealed class AppController : IDisposable
         var now = DateTimeOffset.UtcNow;
         foreach (var e in events)
         {
+            if (e.Kind == SensorKinds.Sms)
+            {
+                if (e.Sms is { } m) OnSms(m);
+                continue;
+            }
+            if (e.Kind == SensorKinds.Deck)
+            {
+                if (e.Deck is { } ask) OnDeck(ask);
+                continue;
+            }
             var d = AlertFilter.Decide(Settings, e, now);
             if (d == AlertDecision.Alert) Alerts.Show(e, test: e.Kind == SensorKinds.Test);
         }
+    }
+
+    // ---- SMS (1.4.0) -----------------------------------------------------------------------
+
+    /// <summary>What this key may do with SMS, as the last hello said (nothing from an older ZIGMon).</summary>
+    public SmsPermissions Sms => _sms;
+    public IReadOnlyList<SmsMessage> SmsMessages { get; private set; } = Array.Empty<SmsMessage>();
+    public ContactBook Contacts { get; private set; } = ContactBook.Empty;
+    /// <summary>Why the SMS list could not be read last time, or null.</summary>
+    public string? SmsProblem { get; private set; }
+    public DateTimeOffset? SmsReadAt { get; private set; }
+    /// <summary>SMS that came in since they were last looked at.</summary>
+    public int UnreadSms => _unread.Values.Sum();
+
+    public bool IsUnread(string threadKey) => _unread.ContainsKey(threadKey);
+
+    public void MarkRead(string threadKey)
+    {
+        if (!_unread.Remove(threadKey)) return;
+        SmsChanged?.Invoke();
+        StatusChanged?.Invoke();
+    }
+
+    private void SetSmsPermissions(SmsPermissions p, bool fresh)
+    {
+        bool changed = p != _sms;
+        _sms = p;
+        if (!p.Read) SmsMessages = Array.Empty<SmsMessage>();
+        if (!p.Contacts) Contacts = ContactBook.Empty;
+        if (changed)
+        {
+            SmsChanged?.Invoke();
+            StatusChanged?.Invoke();
+        }
+        if (fresh || changed)
+        {
+            _ = RefreshSmsAsync();
+            _ = RefreshContactsAsync();
+        }
+    }
+
+    /// <summary>Reads the latest SMS again (when the key may read them). Never logs what they say.</summary>
+    public async Task RefreshSmsAsync()
+    {
+        var client = _client;
+        if (client is null || !_sms.Read) return;
+        try
+        {
+            var list = await client.GetSmsAsync(100, CancellationToken.None);
+            if (!ReferenceEquals(client, _client)) return;
+            // what was just sent and is not in ZIGMon's log yet stays shown for a while
+            var now = DateTimeOffset.UtcNow;
+            var pending = SmsMessages.Where(m => m.Id.StartsWith("local-", StringComparison.Ordinal) && now - m.At < TimeSpan.FromMinutes(2)
+                && !list.Any(x => !x.Incoming && x.Text == m.Text && SmsNumbers.Key(x.Number) == SmsNumbers.Key(m.Number))).ToList();
+            SmsMessages = pending.Concat(list).OrderByDescending(m => m.At).ToList();
+            SmsProblem = null;
+            SmsReadAt = DateTimeOffset.UtcNow;
+        }
+        catch (ZigmonException ex)
+        {
+            SmsProblem = "Messages could not be read: " + ex.Message;
+            Log("sms list: " + ex.Kind);
+        }
+        catch (Exception ex)
+        {
+            SmsProblem = "Messages could not be read just now.";
+            Log("sms list: " + ex.GetType().Name);
+        }
+        SmsChanged?.Invoke();
+    }
+
+    public async Task RefreshContactsAsync()
+    {
+        var client = _client;
+        if (client is null || !_sms.Contacts) return;
+        try
+        {
+            var book = await client.GetContactsAsync(CancellationToken.None);
+            if (!ReferenceEquals(client, _client)) return;
+            Contacts = book;
+        }
+        catch (Exception ex)
+        {
+            Log("contacts: " + (ex is ZigmonException z ? z.Kind.ToString() : ex.GetType().Name));
+        }
+        SmsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Sends through ZIGMon. ZIGMon's refusals (its limits, the gateway) come back as a result
+    /// that is not Ok with ZIGMon's words, for the window to show. Logged: only that it was tried.
+    /// </summary>
+    public async Task<SmsSendResult> SendSmsAsync(IReadOnlyList<string> to, string text, string? replyTo)
+    {
+        var client = _client;
+        if (client is null || Status.State != ConnectionState.Connected)
+            return new SmsSendResult(false, 0, 0, "Not connected to ZIGMon just now – it was not sent.");
+        if (!_sms.CanSend)
+            return new SmsSendResult(false, 0, 0, _sms.Send ? "ZIGMon's SMS gateway is not set up." : "This computer may not send SMS.");
+        SmsSendResult r;
+        try
+        {
+            r = await client.SendSmsAsync(to, text, replyTo, CancellationToken.None);
+        }
+        catch (ZigmonException ex)
+        {
+            Log("sms send: " + ex.Kind);
+            return new SmsSendResult(false, 0, 0, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Log("sms send: " + ex.GetType().Name);
+            return new SmsSendResult(false, 0, 0, "Something went wrong; it may not have been sent.");
+        }
+        Log("sms send: " + (r.Ok ? "accepted" : "refused"));
+        if (r.Ok)
+        {
+            // shown at once as "Sending…"; ZIGMon's own log replaces it on the next read
+            string clean = SafeText.CleanMultiline(text, ProtocolParser.SmsTextMax);
+            var local = new List<SmsMessage>();
+            foreach (var w in to)
+            {
+                string number = SmsNumbers.Clean(w);
+                Contact? c = null;
+                if (w.StartsWith("contact:", StringComparison.Ordinal) && Contacts.Find(w["contact:".Length..]) is { } found)
+                {
+                    c = found;
+                    number = found.Numbers[0].Number;
+                }
+                else if (number.Length > 0) c = Contacts.ByNumber(number);
+                if (number.Length == 0) continue; // a group: ZIGMon's log has it soon enough
+                local.Add(new SmsMessage("local-" + Guid.NewGuid().ToString("N"), false, number,
+                    c is null ? null : new SmsContactRef(c.Id, c.Name), clean, DateTimeOffset.UtcNow, null));
+            }
+            SmsMessages = local.Concat(SmsMessages).ToList();
+            SmsChanged?.Invoke();
+            _ = RefreshSoon();
+        }
+        return r;
+    }
+
+    private async Task RefreshSoon()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        await RefreshSmsAsync();
+    }
+
+    private void OnSms(SmsMessage m)
+    {
+        if (m.Id.Length > 0 && SmsMessages.Any(x => x.Id == m.Id)) return;
+        SmsMessages = new[] { m }.Concat(SmsMessages).Take(500).ToList();
+        bool looking = _messagesWindow is { IsActive: true } w && w.CurrentKey == m.ThreadKey;
+        if (m.Incoming && !looking)
+        {
+            _unread[m.ThreadKey] = _unread.GetValueOrDefault(m.ThreadKey) + 1;
+        }
+        SmsChanged?.Invoke();
+        StatusChanged?.Invoke();
+        if (m.Incoming && Settings.ShowsSmsPopup(DateTimeOffset.UtcNow)) Alerts.ShowSms(m, asked: false);
+    }
+
+    /// <summary>A Stream Deck key asked (it was pressed on purpose: shown even while alerts are paused).</summary>
+    private async void OnDeck(DeckAsk ask)
+    {
+        if (!Settings.DeckPopups)
+        {
+            Log("stream deck ask ignored (switched off)");
+            return;
+        }
+        if (ask.What == DeckAsk.Compose)
+        {
+            if (!_sms.CanSend)
+            {
+                ShowMessages();
+                return;
+            }
+            var to = ask.To.Select(r => Recipient.ForNumber(r.Number, r.Name.Length > 0 ? r.Name : Contacts.ByNumber(r.Number)?.Name)).ToList();
+            ShowCompose(to);
+            return;
+        }
+        // "last": the latest SMS that came in, even when it was seen already
+        if (!SmsMessages.Any(m => m.Incoming)) await RefreshSmsAsync();
+        var latest = SmsMessages.Where(m => m.Incoming).OrderByDescending(m => m.At).FirstOrDefault();
+        if (latest is null)
+        {
+            ShowMessages();
+            return;
+        }
+        MarkRead(latest.ThreadKey);
+        Alerts.ShowSms(latest, asked: true);
+    }
+
+    /// <summary>Messages, on a conversation (by its key) or on a new message; brought to the front.</summary>
+    public void ShowMessages(string? threadKey = null, string? draft = null)
+    {
+        var w = MessagesWin();
+        if (threadKey is not null) w.OpenThread(threadKey, draft);
+        BringForward(w);
+        if (threadKey is not null) w.FocusText();
+    }
+
+    /// <summary>A new message to these people, the cursor in the text: the Stream Deck's "compose", or "Write an SMS…".</summary>
+    public void ShowCompose(IReadOnlyList<Recipient> to)
+    {
+        var w = MessagesWin();
+        w.ShowNew(to);
+        BringForward(w);
+        if (to.Count > 0) w.FocusText();
+    }
+
+    private MessagesWindow MessagesWin()
+    {
+        if (_messagesWindow is null)
+        {
+            var w = new MessagesWindow(this);
+            w.Closed += (_, _) => { if (ReferenceEquals(_messagesWindow, w)) _messagesWindow = null; };
+            _messagesWindow = w;
+            w.Show();
+            _ = RefreshSmsAsync();
+            _ = RefreshContactsAsync();
+        }
+        return _messagesWindow;
+    }
+
+    /// <summary>To the front with the keyboard, past Windows' foreground lock (a Stream Deck press is not our input).</summary>
+    private static void BringForward(System.Windows.Window w)
+    {
+        if (w.WindowState == System.Windows.WindowState.Minimized) w.WindowState = System.Windows.WindowState.Normal;
+        if (!w.IsVisible) w.Show();
+        w.Activate();
+        if (!Native.ForceForeground(w))
+        {
+            w.Topmost = true;  // at least on top, and the taskbar button flashes
+            w.Topmost = false;
+            Native.Flash(w);
+        }
+        w.Focus();
     }
 
     // ---- settings ------------------------------------------------------------------------
@@ -369,6 +627,7 @@ internal sealed class AppController : IDisposable
             if (!ReferenceEquals(client, _client)) return;
             _lastAutoCheck = DateTimeOffset.MinValue;
             OnHello(hello);
+            SetSmsPermissions(hello.Sms, fresh: false);
         }
         catch (Exception ex)
         {
@@ -535,6 +794,7 @@ internal sealed class AppController : IDisposable
         _connectionWindow?.Close();
         _sensorsWindow?.Close();
         _alertSettingsWindow?.Close();
+        _messagesWindow?.Close();
         _tray.Dispose();
     }
 }

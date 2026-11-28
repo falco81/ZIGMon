@@ -21,7 +21,12 @@ public partial class AlertSettingsWindow : Window
         Ui.ApplyIcon(this);
         _app = app;
         SourceInitialized += (_, _) => Native.DarkTitleBar(this);
-        Closed += (_, _) => { if (_testing) Sounds.Stop(); };
+        Closed += (_, _) =>
+        {
+            if (_testing) Sounds.Stop();
+            _app.StatusChanged -= FillSms;
+        };
+        _app.StatusChanged += FillSms;
         Build();
         Fill();
     }
@@ -70,6 +75,20 @@ public partial class AlertSettingsWindow : Window
             CloseChoices.Children.Add(pill);
         }
         BuildMonitors();
+
+        // (1.4.0) the SMS sound: the gentle ones only, once
+        foreach (var id in new[] { "chime", "doorbell", "bell", "beeps" })
+        {
+            var a = AlarmSounds.Find(id);
+            var pill = new RadioButton { GroupName = "smssound", Style = (Style)FindResource("Choice"), Content = a.Name, Tag = a.Id, ToolTip = a.Note };
+            pill.Click += (_, _) =>
+            {
+                S.SmsSoundId = a.Id;
+                _app.Save();
+                Sounds.Play(a.Id, null, S.Volume, AlertChoices.Once);
+            };
+            SmsSoundChoices.Children.Add(pill);
+        }
     }
 
     private void BuildMonitors()
@@ -115,6 +134,54 @@ public partial class AlertSettingsWindow : Window
         FrontOn.IsChecked = S.BringToFront;
         ShowFileProblem();
         _filling = false;
+        FillSms();
+    }
+
+    /// <summary>(1.4.0) The SMS switches, and what ZIGMon allows this computer.</summary>
+    private void FillSms()
+    {
+        SmsPopupsOn.IsChecked = S.SmsPopups;
+        SmsSoundOn.IsChecked = S.SmsSound;
+        DeckOn.IsChecked = S.DeckPopups;
+        SmsSoundChoices.IsEnabled = S.SmsSound;
+        SmsSoundChoices.Opacity = S.SmsSound ? 1 : 0.5;
+        foreach (RadioButton p in SmsSoundChoices.Children) p.IsChecked = (string)p.Tag == S.SmsSoundId;
+
+        var sms = _app.Sms;
+        var can = new System.Collections.Generic.List<string>();
+        if (sms.Read) can.Add("read incoming and sent SMS");
+        if (sms.Send) can.Add(sms.Ready ? "send" : "send (once ZIGMon's SMS gateway is set up)");
+        if (sms.Contacts) can.Add("see the contacts");
+        bool connected = _app.Status.State == ConnectionState.Connected;
+        SmsAllowedText.Text = !connected
+            ? "Connect to ZIGMon to see what this computer may do with SMS. These switches are kept on this computer either way."
+            : can.Count == 0
+                ? "ZIGMon does not share SMS with this computer. An administrator can allow it: Settings → Messages → Desktop app → this key → SMS (ZIGMon 5.59.4 or newer)."
+                : "ZIGMon lets this computer " + string.Join(", ", can) + ". The switches below decide what it does with that.";
+        string accent = connected && can.Count > 0 ? Palette.Ok : Palette.TextDim;
+        SmsAllowedGlyph.Text = connected && can.Count > 0 ? "\uE73E" : "\uE946";
+        SmsAllowedGlyph.Foreground = Ui.Brush(accent);
+        SmsAllowed.BorderBrush = connected && can.Count > 0 ? Ui.Brush(Palette.Ok, 0x59) : Ui.Brush(Palette.Line);
+    }
+
+    private void OnSmsPopups(object sender, RoutedEventArgs e)
+    {
+        S.SmsPopups = SmsPopupsOn.IsChecked == true;
+        _app.Save();
+    }
+
+    private void OnSmsSound(object sender, RoutedEventArgs e)
+    {
+        S.SmsSound = SmsSoundOn.IsChecked == true;
+        _app.Save();
+        FillSms();
+        if (S.SmsSound) Sounds.Play(S.SmsSoundId, null, S.Volume, AlertChoices.Once);
+    }
+
+    private void OnDeck(object sender, RoutedEventArgs e)
+    {
+        S.DeckPopups = DeckOn.IsChecked == true;
+        _app.Save();
     }
 
     private void ShowFileProblem()

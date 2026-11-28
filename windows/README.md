@@ -1,4 +1,4 @@
-# ZIGMon Notifier 1.2.0 (Windows)
+# ZIGMon Notifier 1.4.0 (Windows)
 
 A small tray app for Windows 10 and 11. It sits next to the clock, watches the
 ZIGMon sensors you choose, and when one of them triggers (motion, a door opened,
@@ -6,6 +6,11 @@ water, smoke, gas, CO, tamper, vibration, a button press - or a **condition**
 an administrator set in ZIGMon on any device, such as "temperature ≥ 25 °C" or
 "preset changed to eco") it puts an alert card on top of everything in the
 bottom-right corner of the monitor you choose, with the sound you choose.
+
+From 1.4.0 (with ZIGMon 5.59.4) it also does **SMS**: a card pops up when an
+SMS comes in, with Reply; **Messages** lists the conversations and writes new
+SMS to the contacts kept in ZIGMon; and a **Stream Deck** key can make it show
+the latest SMS or open a new message. See "SMS and the Stream Deck" below.
 
 ## Install
 
@@ -104,6 +109,43 @@ Right-click -> **Alert settings...** (everything is saved at once and remembered
   "Test alert" at once, whatever it watches, pauses or mutes (an event of kind
   `test`, device `zigmon-test`, sent to that key only).
 
+## SMS and the Stream Deck (1.4.0)
+
+Needs ZIGMon 5.59.4 or newer, and the administrator's permission per key:
+Settings → Messages → Desktop app → the key → **SMS** (read, send, contacts;
+all off by default). The app asks for nothing more than the key allows, and
+with an older ZIGMon (no `sms` in hello) every SMS feature stays hidden.
+
+* **SMS pop-up.** An incoming SMS shows as a card in the alerts' stack, on the
+  monitor chosen in Alert settings: the sender's avatar (initials), name or
+  number, the time, and the text (it scrolls when long). **Reply** opens a box
+  in the card with a counter of characters and SMS parts (160 / 153 a part; a
+  text with accents or emoji is sent as Unicode, 70 / 67 a part - counted the
+  way ZIGMon counts them); **Send** (or Ctrl+Enter), **Copy**, **Dismiss** (or
+  Esc), and a button that opens the conversation in Messages. Further SMS from
+  the same person join that card. Without the `send` permission there is no
+  Reply. While alerts are paused, no card pops up (Messages still lists them).
+* **Messages** (tray menu → Messages…; shown only when ZIGMon allows it):
+  the conversations on the left, by contact or number, newest first, with a
+  dot on new ones; the chosen one on the right as bubbles (yours on the right,
+  a failed one in red); the box to write in, with the same counter. **New**
+  (Ctrl+N, or tray menu → Write an SMS…) writes to anyone: a To box with chips
+  and an autocomplete over the contacts' names, their numbers and groups (a
+  contact with several numbers is offered once per number), the favourites as
+  quick chips, and any typed number (+420 777 123 456, 777123456 ...). After
+  Send the result is shown in words - ZIGMon's own, for example its daily
+  limits. F5 reads the list again.
+* **Stream Deck.** A Stream Deck installation is linked in ZIGMon to one or
+  more desktop apps (Settings → Messages → Stream Deck). Its latest-SMS key (`sms:last`)
+  makes this app show the latest incoming SMS (even one already seen); its
+  write-an-SMS key (`sms:compose`) opens a new message, addressed to the people the
+  key names, with the cursor in the text and the window in front.
+* **The switches** (Alert settings → Messages (SMS), kept on this computer):
+  SMS pop-ups on/off, the SMS sound on/off (Chime, Doorbell, Bell or Beeps,
+  once), and whether to answer the Stream Deck's SMS keys at all.
+* The SMS text, the numbers and the contacts are only shown, never written to
+  a file or a log; the app keeps them in memory while it runs.
+
 ## Security
 
 * **The key is read-only.** It can list the sensors it was given and receive
@@ -130,6 +172,10 @@ Right-click -> **Alert settings...** (everything is saved at once and remembered
   name from the server is cleaned (control and bidi characters removed) and
   shown as plain text only.
 * "Open ZIGMon" opens only the validated dashboard address.
+* SMS (1.4.0): with the administrator's permission the key may also read
+  ZIGMon's SMS log, read the contacts and send SMS (ZIGMon's own limits and
+  queue apply, and its log names the app). SMS text is cleaned like every
+  other string (line breaks kept) and shown only as plain text.
 * No telemetry, no other network traffic: the only server the app talks to is
   your ZIGMon - updates too (`do=update`, `do=download`, with the same key
   header, certificate rules, no redirects, and the download capped at the
@@ -141,7 +187,12 @@ Right-click -> **Alert settings...** (everything is saved at once and remembered
 ## Protocol (v1)
 
 `GET {base}/index.php?api=notifier&do=hello|sensors|wait|update|download&after=N&boot=B` with
-`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.2.0 (Windows)`.
+`X-Zigmon-Notifier: zmn_...` and `User-Agent: ZigmonNotifier/1.4.0 (Windows)`.
+1.4.0 adds (see `PROTOCOL-SMS.md`): `hello.sms` {read, send, contacts, ready};
+events of kind `sms` and of kind `deck` (key `sms`, what `last`|`compose`) in
+the wait; `GET do=sms&limit=N` (→ `/api/notifier/sms`), `GET do=contacts`
+(→ `/api/notifier/contacts`) and `POST do=sms-send` with
+`{"to": [...], "text": "...", "reply_to": "..."}` (→ `/api/notifier/sms/send`).
 The app long-polls `wait` (the server holds it up to 25 s; the client gives up at
 60 s), continues from each answer's `seq`, re-reads `sensors` on `reset` or a new
 `boot`, backs off 1, 2, 4 ... 60 s on errors, waits at least a minute on 429, and
@@ -163,7 +214,7 @@ draws the icon (`tools/IconGen`), publishes the framework-dependent single-file
 exe (deterministic: two builds give the same bytes), copies it to
 `dist/ZigmonNotifier.exe` and writes `dist/notifier.json` (one line, the exact
 bytes `tools/make-release.sh` signs into `dist/notifier.json.sig`), and zips
-`out/ZigmonNotifier-1.2.0-win-x64.zip`. `dist/` is committed with each release.
+`out/ZigmonNotifier-1.4.0-win-x64.zip`. `dist/` is committed with each release.
 
 Layout:
 

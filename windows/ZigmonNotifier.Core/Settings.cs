@@ -72,6 +72,20 @@ public sealed class NotifierSettings
     /// <summary>Install signed updates from the connected ZIGMon by themselves (off: show them, install on a click).</summary>
     public bool AutoUpdate { get; set; } = true;
 
+    // ---- SMS (1.4.0): this computer's own switches; ZIGMon's permissions still decide what is possible
+
+    /// <summary>A card pops up when an SMS comes in (off: it is only listed in Messages).</summary>
+    public bool SmsPopups { get; set; } = true;
+    /// <summary>A Stream Deck key may make this app show the latest SMS or open a new message.</summary>
+    public bool DeckPopups { get; set; } = true;
+    /// <summary>A short sound when an SMS comes in (once, at the alert volume; not the alarm).</summary>
+    public bool SmsSound { get; set; } = true;
+    /// <summary>The sound an SMS makes (an <see cref="AlarmSounds"/> id; not a file).</summary>
+    public string SmsSoundId { get; set; } = AlarmSounds.DefaultId;
+
+    /// <summary>Whether an incoming SMS should pop up now (switched on, and alerts not paused).</summary>
+    public bool ShowsSmsPopup(DateTimeOffset now) => SmsPopups && !IsPaused(now);
+
     [JsonIgnore] public bool HasConnection => !string.IsNullOrEmpty(ServerUrl) && !string.IsNullOrEmpty(ProtectedKey);
 
     public CertificatePin? GetPin()
@@ -128,6 +142,7 @@ public sealed class NotifierSettings
         if (SoundId == AlarmSounds.FileId) { if (SoundFile is null) SoundId = AlarmSounds.DefaultId; }
         else if (!AlarmSounds.IsKnown(SoundId)) SoundId = AlarmSounds.DefaultId;
         Monitor = Monitor is AlertChoices.MonitorPrimary or AlertChoices.MonitorCursor ? Monitor : CleanMonitor(Monitor);
+        if (!AlarmSounds.IsKnown(SmsSoundId)) SmsSoundId = AlarmSounds.DefaultId;
     }
 
     private static WatchedSensor CleanWatched(WatchedSensor w)

@@ -98,6 +98,15 @@ public partial class TrayMenu : Window
         SensorsNote.Text = _app.Sensors.Count > 0 ? watched + " of " + _app.Sensors.Count : watched > 0 ? watched + " watched" : "";
         SensorsRow.IsEnabled = _app.Settings.HasConnection;
 
+        var sms = _app.Sms;
+        SmsSection.Visibility = sms.Any ? Visibility.Visible : Visibility.Collapsed;
+        ComposeRow.Visibility = sms.CanSend ? Visibility.Visible : Visibility.Collapsed;
+        MessagesRow.Visibility = sms.Read || sms.CanSend ? Visibility.Visible : Visibility.Collapsed;
+        int unread = _app.UnreadSms;
+        UnreadText.Text = unread > 99 ? "99+" : unread.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        UnreadBadge.Visibility = unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+        MessagesRow.ToolTip = unread > 0 ? unread + (unread == 1 ? " new SMS" : " new SMS") : "SMS in and out, by person";
+
         bool paused = _app.IsPaused;
         PauseNote.Text = paused ? _app.PauseText : "";
         PauseGlyph.Foreground = paused ? Ui.Brush(Palette.Warn) : Ui.Brush(Palette.TextDim);
@@ -162,6 +171,8 @@ public partial class TrayMenu : Window
 
     private void OnSensors(object sender, RoutedEventArgs e) => Then(_app.ShowSensors);
     private void OnConnection(object sender, RoutedEventArgs e) => Then(_app.ShowConnection);
+    private void OnCompose(object sender, RoutedEventArgs e) => Then(() => _app.ShowCompose(System.Array.Empty<Recipient>()));
+    private void OnMessages(object sender, RoutedEventArgs e) => Then(() => _app.ShowMessages());
     private void OnTest(object sender, RoutedEventArgs e) => Then(_app.TestAlert);
     private void OnOpen(object sender, RoutedEventArgs e) => Then(_app.OpenDashboard);
     private void OnExit(object sender, RoutedEventArgs e) => Then(_app.RequestExit);
