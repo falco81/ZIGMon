@@ -106,7 +106,7 @@ plugin sám uviděl.
 
 V nastavení každé akce je oddíl **Look**:
 
-- **22 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
+- **42 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
   změny pro dříve nastavená tlačítka), *Minimal* (velká ikona), *Big value* (hodnota co
   největší), *Solid fill* (celé tlačítko se rozsvítí barvou), *Neon* (zářící obrys),
   *Ring gauge* (prstenec, který se plní), *Two-tone* (barevný pruh nad tmavým),
@@ -117,7 +117,15 @@ V nastavení každé akce je oddíl **Look**:
   *Orb* (koule, která svítí), *Tile* (dlaždice jako ikona aplikace a jedno slovo), *Gauge*
   (silný oblouk s číslem uprostřed), *Bars* (velké číslo nad sloupci), *Wave* (tlačítko se
   plní jako vodou), *Aurora* (barevný přechod, bílé písmo), *Outline* (silný okraj, když je
-  zapnuto) a *Mono* (jedna barva, obří ikona). Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
+  zapnuto) a *Mono* (jedna barva, obří ikona). A dvacet dalších stejně čistých, každý jiného
+  tvaru: *Diagonal* (barevný roh), *Hex* (šestiúhelník), *Stripe* (boční pruh, který se plní),
+  *Switch* (přepínač), *LCD* (retro displej), *Dial* (knoflík s věncem rysek), *Ticket*
+  (vstupenka s barevným ústřižkem), *Bubble* (bublina), *Frame* (rohové závorky), *Shadow*
+  (karta s barevným stínem), *Line* (hodnota na jedné čáře), *Tube* (trubice teploměru),
+  *Stamp* (obří bledá ikona), *Pastel* (jemná barva, tmavé písmo), *Carbon* (karbon a světelný
+  pruh), *Grid* (mřížka kontrolek), *Tab* (složka se jménem na oušku), *Rise* (vycházející
+  slunce), *Spot* (reflektor) a *Button* (skutečné tlačítko, zamáčknuté, když je zapnuto).
+  Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
 - **Barva**: *Auto* (podle druhu položky) nebo jedna z 10 barev.
 - **Popisek**: vlastní text místo jména položky (nejvýš 40 znaků) - u všech akcí.
 - **Dlouhá jména**: *Shrink to fit* (zmenšit, případně na dva řádky), *Two lines* (dva řádky,

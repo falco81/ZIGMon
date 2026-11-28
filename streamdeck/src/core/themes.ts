@@ -32,6 +32,27 @@ export const THEMES: readonly { id: string; name: string; hint: string }[] = [
   { id: "aurora", name: "Aurora", hint: "a glowing gradient, white type" },
   { id: "outline", name: "Outline", hint: "a thick border when on" },
   { id: "mono", name: "Mono", hint: "one colour, a giant icon" },
+  // (1.3) twenty more, as clear, each with its own shape
+  { id: "diagonal", name: "Diagonal", hint: "a coloured corner, the value across" },
+  { id: "hex", name: "Hex", hint: "a hexagon plate" },
+  { id: "stripe", name: "Stripe", hint: "a side stripe that fills" },
+  { id: "switch", name: "Switch", hint: "a toggle switch over the value" },
+  { id: "lcd", name: "LCD", hint: "a retro screen" },
+  { id: "dial", name: "Dial", hint: "a knob with a ring of ticks" },
+  { id: "ticket", name: "Ticket", hint: "a ticket with a coloured stub" },
+  { id: "bubble", name: "Bubble", hint: "the state in a speech bubble" },
+  { id: "frame", name: "Frame", hint: "corner brackets when on" },
+  { id: "shadow", name: "Shadow", hint: "a card with a coloured shadow" },
+  { id: "line", name: "Line", hint: "the value over one line" },
+  { id: "tube", name: "Tube", hint: "a thermometer tube that fills" },
+  { id: "stamp", name: "Stamp", hint: "a giant faint icon behind the value" },
+  { id: "pastel", name: "Pastel", hint: "soft colour, dark type" },
+  { id: "carbon", name: "Carbon", hint: "carbon weave and a light strip" },
+  { id: "grid", name: "Grid", hint: "a grid of lamps that fills" },
+  { id: "tab", name: "Tab", hint: "a folder with the name on its tab" },
+  { id: "rise", name: "Rise", hint: "a sun rising with the level" },
+  { id: "spot", name: "Spot", hint: "a spotlight on the value" },
+  { id: "button", name: "Button", hint: "a real key, pressed when on" },
 ];
 
 export interface Info {
@@ -79,6 +100,8 @@ export interface Face {
   battery: number | null;
   /** (1.2) Taken over by hand: rules and schedules leave it alone. */
   taken?: boolean;
+  /** (1.3) The colour an off key is drawn in, when the user chose one; none = the look's own off style. */
+  offAccent?: string | null;
 }
 
 export interface LookOpts {
@@ -570,7 +593,7 @@ function contrast(f: Face, o: LookOpts): string {
 // only where it fits without clutter: a level as a bar, an arc or a fill, a sparkline, columns.
 
 /** The one small line: the name, else the room. */
-function caption(f: Face, o: LookOpts, x: number, y: number, maxW: number, size: number, fill: string, anchor: "start" | "middle" = "middle", weight = 650, opacity?: number): string {
+function caption(f: Face, o: LookOpts, x: number, y: number, maxW: number, size: number, fill: string, anchor: "start" | "middle" | "end" = "middle", weight = 650, opacity?: number): string {
   const i = o.info;
   const t = i.name && f.name ? f.name : i.room && f.room ? f.room : "";
   if (!t) return "";
@@ -591,7 +614,7 @@ function tag(f: Face, i: Info): string {
 }
 
 /** The tag in one line, a little smaller before it is cut. */
-function tagText(x: number, y: number, t: string, maxW: number, size: number, fill: string, anchor: "start" | "middle" = "start", opacity?: number): string {
+function tagText(x: number, y: number, t: string, maxW: number, size: number, fill: string, anchor: "start" | "middle" | "end" = "start", opacity?: number): string {
   const s = fitSize(t, [size, size * 0.9, size * 0.8], maxW, 700);
   return text(x, y, s.text, { size: s.size, weight: 700, fill, anchor, opacity });
 }
@@ -999,9 +1022,570 @@ function mono(f: Face, o: LookOpts): string {
   return doc(b, defs);
 }
 
+// ------------------------------------------------------------------ (1.3) twenty more looks
+//
+// Twenty more in the spirit of the clear looks - the state big, at most one small line (the
+// name, else the room), a thermostat's target and mode and a moving blind's tag - each with its
+// own shape. Where a look would draw an off key grey, it uses the Face's offAccent when the
+// user chose one; offline stays red.
+
+/** What every one of them works out first. */
+interface Bits {
+  i: Info;
+  lit: boolean;
+  /** The accent, red when offline. */
+  c: string;
+  /** The lit colour: a reading's or a status's own colour, else the accent. */
+  base: string;
+  /** The off colour the user chose, for an off key that is online; else null. */
+  off: string | null;
+  tg: string;
+  lv: number | null;
+  alone: boolean;
+}
+
+function bits(f: Face, o: LookOpts): Bits {
+  const lit = f.active && f.online;
+  const c = f.online ? f.accent : P.crit;
+  return {
+    i: o.info, lit, c, base: lit && f.stateColour ? f.stateColour : c, off: !f.active && f.online && f.offAccent ? f.offAccent : null,
+    tg: tag(f, o.info), lv: levelOf(f, o.info), alone: iconAlone(f, o),
+  };
+}
+
+/** The big words for a band `band` high: no size so big that the words and the tag leave it. */
+function fitBig(f: Face, i: Info, sizes: number[], maxW: number, band: number, tg: string, tagSize = 13, upper = false): Big {
+  const th = tg ? tagSize + 7 : 0;
+  const ok = sizes.filter((s) => s * 0.72 + th <= band);
+  return bigWords(f, i, ok.length ? ok : [sizes[sizes.length - 1]!], maxW, 800, upper);
+}
+
+/** The big words and the tag under them in the band top..bottom: centred in it, or sat on its foot. */
+function words(f: Face, big: Big, tg: string, x: number, top: number, bottom: number, anchor: "start" | "middle" | "end", fill: string, unitFill: string, tagFill: string, tagW: number,
+  tagSize = 13, extra = "", foot = false): { svg: string; end: number } {
+  if (!big.size) return { svg: "", end: top };
+  const capH = big.size * 0.72;
+  const th = tg ? tagSize + 7 : 0;
+  const vy = (foot ? Math.max(top, bottom - capH - th) : top + Math.max(0, (bottom - top - capH - th) / 2)) + capH;
+  let svg = drawBig(big, f, x, vy, fill, unitFill, anchor, extra);
+  if (tg) svg += tagText(x, vy + th, tg, tagW, tagSize, tagFill, anchor);
+  return { svg, end: vy + th };
+}
+
+/** The colour of an off key's grey piece: the user's off colour, else the grey. */
+const greyOr = (b: Bits, grey: string) => b.off ?? grey;
+
+/** The words' colour: a reading's own, else white lit, the off colour or grey off. */
+const ink = (f: Face, b: Bits, litInk: string = P.text, grey: string = P.dim) => f.stateColour ?? (b.lit ? litInk : b.off ?? grey);
+
+/** The icon's colour: lit, offline, off. */
+const iconInk = (f: Face, b: Bits, litInk: string, grey: string = P.muted) => (b.lit ? litInk : !f.online ? P.crit : b.off ?? grey);
+
+/** A dark edge round every piece of text, so it reads over a busy paper. */
+const edged = (svg: string, c: string, w: number) => svg.replace(/<text /g, `<text stroke="${c}" stroke-width="${n(w)}" stroke-linejoin="round" paint-order="stroke" `);
+
+const MONO = "Consolas, Menlo, Courier New, monospace";
+
+/** Diagonal: a coloured corner cut across the key with the icon in it, the value set to the right below it. */
+function diagonal(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const defs = grad("tri", b.base, 1, b.base, 0.74, 1, 1);
+  const T = b.alone ? 144 : i.icon ? 86 : 58;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  s += `<path d="M 0 0 H ${T} L 0 ${T} Z" fill="${b.lit ? "url(#tri)" : greyOr(b, P.panel2)}"${!b.lit && b.off ? ' fill-opacity="0.3"' : ""}/>`;
+  s += `<path d="M ${T} 0 L 0 ${T}" stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="2.5"${f.online ? "" : ' stroke-dasharray="6 5"'}/>`;
+  if (b.lv !== null && b.lv > 0.01) s += `<path d="M 0 ${T} L ${n(T * b.lv)} ${n(T - T * b.lv)}" stroke="${b.lit ? X.white : greyOr(b, P.muted)}" stroke-width="5" stroke-linecap="round"/>`;
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.dim;
+  if (b.alone) return doc(s + icon(f.icon, 14, 14, 56, ic, 2.2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 11, 11, 30, ic, 2.2);
+  const cap = caption(f, o, 132, 134, 120, 14, P.dim, "end");
+  const top = i.icon ? 56 : 36, bottom = cap ? 114 : 134;
+  const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 132, top, bottom, "end", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Hex: a hexagon plate - filled with the accent when lit, an outline when off - the value on it. */
+function hex(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const cap = b.alone ? "" : caption(f, o, 72, 136, 124, 13.5, P.dim);
+  const R = cap ? 62 : 66, cx = 72, cy = cap ? 63 : 72, h = (R * Math.sqrt(3)) / 2;
+  const pts = [[cx - R, cy], [cx - R / 2, cy - h], [cx + R / 2, cy - h], [cx + R, cy], [cx + R / 2, cy + h], [cx - R / 2, cy + h]];
+  const d = "M " + pts.map((p) => n(p[0]!) + " " + n(p[1]!)).join(" L ") + " Z";
+  const defs = grad("hx", b.base, 1, b.base, 0.72, 1, 1);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  if (b.lit) s += `<path d="${d}" fill="url(#hx)"/><path d="${d}" fill="none" stroke="${X.white}" stroke-opacity="0.25" stroke-width="2" stroke-linejoin="round"/>`;
+  else s += `<path d="${d}" fill="${P.panel}" stroke="${f.online ? greyOr(b, P.line) : P.crit}" stroke-width="${b.off ? 3.5 : 2.5}" stroke-linejoin="round"${f.online ? "" : ' stroke-dasharray="7 5"'}/>`;
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.muted;
+  if (b.alone) return doc(s + icon(f.icon, cx - 30, cy - 30, 60, ic, 2.2) + badges(f, i, DARK, 10, true), defs);
+  if (i.icon) s += icon(f.icon, cx - 11, cy - h + 11, 22, ic, 2.2);
+  const showLv = b.lv !== null && !b.tg;
+  const top = cy - h + (i.icon ? 38 : 14), bottom = cy + h - (showLv ? 20 : 10);
+  const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 100, bottom - top, b.tg);
+  s += words(f, big, b.tg, cx, top, bottom, "middle", b.lit ? P.bg : ink(f, b), b.lit ? P.panel2 : P.muted, b.lit ? P.bg : greyOr(b, P.dim), 96).svg;
+  if (showLv) {
+    const y = cy + h - 14;
+    s += rect(cx - 30, y, 60, 5, 2.5, b.lit ? P.bg : P.line, b.lit ? 'fill-opacity="0.25"' : "") + rect(cx - 30, y, Math.max(5, 60 * b.lv!), 5, 2.5, b.lit ? P.bg : greyOr(b, P.muted));
+  }
+  s += cap;
+  s += badges(f, i, DARK, 10, true);
+  return doc(s, defs);
+}
+
+/** Stripe: a stripe down the left edge that fills with the level (whole when lit), the words beside it. */
+function stripe(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const W = 16;
+  const fillTo = b.lit ? b.lv ?? 1 : b.lv ?? (b.off ? 1 : 0);
+  const defs = grad("st", b.base, 0.75, b.base, 1);
+  let s = rect(0, 0, 144, 144, 0, P.bg) + rect(0, 0, W, 144, 0, f.online ? P.panel2 : P.crit, f.online ? "" : 'fill-opacity="0.35"');
+  if (f.online && fillTo > 0.003) s += rect(0, 144 - 144 * fillTo, W, 144 * fillTo, 0, b.lit ? "url(#st)" : greyOr(b, P.muted));
+  if (b.lit) s += rect(W, 0, 3, 144, 0, b.base, 'fill-opacity="0.3"');
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 44, 38, 68, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 30, 14, 24, ic, 2.2);
+  const cap = caption(f, o, 28, 134, 110, 14, P.dim, "start");
+  const top = i.icon ? 46 : 16, bottom = cap ? 114 : 134;
+  const big = fitBig(f, i, [54, 48, 42, 36, 32, 28, 24], 104, bottom - top, b.tg);
+  s += words(f, big, b.tg, 29, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 104).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Switch: a toggle switch - the knob right and the track lit when on, the knob at the level for a dimmer - the value under it. */
+function toggle(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const pos = b.lit ? b.lv ?? 1 : f.kind === "reading" && b.lv !== null ? b.lv : 0;
+  const [tx, ty, tw, th] = b.alone ? [14, 44, 116, 56] : [12, 14, 84, 44];
+  const r = th / 2, kr = r - 4;
+  const kx = tx + r + (tw - 2 * r) * pos, ky = ty + r;
+  const defs = grad("tr", b.base, 0.8, b.base, 1, 1, 0);
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  if (b.lit) s += rect(tx, ty + 3, tw, th, r, b.base, 'fill-opacity="0.2"');
+  s += rect(tx, ty, tw, th, r, b.lit ? "url(#tr)" : !f.online ? P.panel2 : b.off ?? P.line,
+    !f.online ? `stroke="${P.crit}" stroke-width="2" stroke-dasharray="6 4"` : !b.lit && b.off ? 'fill-opacity="0.35"' : "");
+  s += `<circle cx="${n(kx)}" cy="${n(ky + 1.5)}" r="${n(kr)}" fill="${X.night}" fill-opacity="0.35"/>`;
+  s += `<circle cx="${n(kx)}" cy="${n(ky)}" r="${n(kr)}" fill="${b.lit ? X.white : !f.online ? P.muted : b.off ?? P.dim}"/>`;
+  const is = kr * 1.15;
+  if (i.icon) s += icon(f.icon, kx - is / 2, ky - is / 2, is, b.lit ? b.base : P.bg, 2.2);
+  if (b.alone) return doc(s + badges(f, i, DARK, 12, true), defs);
+  const cap = caption(f, o, 14, 134, 118, 14, P.dim, "start");
+  const top = ty + th + 8, bottom = cap ? 114 : 134;
+  const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** LCD: a retro screen - glowing in the accent when on, dark when off - the value in capitals of a fixed width. */
+function lcd(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const cap = b.alone ? "" : caption(f, o, 72, 134, 124, 12.5, P.dim, "middle", 700);
+  const sb = cap ? 114 : 134;
+  const defs = radial("scr", [[0, b.base, 0.3], [1, b.base, 0.08]], 0.5, 0.45, 0.75)
+    + `<pattern id="sl" width="4" height="3" patternUnits="userSpaceOnUse"><rect width="4" height="1" fill="${X.black}" fill-opacity="0.35"/></pattern>`;
+  let s = rect(0, 0, 144, 144, 0, P.panel2);
+  s += rect(9, 9, 126, sb - 9, 9, X.night, `stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="6 4"'}`);
+  if (b.lit) s += rect(10, 10, 124, sb - 11, 8, "url(#scr)");
+  else if (b.off) s += rect(10, 10, 124, sb - 11, 8, b.off, 'fill-opacity="0.08"');
+  const col = b.lit ? b.base : f.stateColour ?? b.off ?? P.muted;
+  const ic = b.lit ? b.base : !f.online ? P.crit : col;
+  if (b.alone) s += icon(f.icon, 38, 32, 68, ic, 2);
+  else {
+    if (i.icon) s += icon(f.icon, 18, 17, 20, ic, 2.2);
+    const showLv = b.lv !== null && !b.tg;
+    const top = i.icon ? 40 : 18, bottom = sb - (showLv ? 22 : 10);
+    const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 110, bottom - top, b.tg, 13, true);
+    const w = words(f, big, b.tg, 72, top, bottom, "middle", col, col, col, 112);
+    const glow = b.lit ? words(f, big, b.tg, 72, top, bottom, "middle", col, col, col, 112, 13, `stroke="${b.base}" stroke-opacity="0.3" stroke-width="5" stroke-linejoin="round"`).svg.match(/^<text[\s\S]*?<\/text>/)?.[0] ?? "" : "";
+    s += (glow + w.svg).replace(/font-family="[^"]*"/g, `font-family="${MONO}"`);
+    if (showLv) {
+      const on = Math.round(b.lv! * 10);
+      for (let k = 0; k < 10; k++) s += rect(17 + k * 11.2, sb - 16, 8.4, 6, 1, k < on ? (b.lit ? b.base : greyOr(b, P.muted)) : P.panel2);
+    }
+  }
+  s += `<rect x="10" y="10" width="124" height="${n(sb - 11)}" rx="8" fill="url(#sl)"/>`;
+  s += cap;
+  s += badges(f, i, DARK, 14, true);
+  return doc(s, defs);
+}
+
+/** Dial: a knob in a ring of ticks lit as far as the level (all of them when on), the value under it. */
+function dial(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const cap = b.alone ? "" : caption(f, o, 72, 136, 124, 13.5, P.dim);
+  const bottom = cap ? 120 : 138;
+  const big = b.alone ? { words: "", unit: "", size: 0 } : fitBig(f, i, [44, 40, 36, 32, 28, 24], 124, b.tg ? 44 : 50, b.tg);
+  const need = big.size ? big.size * 0.72 + (b.tg ? 20 : 0) : 0;
+  const tTop = bottom - need - 6;
+  const Ro = b.alone ? 60 : Math.max(26, Math.min(44, (tTop - 10) / 2));
+  const cx = 72, cy = b.alone ? 72 : 6 + Ro + Math.max(0, (tTop - 10 - 2 * Ro) / 2);
+  const shown = b.lv ?? (b.lit ? 1 : 0);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  const defs = radial("knob", [[0, P.panel2, 1], [1, P.bg, 1]], 0.4, 0.35, 0.7);
+  for (let k = 0; k <= 24; k++) {
+    const a = ((-135 + (270 * k) / 24 - 90) * Math.PI) / 180;
+    const on = f.online && shown > 0.005 && k / 24 <= shown + 0.001;
+    const r0 = Ro - (k % 6 === 0 ? 10 : 7);
+    s += `<path d="M ${n(cx + r0 * Math.cos(a))} ${n(cy + r0 * Math.sin(a))} L ${n(cx + Ro * Math.cos(a))} ${n(cy + Ro * Math.sin(a))}" stroke="${on ? (b.lit ? b.base : greyOr(b, P.muted)) : !f.online ? P.crit : b.off && !b.lv ? b.off : P.line}" stroke-width="3" stroke-linecap="round"${!f.online || (!on && b.off && !b.lv) ? ' stroke-opacity="0.45"' : ""}/>`;
+  }
+  const kr = Ro - 14;
+  if (b.lit) s += `<circle cx="${cx}" cy="${n(cy)}" r="${n(kr + 3)}" fill="${b.base}" fill-opacity="0.18"/>`;
+  s += `<circle cx="${cx}" cy="${n(cy)}" r="${n(kr)}" fill="url(#knob)" stroke="${b.lit ? b.base : !f.online ? P.crit : greyOr(b, P.line)}" stroke-width="1.6"/>`;
+  const pa = ((-135 + 270 * shown - 90) * Math.PI) / 180;
+  s += `<circle cx="${n(cx + (kr - 5) * Math.cos(pa))}" cy="${n(cy + (kr - 5) * Math.sin(pa))}" r="2.6" fill="${b.lit ? b.base : greyOr(b, P.muted)}"/>`;
+  if (i.icon) {
+    const is = kr * 0.95;
+    s += icon(f.icon, cx - is / 2, cy - is / 2, is, iconInk(f, b, b.base), 2.2);
+  }
+  s += words(f, big, b.tg, 72, tTop, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 124).svg;
+  s += cap;
+  s += badges(f, i, DARK, 10, true);
+  return doc(s, defs);
+}
+
+/** Ticket: a ticket with notches and a torn line - its stub in the accent when on, holding the icon - the value on the rest. */
+function ticket(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const py = 50;
+  const defs = grad("stub", b.base, 1, b.base, 0.78, 1, 1);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  s += rect(6, 8, 132, 128, 12, P.panel2, f.online ? (b.lit ? `stroke="${b.base}" stroke-opacity="0.6" stroke-width="1.5"` : "") : `stroke="${P.crit}" stroke-width="2" stroke-dasharray="6 4"`);
+  s += `<path d="M 6 ${py} V 20 A 12 12 0 0 1 18 8 H 126 A 12 12 0 0 1 138 20 V ${py} Z" fill="${b.lit ? "url(#stub)" : !f.online ? P.panel : b.off ?? P.line}"${!b.lit && b.off ? ' fill-opacity="0.4"' : ""}/>`;
+  s += `<circle cx="6" cy="${py}" r="8" fill="${X.night}"/><circle cx="138" cy="${py}" r="8" fill="${X.night}"/>`;
+  s += `<path d="M 18 ${py} H 126" stroke="${X.night}" stroke-width="2" stroke-dasharray="4 4"/>`;
+  const showLv = b.lv !== null && !b.tg;
+  if (showLv && b.lv! > 0.01) s += `<path d="M 18 ${py} H ${n(18 + 108 * b.lv!)}" stroke="${b.lit ? X.white : greyOr(b, P.muted)}" stroke-width="3" stroke-dasharray="4 4"/>`;
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.dim;
+  if (b.alone) return doc(s + icon(f.icon, 46, 62, 52, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 13, true), defs);
+  if (i.icon) s += icon(f.icon, 17, 16, 26, ic, 2.2);
+  const cap = caption(f, o, 72, 127, 120, 13.5, P.dim);
+  const top = py + 8, bottom = cap ? 110 : 128;
+  const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
+  s += cap;
+  s += badges(f, i, DARK, 13, true);
+  return doc(s, defs);
+}
+
+/** Bubble: the state in a speech bubble - filled when on - and the name beside its tail. */
+function bubble(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const cap = b.alone ? "" : caption(f, o, 40, 128, 96, 13.5, P.dim, "start");
+  const y1 = cap ? 100 : 112, x0 = 8, y0 = 8, x1 = 136, r = 22;
+  const d = `M ${x0 + r} ${y0} H ${x1 - r} A ${r} ${r} 0 0 1 ${x1} ${y0 + r} V ${y1 - r} A ${r} ${r} 0 0 1 ${x1 - r} ${y1} H 42 L 18 ${y1 + 18} L 26 ${y1} H ${x0 + r} A ${r} ${r} 0 0 1 ${x0} ${y1 - r} V ${y0 + r} A ${r} ${r} 0 0 1 ${x0 + r} ${y0} Z`;
+  const defs = grad("bub", b.base, 1, b.base, 0.76, 1, 1);
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  s += b.lit ? `<path d="${d}" fill="url(#bub)"/>`
+    : `<path d="${d}" fill="${P.panel2}" stroke="${f.online ? greyOr(b, P.line) : P.crit}" stroke-width="${b.off ? 3 : 2}" stroke-linejoin="round"${f.online ? "" : ' stroke-dasharray="7 5"'}/>`;
+  const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.muted;
+  if (b.alone) return doc(s + icon(f.icon, 42, 30, 60, ic, 2.2) + badges(f, i, DARK, 14, true), defs);
+  if (i.icon) s += icon(f.icon, 20, 18, 22, ic, 2.2);
+  const showLv = b.lv !== null && !b.tg;
+  const top = i.icon ? 42 : 18, bottom = y1 - (showLv ? 20 : 8);
+  const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 112, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", b.lit ? P.bg : ink(f, b), b.lit ? P.panel2 : P.muted, b.lit ? P.bg : greyOr(b, P.dim), 110).svg;
+  if (showLv) s += rect(34, y1 - 15, 76, 5, 2.5, b.lit ? P.bg : P.line, b.lit ? 'fill-opacity="0.25"' : "") + rect(34, y1 - 15, Math.max(5, 76 * b.lv!), 5, 2.5, b.lit ? P.bg : greyOr(b, P.muted));
+  s += cap;
+  s += badges(f, i, DARK, 14, true);
+  return doc(s, defs);
+}
+
+/** Frame: corner brackets round the words - thick in the accent when on, thin when off - the level along the foot. */
+function brackets(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  if (b.lit) s += rect(10, 10, 124, 124, 14, b.base, 'fill-opacity="0.07"');
+  const col = b.lit ? b.base : !f.online ? P.crit : b.off ?? P.muted;
+  const w = b.lit ? 6 : b.off ? 4 : 3, L = 28, a = 10, z = 134, q = 8;
+  const arms = [
+    `M ${a} ${a + L} V ${a + q} Q ${a} ${a} ${a + q} ${a} H ${a + L}`, `M ${z - L} ${a} H ${z - q} Q ${z} ${a} ${z} ${a + q} V ${a + L}`,
+    `M ${z} ${z - L} V ${z - q} Q ${z} ${z} ${z - q} ${z} H ${z - L}`, `M ${a + L} ${z} H ${a + q} Q ${a} ${z} ${a} ${z - q} V ${z - L}`,
+  ];
+  s += `<path d="${arms.join(" ")}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"${f.online ? "" : ' stroke-dasharray="7 5"'}/>`;
+  const showLv = b.lv !== null && !b.tg;
+  if (showLv) s += `<path d="M 48 ${z} H 96" stroke="${P.line}" stroke-width="3" stroke-linecap="round"/>` + (b.lv! > 0.01 ? `<path d="M 48 ${z} H ${n(48 + 48 * b.lv!)}" stroke="${b.lit ? b.base : greyOr(b, P.muted)}" stroke-width="3" stroke-linecap="round"/>` : "");
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 38, 38, 68, ic, 2) + badges(f, i, DARK, 14, true));
+  if (i.icon) s += icon(f.icon, 60, 20, 24, ic, 2.2);
+  const cap = caption(f, o, 72, 122, 108, 13.5, b.lit ? P.text : P.dim);
+  const top = i.icon ? 50 : 22, bottom = cap ? 104 : 124;
+  const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 108, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 108).svg;
+  s += cap;
+  s += badges(f, i, DARK, 14, true);
+  return doc(s);
+}
+
+/** Shadow: a card with a hard shadow under it - in the accent when on, a grey line when off. */
+function shadow(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  s += rect(18, 18, 118, 118, 16, f.online ? (b.lit ? b.base : b.off ?? P.line) : P.crit, f.online ? "" : 'fill-opacity="0.35"');
+  s += rect(8, 8, 118, 118, 16, P.panel2, `stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="6 4"'}`);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 34, 34, 66, ic, 2) + badges(f, i, DARK, 14, true));
+  if (i.icon) s += icon(f.icon, 20, 20, 24, ic, 2.2);
+  const cap = caption(f, o, 20, 115, 100, 13.5, P.dim, "start");
+  const showLv = b.lv !== null && !b.tg;
+  const bar = cap ? 98 : 110;
+  const top = i.icon ? 50 : 22, bottom = (cap ? 98 : 116) - (showLv ? 8 : 0);
+  const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 100, bottom - top, b.tg);
+  s += words(f, big, b.tg, 19, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 100).svg;
+  if (showLv) s += rect(20, bar, 94, 4, 2, P.line) + rect(20, bar, Math.max(4, 94 * b.lv!), 4, 2, b.lit ? b.base : greyOr(b, P.muted));
+  s += cap;
+  s += badges(f, i, DARK, 14, true);
+  return doc(s);
+}
+
+/** Line: nothing but the value standing on one line - the accent's, as long as the level, when on. */
+function line(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) {
+    s += icon(f.icon, 38, 28, 68, ic, 2) + rect(30, 112, 84, 4, 2, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.line);
+    return doc(s + badges(f, i, DARK, 12, true));
+  }
+  if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
+  const cap = caption(f, o, 14, 134, 120, 14, P.dim, "start");
+  const uy = cap ? 104 : 122;
+  const top = i.icon ? 44 : 16, bottom = uy - 10;
+  const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120, 13, "", true).svg;
+  s += rect(14, uy, 116, b.off ? 3 : 2, 1, !f.online ? P.crit : b.off ?? P.line);
+  const len = b.lit ? b.lv ?? 1 : b.lv ?? 0;
+  if (f.online && len > 0.005) s += rect(14, uy - 1, Math.max(4, 116 * len), 4, 2, b.lit ? b.base : greyOr(b, P.muted));
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s);
+}
+
+/** Tube: a thermometer tube at the side, filled as far as the level (most of the way when on), the value beside it. */
+function tube(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const tx = 106, tw = 18, t0 = b.alone ? 20 : 40, t1 = b.alone ? 104 : 96, by = t1 + 10, br = 12;
+  const h = b.lv ?? (b.lit ? 0.72 : 0);
+  const col = b.lit ? b.base : !f.online ? P.crit : b.off ?? (b.lv !== null ? P.muted : P.line);
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  s += rect(tx, t0, tw, t1 - t0 + 6, tw / 2, P.panel2, `stroke="${P.line}" stroke-width="1.5"`);
+  s += `<circle cx="${tx + tw / 2}" cy="${by}" r="${br + 1.5}" fill="${P.panel2}" stroke="${P.line}" stroke-width="1.5"/>`;
+  if (f.online && h > 0.003) s += rect(tx + 4, t0 + 4 + (t1 - t0 - 4) * (1 - h), tw - 8, (t1 - t0 - 4) * h + 8, (tw - 8) / 2, col);
+  s += `<circle cx="${tx + tw / 2}" cy="${by}" r="${br - 2}" fill="${col}"${f.online ? "" : ' fill-opacity="0.5"'}/>`;
+  for (let k = 1; k <= 4; k++) s += `<path d="M ${tx - 8} ${n(t0 + ((t1 - t0) * k) / 5)} H ${tx - 3}" stroke="${P.line}" stroke-width="2" stroke-linecap="round"/>`;
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 14, 42, 60, ic, 2) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
+  const cap = caption(f, o, 13, 136, 120, 14, P.dim, "start");
+  const top = i.icon ? 44 : 16, bottom = cap ? 116 : 134;
+  const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 88, bottom - top, b.tg);
+  s += words(f, big, b.tg, 12, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 88).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s);
+}
+
+/** Stamp: the icon giant and faint, cut off by the edge - in the accent when on - with the value over it. */
+function stamp(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, P.bg);
+  if (b.alone) return doc(s + icon(f.icon, 30, 30, 84, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += `<g opacity="${b.lit ? 0.32 : !f.online ? 0.22 : b.off ? 0.3 : 1}">${icon(f.icon, 50, 40, 112, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.panel2, 2.6)}</g>`;
+  let defs = "";
+  if (i.graph && f.online && f.series.length >= 2) {
+    // a reading's history, faint, across the foot behind the words
+    const g = graph(f, { ...i, scale: false }, -2, 84, 148, 34, f.stateColour ?? b.c, DARK, "g");
+    s += `<g opacity="0.4">${g.body}</g>`;
+    defs = g.defs;
+  }
+  // the mark at the top: as long as the level, when there is one
+  if (b.lv !== null) s += rect(14, 16, 88, 6, 3, P.panel2) + rect(14, 16, Math.max(6, 88 * b.lv), 6, 3, b.lit ? b.base : b.off ?? P.muted);
+  else s += rect(14, 16, 26, 6, 3, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.line);
+  const cap = caption(f, o, 14, 134, 120, 14, b.lit ? P.text : P.dim, "start");
+  const top = 30, bottom = cap ? 114 : 134;
+  const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.dim, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Pastel: a soft wash of the accent on white paper with dark type; off, plain grey paper. */
+function pastel(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  let s = rect(0, 0, 144, 144, 0, X.white);
+  s += b.lit ? rect(0, 0, 144, 144, 0, b.base, 'fill-opacity="0.32"') : b.off ? rect(0, 0, 144, 144, 0, b.off, 'fill-opacity="0.2"') : rect(0, 0, 144, 144, 0, X.paper2);
+  s += `<circle cx="126" cy="8" r="56" fill="${X.white}" fill-opacity="${b.lit ? 0.4 : 0.55}"/>`;
+  if (!f.online) s += `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${X.inkCrit}" stroke-width="2.5" stroke-dasharray="7 5"/>`;
+  const ic = b.lit ? X.ink : !f.online ? X.inkCrit : b.off ?? X.inkMuted;
+  if (b.alone) return doc(s + `<circle cx="72" cy="72" r="46" fill="${X.white}"/>` + icon(f.icon, 44, 44, 56, ic, 2.2) + badges(f, i, PAPER, 12, true));
+  if (i.icon) s += `<circle cx="33" cy="33" r="20" fill="${X.white}"/>` + icon(f.icon, 21, 21, 24, ic, 2.2);
+  const cap = caption(f, o, 14, 134, 120, 14, X.inkDim, "start");
+  const top = i.icon ? 62 : 18, bottom = cap ? 114 : 132;
+  const big = fitBig(f, i, [50, 44, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 13, top, bottom, "start", b.lit ? X.ink : f.stateColour ?? (b.off ? X.ink : X.inkDim), X.inkDim, b.lit ? X.ink : X.inkDim, 120).svg;
+  if (b.lv !== null) s += rect(0, 140, 144, 4, 0, X.paperLine) + rect(0, 140, Math.max(4, 144 * b.lv), 4, 0, b.lit ? b.base : b.off ?? X.inkMuted);
+  s += cap;
+  s += badges(f, i, PAPER, 12, true);
+  return doc(s);
+}
+
+/** Carbon: a carbon weave with a light strip along the foot - lit in the accent as far as the level - and slanted type. */
+function carbon(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const defs = `<pattern id="cf" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="${P.bg}"/><rect width="4" height="4" fill="${P.panel2}"/><rect x="4" y="4" width="4" height="4" fill="${P.panel2}"/></pattern>`
+    + grad("sh", X.white, 0.12, X.white, 0);
+  let s = `<rect width="144" height="144" fill="url(#cf)"/><rect width="144" height="72" fill="url(#sh)"/>`;
+  const len = b.lit ? b.lv ?? 1 : b.lv ?? (b.off ? 1 : 0);
+  s += rect(14, 130, 116, 6, 3, X.night);
+  if (b.lit && len > 0.005) s += rect(10, 126, Math.max(14, 116 * len + 8), 14, 7, b.base, 'fill-opacity="0.25"');
+  if (len > 0.005 && f.online) s += rect(14, 130, Math.max(6, 116 * len), 6, 3, b.lit ? b.base : greyOr(b, P.muted));
+  if (!f.online) s += rect(14, 130, 116, 6, 3, P.crit, 'fill-opacity="0.6"');
+  const ic = iconInk(f, b, b.base, P.dim);
+  if (b.alone) return doc(s + icon(f.icon, 36, 28, 72, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
+  const cap = caption(f, o, 14, 120, 120, 13.5, P.dim, "start");
+  const top = i.icon ? 44 : 16, bottom = cap ? 102 : 120;
+  const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 118, bottom - top, b.tg);
+  s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b, X.white), P.dim, b.lit ? b.base : greyOr(b, P.dim), 118, 13, 'font-style="italic"').svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Grid: a grid of lamps that light row by row as far as the level (all of them when on), the words edged over them. */
+function grid(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const shown = b.lv ?? (b.lit ? 1 : 0);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  for (let r = 0; r < 8; r++) {
+    const on = f.online && shown > 0.005 && (7 - r + 0.5) / 8 <= shown + 0.0625;
+    for (let k = 0; k < 8; k++) {
+      const fill = on ? (b.lit ? b.base : greyOr(b, P.muted)) : !f.online && (r + k) % 3 === 0 ? P.crit : b.off ?? P.panel2;
+      const op = on ? (b.lit ? 0.6 : 0.55) : !f.online ? 0.35 : b.off ? 0.3 : 1;
+      s += `<circle cx="${16 + k * 16}" cy="${16 + r * 16}" r="5" fill="${fill}"${op < 1 ? ` fill-opacity="${n(op)}"` : ""}/>`;
+    }
+  }
+  const ic = iconInk(f, b, b.lit ? X.white : b.base);
+  if (b.alone) return doc(s + `<circle cx="72" cy="72" r="40" fill="${X.night}" fill-opacity="0.8"/>` + icon(f.icon, 44, 44, 56, ic, 2.2) + badges(f, i, DARK, 12, true));
+  if (i.icon) s += `<circle cx="26" cy="26" r="16" fill="${X.night}" fill-opacity="0.85"/>` + icon(f.icon, 15, 15, 22, ic, 2.2);
+  const cap = caption(f, o, 72, 134, 124, 14, b.lit ? P.text : P.dim, "middle", 700);
+  const top = i.icon ? 44 : 14, bottom = cap ? 114 : 132;
+  const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 124, bottom - top, b.tg);
+  s += edged(words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b, X.white), b.lit ? P.text : P.muted, b.lit ? X.white : greyOr(b, P.dim), 124).svg + cap, X.night, 6);
+  s += badges(f, i, DARK, 12, true);
+  return doc(s);
+}
+
+/** Tab: a folder with the name on its tab - the tab in the accent when on - and the value in the folder. */
+function tab(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const t = b.alone ? "" : i.name && f.name ? f.name : i.room && f.room ? f.room : "";
+  const nl = t ? nameLines(t, o.fit, 13.5, 100, 700, 1) : null;
+  // the tab's right end: past the name, at most the folder's edge
+  const tw = Math.min(116, nl ? Math.max(40, textWidth(nl.lines[0]!, nl.size, 700) + 22) : 40);
+  const tabFill = b.lit ? b.base : !f.online ? P.panel2 : b.off ?? P.line;
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  s += `<path d="M 8 36 V 18 A 10 10 0 0 1 18 8 H ${n(8 + tw - 6)} Q ${n(8 + tw)} 8 ${n(8 + tw + 4)} 16 L ${n(8 + tw + 12)} 36 Z" fill="${tabFill}"/>`;
+  s += rect(8, 30, 128, 106, 14, b.lit ? P.panel2 : P.panel, `stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="6 4"'}`);
+  s += rect(9, 31, Math.min(126, tw + 10), 6, 0, tabFill);
+  if (nl) s += text(20, 26, nl.lines[0]!, { size: nl.size, weight: 700, fill: b.lit || b.off ? P.bg : P.dim });
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 50, 64, ic, 2) + badges(f, i, DARK, 40, true));
+  if (i.icon) s += icon(f.icon, 20, 44, 22, ic, 2.2);
+  const showLv = b.lv !== null && !b.tg;
+  const top = i.icon ? 72 : 44, bottom = showLv ? 116 : 128;
+  const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 112, bottom - top, b.tg);
+  s += words(f, big, b.tg, 19, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 112).svg;
+  if (showLv) s += rect(20, 122, 104, 4, 2, P.line) + rect(20, 122, Math.max(4, 104 * b.lv!), 4, 2, b.lit ? b.base : greyOr(b, P.muted));
+  s += badges(f, i, DARK, 40, true);
+  return doc(s);
+}
+
+/** Rise: a sun rising from the foot of the key - as high as the level, glowing when on - the value in the sky above it. */
+function rise(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const H = b.lit ? 26 + 24 * (b.lv ?? 1) : b.lv !== null ? 12 + 24 * b.lv : 12;
+  const R = 96, cy = 144 - H + R;
+  const defs = grad("sky", P.panel2, 1, X.night, 1) + radial("sun", [[0, b.base, 1], [1, b.base, 0.7]], 0.5, 0.1, 0.6);
+  let s = rect(0, 0, 144, 144, 0, "url(#sky)");
+  if (b.lit) s += rect(0, 0, 144, 144, 0, b.base, 'fill-opacity="0.08"') + `<circle cx="72" cy="${n(cy)}" r="${R + 14}" fill="${b.base}" fill-opacity="0.14"/>`;
+  s += `<circle cx="72" cy="${n(cy)}" r="${R}" fill="${b.lit ? "url(#sun)" : !f.online ? P.crit : b.off ?? (b.lv !== null ? P.muted : P.line)}"${b.lit ? "" : ` fill-opacity="${!f.online ? 0.4 : b.off ? 0.5 : 1}"`}/>`;
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 22, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 14, 12, 22, ic, 2.2);
+  const cap = caption(f, o, 72, 136, 124, 13.5, b.lit ? P.bg : P.text, "middle", 700);
+  const top = i.icon ? 38 : 14, bottom = Math.min(144 - H, cap ? 118 : 138) - 6;
+  const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 124, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 124).svg;
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Spot: a spotlight from the top shining down on the value - bright in the accent when on, faint when off. */
+function spot(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const beam = b.lit ? b.base : b.off ?? P.panel2;
+  const defs = grad("cone", beam, b.lit ? 0.55 : b.off ? 0.35 : 0.9, beam, 0);
+  let s = rect(0, 0, 144, 144, 0, X.night);
+  s += `<path d="M 60 6 L 84 6 L 138 118 L 6 118 Z" fill="url(#cone)"/>`;
+  s += `<ellipse cx="72" cy="118" rx="62" ry="9" fill="${beam}" fill-opacity="${b.lit ? 0.32 : b.off ? 0.25 : 0.7}"/>`;
+  s += rect(54, 0, 36, 8, 3, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.line);
+  const ic = iconInk(f, b, b.base);
+  if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
+  if (i.icon) s += icon(f.icon, 14, 12, 22, ic, 2.2);
+  const cap = caption(f, o, 72, 136, 124, 13.5, P.dim);
+  const top = i.icon ? 38 : 16, bottom = cap ? 112 : 130;
+  const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
+  if (b.lv !== null && !b.tg) s += rect(36, 140, 72, 3, 1.5, P.line) + rect(36, 140, Math.max(3, 72 * b.lv), 3, 1.5, b.lit ? b.base : greyOr(b, P.muted));
+  s += cap;
+  s += badges(f, i, DARK, 12, true);
+  return doc(s, defs);
+}
+
+/** Button: a real key - raised when off, pressed in with a glow in the accent when on - with lamps for the level. */
+function button(f: Face, o: LookOpts): string {
+  const b = bits(f, o), i = b.i;
+  const dy = b.lit ? 4 : 0;
+  const defs = (b.lit ? grad("face", b.base, 0.42, b.base, 0.16) : grad("face", P.panel2, 1, P.panel, 1)) + grad("hi", X.white, 0.1, X.white, 0);
+  let s = rect(0, 0, 144, 144, 0, X.night) + rect(5, 5, 134, 134, 24, P.bg, `stroke="${P.line}" stroke-width="1"`);
+  if (b.lit) s += rect(10, 12, 124, 122, 21, b.base, 'fill-opacity="0.25"');
+  else s += rect(12, 16, 120, 118, 20, X.night);
+  s += rect(12, 10 + dy, 120, 116, 20, P.panel2);
+  s += rect(12, 10 + dy, 120, 116, 20, "url(#face)", `stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="${b.off ? 2.5 : 1.5}"${f.online ? "" : ' stroke-dasharray="6 4"'}`);
+  s += rect(16, 12 + dy, 112, 40, 18, "url(#hi)");
+  const ic = iconInk(f, b, X.white, P.dim);
+  // the lamps: five for a level, else one
+  const cnt = b.lv !== null && !b.tg ? 5 : 1;
+  const lit = b.lv !== null && !b.tg ? Math.round(b.lv * 5) : b.lit ? 1 : 0;
+  const ly = 116 + dy;
+  for (let k = 0; k < cnt; k++) {
+    const x = 72 - ((cnt - 1) * 11) / 2 + k * 11;
+    const on = f.online && k < lit;
+    if (on && b.lit) s += `<circle cx="${n(x)}" cy="${ly}" r="5.5" fill="${b.base}" fill-opacity="0.3"/>`;
+    s += `<circle cx="${n(x)}" cy="${ly}" r="3" fill="${on ? (b.lit ? b.base : greyOr(b, P.muted)) : !f.online ? P.crit : b.off ?? P.line}"/>`;
+  }
+  if (b.alone) return doc(s + icon(f.icon, 42, 34 + dy, 60, ic, 2.2) + badges(f, i, DARK, 14, true), defs);
+  if (i.icon) s += icon(f.icon, 22, 20 + dy, 22, ic, 2.2);
+  const cap = caption(f, o, 72, 106 + dy, 104, 13, b.lit ? P.text : P.dim);
+  const top = (i.icon ? 44 : 22) + dy, bottom = (cap ? 92 : 108) + dy;
+  const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 104, bottom - top, b.tg);
+  s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b, X.white), b.lit ? P.text : P.muted, b.lit ? X.white : greyOr(b, P.dim), 104).svg;
+  s += cap;
+  s += badges(f, i, DARK, 14 + dy, true);
+  return doc(s, defs);
+}
+
 const LOOKS: Record<string, (f: Face, o: LookOpts) => string> = {
   minimal, bigvalue, fill: solid, neon, ring, split, glass, label, dot, light, contrast,
   huge, pill, orb, tile, gauge, bars, wave, aurora, outline, mono,
+  diagonal, hex, stripe, switch: toggle, lcd, dial, ticket, bubble, frame: brackets, shadow, line, tube, stamp, pastel, carbon, grid, tab, rise, spot, button,
 };
 
 /** A key in one of the looks (not Classic, which render.ts draws as 1.0 did). */
