@@ -102,13 +102,18 @@ plugin sám uviděl.
 
 V nastavení každé akce je oddíl **Look**:
 
-- **12 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
+- **22 vzhledů** se živými náhledy z aktuálního stavu položky: *Classic* (jako v 1.0 - beze
   změny pro dříve nastavená tlačítka), *Minimal* (velká ikona), *Big value* (hodnota co
   největší), *Solid fill* (celé tlačítko se rozsvítí barvou), *Neon* (zářící obrys),
   *Ring gauge* (prstenec, který se plní), *Two-tone* (barevný pruh nad tmavým),
   *Glass* (matné sklo se zářením), *Bold label* (velký nápis), *Status dot* (kontrolka a
   čisté písmo), *Light* (světlé tlačítko s tmavým písmem) a *High contrast* (černobílé,
-  silné čáry). Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
+  silné čáry). K nim deset čistých, které ukazují jen to podstatné velkým písmem a nanejvýš
+  jeden malý řádek: *Huge* (hodnota přes celé tlačítko), *Pill* (stav ve velké pilulce),
+  *Orb* (koule, která svítí), *Tile* (dlaždice jako ikona aplikace a jedno slovo), *Gauge*
+  (silný oblouk s číslem uprostřed), *Bars* (velké číslo nad sloupci), *Wave* (tlačítko se
+  plní jako vodou), *Aurora* (barevný přechod, bílé písmo), *Outline* (silný okraj, když je
+  zapnuto) a *Mono* (jedna barva, obří ikona). Nad nimi je dvojice náhledů **zapnuto / vypnuto**.
 - **Barva**: *Auto* (podle druhu položky) nebo jedna z 10 barev.
 - **Popisek**: vlastní text místo jména položky (nejvýš 40 znaků) - u všech akcí.
 - **Dlouhá jména**: *Shrink to fit* (zmenšit, případně na dva řádky), *Two lines* (dva řádky,

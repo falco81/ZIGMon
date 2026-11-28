@@ -689,7 +689,8 @@ export class ActionView implements HubView {
       const size = layout === "dimmer" ? 36 : layout === "reading" ? 22 : 40;
       out.icon = paperInk || t === "light"
         ? iconPix(f.icon, t === "light" ? (lit ? c : X.inkDim) : P.bg, size, t === "light" && lit ? c : undefined)
-        : t === "contrast" ? iconPix(f.icon, X.white, size) : t === "minimal" ? iconPix(f.icon, lit ? c : P.muted, size) : iconPix(f.icon, lit ? c : P.dim, size, lit ? c : undefined);
+        : t === "contrast" ? iconPix(f.icon, X.white, size) : t === "minimal" || t === "mono" ? iconPix(f.icon, lit ? c : P.muted, size)
+        : t === "aurora" && lit ? iconPix(f.icon, X.white, size) : iconPix(f.icon, lit ? c : P.dim, size, lit ? c : undefined);
     }
     return out;
   }
@@ -1072,6 +1073,27 @@ function stripPaper(theme: string, lit: boolean, c: string): string {
       return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/>` + (lit ? `<rect x="0" y="97" width="200" height="3" fill="${c}"/>` : ""));
     case "minimal":
       return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>`);
+    // (1.2) the clear looks
+    case "huge":
+    case "gauge":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<ellipse cx="100" cy="100" rx="130" ry="60" fill="${c}" fill-opacity="0.16"/>` : ""));
+    case "pill":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect x="3" y="3" width="194" height="94" rx="47" fill="${lit ? c : P.panel}" fill-opacity="${lit ? 0.2 : 1}" stroke="${lit ? c : P.line}" stroke-width="2"/>`);
+    case "orb":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<circle cx="30" cy="50" r="70" fill="${c}" fill-opacity="0.18"/>` : ""));
+    case "tile":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect x="3" y="3" width="194" height="94" rx="18" fill="${P.panel2}" stroke="${lit ? c : P.line}" stroke-width="2"/>`);
+    case "bars":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/>` + (lit ? `<rect x="0" y="60" width="200" height="40" fill="${c}" fill-opacity="0.12"/><rect x="0" y="96" width="200" height="4" fill="${c}"/>` : ""));
+    case "wave":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<path d="M 0 72 Q 25 64 50 72 T 100 72 T 150 72 T 200 72 V 100 H 0 Z" fill="${c}" fill-opacity="0.3"/>` : ""));
+    case "aurora":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect width="200" height="100" fill="url(#p)"/>`,
+        lit ? g("p", c, 0.55, X.night, 0.2) : g("p", P.panel2, 1, X.night, 1));
+    case "outline":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="4" y="4" width="192" height="92" rx="16" fill="none" stroke="${lit ? c : P.line}" stroke-width="${lit ? 5 : 2}"/>`);
+    case "mono":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<rect width="200" height="100" fill="${c}" fill-opacity="0.12"/>` : ""));
     default:
       return svgDoc(4, 4, "");
   }
