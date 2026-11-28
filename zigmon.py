@@ -13233,6 +13233,41 @@ class Daemon(object):
                                         if st['attrs'][sp_key] is not None else None)
         return out
 
+    def _deck_scene_members(self, sc):
+        """(5.59.4) (target, wanted on) for every socket and Zigbee switch a scene leaves on or off -
+        what its state is read from. A toggle, a pulse, a brightness says nothing of where it ends."""
+        out = []
+        for a in sc.get('actions') or []:
+            if not isinstance(a, dict):
+                continue
+            do = str(a.get('do') or 'on').strip().lower()
+            for t in self._binding_targets(str(a.get('target') or '')):
+                if t[0] == 'plug':
+                    if t[1].cfg.get('monitor_only') or do not in ('on', 'off'):
+                        continue
+                    out.append((t, do == 'on'))
+                elif t[0] == 'zb' and self.ZB_STATE_RE.match(t[2]):
+                    if do in ('on', 'off'):
+                        out.append((t, do == 'on'))
+                    elif do in ('set:on', 'set:off'):
+                        out.append((t, do == 'set:on'))
+        return out
+
+    def _deck_switch_on(self, t):
+        if t[0] == 'plug':
+            return None if t[1].output not in (0, 1) else bool(t[1].output)
+        said = self.latest_text(t[1], t[2]).strip().lower()
+        return True if said in ('on', 'true', '1') else False if said in ('off', 'false', '0') else None
+
+    def _deck_scene_state(self, sc):
+        """(on, how many are as the scene leaves them, how many are known): on is None when the
+        scene switches nothing that says where it is."""
+        known = [self._deck_switch_on(t) == want for t, want in self._deck_scene_members(sc)
+                 if self._deck_switch_on(t) is not None]
+        if not known:
+            return None, 0, 0
+        return all(known), sum(1 for k in known if k), len(known)
+
     def _deck_house_items(self, rooms):
         """Everything but the Zigbee targets and the readings: sockets, heating, scenes and the rest."""
         out = []
@@ -13308,7 +13343,16 @@ class Daemon(object):
                 on=r.get('mode') != 'off', value=r.get('mode'), vtext=r.get('mode'), extra=dict(extra))
         for sc in self.scenes() or []:
             if sc.get('id'):
-                add('scene:%s' % sc['id'], str(sc.get('name') or sc['id']), 'scene', 'scene', 'scenes', ['run'])
+                # (5.59.4) a scene has a state too: on while everything it switches is as it leaves it
+                try:
+                    on, same, members = self._deck_scene_state(sc)
+                except Exception:                            # noqa: BLE001
+                    on, same, members = None, 0, 0
+                add('scene:%s' % sc['id'], str(sc.get('name') or sc['id']), 'scene', 'scene', 'scenes',
+                    ['run', 'toggle', 'on', 'off'], on=on,
+                    vtext=None if on is None else ('on' if on else 'off'),
+                    extra={'members': members, 'as_set': same},
+                    online=sc.get('enabled', True) is not False)
         for sq in self.sequences() or []:
             if sq.get('id'):
                 add('seq:%s' % sq['id'], str(sq.get('name') or sq['id']), 'sequence', 'seq', 'scenes', ['run'])
@@ -13974,6 +14018,21 @@ class Daemon(object):
         fired = self._binding_targets(target)
         if not fired:
             return 404, {'ok': False, 'error': '%s is switched off or gone' % item['name']}
+        if item['kind'] == 'scene' and str(target).startswith('scene:') and action in ('toggle', 'on', 'off'):
+            # (5.59.4) a scene switched as a switch: on runs it; off switches off what it switches on;
+            # toggle does whichever its state (everything as it leaves it, or not) asks for
+            sc = next((x for x in self.scenes() or [] if 'scene:%s' % x.get('id') == target), None)
+            if sc is None:
+                return 404, {'ok': False, 'error': '%s is gone' % item['name']}
+            on = self._deck_scene_state(sc)[0]
+            if action == 'off' or (action == 'toggle' and on is True):
+                ups = [t for t, want in self._deck_scene_members(sc) if want]
+                if not ups:
+                    return 400, {'ok': False, 'error': '%s switches nothing on, so there is nothing to switch off'
+                                 % item['name']}
+                fired, do, words = ups, 'off', 'turned off %s' % item['name']
+            else:
+                do, words = 'on', 'ran %s' % item['name']
         asked = time.time()
         # (5.59.3) "By hand" on the key, as a button's: a press that leaves it on takes it over -
         # rules and schedules leave it alone - and one that leaves it off gives it back

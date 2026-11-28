@@ -500,7 +500,7 @@ try:
     blind = items.get('zb:%s:state' % BLIND) or {}
     check(blind.get('kind') == 'cover' and blind.get('cap') == 'cover' and blind.get('actions') == ['open', 'close', 'stop', 'set', 'step']
           and blind['state']['value'] == 40, 'the blind: %r' % blind)
-    check(items.get('scene:sc1', {}).get('cap') == 'scenes' and items['scene:sc1']['actions'] == ['run']
+    check(items.get('scene:sc1', {}).get('cap') == 'scenes' and items['scene:sc1']['actions'] == ['run', 'toggle', 'on', 'off']
           and items.get('rule:ru1', {}).get('cap') == 'automations' and items['rule:ru1']['state']['on'] is True
           and items.get('tell:house', {}).get('cap') == 'messages' and items.get('sys:refresh', {}).get('cap') == 'system'
           and items['sys:refresh']['hold'] is True and items.get('heat:temp:r1', {}).get('cap') == 'climate',
@@ -647,6 +647,49 @@ try:
     time.sleep(0.3)
     check(code == 200 and not d.manual_holds(), 'by hand on a setpoint took something over: %s %r %r'
           % (code, out, d.manual_holds()))
+    # (5.59.4) a scene has a state, and is switched as a switch: on runs it, off switches off what it
+    # switches on, toggle does whichever its state asks for
+    print('a scene as a switch')
+    caps(scenes={'on': True, 'all': True})
+    lamp = d.plugs['Lampa']
+
+    def scene_st():
+        d._deck_items_kept = None
+        return next(it for it in d.deck_items() if it['id'] == 'scene:sc1')['state']
+    lamp.output = 0
+    st0 = scene_st()
+    check(st0['on'] is False and st0['value_text'] == 'off' and st0['attrs'].get('members') == 1
+          and st0['attrs'].get('as_set') == 0, 'the scene with its lamp off: %r' % st0)
+    lamp.output = 1
+    check(scene_st()['on'] is True and scene_st()['value_text'] == 'on', 'the scene with its lamp on: %r' % scene_st())
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'toggle'})
+    time.sleep(0.3)
+    check(code == 200 and [r[:3] for r in RAN] == [('plug', 'Lampa', 'off')] and 'turned off Večer' in out.get('said', ''),
+          'toggle of a scene that is on did not switch its lamp off: %s %r %r' % (code, out, RAN))
+    lamp.output = 0
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'toggle'})
+    time.sleep(0.3)
+    check(code == 200 and [r[:2] for r in RAN] == [('scene', 'sc1')], 'toggle of a scene that is off did not run it: %r' % RAN)
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'on'})
+    time.sleep(0.3)
+    check(code == 200 and [r[:2] for r in RAN] == [('scene', 'sc1')], 'on did not run the scene: %r' % RAN)
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'off'})
+    time.sleep(0.3)
+    check(code == 200 and [r[:3] for r in RAN] == [('plug', 'Lampa', 'off')], 'off did not switch the lamp off: %r' % RAN)
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'run'})
+    time.sleep(0.3)
+    check(code == 200 and [r[:2] for r in RAN] == [('scene', 'sc1')], 'run is no longer a run: %r' % RAN)
+    lamp.output = None
+    check(scene_st()['on'] is None, 'a scene whose lamp says nothing is not unknown: %r' % scene_st())
+    caps(scenes={'on': False})
+    RAN.clear()
+    code, out = deck('do', {'deck': XL['id'], 'id': 'scene:sc1', 'action': 'off'})
+    check(code == 403 and not RAN, 'a scene switched off without the right: %s %r' % (code, RAN))
     # view and status are only looked at
     caps(switch={'on': True, 'all': True})
     for iid in ('read:%s:temperature' % TEMP, 'status:alerts'):
