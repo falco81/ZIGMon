@@ -129,7 +129,7 @@ export async function newActionsSheet(out: string): Promise<string> {
   special.push(["ZIGMon before 5.59.4", keyOf("power", all, {}, "Keypad", { features: [] }).s.svg]);
   const sec = keyOf("security", all, {}).s.svg;
   special.push(["held: acknowledge", renderHold(sec, 0.6, "#F85149")]);
-  special.push(["SMS: no desktop app (409)", renderToast(keyOf("sms", all, {}).s.svg, "No desktop app running", "link one in ZIGMon", "warn")]);
+  special.push(["SMS: no desktop app (409)", renderToast(keyOf("sms", all, {}).s.svg, "Desktop app not running", "link one in ZIGMon", "warn")]);
   const offline = patched(base, "house:openings", { online: false });
   special.push(["offline", keyOf("openings", offline, {}).s.svg]);
   const noSys = base.map((r) => (r.id === "status:security" ? parseItem({ ...r, act: { ack: { cap: "system", allowed: false, hold: true } } }) : parseItem(r)));

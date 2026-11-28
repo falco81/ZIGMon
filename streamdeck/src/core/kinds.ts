@@ -2,6 +2,7 @@
  * (1.3, ZIGMon 5.59.4) The ten new actions: their names, the item each one shows, and what they
  * need of ZIGMon. Shared by the plugin and the property inspector (no Node, no SDK here).
  */
+import { CONTACT_ID_RE, GROUP_MOST, typedNumber } from "./smsbook.js";
 
 export const NEW_KINDS = ["power", "security", "heatgroup", "away", "openings", "batteries", "zigbee", "timer", "room", "sms"] as const;
 export type NewKind = (typeof NEW_KINDS)[number];
@@ -89,16 +90,19 @@ export function minutesWord(m: number): string {
   return r ? `${h} h ${r}` : `${h} h`;
 }
 
-/** (1.3) One recipient as the user typed it: a phone number, group:<name> or contact:<id>; else null. */
+/**
+ * (1.3) One recipient as the picker stores it (or the user typed it): `contact:<id>` with an id as
+ * ZIGMon makes them (c_ and 6-12 lowercase hex), `group:<name>` up to 40 characters, or a phone
+ * number (+ and digits); else null.
+ */
 export function cleanRecipient(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g, " ").replace(/\s+/g, " ").trim();
-  if (/^contact:c_[0-9a-f]{6,12}$/.test(t)) return t;
+  if (t.startsWith("contact:")) return CONTACT_ID_RE.test(t.slice(8)) ? t : null;
   const g = /^group:\s*(.+)$/i.exec(t);
   if (g) {
     const name = g[1]!.trim();
-    return name && [...name].length <= 40 && !/[,;<>"]/.test(name) ? "group:" + name : null;
+    return name && [...name].length <= GROUP_MOST && !/[,;<>"]/.test(name) ? "group:" + name : null;
   }
-  const num = t.replace(/[\s().-]/g, "");
-  return /^\+?[0-9]{3,20}$/.test(num) ? num : null;
+  return typedNumber(t);
 }

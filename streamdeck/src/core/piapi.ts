@@ -35,6 +35,11 @@ export function catalogMessage(hub: Hub, kind: ActionKind): PiReply {
   const msg: PiReply = { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };
   // (1.3) Away / Home: the switches it may turn off as well, each under its own capability
   if (kind === "away") msg.extras = awayChoices(hub);
+  // (1.3) SMS, Write new: ZIGMon's contacts and groups for the picker (no numbers), or null when it sent none
+  if (kind === "sms") {
+    const b = hub.smsBook();
+    msg.sms = b ? { contacts: b.contacts.map((c) => ({ ...c })), groups: [...b.groups] } : null;
+  }
   return msg;
 }
 

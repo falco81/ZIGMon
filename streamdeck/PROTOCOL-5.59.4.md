@@ -181,7 +181,8 @@ History: `state` POST with `"history": {"span": s, "points": n}` and `ids` conta
 Action `ack`: body `{"deck", "id": "status:security", "action": "ack", "held_ms": 1500}`. It clears
 the **latest** standing alert, the same as the dashboard's "seen" on that alert
 (`/api/alerts/clear` with its id). Older alerts stay. With no alert standing it answers 409
-`{"error": "there is no alert standing"}`. It writes the event
+`{"ok": false, "error": "there is no alert standing", "nothing": true}` - read the flag `nothing`,
+not the words. It writes the event
 `Stream Deck '<name>' (<type>) acknowledged the latest alert`.
 
 ```json
@@ -213,8 +214,8 @@ This item is present only when at least one room is heated.
 | state field | type | meaning |
 |---|---|---|
 | `on` | bool | some room is calling for heat |
-| `value`, `value_text` | string | the common mode, or `"mixed"` |
-| `attrs.mode` | string | same |
+| `value`, `value_text` | string | the common mode, or `"mixed"` - a **string**, unlike most items' numeric `value` |
+| `attrs.mode` | string | same; **this is the field to read** for the mode (and the attribute `set` changes) |
 | `attrs.rooms` | int | heated rooms |
 | `attrs.calling` | int | rooms calling for heat now |
 | `attrs.min_temperature`, `attrs.max_temperature` | number \| null | the lowest and highest measured room temperature (°C) |
@@ -447,7 +448,7 @@ There is one item per room ZIGMon knows (Settings, Rooms), and the id is ZIGMon'
 | `attrs.heat_mode` | string \| null | its heating mode (plan, comfort, eco, night, max, off, manual) |
 | `attrs.heat_target` | number \| null | the temperature it wants now (°C) |
 | `attrs.calling` | bool \| null | it is calling for heat |
-| `attrs.members_n` | int | how many of the room's items **this deck may see** |
+| `attrs.members_n` | int | how many of the room's items **this deck may see** (see below: counted in the capped list) |
 
 The extended catalogue's room item also carries, at the top level:
 
@@ -456,7 +457,10 @@ The extended catalogue's room item also carries, at the top level:
 ```
 
 These are the ids of the items in that room that this deck may see (up to 200), in catalogue
-order. Scroll them on a dial. Act on each with its own item, under its own capability; a room item
+order. ZIGMon keeps at most the room's first 200 items (in catalogue order) and filters those by what
+the deck may see: `members_n` is always the length of this `members` list, so in a room of more than
+200 items both stop at what fits in the first 200. `members_n` is in the state of every catalogue,
+state and wait; the `members` list only in the extended catalogue. Scroll them on a dial. Act on each with its own item, under its own capability; a room item
 itself does nothing. When the room's items change (a device moved between rooms), `members_n`
 changes. Fetch the catalogue again then.
 

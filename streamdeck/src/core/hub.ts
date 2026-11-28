@@ -4,7 +4,7 @@ import { parseAddress, type ServerAddress } from "./address.js";
 import { ZigmonClient, type Command, type Credentials, type DeckInfo } from "./client.js";
 import { ApiError, CertError, NetError, type CertSeen, type Transport } from "./http.js";
 import { IDLE, pairStep, pairView, type PairEvent, type PairState } from "./pairing.js";
-import { cleanText, ProtocolError, type Caps, type Hello, type Item, type ItemState, type Room, type Series } from "./protocol.js";
+import { cleanText, ProtocolError, type Caps, type Hello, type Item, type ItemState, type Room, type Series, type SmsBook } from "./protocol.js";
 import type { Protector } from "./secrets.js";
 import { newInstallId, normalizeGlobal, type GlobalSettings } from "./settings.js";
 import { pinFor, withPin } from "./tls.js";
@@ -61,10 +61,42 @@ export interface HubDeps {
 
 export type CommandResult =
   | { ok: true; said: string; state: ItemState | null }
-  | { ok: false; why: "hold" | "deck" | "denied" | "off" | "revoked" | "invalid" | "rate" | "net" | "offline" | "noapp"; message: string };
+  | {
+    ok: false;
+    why: "hold" | "deck" | "denied" | "off" | "revoked" | "invalid" | "rate" | "net" | "offline" | "noapp" | "notallowed" | "badto" | "nothing";
+    message: string;
+    /** (1.3) badto: the entries of `to` that named nothing (as sent back, cleaned). */
+    bad?: string[];
+  };
 
-/** (1.3) 409 from a deck SMS key: no desktop app linked to this Stream Deck is running (windows/PROTOCOL-SMS.md 3). */
-export const NO_APP_RE = /desktop app/i;
+/**
+ * (1.3) The 409s and 400s of the deck SMS keys and of acknowledging (windows/PROTOCOL-SMS.md 3,
+ * PROTOCOL-5.59.4.md 3): told by their flags - `no_app`, `not_allowed`, `bad_to`, `nothing`. The words
+ * are matched only when a flag is missing (a ZIGMon in between), never instead of one.
+ */
+export const NO_APP_RE = /desktop app .*\bis running|no desktop app/i;
+export const NOT_ALLOWED_RE = /desktop app .*\bmay not\b/i;
+export const BAD_TO_RE = /is not a contact, a group or a phone number/i;
+export const NOTHING_RE = /no alert/i;
+
+/** (1.3) What a refused command's flags (else, as a fallback, its words) say it was. */
+export function refusalOf(status: number, body: Record<string, unknown>, message: string): { why: "noapp" | "notallowed" | "badto" | "nothing"; bad?: string[] } | null {
+  if (status === 409 && body.no_app === true) return { why: "noapp" };
+  if (status === 409 && body.not_allowed === true) return { why: "notallowed" };
+  if (status === 409 && body.nothing === true) return { why: "nothing" };
+  if (status === 400 && Array.isArray(body.bad_to)) return { why: "badto", bad: cleanBad(body.bad_to) };
+  // the words only where no flag was sent
+  if ("no_app" in body || "not_allowed" in body || "nothing" in body || "bad_to" in body) return null;
+  if (status === 409 && NOT_ALLOWED_RE.test(message)) return { why: "notallowed" };
+  if (status === 409 && NO_APP_RE.test(message)) return { why: "noapp" };
+  if (status === 409 && NOTHING_RE.test(message)) return { why: "nothing" };
+  if (status === 400 && BAD_TO_RE.test(message)) return { why: "badto", bad: [] };
+  return null;
+}
+
+function cleanBad(v: unknown[]): string[] {
+  return v.slice(0, 20).map((x) => cleanText(x, 60)).filter((x) => x.length > 0);
+}
 
 export interface Status {
   phase: Phase;
@@ -115,6 +147,8 @@ export class Hub {
   private items = new Map<string, Item>();
   private states = new Map<string, ItemState>();
   private rooms: Room[] = [];
+  /** (1.3) The address book for the "New SMS" picker; null when ZIGMon sent none (no cap sms, or older). */
+  private book: SmsBook | null = null;
   private boot = "";
   private seq = 0;
   private catalogAt = 0;
@@ -393,6 +427,11 @@ export class Hub {
     return this.rooms;
   }
 
+  /** (1.3) ZIGMon's contacts and groups (no numbers) for the SMS key's picker; null when it sent none. */
+  smsBook(): SmsBook | null {
+    return this.book;
+  }
+
   get pairCode(): string | null {
     return this.pair.phase === "waiting" ? this.pair.code : null;
   }
@@ -506,6 +545,7 @@ export class Hub {
     this.states = new Map();
     for (const i of c.items) this.setState(i.id, i.state);
     this.rooms = c.rooms;
+    this.book = c.sms;
     this.boot = c.boot;
     this.seq = c.seq;
     this.catalogAt = this.now();
@@ -566,6 +606,7 @@ export class Hub {
     this.helloInfo = null;
     this.items.clear();
     this.states.clear();
+    this.book = null;
     await this.persist();
   }
 
@@ -742,7 +783,9 @@ export class Hub {
           }
           return { ok: false, why: "hold", message: "Hold the key to confirm" };
         }
-        if (e.status === 409 && NO_APP_RE.test(e.message)) return { ok: false, why: "noapp", message: e.message };
+        // (1.3) the SMS keys' and acknowledging's refusals, by their flags
+        const rf = refusalOf(e.status, b, e.message);
+        if (rf) return { ok: false, why: rf.why, message: e.message, ...(rf.bad ? { bad: rf.bad } : {}) };
         if (e.status === 403 && b.deck_pending === true) {
           this.deckApproved.set(cmd.deck, false);
           this.redrawAll();

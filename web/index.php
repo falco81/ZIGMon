@@ -1123,18 +1123,47 @@ if (isset($_GET['api'])) {
     if ($what === 'notifier') {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
-        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
+        $do = (string) ($_GET['do'] ?? '');
+        $method = (string) ($_SERVER['REQUEST_METHOD'] ?? 'GET');
+        /* (5.59.4) sms-send - a text message sent from the app - is the one road asked by POST */
+        if ($do === 'sms-send' ? $method !== 'POST' : $method !== 'GET') {
             http_response_code(405);
-            echo json_encode(['ok' => false, 'error' => 'the notifier asks by GET']);
+            echo json_encode(['ok' => false, 'error' => $do === 'sms-send' ? 'sms-send is asked by POST'
+                                                                           : 'the notifier asks by GET']);
             exit;
         }
-        $do = (string) ($_GET['do'] ?? '');
-        if (!in_array($do, ['hello', 'sensors', 'wait', 'update', 'download'], true)) {
+        if (!in_array($do, ['hello', 'sensors', 'wait', 'update', 'download', 'sms', 'contacts', 'sms-send'], true)) {
             http_response_code(400);
-            echo json_encode(['ok' => false, 'error' => 'do is hello, sensors, wait, update or download']);
+            echo json_encode(['ok' => false, 'error' => 'do is hello, sensors, wait, update, download, sms, contacts '
+                              . 'or sms-send']);
             exit;
         }
         $key = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($_SERVER['HTTP_X_ZIGMON_NOTIFIER'] ?? '')), 0, 80);
+        if ($do === 'sms-send') {
+            $raw = (string) file_get_contents('php://input', false, null, 0, 16385);
+            if (strlen($raw) > 16384) {
+                http_response_code(413);
+                echo json_encode(['ok' => false, 'sent' => [], 'failed' => [], 'message' => 'too long',
+                                  'error' => 'The message is far too long to send.']);
+                exit;
+            }
+            $in = $raw === '' ? [] : json_decode($raw, true);
+            if (!is_array($in)) {
+                http_response_code(400);
+                echo json_encode(['ok' => false, 'sent' => [], 'failed' => [], 'message' => 'not JSON',
+                                  'error' => 'The app sent something ZIGMon cannot read (not a JSON object).']);
+                exit;
+            }
+            /* each recipient waits its turn at the gateway: the relay is given its time */
+            zigmon_relay('/api/notifier/sms/send', 'POST', $in, 240.0, ['X-Zigmon-Notifier: ' . $key]);
+            exit;
+        }
+        if ($do === 'sms' || $do === 'contacts') {
+            $limit = preg_replace('/\D/', '', substr((string) ($_GET['limit'] ?? ''), 0, 4));
+            zigmon_relay('/api/notifier/' . $do . ($do === 'sms' && $limit !== '' ? '?limit=' . $limit : ''), 'GET', null,
+                         15.0, ['X-Zigmon-Notifier: ' . $key]);
+            exit;
+        }
         if ($do === 'download') {
             // the app's new version: the exe streamed through with its own headers
             zigmon_relay_download('/api/notifier/download', 30, '', ['X-Zigmon-Notifier: ' . $key],
@@ -6177,6 +6206,48 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .dk-holdo{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;cursor:pointer}
   .dk-holdo input{margin-top:3px!important}
   .dk-holdo > span{display:flex;flex-direction:column} .dk-holdo span span{color:var(--tx-mut);font-size:11.5px}
+  /* (5.59.4) shared with the desktop app key's dialog; and the desktop apps under an installation */
+  .dk-cap-fixed{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--tx-mut);padding:3px 9px;
+    border-radius:999px;border:1px solid var(--line);background:var(--panel);white-space:nowrap;flex:0 0 auto}
+  .dk-cap-note{margin:0;font-size:11.5px;color:var(--tx-mut);line-height:1.45}
+  .dk-cap-note.warn{color:var(--warn)}
+  .dk-cap[data-cap=sms-send].on,.dk-cap[data-cap=sms].on{border-color:rgba(88,166,255,.45);
+    background:linear-gradient(180deg,rgba(88,166,255,.08),transparent 70%),var(--panel2)}
+  .dk-asks{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px}
+  .dk-asks-k{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut)}
+  .dk-asks-app{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border-radius:999px;background:var(--panel);
+    border:1px solid var(--line)}
+  .dk-asks-app .ok{color:var(--ok)} .dk-asks-app .warn,.dk-asks-none{color:var(--warn)}
+  .dk-apps{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--panel2);display:flex;
+    flex-direction:column;gap:9px}
+  .dk-apps-h{display:flex;gap:10px;align-items:flex-start}
+  .dk-apps-ic{font-size:18px;line-height:1.2;flex:0 0 auto}
+  .dk-apps-t{display:flex;flex-direction:column;flex:1 1 auto;min-width:0} .dk-apps-t b{font-size:13.5px}
+  .dk-apps-t span{font-size:12px;color:var(--tx-dim);line-height:1.45}
+  .dk-apps-auto{white-space:nowrap;margin-top:2px}
+  .dk-apps-list{display:flex;flex-wrap:wrap;gap:6px}
+  .dk-app{display:inline-flex;align-items:center;gap:9px;padding:6px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--panel);cursor:pointer;font-size:13px;min-width:0;max-width:100%}
+  .dk-app:hover{border-color:rgba(88,166,255,.5)}
+  .dk-app.on{border-color:var(--info);background:var(--info-bg)}
+  .dk-app input{width:auto;margin:0;flex:0 0 auto;accent-color:var(--info)}
+  .dk-app-t{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;min-width:0} .dk-app-t b{overflow-wrap:anywhere}
+  .dk-app-auto{font-size:11.5px;color:var(--info)}
+  .dk-app-may{font-size:11px;color:var(--ok);white-space:nowrap} .dk-app-may.none{color:var(--tx-mut)}
+  .dk-apps-note{margin:0;font-size:11.5px;color:var(--warn)}
+  .ntf-caps .ntf-pick{margin-top:0}
+  .ntf-dlg .ntf-caps .ntf-opts{max-height:min(34vh,240px)}
+  .ntf-caprules{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+  .ntf-caprule{display:flex;gap:9px;align-items:center;padding:6px 11px;border-bottom:1px solid var(--line)}
+  .ntf-caprule:last-child{border-bottom:0}
+  .ntf-deckopts{max-height:200px}
+  .ntf-deckopts .warnword{color:var(--warn)}
+  .ntf-key .ntf-smsrow{grid-column:1/-1;margin:2px 0 0 50px;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;font-size:12.5px}
+  .ntf-smsrow-k{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-mut);margin-right:4px}
+  .ntf-smsflag{display:inline-flex;align-items:center;gap:7px;padding:3px 11px 3px 5px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel2)}
+  .ntf-smsflag.on{border-color:rgba(63,185,80,.45);background:var(--ok-bg)}
+  .ntf-smsdecks{color:var(--tx-dim);margin-left:auto;font-size:12px} .ntf-smsdecks.none{color:var(--tx-mut)}
   @media (max-width:720px){
     .dk-hero{flex-direction:column;align-items:stretch;padding:14px;gap:14px}
     .dk-hero-art{width:min(196px,70%);align-self:center}
@@ -6604,6 +6675,8 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .ntf-met.yes{color:var(--ok)} .ntf-met.no{color:var(--tx)}
   @media (max-width:760px){
     .ntf-key .ntf-conds{margin-left:0}
+    .ntf-key .ntf-smsrow{margin-left:0}
+    .ntf-smsdecks{margin-left:0;width:100%}
     .ntf-cond{grid-template-columns:24px minmax(0,1fr) auto;grid-template-areas:'ic who acts' 'ic pill pill' 'ic now now'}
     .ntf-cond .ntf-cond-ic{grid-area:ic;align-self:start} .ntf-cond .ntf-cond-who{grid-area:who}
     .ntf-cond .ntf-cpill{grid-area:pill} .ntf-cond .ntf-now{grid-area:now} .ntf-cond .ntf-cond-acts{grid-area:acts}
@@ -39628,18 +39701,85 @@ function ntfRow(k) {
   };
   a.appendChild(gone);
   r.appendChild(a);
+  r.appendChild(ntfSmsRow(k));         /* (5.59.4) what it may do with SMS, and the Stream Decks */
   r.appendChild(ntfConds(k));          /* (5.58) its conditions on any sensor */
   return r;
 }
-/* New key / Edit: a name, and every sensor or the ones chosen in a list to search. */
+/* New key / Edit (5.59.4): laid out as the Stream Deck's "What … may do" - the name, presets, a
+   sentence of what it may do, and a card for each permission: the sensors it sees (every one, or
+   the ones chosen in a list to search), its own conditions, SMS read, SMS send, the contacts and
+   the Stream Decks that may ask it. Every SMS permission is off until it is switched on here. */
+var NTF_PRESETS = [['alerts', 'Alerts only', 'the sensors and conditions'],
+                   ['read', 'Alerts + SMS read', 'incoming texts pop up'],
+                   ['all', 'Everything', 'read, send, contacts, Stream Deck']];
+function ntfDecksAuto(name) {
+  var n = String(name || '').trim().toLowerCase();
+  return ((NTF.d && NTF.d.deck_installs) || []).filter(function (x) {
+    return x.auto && n && String(x.computer || '').trim().toLowerCase() === n;
+  }).map(function (x) { return x.id; });
+}
+function ntfSummary(name, mode, nsens, nrules, sms, decks) {
+  var who = name || 'This computer';
+  var parts = [mode === 'all' ? 'sees every sensor that can trigger' : 'sees ' + nsens + ' sensor' + (nsens === 1 ? '' : 's')];
+  if (nrules) parts[0] += ' and ' + nrules + ' condition' + (nrules === 1 ? '' : 's') + ' of its own';
+  if (sms.read) parts.push('shows each incoming SMS and the history');
+  if (sms.send) parts.push('writes and answers SMS');
+  if (sms.contacts) parts.push('looks up the contacts');
+  if (decks.length) parts.push('may be asked by ' + decks.length + ' Stream Deck' + (decks.length === 1 ? '' : 's'));
+  var none = !sms.read && !sms.send && !sms.contacts;
+  return who + ' ' + parts[0] + (parts.length > 2 ? ', ' : parts.length > 1 ? ' and ' : '')
+    + parts.slice(1, -1).join(', ') + (parts.length > 2 ? ' and ' : '') + (parts.length > 1 ? parts[parts.length - 1] : '')
+    + (none ? ' - and does nothing with SMS' : '') + '.';
+}
 function ntfEdit(k) {
-  var sensors = (NTF.d && NTF.d.sensors) || [];
+  var d = NTF.d || {};
+  var sensors = d.sensors || [];
+  var installs = d.deck_installs || [];
   var chosen = {};
   ((k && k.devices) || []).forEach(function (id) { chosen[id] = true; });
   var name = zText(k ? k.name : '', 'Office PC');
   name.id = 'ntf-name';
   name.maxLength = 60;
   var mode = (k && (k.devices || []).length) ? 'some' : 'all';
+  var sms = Object.assign({read: false, send: false, contacts: false}, (k && k.sms) || {});
+  var decks = k ? (k.decks || []).map(function (x) { return x.id; }) : [];
+  var decksTouched = false;
+  var rules = (k && k.rules) || [];
+  var cards = {};
+  var summary = el('div', 'dk-summary');
+  summary.id = 'ntf-summary';
+  var presets = capPresets(NTF_PRESETS, function (pid) {
+    sms.read = pid !== 'alerts';
+    sms.send = sms.contacts = pid === 'all';
+    if (pid === 'all') {
+      if (!decks.length) decks = ntfDecksAuto(name.value).length ? ntfDecksAuto(name.value)
+        : installs.map(function (x) { return x.id; });
+    } else {
+      decks = [];
+    }
+    decksTouched = true;
+    Object.keys(cards).forEach(function (c) { cards[c].sync(); });
+    tell();
+  });
+  presets.id = 'ntf-presets';
+  var tell = function () {
+    summary.textContent = ntfSummary(name.value.trim(), mode, Object.keys(chosen).length, rules.length, sms, decks);
+    capPresetsMark(presets, function (pid) {
+      if (pid === 'alerts') return !sms.read && !sms.send && !sms.contacts && !decks.length;
+      if (pid === 'read') return sms.read && !sms.send && !sms.contacts && !decks.length;
+      return sms.read && sms.send && sms.contacts && (!installs.length || decks.length > 0);
+    });
+  };
+  name.addEventListener('input', function () {
+    /* a new key named as a Stream Deck's computer is linked to it by itself - shown so */
+    if (!k && !decksTouched) { decks = ntfDecksAuto(name.value); cards.decks.sync(); }
+    tell();
+  });
+  if (!k) decks = [];
+  var list = el('div', 'dk-caps ntf-caps');
+  /* the sensors: always on - the app is an alert app first */
+  var sc = capCard({cap: 'sensors', icon: '📡', title: 'Sensors it may see', fixed: 'always',
+                    desc: 'An alert the moment one is triggered: motion, a door opened, water, smoke, a button pressed.'});
   var pick = el('div', 'ntf-pick');
   var count = el('span', 'ntf-count');
   var find = el('input', 'ntf-find');
@@ -39647,9 +39787,10 @@ function ntfEdit(k) {
   find.id = 'ntf-find';
   var rows = el('div', 'ntf-opts');
   rows.id = 'ntf-opts';
-  var tell = function () {
+  var countWord = function () {
     var n = Object.keys(chosen).length;
     count.textContent = n ? n + ' chosen' : 'none chosen yet';
+    tell();
   };
   sensors.forEach(function (s) {
     var lab = el('label', 'ntf-opt');
@@ -39658,7 +39799,7 @@ function ntfEdit(k) {
     var cb = el('input');
     cb.type = 'checkbox';
     cb.checked = !!chosen[s.id];
-    cb.onchange = function () { if (cb.checked) chosen[s.id] = true; else delete chosen[s.id]; tell(); };
+    cb.onchange = function () { if (cb.checked) chosen[s.id] = true; else delete chosen[s.id]; countWord(); };
     lab.appendChild(cb);
     lab.appendChild(el('span', 'ntf-oic', (NTF_KINDS[s.kind] || [ICON.sensor])[0]));
     var t = el('span', 'ntf-ot');
@@ -39681,47 +39822,138 @@ function ntfEdit(k) {
     Array.prototype.forEach.call(rows.querySelectorAll('.ntf-opt:not([hidden]) input'), function (cb) {
       cb.checked = true; chosen[cb.parentNode.dataset.id] = true;
     });
-    tell();
+    countWord();
   };
   var noneShown = cmdButton('None', 'close', 'small');
   noneShown.onclick = function () {
     Array.prototype.forEach.call(rows.querySelectorAll('.ntf-opt:not([hidden]) input'), function (cb) {
       cb.checked = false; delete chosen[cb.parentNode.dataset.id];
     });
-    tell();
+    countWord();
   };
   bar.appendChild(allShown);
   bar.appendChild(noneShown);
   bar.appendChild(count);
   pick.appendChild(bar);
   pick.appendChild(rows);
-  tell();
-  var radios = el('div', 'ntf-modes');
-  [['all', 'Every sensor that can trigger', sensors.length + ' now, and every one added later'],
-   ['some', 'Only the ones chosen', 'the app sees no other']].forEach(function (m) {
-    var lab = el('label', 'ntf-mode');
-    var rb = el('input');
-    rb.type = 'radio'; rb.name = 'ntf-mode'; rb.value = m[0]; rb.checked = mode === m[0];
-    rb.onchange = function () { mode = m[0]; pick.hidden = mode !== 'some'; if (mode === 'some') find.focus(); };
-    lab.appendChild(rb);
-    var t = el('span', '');
-    t.appendChild(el('b', '', m[1]));
-    t.appendChild(el('span', 'muted small', m[2]));
-    lab.appendChild(t);
-    radios.appendChild(lab);
+  var modes = capScope('ntf-mode', [['all', 'Every sensor (' + sensors.length + ')'], ['some', 'Only these']], function (v) {
+    mode = v; sc.sync(); if (mode === 'some') find.focus();
   });
-  pick.hidden = mode !== 'some';
+  sc.more.appendChild(modes);
+  sc.more.appendChild(el('p', 'dk-cap-note', 'Every sensor counts the ones added later too; Only these, the app sees no other.'));
+  sc.more.appendChild(pick);
+  sc.sync = function () {
+    sc.classList.add('on');
+    Array.prototype.forEach.call(modes.querySelectorAll('input'), function (rb) { rb.checked = rb.value === mode; });
+    pick.hidden = mode !== 'some';
+    tell();
+  };
+  cards.sensors = sc;
+  list.appendChild(sc);
+  /* its own conditions (5.58): listed here, made and changed on the key's card */
+  var rc = capCard({cap: 'rules', icon: '🎯', title: 'Conditions', fixed: rules.length ? String(rules.length) : 'none',
+                    desc: 'Alerts of its own on any reading - a temperature over a line, a socket’s power, a preset changed.'});
+  if (rules.length) {
+    var rl = el('div', 'ntf-caprules');
+    rules.forEach(function (r) {
+      var one = el('div', 'ntf-caprule');
+      one.appendChild(el('span', 'dk-oic', ntfKindIcon(r.kind)));
+      var t = el('span', 'dk-ot');
+      t.appendChild(el('b', '', r.label || r.device_name || r.device));
+      t.appendChild(el('span', '', r.text || ''));
+      one.appendChild(t);
+      rl.appendChild(one);
+    });
+    rc.more.appendChild(rl);
+  }
+  rc.more.appendChild(el('p', 'dk-cap-note', k ? 'Added and changed on the key’s card, under Conditions - they stay as they are here.'
+    : 'Once the key is made: Add condition, on its card.'));
+  rc.sync = function () { rc.classList.toggle('on', rules.length > 0); };
+  cards.rules = rc;
+  list.appendChild(rc);
+  /* SMS, flag by flag */
+  var noGate = d.sms_ready === false;
+  [['read', '📥', 'SMS: read', 'Each incoming text pops up on this computer, and the app shows the history - with whole numbers.'],
+   ['send', '📤', 'SMS: send', 'Write and answer texts from this computer, through ZIGMon’s gateway, its daily cap and its queue - '
+     + 'at most 10 a minute. Each send is written into the events with the key’s name, never the text.'],
+   ['contacts', '👥', 'Contacts', 'The app may read ZIGMon’s contacts (never change them), to show names and pick whom to write to.']]
+    .forEach(function (f) {
+      var card = capCard({cap: 'sms-' + f[0], icon: f[1], title: f[2], desc: f[3], on: sms[f[0]],
+                          onSwitch: function (on) { sms[f[0]] = on; card.sync(); tell(); }});
+      card.sw.input.dataset.sms = f[0];
+      if (noGate && f[0] !== 'contacts') card.more.appendChild(el('p', 'dk-cap-note warn', 'No text gateway is set up yet '
+        + '(Settings - SMS): granted, it works once one is.'));
+      card.sync = function () {
+        card.classList.toggle('on', !!sms[f[0]]);
+        card.sw.input.checked = !!sms[f[0]];
+        card.more.hidden = !card.more.children.length || !sms[f[0]];
+      };
+      cards['sms-' + f[0]] = card;
+      list.appendChild(card);
+    });
+  /* the Stream Decks that may ask it: the same link as under Settings - Stream Deck, from this end */
+  var dc = capCard({cap: 'decks', icon: '🎛️', title: 'Stream Deck pop-ups', on: decks.length > 0,
+                    desc: 'Which Stream Decks may ask this app to show the latest SMS or write a new one - their '
+                      + '“SMS via the desktop app” keys.',
+                    onSwitch: function (on) {
+                      decksTouched = true;
+                      if (!on) decks = [];
+                      else if (!decks.length) {
+                        decks = ntfDecksAuto(name.value);
+                        if (!decks.length && installs.length === 1) decks = [installs[0].id];
+                      }
+                      dc.sync(); tell();
+                    }});
+  var dl = el('div', 'dk-opts ntf-deckopts');
+  installs.forEach(function (x) {
+    var lab = el('label', 'dk-opt');
+    lab.dataset.id = x.id;
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.onchange = function () {
+      decksTouched = true;
+      decks = decks.filter(function (i) { return i !== x.id; });
+      if (cb.checked) decks.push(x.id);
+      dc.sync(); tell();
+    };
+    lab.appendChild(cb);
+    lab.appendChild(el('span', 'dk-oic', '🎛️'));
+    var t = el('span', 'dk-ot');
+    t.appendChild(el('b', '', x.name || x.computer));
+    var words = [x.computer && x.computer !== x.name ? x.computer : ''];
+    var autoOne = k && x.auto && (k.decks || []).some(function (y) { return y.id === x.id && y.auto; });
+    if (autoOne || (!k && x.auto && ntfDecksAuto(name.value).indexOf(x.id) >= 0)) words.push('(automatic: ' + x.computer + ')');
+    words.push(x.sms ? 'its SMS keys are allowed' : 'its SMS keys are not allowed yet');
+    t.appendChild(el('span', x.sms ? '' : 'warnword', words.filter(Boolean).join(' · ')));
+    lab.appendChild(t);
+    lab.cb = cb;
+    dl.appendChild(lab);
+  });
+  if (!installs.length) dl.appendChild(el('p', 'dk-none', 'No Stream Deck is paired yet (Settings - Messages - Stream Deck).'));
+  dc.more.appendChild(dl);
+  if (d.deck_enabled === false) dc.more.appendChild(el('p', 'dk-cap-note warn', 'Stream Deck control is switched off.'));
+  dc.sync = function () {
+    dc.classList.toggle('on', decks.length > 0);
+    dc.sw.input.checked = decks.length > 0;
+    dc.more.hidden = !decks.length && !!installs.length;
+    Array.prototype.forEach.call(dl.querySelectorAll('.dk-opt'), function (lab) { lab.cb.checked = decks.indexOf(lab.dataset.id) >= 0; });
+  };
+  cards.decks = dc;
+  list.appendChild(dc);
+  Object.keys(cards).forEach(function (c) { cards[c].sync(); });
+  countWord();
   var gen;
-  zmodal(k ? 'Edit the key ' + (k.name || '') : 'New key for the desktop app', function (body) {
-    body.classList.add('ntf-dlg');
-    body.appendChild(el('p', 'note', k ? 'The key itself stays as it is - the computer holding it carries on; what it may see '
+  zmodal(k ? 'What ' + (k.name || 'the key') + ' may do' : 'New key for the desktop app', function (body) {
+    body.classList.add('ntf-dlg', 'dk-dlg');
+    body.appendChild(el('p', 'note', k ? 'The key itself stays as it is - the computer holding it carries on; what it may do '
       + 'changes from its next question.' : 'One key for each computer, named after it. The key is shown once, in the next step.'));
     body.appendChild(zField('Name', name, 'At most 60 characters - the computer it is for, say.'));
     /* not a .set-item: its rules are for one field, and would dress every tick box here as a heading */
-    var w = el('div', 'ntf-field');
-    w.appendChild(el('div', 'ntf-flabel', 'Sensors it may see'));
-    w.appendChild(radios);
-    w.appendChild(pick);
+    var w = el('div', 'ntf-field dk-field');
+    w.appendChild(el('div', 'ntf-flabel', 'What it may do'));
+    w.appendChild(presets);
+    w.appendChild(summary);
+    w.appendChild(list);
     body.appendChild(w);
   }, [{words: 'Cancel', close: true},
       {words: k ? 'Save' : 'Make the key', cls: 'primary', icon: k ? 'save' : 'key', go: function (b) {
@@ -39729,12 +39961,44 @@ function ntfEdit(k) {
         if (mode === 'some' && !devs.length) { zmodalSaid(new Error('choose at least one sensor, or Every sensor'), gen); return; }
         var body = k ? {action: 'update', id: k.id, name: name.value.trim(), devices: devs}
                      : {action: 'create', name: name.value.trim(), devices: devs};
+        body.sms = {read: !!sms.read, send: !!sms.send, contacts: !!sms.contacts};
+        /* the links are sent only when they may have changed: an automatic one stays automatic */
+        if (decksTouched || (k && decks.join() !== (k.decks || []).map(function (x) { return x.id; }).join())) body.decks = decks;
         ntfAsk(body, b).then(function (x) {
           if (k) { closeZModal(); if (x.message) toast(x.message, true); return; }
           ntfShowKey(x, body.name);
         }, function (e) { zmodalSaid(e, gen); });
-      }}], 'medium ntf-dlg-box');
+      }}], 'medium dk-dlg-box ntf-dlg-box');
   gen = ZM.gen;
+  tell();
+}
+/* (5.59.4) A key's row: its SMS permissions as three switches, saved at once, and the Stream
+   Decks that may ask it. */
+function ntfSmsRow(k) {
+  var row = el('div', 'ntf-smsrow');
+  row.appendChild(el('span', 'ntf-smsrow-k', '💬 SMS'));
+  var flags = Object.assign({read: false, send: false, contacts: false}, k.sms || {});
+  [['read', 'SMS: read'], ['send', 'send'], ['contacts', 'contacts']].forEach(function (f) {
+    var sw = makeSwitch(flags[f[0]], function (on, box) {
+      box.disabled = true;
+      var want = Object.assign({}, flags);
+      want[f[0]] = on;
+      ntfAsk({action: 'update', id: k.id, sms: want}, null).then(function (x) { if (x.message) toast(x.message, true); },
+        function (e) { box.checked = !on; box.disabled = false; zoops(e); });
+    }, {small: true, title: {read: 'Incoming texts pop up on this computer, and the app shows the history',
+                             send: 'The app may write and answer texts through ZIGMon (at most 10 a minute)',
+                             contacts: 'The app may read ZIGMon’s contacts'}[f[0]]});
+    sw.input.dataset.sms = f[0];
+    var lab = el('span', 'ntf-smsflag' + (flags[f[0]] ? ' on' : ''));
+    lab.appendChild(sw);
+    lab.appendChild(el('span', '', f[1]));
+    row.appendChild(lab);
+  });
+  var n = (k.decks || []).length;
+  var dk = el('span', 'ntf-smsdecks' + (n ? '' : ' none'), n ? '🎛️ asked by ' + n + ' Stream Deck' + (n === 1 ? '' : 's')
+    + ((k.decks || []).some(function (x) { return x.auto; }) ? ' (automatic)' : '') : '🎛️ no Stream Deck asks it');
+  row.appendChild(dk);
+  return row;
 }
 /* The key, this once: with the address, each copied by a click, and said plainly that it
    is never shown again. */
@@ -39788,15 +40052,26 @@ var DK_CAPS = {
   automations: ['⚡', 'Automations', 'Rules, schedules and groups switched on and off.', 'rule, schedule and group'],
   messages: ['🔔', 'Messages', 'The reports and messages the house sends.', 'report and message'],
   system: ['⚙️', 'System', 'A backup now, hush the alerts, ask everything again… - each held to confirm by default.', 'system action'],
-  status: ['🩺', 'ZIGMon’s health', 'Standing alerts, blocked addresses, the server in front, devices unwell, the gateway.', ''],
+  status: ['🩺', 'ZIGMon’s health', 'Standing alerts, network security, the Zigbee network, the text gateway, the server in front.', ''],
   /* (5.59.4) the locks of the ESP32 gateways: off until granted, a long press by default -
      and always for what a lock names as sensitive (open, unlock), whatever is chosen here */
-  locks: ['🔐', 'Locks', 'The locks of the ESP32 gateways: open, unlock, lock. Open and unlock are always held to confirm.', 'lock']
+  locks: ['🔐', 'Locks', 'The locks of the ESP32 gateways: open, unlock, lock. Open and unlock are always held to confirm.', 'lock'],
+  /* (5.59.4) the keys that ask the desktop app on the deck's computer (windows/PROTOCOL-SMS.md, 3) */
+  sms: ['💬', 'SMS via the desktop app', 'Latest SMS and New SMS keys: ZIGMon Notifier on this computer shows the newest text '
+    + 'or opens a new one. ZIGMon sends nothing by itself - the app does, if its own key may.', 'SMS key']
 };
-var DK_ORDER = ['view', 'switch', 'dim', 'climate', 'cover', 'locks', 'scenes', 'automations', 'messages', 'system', 'status'];
+var DK_ORDER = ['view', 'switch', 'dim', 'climate', 'cover', 'locks', 'scenes', 'automations', 'messages', 'sms', 'system',
+                'status'];
 var DK_KIND_ICON = {socket: ICON.plug, light: ICON.light, 'switch': ICON.zb, dimmer: '🔆', thermostat: ICON.valve,
                     cover: '🪟', scene: ICON.scene, sequence: ICON.seq, group: ICON.agroup, rule: '⚡', schedule: '⏰',
-                    message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺', lock: '🔐'};
+                    message: ICON.bell, system: '⚙️', reading: ICON.thermo, sensor: ICON.sensor, status: '🩺', lock: '🔐',
+                    /* (5.59.4) the summaries and the SMS keys */
+                    power: '⚡', security: '🛡️', heatgroup: '🔥', away: '🧳', openings: '🚪', batteries: '🔋',
+                    zigbee: '📡', room: '🏠', sms: '💬'};
+/* (5.59.4) the words under a thing in an "Only these" list: what it is, and what it does there */
+var DK_KIND_WORD = {power: 'house power', security: 'network security', heatgroup: 'every heated room', away: 'away',
+                    openings: 'doors and windows open', batteries: 'batteries low', zigbee: 'Zigbee network',
+                    room: 'room summary', sms: 'asks the desktop app'};
 var DK_PRESETS = [
   ['look', 'Look only', ['view', 'status']],
   ['lights', 'Lights & sockets', ['view', 'status', 'switch', 'dim']],
@@ -40122,6 +40397,7 @@ function dkInstallCard(x) {
   });
   if (!(x.decks || []).length) decks.appendChild(el('span', 'dk-none', 'No deck has shown yet.'));
   card.appendChild(decks);
+  card.appendChild(dkAppsBox(x));             /* (5.59.4) the desktop apps its SMS keys ask */
   var foot = el('div', 'dk-inst-f');
   foot.appendChild(dkCapChips(x.caps));
   var acts = el('div', 'dk-inst-acts');
@@ -40161,6 +40437,138 @@ function dkRename(x) {
   }}], 'narrow');
   gen = ZM.gen;
 }
+/* (5.59.4) The pieces of a permission dialog, shared by the Stream Deck's ("What OFFICE-PC may do")
+   and the desktop app key's: the presets along the top, a card for each permission - its icon,
+   title, what it means and its switch (or a tag where it cannot be switched off), with what more
+   there is to choose below while it is on - and the "Every … / Only these" choice. */
+function capPresets(list, onPick) {
+  var box = el('div', 'dk-presets');
+  list.forEach(function (p) {
+    var b = el('button', 'dk-preset');
+    b.type = 'button';
+    b.dataset.p = p[0];
+    b.appendChild(el('b', '', p[1]));
+    if (p[2]) b.appendChild(el('span', '', p[2]));
+    b.onclick = function () { onPick(p[0]); };
+    box.appendChild(b);
+  });
+  return box;
+}
+function capPresetsMark(box, isOn) {
+  Array.prototype.forEach.call(box.querySelectorAll('.dk-preset'), function (b) { b.classList.toggle('on', !!isOn(b.dataset.p)); });
+}
+function capCard(o) {
+  var card = el('div', 'dk-cap' + (o.cls ? ' ' + o.cls : ''));
+  card.dataset.cap = o.cap;
+  var h = el('div', 'dk-cap-h');
+  h.appendChild(el('span', 'dk-cap-ic', o.icon));
+  var t = el('div', 'dk-cap-t');
+  t.appendChild(el('b', '', o.title));
+  t.appendChild(el('span', '', o.desc));
+  h.appendChild(t);
+  if (o.fixed) {
+    card.sw = {input: {}};
+    h.appendChild(el('span', 'dk-cap-fixed', o.fixed));
+  } else {
+    card.sw = makeSwitch(!!o.on, o.onSwitch, {title: o.title});
+    card.sw.classList.add('dk-cap-sw');
+    h.appendChild(card.sw);
+  }
+  card.appendChild(h);
+  card.more = el('div', 'dk-cap-more');
+  card.appendChild(card.more);
+  return card;
+}
+function capScope(name, choices, onPick) {
+  var modes = el('div', 'dk-scope');
+  choices.forEach(function (m) {
+    var lab = el('label', 'dk-scope-o');
+    var rb = el('input');
+    rb.type = 'radio'; rb.name = name; rb.value = m[0];
+    rb.onchange = function () { onPick(m[0]); };
+    lab.appendChild(rb);
+    lab.appendChild(el('span', '', m[1]));
+    modes.appendChild(lab);
+  });
+  return modes;
+}
+/* (5.59.4) Under "SMS via the desktop app": which desktop app the keys ask, and whether it may. */
+function dkSmsAsks(opts) {
+  var d = DK.d || {}, apps = d.apps || [];
+  var box = el('div', 'dk-asks');
+  var inst = opts.install;
+  var linked = inst ? apps.filter(function (a) { return (inst.apps_linked || []).indexOf(a.id) >= 0; })
+    : apps.filter(function (a) { return a.name.trim().toLowerCase() === String(opts.pair.computer || '').trim().toLowerCase(); });
+  box.appendChild(el('span', 'dk-asks-k', 'Asks'));
+  if (!linked.length) {
+    box.appendChild(el('span', 'dk-asks-none', inst && Array.isArray(inst.apps) ? 'no desktop app - tick one under the installation'
+      : 'no desktop app is named ' + ((inst || opts.pair).computer || 'as this computer') + ' yet - make its key under Desktop app, '
+      + 'or tick one under the installation'));
+    return box;
+  }
+  linked.forEach(function (a) {
+    var chip = el('span', 'dk-asks-app');
+    chip.appendChild(el('b', '', a.name));
+    var may = [a.sms.read ? 'reads' : '', a.sms.send ? 'sends' : ''].filter(Boolean);
+    chip.appendChild(el('span', may.length ? 'ok' : 'warn', may.length ? may.join(' & ') + ' SMS' : 'may not read or send SMS'));
+    box.appendChild(chip);
+  });
+  return box;
+}
+/* (5.59.4) Under an installation: the desktop apps on its computer - the ones its SMS keys ask.
+   None ticked by hand, ZIGMon takes the key named as the computer (shown as automatic). */
+function dkAppsBox(x) {
+  var d = DK.d || {}, apps = d.apps || [];
+  var auto = !Array.isArray(x.apps);
+  var linked = x.apps_linked || [];
+  var box = el('div', 'dk-apps');
+  box.dataset.install = x.id;
+  var h = el('div', 'dk-apps-h');
+  h.appendChild(el('span', 'dk-apps-ic', '🖥️'));
+  var t = el('div', 'dk-apps-t');
+  t.appendChild(el('b', '', 'Desktop apps on this deck’s computer'));
+  t.appendChild(el('span', '', 'The ones its SMS keys ask to show the latest text or write one. ' + (auto
+    ? 'Nothing ticked by hand: the app whose key is named ' + (x.computer || 'as the computer') + '.'
+    : 'Ticked by hand.')));
+  h.appendChild(t);
+  if (!auto) {
+    var back = el('button', 'dk-link dk-apps-auto', 'Back to automatic');
+    back.type = 'button';
+    back.onclick = function () {
+      dkAsk({action: 'apps', install: x.id, apps: null}, null).then(function (r) { toast(r.message, true); }, zoops);
+    };
+    h.appendChild(back);
+  }
+  box.appendChild(h);
+  var list = el('div', 'dk-apps-list');
+  if (!apps.length) list.appendChild(el('span', 'dk-none', 'No desktop app key yet - make one under Desktop app.'));
+  apps.forEach(function (a) {
+    var lab = el('label', 'dk-app' + (linked.indexOf(a.id) >= 0 ? ' on' : ''));
+    lab.dataset.id = a.id;
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = linked.indexOf(a.id) >= 0;
+    cb.onchange = function () {
+      var want = Array.prototype.filter.call(list.querySelectorAll('input'), function (i) { return i.checked; })
+        .map(function (i) { return i.parentNode.dataset.id; });
+      Array.prototype.forEach.call(list.querySelectorAll('input'), function (i) { i.disabled = true; });
+      dkAsk({action: 'apps', install: x.id, apps: want}, null).then(function (r) { toast(r.message, true); }, zoops);
+    };
+    lab.appendChild(cb);
+    var tt = el('span', 'dk-app-t');
+    tt.appendChild(el('b', '', a.name));
+    if (auto && cb.checked) tt.appendChild(el('span', 'dk-app-auto', '(automatic: ' + (x.computer || a.name) + ')'));
+    lab.appendChild(tt);
+    var may = [a.sms.read ? 'reads SMS' : '', a.sms.send ? 'sends SMS' : ''].filter(Boolean);
+    lab.appendChild(el('span', 'dk-app-may' + (may.length ? '' : ' none'), may.length ? may.join(' · ') : 'no SMS permission'));
+    list.appendChild(lab);
+  });
+  box.appendChild(list);
+  if (!((x.caps || {}).sms || {}).on) {
+    box.appendChild(el('p', 'dk-apps-note', 'Its SMS keys are not allowed yet - Permissions…, then “SMS via the desktop app”.'));
+  }
+  return box;
+}
 /* What the permissions say, in a line. */
 function dkSummary(caps) {
   var parts = [];
@@ -40171,6 +40579,11 @@ function dkSummary(caps) {
     if (c === 'view' || c === 'status') return;
     var one = caps[c] || {};
     if (!one.on) return;
+    if (c === 'sms') {
+      parts.push('asks the desktop app for SMS (' + (one.all ? 'both keys' : (one.targets || []).length + ' chosen')
+        + (one.hold ? ', held' : '') + ')');
+      return;
+    }
     parts.push(DK_CAPS[c][1].toLowerCase() + ' ' + (one.all ? 'everything' : (one.targets || []).length + ' chosen')
       + (one.hold ? ' (held)' : ''));
   });
@@ -40196,62 +40609,39 @@ function dkCapsEdit(opts) {
   var cards = {};
   var tell = function () {
     summary.textContent = dkSummary(caps);
-    Array.prototype.forEach.call(presets.querySelectorAll('.dk-preset'), function (b) {
-      var p = DK_PRESETS.filter(function (x) { return x[0] === b.dataset.p; })[0];
-      var same = DK_ORDER.every(function (c) {
+    capPresetsMark(presets, function (pid) {
+      var p = DK_PRESETS.filter(function (x) { return x[0] === pid; })[0];
+      return DK_ORDER.every(function (c) {
         var want = p[2].indexOf(c) >= 0;
         return !!caps[c].on === want && (!want || c === 'status' || caps[c].all);
       });
-      b.classList.toggle('on', same);
     });
   };
-  var presets = el('div', 'dk-presets');
-  DK_PRESETS.forEach(function (p) {
-    var b = el('button', 'dk-preset');
-    b.type = 'button';
-    b.dataset.p = p[0];
-    b.appendChild(el('b', '', p[1]));
-    if (p[3]) b.appendChild(el('span', '', p[3]));
-    b.onclick = function () {
-      DK_ORDER.forEach(function (c) {
-        caps[c].on = p[2].indexOf(c) >= 0;
-        if (caps[c].on && c !== 'status') caps[c].all = true;
-      });
-      DK_ORDER.forEach(function (c) { cards[c].sync(); });
-      tell();
-    };
-    presets.appendChild(b);
+  var presets = capPresets(DK_PRESETS.map(function (p) { return [p[0], p[1], p[3]]; }), function (pid) {
+    var p = DK_PRESETS.filter(function (x) { return x[0] === pid; })[0];
+    DK_ORDER.forEach(function (c) {
+      caps[c].on = p[2].indexOf(c) >= 0;
+      if (caps[c].on && c !== 'status') caps[c].all = true;
+    });
+    DK_ORDER.forEach(function (c) { cards[c].sync(); });
+    tell();
   });
   var list = el('div', 'dk-caps');
   DK_ORDER.forEach(function (c) {
     var meta = DK_CAPS[c];
-    var mine = items.filter(function (it) { return c === 'view' ? it.cap !== 'status' : it.cap === c; });
-    if (c !== 'view' && c !== 'status' && !mine.length && !caps[c].on) return;
-    var card = el('div', 'dk-cap');
-    card.dataset.cap = c;
-    var h = el('div', 'dk-cap-h');
-    h.appendChild(el('span', 'dk-cap-ic', meta[0]));
-    var t = el('div', 'dk-cap-t');
-    t.appendChild(el('b', '', meta[1]));
-    t.appendChild(el('span', '', meta[2]));
-    h.appendChild(t);
-    var sw = makeSwitch(caps[c].on, function (on) { caps[c].on = on; card.sync(); tell(); });
-    sw.classList.add('dk-cap-sw');
-    h.appendChild(sw);
-    card.appendChild(h);
-    var more = el('div', 'dk-cap-more');
+    /* (5.59.4) an action under a capability of its own (acknowledge, hush: system) is chosen there
+       too; the SMS keys are not among what "See the house" shows */
+    var mine = items.filter(function (it) {
+      if (c === 'view') return it.cap !== 'status' && it.cap !== 'sms';
+      return it.cap === c || (it.act_caps || []).indexOf(c) >= 0;
+    });
+    if (c !== 'view' && c !== 'status' && c !== 'sms' && !mine.length && !caps[c].on) return;
+    var card = capCard({cap: c, icon: meta[0], title: meta[1], desc: meta[2], on: caps[c].on,
+                        onSwitch: function (on) { caps[c].on = on; card.sync(); tell(); }});
+    var sw = card.sw, more = card.more;
     if (c !== 'status') {
-      var modes = el('div', 'dk-scope');
-      var name = 'dk-scope-' + c;
-      [['all', 'Every ' + meta[3] + ' (' + mine.length + ')'], ['some', 'Only these']].forEach(function (m) {
-        var lab = el('label', 'dk-scope-o');
-        var rb = el('input');
-        rb.type = 'radio'; rb.name = name; rb.value = m[0];
-        rb.onchange = function () { caps[c].all = m[0] === 'all'; card.sync(); tell(); };
-        lab.appendChild(rb);
-        lab.appendChild(el('span', '', m[1]));
-        modes.appendChild(lab);
-      });
+      var modes = capScope('dk-scope-' + c, [['all', 'Every ' + meta[3] + ' (' + mine.length + ')'], ['some', 'Only these']],
+        function (v) { caps[c].all = v === 'all'; card.sync(); tell(); });
       more.appendChild(modes);
       var pick = el('div', 'dk-pick');
       var find = el('input', 'ntf-find dk-find');
@@ -40263,14 +40653,24 @@ function dkCapsEdit(opts) {
       pick.appendChild(bar);
       var opts_ = el('div', 'dk-opts');
       var rooms = {};
-      mine.forEach(function (it) { (rooms[it.room || ''] = rooms[it.room || ''] || []).push(it); });
-      Object.keys(rooms).sort(function (a, b) { return !a ? 1 : !b ? -1 : a.localeCompare(b); }).forEach(function (r) {
+      /* (5.59.4) what is chosen here for an action of its own (acknowledge, hush) comes first, together */
+      var ACTS = '\u0001';
+      mine.forEach(function (it) {
+        var r = it.cap !== c && c !== 'view' ? ACTS : (it.room || '');
+        (rooms[r] = rooms[r] || []).push(it);
+      });
+      Object.keys(rooms).sort(function (a, b) {
+        return a === ACTS ? -1 : b === ACTS ? 1 : !a ? 1 : !b ? -1 : a.localeCompare(b);
+      }).forEach(function (r) {
         var grp = el('div', 'dk-grp');
-        grp.appendChild(el('div', 'dk-grp-h', r || 'No room'));
+        grp.appendChild(el('div', 'dk-grp-h', r === ACTS ? 'Acknowledge and hush' : r || 'No room'));
         rooms[r].forEach(function (it) {
           var lab = el('label', 'dk-opt');
           lab.dataset.id = it.id;
-          lab.dataset.find = [it.name, it.room || '', it.kind, it.id].join(' ').toLowerCase();
+          var word = (it.kind === 'sms' && it.cap !== 'sms' ? 'the text gateway' : DK_KIND_WORD[it.kind] || it.kind)
+            + (it.cap !== c && c !== 'view' ? ' · acknowledge, hush' : '')
+            + (c === 'switch' && it.kind !== 'scene' ? ' · timer too' : '');
+          lab.dataset.find = [it.name, it.room || '', it.kind, word, it.id].join(' ').toLowerCase();
           var cb = el('input');
           cb.type = 'checkbox';
           cb.checked = (caps[c].targets || []).indexOf(it.id) >= 0;
@@ -40283,13 +40683,14 @@ function dkCapsEdit(opts) {
           lab.appendChild(el('span', 'dk-oic', DK_KIND_ICON[it.kind] || ICON.sensor));
           var ot = el('span', 'dk-ot');
           ot.appendChild(el('b', '', it.name));
-          ot.appendChild(el('span', '', it.kind));
+          ot.appendChild(el('span', '', word));
           lab.appendChild(ot);
           grp.appendChild(lab);
         });
         opts_.appendChild(grp);
       });
-      if (!mine.length) opts_.appendChild(el('p', 'dk-none', 'Nothing of this kind in the house yet.'));
+      if (!mine.length) opts_.appendChild(el('p', 'dk-none', c === 'sms' ? 'The SMS keys show once a text gateway is set up '
+        + '(Settings - SMS).' : 'Nothing of this kind in the house yet.'));
       find.oninput = function () {
         var q = find.value.trim().toLowerCase();
         Array.prototype.forEach.call(opts_.querySelectorAll('.dk-grp'), function (g) {
@@ -40303,6 +40704,7 @@ function dkCapsEdit(opts) {
       };
       pick.appendChild(opts_);
       more.appendChild(pick);
+      if (c === 'sms') more.appendChild(dkSmsAsks(opts));
       if (c !== 'view') {
         var hold = el('label', 'dk-holdo');
         var hb = el('input');
@@ -40320,7 +40722,6 @@ function dkCapsEdit(opts) {
       card.pick = pick;
       card.count = count;
     }
-    card.appendChild(more);
     card.sync = function () {
       card.classList.toggle('on', !!caps[c].on);
       more.hidden = !caps[c].on || c === 'status';

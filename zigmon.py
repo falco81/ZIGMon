@@ -14348,7 +14348,10 @@ class Daemon(EspGateways):
                 last_at, last_from = seen
             row = {'id': r['id'], 'name': r.get('name') or '', 'devices': list(r.get('devices') or []),
                    'created': r.get('created'), 'by': r.get('by') or '', 'last_at': last_at,
-                   'last_from': last_from or None, 'hint': r.get('hint') or ''}
+                   'last_from': last_from or None, 'hint': r.get('hint') or '',
+                   # (5.59.4) what it may do with SMS (every flag off unless granted), and the
+                   # Stream Deck installations that may ask it - by hand, or by the computer's name
+                   'sms': self.notifier_sms_flags(r), 'decks': self._ntf_decks_of(r)}
             rules = [x for x in r.get('rules') or [] if isinstance(x, dict) and x.get('id')]
             if rules:
                 # (5.58) its conditions - only when it has some, so a key without is as it was
@@ -14431,14 +14434,21 @@ class Daemon(EspGateways):
                                  'Settings - Messages - Desktop app' % most)
             name = clean_name(body.get('name'))
             devs = clean_devices(body.get('devices'))
+            sms = self._ntf_clean_sms(body.get('sms')) if 'sms' in body else None     # (5.59.4)
+            decks = self._ntf_clean_decks(body.get('decks')) if 'decks' in body else None
             key = 'zmn_' + secrets.token_urlsafe(30)
             kid = secrets.token_hex(6)
-            rows.append({'id': kid, 'name': name, 'devices': devs, 'created': time.time(), 'by': by or '',
-                         'last_at': None, 'last_from': None, 'hint': key[-2:],
-                         'hash': hashlib.sha256(key.encode('utf-8')).hexdigest()})
+            row = {'id': kid, 'name': name, 'devices': devs, 'created': time.time(), 'by': by or '',
+                   'last_at': None, 'last_from': None, 'hint': key[-2:],
+                   'hash': hashlib.sha256(key.encode('utf-8')).hexdigest()}
+            if sms is not None and any(sms.values()):
+                row['sms'] = sms
+            rows.append(row)
             self._ntf_put(rows)
+            if decks is not None:
+                self._ntf_link_decks(row, decks, by)
             self.store.add_event('control', "%s made the desktop notifier key '%s' (%s)"
-                                 % (by or 'somebody', name, said(devs)), 'info')
+                                 % (by or 'somebody', name, said(devs) + self._ntf_sms_said(row)), 'info')
             return {'key': key, 'id': kid, 'message': "the key '%s' is made" % name}
         kid = str(body.get('id') or '')
         mine = next((r for r in rows if r['id'] == kid), None)
@@ -14462,11 +14472,17 @@ class Daemon(EspGateways):
                 mine['name'] = clean_name(body.get('name'))
             if 'devices' in body:
                 mine['devices'] = clean_devices(body.get('devices'))
+            if 'sms' in body:                                                # (5.59.4)
+                mine['sms'] = self._ntf_clean_sms(body.get('sms'))
+            decks = self._ntf_clean_decks(body.get('decks')) if 'decks' in body else None
             self._ntf_put(rows)
+            if decks is not None:
+                self._ntf_link_decks(mine, decks, by)
             with self._ntf_cond:
                 self._ntf_cond.notify_all()
             self.store.add_event('control', "%s changed the desktop notifier key '%s' (%s)"
-                                 % (by or 'somebody', mine['name'], said(mine['devices'])), 'info')
+                                 % (by or 'somebody', mine['name'], said(mine['devices']) + self._ntf_sms_said(mine)),
+                                 'info')
             return {'message': "the key '%s' is saved" % mine['name']}
         raise ValueError('what with the key? (create, update, delete, test, rule_add, rule_update, rule_delete; '
                          'enable or disable the desktop app)')
@@ -14538,7 +14554,9 @@ class Daemon(EspGateways):
                             **({'rules': nrules} if nrules else {})),
                 'boot': self.notifier_boot, 'seq': self._ntf_seq,
                 # (5.57) the app this server hands out, for the app to update itself from
-                'app': None if app is None else {'version': app['version']}}
+                'app': None if app is None else {'version': app['version']},
+                # (5.59.4) what this key may do with SMS, and whether the gateway is set up
+                'sms': dict(self.notifier_sms_flags(key), ready=self.sms_ready())}
 
     # ---- the app itself (5.57): ZIGMon Notifier shipped with ZIGMon, fetched from here --------
     # install.sh puts the three files of windows/dist into <lib>/notifier/: the exe, its
@@ -14670,9 +14688,9 @@ class Daemon(EspGateways):
                 key = self.notifier_key_by_id(kid)
                 if key is None:
                     return None
-                got = [e for e in self._ntf_ring if e[0] > after and (
-                    # (5.58) a condition's event is its own key's only
-                    e[7]['kid'] == kid if len(e) > 7 else self.notifier_may_see(key, e[2]))]
+                # (5.58) a condition's event is its own key's only; (5.59.4) an SMS is for a key
+                # with sms.read, a Stream Deck's ask for the apps it was handed to
+                got = [e for e in self._ntf_ring if e[0] > after and self._ntf_for(key, e)]
                 if got:
                     break
                 remaining = deadline - time.monotonic()
@@ -14687,6 +14705,15 @@ class Daemon(EspGateways):
         for e in got:
             s, at, dev, kind, k, active, what = e[:7]
             extra = e[7] if len(e) > 7 else None
+            if extra and ('sms' in extra or 'deck' in extra):
+                # (5.59.4) an SMS that came in, or a Stream Deck asking: shaped as PROTOCOL-SMS.md says
+                one = {'seq': s, 'at': round(at, 3), 'device': dev, 'name': extra.get('label') or dev, 'room': None,
+                       'kind': kind, 'key': k, 'active': active, 'what': what}
+                for part in ('sms', 'deck'):
+                    if part in extra:
+                        one[part] = json.loads(json.dumps(extra[part]))
+                events.append(one)
+                continue
             real = extra['dev'] if extra else dev
             if real not in names:
                 row = self.store.device(real) or {}
@@ -14703,6 +14730,265 @@ class Daemon(EspGateways):
         # next one carries on from there
         return {'ok': True, 'boot': self.notifier_boot, 'seq': got[-1][0] if more else seq,
                 'reset': False, 'events': events}
+
+    # ---- SMS for the desktop app (5.59.4, windows/PROTOCOL-SMS.md section 2) ----------------
+    # A key may be given, flag by flag, the house's SMS: read (the history, and each incoming
+    # SMS in its wait), send (through sms_send, its limits and its queue, at most
+    # NOTIFIER_SMS_RATE a minute for each key on top) and contacts (read-only). Every flag is
+    # off until an administrator grants it. The history is ZIGMon's own SMS log: the modem is
+    # never read again for this. What is written into the events names the key, never the
+    # text and never a number.
+    NOTIFIER_SMS_FLAGS = ('read', 'send', 'contacts')
+    NOTIFIER_SMS_RATE = 10            # messages a minute for each key
+    NOTIFIER_SMS_TO_MOST = 10         # recipients of one send, after the contacts and groups are expanded
+    NOTIFIER_SMS_ONLINE_S = 60        # a key that asked within this is "running" for a Stream Deck's ask
+
+    @classmethod
+    def notifier_sms_flags(cls, key):
+        got = (key or {}).get('sms')
+        got = got if isinstance(got, dict) else {}
+        return {f: got.get(f) is True for f in cls.NOTIFIER_SMS_FLAGS}
+
+    def _ntf_clean_sms(self, v):
+        if v in (None, ''):
+            return {f: False for f in self.NOTIFIER_SMS_FLAGS}
+        if not isinstance(v, dict):
+            raise ValueError('sms is an object: {"read": true|false, "send": ..., "contacts": ...}')
+        unknown = [k for k in v if k not in self.NOTIFIER_SMS_FLAGS]
+        if unknown:
+            raise ValueError('sms.%s is not a permission (read, send, contacts)' % str(unknown[0])[:20])
+        out = {}
+        for f in self.NOTIFIER_SMS_FLAGS:
+            one = v.get(f, False)
+            if not isinstance(one, bool):
+                raise ValueError('sms.%s is true or false' % f)
+            out[f] = one
+        return out
+
+    def _ntf_sms_said(self, key):
+        """'; SMS: read, send' for the events - nothing when it may do nothing with SMS."""
+        on = [f for f, v in self.notifier_sms_flags(key).items() if v]
+        return ('; SMS: ' + ', '.join(on)) if on else ''
+
+    def _ntf_for(self, key, e):
+        """Whether one event of the ring is for this key."""
+        if len(e) > 7:
+            x = e[7]
+            if 'kid' in x:
+                return x['kid'] == key['id']
+            if 'kids' in x:
+                return key['id'] in x['kids']
+            if x.get('need') == 'sms.read':
+                return self.notifier_sms_flags(key)['read']
+            return False
+        return self.notifier_may_see(key, e[2])
+
+    def _ntf_push(self, dev, kind, k, what, extra):
+        self._ntf_setup()
+        if not self.notifier_enabled():
+            return None
+        with self._ntf_cond:
+            self._ntf_seq += 1
+            self._ntf_ring.append((self._ntf_seq, time.time(), dev, kind, k, True, what, extra))
+            self._ntf_cond.notify_all()
+            return self._ntf_seq
+
+    # -- the contacts: the address book's own helpers (contacts, contact_by_number, contacts_expand) --
+    def _ntf_contacts(self):
+        out = []
+        for r in self.contacts():
+            if not r.get('id') or not r.get('name'):
+                continue
+            out.append({'id': r['id'], 'name': r['name'],
+                        'numbers': [{'label': str(n.get('label') or ''), 'number': str(n.get('number') or '')}
+                                    for n in r.get('numbers') or [] if str(n.get('number') or '').strip()],
+                        'group': r.get('group') or '', 'note': r.get('note') or '',
+                        'favourite': r.get('favourite') is True})
+        return out
+
+    def _ntf_contact_of(self, number, contacts=None):
+        """{id, name} of the contact a number belongs to, or None."""
+        if not str(number or '').strip():
+            return None
+        c = self.contact_by_number(number)
+        return {'id': c['id'], 'name': c['name']} if c else None
+
+    def _ntf_expand(self, to, most):
+        """`to` - numbers, contact:<id>, group:<name> - as [{id, name, number}], each number once.
+        ValueError, in words and with .bad (the entries that name nothing), for one that is not known."""
+        if not isinstance(to, list):
+            raise ValueError('to is a list of numbers, contact:<id> and group:<name>')
+        given = [re.sub(r'[\x00-\x1f\x7f]', '', str(x if x is not None else '')).strip()[:120] for x in to[:200]]
+        unknown = []
+        got = self.contacts_expand([x for x in given if x], unknown)
+        if unknown:
+            e = ValueError('%s is not a contact, a group or a phone number here%s'
+                           % (unknown[0][:60], (' (and %d more)' % (len(unknown) - 1)) if len(unknown) > 1 else ''))
+            e.bad = unknown[:50]
+            raise e
+        if len(got) > most:
+            raise ValueError('at most %d recipients at once' % most)
+        return [{'id': c['id'] if c else None, 'name': c['name'] if c else None,
+                 'number': re.sub(r'[^0-9+]', '', str(number))} for number, c in got]
+
+    # -- what came in, into the waits; the history --
+    def _ntf_sms_in(self, row_id, number, text):
+        """An incoming SMS, from ZIGMon's own log, into the ring - for the keys with sms.read."""
+        try:
+            if self.__dict__.get('_ntf_cond') is None or not self.notifier_enabled():
+                return
+            contact = self._ntf_contact_of(number)
+            sms = {'id': row_id, 'from': str(number or ''), 'contact': contact, 'text': str(text or '')[:1000],
+                   'at': int(time.time())}
+            self._ntf_push('sms', 'sms', 'in', 'sms', {'need': 'sms.read', 'label': (contact or {}).get('name') or 'SMS',
+                                                       'sms': sms})
+        except Exception as e:                               # noqa: BLE001
+            log('the desktop app: an incoming SMS: %s' % type(e).__name__, 'debug')
+
+    def notifier_sms_history(self, key, limit=50):
+        try:
+            limit = max(1, min(self.SMS_LOG_KEEP, int(limit)))
+        except (TypeError, ValueError):
+            limit = 50
+        self._ntf_setup()
+        newest = next((r.get('id') for r in self.sms_log(self.SMS_LOG_KEEP)
+                       if isinstance(r, dict) and r.get('dir') == 'in'), None)
+        if newest:
+            self._ntf_sms_read_mark = newest             # a Stream Deck's "unread" goes back to 0
+            self._deck_items_kept = None
+        contacts = self._ntf_contacts()
+        out = []
+        for r in self.sms_log(limit):
+            if not isinstance(r, dict) or r.get('dir') not in ('in', 'out'):
+                continue
+            out.append({'id': r.get('id'), 'dir': r['dir'], 'number': str(r.get('number') or ''),
+                        'contact': self._ntf_contact_of(r.get('number'), contacts),
+                        'text': str(r.get('text') or ''), 'at': r.get('at'),
+                        'ok': None if r.get('ok') is None else bool(r.get('ok'))})
+        return {'ok': True, 'ready': self.sms_ready(), 'messages': out}
+
+    def notifier_contacts_for(self, key):
+        rows = self._ntf_contacts()
+        groups = sorted({r['group'] for r in rows if r['group']}, key=lambda g: g.lower())
+        return {'ok': True, 'contacts': rows, 'groups': groups}
+
+    def _ntf_sms_rate_ok(self, kid, n):
+        now = time.time()
+        rates = self.__dict__.setdefault('_ntf_sms_rates', {})
+        with self._ntf_cond:
+            times = [t for t in rates.get(kid, []) if now - t < 60]
+            if len(times) + n > self.NOTIFIER_SMS_RATE:
+                rates[kid] = times
+                return False
+            rates[kid] = times + [now] * n
+        return True
+
+    def notifier_sms_send(self, key, body):
+        """(status, answer) - the shape of /api/sms/send: ok, sent, failed, message, error."""
+        def no(code, words):
+            return code, {'ok': False, 'sent': [], 'failed': [], 'message': words, 'error': words}
+        if not self.notifier_sms_flags(key)['send']:
+            return no(403, 'This desktop app may not send SMS - an administrator allows it in ZIGMon under '
+                           'Settings - Messages - Desktop app.')
+        if not self.sms_ready():
+            return no(409, 'No SMS gateway is set up in ZIGMon, so nothing can be sent.')
+        body = body if isinstance(body, dict) else {}
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', str(body.get('text') or '')).strip()
+        if not text:
+            return no(400, 'The message is empty - write something first.')
+        if len(text) > 1000:
+            return no(400, 'The message is too long - at most 1000 characters.')
+        to = body.get('to')
+        if to in (None, ''):
+            to = []
+        reply = str(body.get('reply_to') or '').strip()[:40]
+        if reply:
+            row = next((r for r in self.sms_log(self.SMS_LOG_KEEP) if isinstance(r, dict) and r.get('id') == reply), None)
+            if row is None:
+                return no(400, 'The message this answers is no longer in ZIGMon’s history.')
+            if not to and isinstance(to, list):
+                to = [str(row.get('number') or '')]
+        try:
+            rcpt = self._ntf_expand(to, self.NOTIFIER_SMS_TO_MOST)
+        except ValueError as e:
+            code, out = no(400, 'Not sent: %s.' % str(e).rstrip('.'))
+            if getattr(e, 'bad', None):
+                out['bad_to'] = e.bad
+            return code, out
+        if not rcpt:
+            return no(400, 'Not sent: choose at least one recipient.')
+        if not self._ntf_sms_rate_ok(key['id'], len(rcpt)):
+            return no(429, 'Not sent: at most %d messages a minute from this desktop app - wait a moment and try again.'
+                      % self.NOTIFIER_SMS_RATE)
+        sent, failed, why = [], [], ''
+        for one in rcpt:
+            try:
+                ok, detail = self.sms_send(one['number'], text, why='desktop app')
+            except Exception as e:                           # noqa: BLE001
+                ok, detail = False, type(e).__name__
+            (sent if ok else failed).append(one['number'])
+            if not ok and not why:
+                why = str(detail or '')[:160]
+        self.store.add_event('sms', "SMS sent from the desktop app '%s' to %d recipient%s%s"
+                             % (key.get('name') or '', len(sent), '' if len(sent) == 1 else 's',
+                                (', %d failed' % len(failed)) if failed else ''), 'info' if sent else 'warn')
+        words = '%d sent%s' % (len(sent), (', %d failed' % len(failed)) if failed else '')
+        return 200, {'ok': bool(sent), 'sent': sent, 'failed': failed, 'message': words,
+                     'error': None if sent else ('Nothing could be sent%s' % (': ' + why if why else '.'))}
+
+    # -- (5.59.4, section 3) a Stream Deck installation's desktop apps --
+    def deck_linked_apps(self, inst, keys=None):
+        """The keys an installation is linked to: its `apps` when an administrator set them (a
+        list - an empty one links none), else the keys named as its computer, ignoring case."""
+        keys = self.notifier_keys() if keys is None else keys
+        apps = inst.get('apps')
+        if isinstance(apps, list):
+            return [k for k in keys if k['id'] in apps]
+        name = str(inst.get('computer') or '').strip().lower()
+        return [k for k in keys if name and str(k.get('name') or '').strip().lower() == name]
+
+    def _ntf_decks_of(self, key):
+        """[{id, auto}] - the Stream Deck installations that may ask this key's app."""
+        out = []
+        for inst in self.deck_installs():
+            if self.deck_linked_apps(inst, [key]):
+                out.append({'id': inst['id'], 'auto': not isinstance(inst.get('apps'), list)})
+        return out
+
+    def _ntf_clean_decks(self, v):
+        if not isinstance(v, list):
+            raise ValueError('decks is a list of Stream Deck installation ids')
+        known = {r['id'] for r in self.deck_installs()}
+        out = []
+        for one in v[:200]:
+            one = str(one or '').strip()
+            if one not in known:
+                raise ValueError('%s is not a Stream Deck installation here' % one[:40])
+            if one not in out:
+                out.append(one)
+        return out
+
+    def _ntf_link_decks(self, key, wanted, by):
+        """The installations that may ask this key, set from the key's side: each installation whose
+        links change gets a list of its own (an automatic one written out as it was, give or take this)."""
+        rows = self.deck_installs()
+        keys = self.notifier_keys()
+        changed = []
+        for inst in rows:
+            now = [k['id'] for k in self.deck_linked_apps(inst, keys)]
+            want = inst['id'] in wanted
+            if (key['id'] in now) == want:
+                continue
+            inst['apps'] = [x for x in now if x != key['id']] + ([key['id']] if want else [])
+            changed.append(inst.get('name') or inst['id'])
+        if changed:
+            self._deck_put(rows)
+            self._deck_setup()
+            with self._deck_cond:
+                self._deck_cond.notify_all()
+            self.store.add_event('control', "%s changed which Stream Decks may ask the desktop app '%s' (%s)"
+                                 % (by or 'somebody', key.get('name') or '', ', '.join("'%s'" % c for c in changed)),
+                                 'info')
 
     # ---- Stream Deck (5.59): ZIGMon for Stream Deck, the Elgato plugin for Windows ----------
     # Off until an administrator switches it on (Settings - Messages - Stream Deck). A copy of
@@ -14725,7 +15011,7 @@ class Daemon(EspGateways):
     DECK_RATE_S, DECK_RATE_MIN = 10, 300
     DECK_REVOKED_KEPT = 50
     DECK_CAPS = ('view', 'switch', 'dim', 'climate', 'cover', 'scenes', 'automations', 'messages', 'system',
-                 'status', 'locks')
+                 'status', 'locks', 'sms')   # (5.59.4) sms: ask the desktop app (PROTOCOL-SMS.md section 3)
     DECK_CAP_WORDS = {'view': 'see states and readings', 'switch': 'switch sockets, lights and relays',
                       'dim': 'dim lights and set their colour', 'climate': 'set the heating and thermostats',
                       'cover': 'move the blinds', 'scenes': 'run scenes, sequences and groups',
@@ -14733,7 +15019,8 @@ class Daemon(EspGateways):
                       'messages': 'send the reports and messages', 'system': 'run the system actions',
                       'status': 'see ZIGMon’s own health',
                       # (5.59.4) the locks of the ESP32 gateways: off until granted, held by default
-                      'locks': 'open, unlock and lock the locks'}
+                      'locks': 'open, unlock and lock the locks',
+                      'sms': 'ask the desktop app on its computer to show or write a text message'}
     DECK_TYPES = {0: ('Stream Deck', 'Stream Deck'), 1: ('Stream Deck Mini', 'Mini'), 2: ('Stream Deck XL', 'XL'),
                   3: ('Stream Deck Mobile', 'Mobile'), 4: ('Corsair G-Keys', 'G-Keys'), 5: ('Stream Deck Pedal', 'Pedal'),
                   6: ('Corsair Voyager', 'Voyager'), 7: ('Stream Deck +', '+'), 8: ('SCUF controller', 'SCUF'),
@@ -14886,6 +15173,8 @@ class Daemon(EspGateways):
         base = self.deck_default_caps()
         listed = self.deck_items()
         items = {i['id']: i['cap'] for i in listed}
+        for sid in self.DECK_SMS_IDS:
+            items.setdefault(sid, 'sms')     # (5.59.4) granted by name even while the gateway is not set up
         # (5.59.4) an action with a capability of its own (acknowledge under system) is granted by name too
         acting = {i['id']: set((i.get('_act_caps') or {}).values()) for i in listed if i.get('_act_caps')}
         out = {}
@@ -15783,13 +16072,96 @@ class Daemon(EspGateways):
                    'muted_until': muted},
             online=online is not False, act_caps={'mute': 'system', 'unmute': 'system'})]
 
+    # (5.59.4) the desktop app asked from a key (PROTOCOL-SMS.md section 3): under the cap "sms"
+    DECK_SMS_IDS = ('sms:last', 'sms:compose')
+    DECK_SMS_TO_MOST = 20
+
+    def _deck_sms_keys_for(self, inst):
+        caps = inst.get('caps') or {}
+        if not ((caps.get('sms') or {}).get('on')):
+            return False
+        try:
+            return bool(self.sms_ready() or self._deck_sms_rows())
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _deck_sms_app_items(self, items, heat):
+        """sms:last and sms:compose - their state from ZIGMon's own log; a number shown as …123."""
+        rows = self._deck_sms_rows()
+        if not self.sms_ready() and not rows:
+            return []
+        lt = time.localtime()
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        today = sum(1 for r in rows if isinstance(r.get('at'), (int, float)) and r['at'] >= midnight)
+        # unread: the ones above the newest a desktop app had when it last fetched them
+        mark = self.__dict__.get('_ntf_sms_read_mark')
+        ids = [r.get('id') for r in rows]
+        unread = ids.index(mark) if mark in ids else today
+        last = rows[0] if rows else None
+        who = None
+        if last:
+            hit = self._ntf_contact_of(last.get('number'))
+            who = (hit or {}).get('name') or self.deck_mask_phone(last.get('number'))
+            who = self.deck_scrub(who, 30) if who else None
+        extra = {'last_from': who,
+                 'last_at': int(last['at']) if last and isinstance(last.get('at'), (int, float)) else None,
+                 'unread': unread}
+        out = []
+        for sid, name in (('sms:last', 'Latest SMS'), ('sms:compose', 'New SMS')):
+            it = self._deck_new_item(sid, name, 'sms', 'message', 'sms', actions=['run'], value=today,
+                                     vtext='%d today' % today, on=None, extra=dict(extra))
+            it['_do'] = 'sms'
+            out.append(it)
+        return out
+
+    def _deck_sms_do(self, inst, deck, item, body):
+        """Hand the ask to the desktop apps linked to this installation that may do it and are running:
+        an event in their waits. ZIGMon sends nothing by itself."""
+        what = 'last' if item['id'] == 'sms:last' else 'compose'
+        to = body.get('to')
+        rcpt = []
+        if what == 'compose' and to not in (None, ''):
+            if not isinstance(to, list) or len(to) > self.DECK_SMS_TO_MOST:
+                return 400, {'ok': False, 'error': 'to is a list of at most %d numbers, contact:<id> and group:<name>'
+                             % self.DECK_SMS_TO_MOST}
+            try:
+                rcpt = self._ntf_expand(to, self.DECK_SMS_TO_MOST)
+            except ValueError as e:
+                return 400, dict({'ok': False, 'error': str(e)}, **({'bad_to': e.bad} if getattr(e, 'bad', None) else {}))
+        need = 'read' if what == 'last' else 'send'
+        linked = self.deck_linked_apps(inst)
+        if not linked:
+            return 409, {'ok': False, 'error': 'no desktop app linked to this Stream Deck is running', 'apps': 0,
+                         'no_app': True}
+        may = [k for k in linked if self.notifier_sms_flags(k)[need]]
+        if not may:
+            return 409, {'ok': False, 'apps': len(linked), 'not_allowed': True,
+                         'error': 'the desktop app linked to this Stream Deck may not %s SMS'
+                                  % ('read' if need == 'read' else 'send')}
+        self._ntf_setup()
+        now = time.time()
+        live = [k for k in may if now - (self._ntf_seen.get(k['id']) or (0, ''))[0] < self.NOTIFIER_SMS_ONLINE_S]
+        if not live or not self.notifier_enabled():
+            return 409, {'ok': False, 'error': 'no desktop app linked to this Stream Deck is running', 'apps': len(may),
+                         'no_app': True}
+        ask = {'install': inst['id'], 'computer': str(inst.get('computer') or '')[:60], 'to': rcpt}
+        self._ntf_push('deck', 'deck', 'sms', what, {'kids': [k['id'] for k in live],
+                                                     'label': "Stream Deck '%s'" % (inst.get('name') or ''),
+                                                     'deck': ask})
+        names = ', '.join("'%s'" % (k.get('name') or '') for k in live)
+        said = ('asked the desktop app %s to show the latest SMS' if what == 'last'
+                else 'asked the desktop app %s to write an SMS') % names
+        self.store.add_event('control', "Stream Deck '%s' (%s) %s" % (
+            inst.get('name') or '', self.deck_type_name(deck.get('type'), short=True), said), 'info')
+        return 200, {'ok': True, 'said': said, 'apps': len(live), 'state': dict(item['state'])}
+
     def _deck_more_items(self, items, rooms):
         """(5.59.4) The summaries, each part on its own: one that fails hides none of the rest."""
         heat = getattr(self, '_deck_heat_now', None) or {'rooms': []}
         out = []
         for part in (self._deck_power_item, self._deck_security_item, self._deck_heatgroup_item,
                      self._deck_away_item, self._deck_batteries_item, self._deck_zigbee_item,
-                     self._deck_sms_item):
+                     self._deck_sms_item, self._deck_sms_app_items):
             try:
                 out.extend(part(items, heat))
             except Exception as e:                           # noqa: BLE001
@@ -15903,8 +16275,8 @@ class Daemon(EspGateways):
     def deck_visible(cls, caps, item):
         if cls.deck_allowed(caps, item):
             return True
-        if item['cap'] == 'status':
-            return False
+        if item['cap'] in ('status', 'sms'):
+            return False            # (5.59.4) the SMS keys only with the sms capability itself
         view = (caps or {}).get('view') or {}
         return bool(view.get('on')) and (bool(view.get('all')) or item['id'] in (view.get('targets') or []))
 
@@ -16154,7 +16526,9 @@ class Daemon(EspGateways):
                            'cols': x.get('cols'), 'rows': x.get('rows')} for x in inst.get('decks') or []],
                 'plugin': None if plugin is None else {'version': plugin['version']},
                 # (5.59.4) what may be asked for beyond api 1: the summaries ("extended") and a timer
-                'features': ['extended', 'timer', 'summaries-5.59.4']}
+                'features': ['extended', 'timer', 'summaries-5.59.4']
+                # (5.59.4) the SMS keys, where they exist and this installation is granted them
+                + (['sms'] if self._deck_sms_keys_for(inst) else [])}
 
     def deck_catalog(self, inst, extended=False):
         self._deck_setup()
@@ -16163,8 +16537,15 @@ class Daemon(EspGateways):
         shown = self.deck_shown(caps, extended)
         ids = {it['id'] for it in shown}
         items = [self.deck_item_out(caps, it, extended, ids) for it in shown]
-        return {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq,
-                'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()], 'items': items}
+        out = {'ok': True, 'boot': self.deck_boot_for(inst), 'seq': self._deck_seq,
+               'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()], 'items': items}
+        if extended and ((caps.get('sms') or {}).get('on')):
+            # (5.59.4) for the inspector's picker of "New SMS": who, never a number
+            book = self.contacts()[:500]
+            out['sms_contacts'] = [{'id': c['id'], 'name': c['name'], 'group': c.get('group') or '',
+                                    'favourite': c.get('favourite') is True} for c in book]
+            out['sms_groups'] = self.contact_groups()
+        return out
 
     @staticmethod
     def _deck_ids(text):
@@ -16345,6 +16726,8 @@ class Daemon(EspGateways):
                 return 409, {'ok': False, 'error': 'Hold the key to confirm', 'hold': True}
         if item.get('_do') == 'heatgroup':
             return self._deck_heatgroup_do(inst, mine, item, action, body, caps)
+        if item.get('_do') == 'sms':
+            return self._deck_sms_do(inst, mine, item, body)          # (5.59.4) handed to the desktop app
         was_on = item['state'].get('on')
         do, words, target = self._deck_command(item, action, body)
         if do is None:
@@ -16459,7 +16842,7 @@ class Daemon(EspGateways):
         if action == 'ack':
             alerts = [a for a in self.active_alerts() if isinstance(a, dict) and a.get('id')]
             if not alerts:
-                return 409, {'ok': False, 'error': 'there is no alert standing'}
+                return 409, {'ok': False, 'error': 'there is no alert standing', 'nothing': True}
             self.clear_alerts(alerts[-1]['id'])         # as the dashboard's "seen" does, the latest one
             said = 'acknowledged the latest alert'
         elif action == 'mute':
@@ -16746,6 +17129,7 @@ class Daemon(EspGateways):
 
     def deck_installs_view(self):
         self._deck_setup()
+        keys = self.notifier_keys()
         out = []
         for r in self.deck_installs():
             seen = self._deck_seen.get(r['id'])
@@ -16759,7 +17143,11 @@ class Daemon(EspGateways):
                         'decks': [dict(x, type_name=self.deck_type_name(x.get('type')), approved=bool(x.get('approved')))
                                   for x in r.get('decks') or []],
                         'approved_by': r.get('approved_by') or '', 'approved_at': r.get('approved_at'),
-                        'created': r.get('created'), 'last_at': last_at, 'last_from': last_from or None})
+                        'created': r.get('created'), 'last_at': last_at, 'last_from': last_from or None,
+                        # (5.59.4) the desktop apps it may ask: set by hand (a list), or None - then
+                        # the keys named as its computer, which `linked` holds either way
+                        'apps': list(r['apps']) if isinstance(r.get('apps'), list) else None,
+                        'apps_linked': [k['id'] for k in self.deck_linked_apps(r, keys)]})
         return out
 
     def deck_admin_view(self, admin_items=True):
@@ -16774,8 +17162,14 @@ class Daemon(EspGateways):
                'address': re.sub(r'/(index\.php)?$', '', str(CONFIG.get('public_url') or '').strip()),
                'rooms': [{'id': r['id'], 'name': r['name']} for r in self.rooms()]}
         if admin_items:
-            out['items'] = [{'id': it['id'], 'name': it['name'], 'room': it['room'], 'kind': it['kind'],
-                             'icon': it['icon'], 'cap': it['cap']} for it in self.deck_items()]
+            out['items'] = [dict({'id': it['id'], 'name': it['name'], 'room': it['room'], 'kind': it['kind'],
+                                  'icon': it['icon'], 'cap': it['cap']},
+                                 # (5.59.4) an action under a capability of its own (acknowledge, hush: system)
+                                 **({'act_caps': sorted(set(it['_act_caps'].values()))} if it.get('_act_caps') else {}))
+                            for it in self.deck_items()]
+            # (5.59.4) the desktop app keys an installation may be linked to (Settings - Stream Deck)
+            out['apps'] = [{'id': k['id'], 'name': k.get('name') or '', 'sms': self.notifier_sms_flags(k)}
+                           for k in self.notifier_keys()]
         return out
 
     def deck_admin_post(self, body, by):
@@ -16832,6 +17226,8 @@ class Daemon(EspGateways):
                    'hash': hashlib.sha256(token.encode('utf-8')).hexdigest(), 'hint': token[-2:], 'caps': caps,
                    'decks': decks, 'approved_by': who, 'approved_at': now, 'created': (old or {}).get('created') or now,
                    'last_at': None, 'last_from': None}
+            if old is not None and isinstance(old.get('apps'), list):
+                row['apps'] = list(old['apps'])          # (5.59.4) paired again: its desktop apps kept
             if old is not None:
                 self._deck_revoke_hash(old['hash'], old['id'])
             rows = [r for r in rows if r['id'] != pair['install']] + [row]
@@ -16858,6 +17254,22 @@ class Daemon(EspGateways):
             self.store.add_event('control', "%s changed what the Stream Deck installation '%s' may do (%s)"
                                  % (who, mine.get('name') or '', self.deck_caps_words(mine['caps'])), 'info')
             return {'message': "the permissions of '%s' are saved" % (mine.get('name') or '')}
+        if act == 'apps':
+            # (5.59.4) the desktop apps this installation may ask: a list of key ids, or null for
+            # the automatic one (the keys named as its computer)
+            given = body.get('apps')
+            if given is None:
+                mine.pop('apps', None)
+            else:
+                mine['apps'] = self._deck_clean_apps(given)
+            self._deck_put(rows)
+            with self._deck_cond:
+                self._deck_cond.notify_all()
+            names = [k.get('name') or '' for k in self.deck_linked_apps(mine)]
+            self.store.add_event('control', "%s set the desktop apps the Stream Deck installation '%s' may ask (%s)"
+                                 % (who, mine.get('name') or '', ('automatic: ' if given is None else '')
+                                    + (', '.join("'%s'" % n for n in names) or 'none')), 'info')
+            return {'message': "the desktop apps of '%s' are saved" % (mine.get('name') or '')}
         if act == 'rename':
             was = mine.get('name') or ''
             mine['name'] = self._deck_clean_name(body.get('name'), 'a name')
@@ -16892,8 +17304,21 @@ class Daemon(EspGateways):
             self.store.add_event('control', "%s revoked the Stream Deck installation '%s'"
                                  % (who, mine.get('name') or ''), 'info')
             return {'message': "'%s' is revoked - its next question is refused" % (mine.get('name') or '')}
-        raise ValueError('what with the Stream Deck? (enable, disable, approve, deny, caps, rename, deck_approve, '
+        raise ValueError('what with the Stream Deck? (enable, disable, approve, deny, caps, apps, rename, deck_approve, '
                          'deck_remove, revoke)')
+
+    def _deck_clean_apps(self, v):
+        if not isinstance(v, list):
+            raise ValueError('apps is a list of desktop app key ids, or null for the automatic one')
+        known = {k['id'] for k in self.notifier_keys()}
+        out = []
+        for one in v[:200]:
+            one = str(one or '').strip()
+            if one not in known:
+                raise ValueError('%s is not a desktop app key here' % one[:40])
+            if one not in out:
+                out.append(one)
+        return out
 
     def _deck_revoke_hash(self, digest, iid):
         gone = [r for r in self._deck_revoked() if r.get('hash') != digest]
@@ -18233,7 +18658,12 @@ class Daemon(EspGateways):
         can show a conversation rather than a scattering of events."""
         person = self.person_by_phone(number)
         with self._sms_lock():
-            return self._sms_note_locked(direction, number, text, ok, why, key, road, person)
+            row_id = self._sms_note_locked(direction, number, text, ok, why, key, road, person)
+        if direction == 'in' and why == 'received':
+            # (5.59.4) a fresh one, as written down here, into the desktop apps' waits (sms.read);
+            # one found sitting in the inbox ("was already here") is history, not news
+            self._ntf_sms_in(row_id, number, text)
+        return row_id
 
     def _sms_note_locked(self, direction, number, text, ok, why, key, road, person):
         try:
@@ -18671,6 +19101,10 @@ class Daemon(EspGateways):
             group, number = str(number)[6:].strip(), ''
         else:
             number = self.sms_number_for_gateway(number)
+        # (5.59.4) one from the desktop app is written down by the events and the log as …123,
+        # without its text (the SMS tab's own history keeps the conversation, as for every text)
+        quiet = why == 'desktop app'
+        shown = (self.deck_mask_phone(number) or 'a number') if quiet else number
         if not number and not group:
             return False, 'no number to send to'
         text = str(text or '')[:1000]
@@ -18756,23 +19190,23 @@ class Daemon(EspGateways):
                 (isinstance(e, socket.timeout) or 'timed out' in str(e).lower())
             if timed_out:
                 log('SMS to %s: no answer within %gs, it may still have gone out'
-                    % (number, timeout), 'warn')
+                    % (shown, timeout), 'warn')
                 self.say_event('sms', 'no answer from the gateway within %gs for %s - the '
-                                      'message may still have gone out' % (timeout, number), 'warn',
+                                      'message may still have gone out' % (timeout, shown), 'warn',
                                about='sms_trouble', title='The text gateway did not answer',
                                dedup='sms_trouble|slow')
                 self.sms_note_settled(going, None)
             else:
                 log('SMS to %s failed after %gs (%d part%s): %s'
-                % (number, timeout, parts, '' if parts == 1 else 's', e), 'warn')
-                self.store.add_event('sms', 'could not send to %s: %s' % (number, e), 'warn')
+                % (shown, timeout, parts, '' if parts == 1 else 's', e), 'warn')
+                self.store.add_event('sms', 'could not send to %s: %s' % (shown, e), 'warn')
                 self.sms_note_settled(going, False)
                 # Down the other roads, never by text: the text road is the
                 # one that just failed. Said once an hour, since a gateway
                 # that is away fails every message until it comes back.
                 if time.time() - getattr(self, '_sms_told', 0) > 3600:
                     self._sms_told = time.time()
-                    self.notify('The text gateway would not send to %s: %s' % (number, str(e)[:120]),
+                    self.notify('The text gateway would not send to %s: %s' % (shown, str(e)[:120]),
                                 'warn', sms=False, dedup='gateway-will-not-send',
                                 title='A text would not go', about='gateway')
             if timed_out and why == 'reply':
@@ -18800,11 +19234,13 @@ class Daemon(EspGateways):
             self._sms_sending = 0
             return False, ('%s - kept to try again' % e) if kept else str(e)
         ok = 'error' not in body.lower() or 'ok' in body.lower()[:20]
-        self.store.add_event('sms', 'sent to %s (%s): %s' % (number, why, text[:80]), 'info' if ok else 'warn')
+        self.store.add_event('sms', ('sent to %s (%s)' % (shown, why)) if quiet else
+                             ('sent to %s (%s): %s' % (number, why, text[:80])), 'info' if ok else 'warn')
         if ok and self._sms_today:
             self._sms_today = (self._sms_today[0], self._sms_today[1] + 1, self._sms_today[2])
         self.sms_note_settled(going, ok)
-        self.debug('SMS out %s' % number, text[:120])
+        if not quiet:
+            self.debug('SMS out %s' % number, text[:120])
         self._sms_sending = 0
         return ok, body.strip()[:200] or 'sent'
 
@@ -53210,15 +53646,18 @@ class ApiHandler(BaseHTTPRequestHandler):
             return out
         return self._send(200, out)
 
-    def _notifier(self, d, which, q):
+    def _notifier(self, d, which, q, body=None, method='GET'):
         """The desktop notifier's roads (5.57): hello, sensors, wait - and update and
         download, the app's own new version from this server. The key in
         X-Zigmon-Notifier is the whole of their authority - no API token, no sign-in, whatever
         the view is set to - and it can only look. A wrong one is counted as a wrong one-tap
         secret is, against the address the request really came from."""
         who = self._caller()
-        if which not in ('hello', 'sensors', 'wait', 'update', 'download'):
-            return self._error(400, 'hello, sensors, wait, update or download')
+        if which not in ('hello', 'sensors', 'wait', 'update', 'download', 'sms', 'contacts', 'sms/send'):
+            return self._error(400, 'hello, sensors, wait, update, download, sms, contacts or sms/send')
+        # (5.59.4) a message is sent by POST, and only that is
+        if (which == 'sms/send') != (method == 'POST'):
+            return self._error(405, 'sms/send is asked by POST' if which == 'sms/send' else '%s is asked by GET' % which)
         if not d.notifier_enabled():
             # (5.59.1) switched off: every road says so, the app's own update too
             return self._send(403, {'ok': False, 'off': True,
@@ -53241,6 +53680,19 @@ class ApiHandler(BaseHTTPRequestHandler):
             return self._send(200, d.notifier_update())
         if which == 'download':
             return self._send_notifier_app(d)
+        if which in ('sms', 'contacts'):
+            # (5.59.4) the SMS history and the contacts, each for a key granted it
+            flag = 'read' if which == 'sms' else 'contacts'
+            if not d.notifier_sms_flags(key)[flag]:
+                return self._send(403, {'ok': False, 'error': 'This desktop app may not %s - an administrator allows '
+                                        'it in ZIGMon under Settings - Messages - Desktop app.'
+                                        % ('read SMS' if which == 'sms' else 'see the contacts')})
+            if which == 'sms':
+                return self._send(200, d.notifier_sms_history(key, str(q.get('limit') or '50')[:6]))
+            return self._send(200, d.notifier_contacts_for(key))
+        if which == 'sms/send':
+            status, out = d.notifier_sms_send(key, body)
+            return self._send(status, out)
         after = str(q.get('after') or '0').strip()
         boot = re.sub(r'[^0-9a-f]', '', str(q.get('boot') or '').lower())[:32]
         if not re.match(r'^\d{1,18}$', after):
@@ -54108,7 +54560,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                                         'address': where, 'app': d.notifier_app_short(),
                                         # (5.58) every device a condition may be about
                                         'rule_devices': d.notifier_rule_devices(),
-                                        'rules_most': d.NOTIFIER_RULES_MOST})
+                                        'rules_most': d.NOTIFIER_RULES_MOST,
+                                        # (5.59.4) whether texts can be sent, and the Stream Deck
+                                        # installations a key may be asked by (never a token)
+                                        'sms_ready': d.sms_ready(), 'deck_enabled': d.deck_enabled(),
+                                        'deck_installs': [{'id': r['id'], 'name': r.get('name') or '',
+                                                           'computer': r.get('computer') or '',
+                                                           'sms': bool(((r.get('caps') or {}).get('sms') or {}).get('on')),
+                                                           'auto': not isinstance(r.get('apps'), list)}
+                                                          for r in d.deck_installs()]})
             if path == '/api/deck/admin':
                 # (5.59) the Stream Deck integration: an administrator's (ALWAYS_LOCKED), asked
                 # again here so a road moved out of that list never opens. Never a token, a
@@ -54382,6 +54842,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             if path.startswith('/api/deck/') and path != '/api/deck/admin':
                 # (5.59) ZIGMon for Stream Deck: its own header, no API token, no sign-in
                 return self._deck(d, path[len('/api/deck/'):], q, body, 'POST')
+            if path.startswith('/api/notifier/') and path not in ('/api/notifier/keys', '/api/notifier/app',
+                                                                  '/api/notifier/attrs'):
+                # (5.59.4) the desktop app sends an SMS: its own key in its own header, as its reads
+                return self._notifier(d, path[len('/api/notifier/'):], q, body, 'POST')
             if path == '/api/tap':
                 # The same authority as the address form and none of its leaks:
                 # the secret rides in a header, where a web server log, a link

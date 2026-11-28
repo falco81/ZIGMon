@@ -205,3 +205,48 @@ Rules:
 - **Yeelock packets.** Sign key `00112233445566778899aabbccddeeff` (a fake key); ts `0x5c84ff2f`:
   - time packet = `08405c84ff2f55748c652e3c83fc10a7cddc7c9f`
   - unlock (mode 01) = `01505c84ff2f01674720aeda9918f538e1471bca`
+- **Response signature** (additional vector, same device key `000102…1f`): nonce
+  `00112233445566778899aabbccddeeff`, status `202`, body `{"ok":true,"job":"j1"}`:
+  - X-Gw-Sig = `6824610d10be8ab28a3c1b7e651f4deeba285b2471073559e2db578e0f141325`
+- **Yeelock packets, the other modes** (same key and ts): open (mode 00) =
+  `01505c84ff2f0079fe2c69af14b432f22845a8e0`, lock (mode 02) = `01505c84ff2f026a65780114a9a0d3e21204a637`.
+
+## 8. Details pinned down
+
+These were left open above; both sides now do exactly this.
+
+1. **Pairing errors.** A wrong, used, expired or missing code answers **401**
+   `{"ok":false,"error":"…"}`. While pairing is locked after five wrong proofs, the answer is
+   **429** `{"ok":false,"error":"pairing locked for N s","retry_in":N}`. A malformed body
+   (bad JSON, wrong field lengths, `v` other than 1) answers **400**. Only a well-formed proof
+   spends the code and counts towards the lockout.
+2. **The `/pair` answer is not signed** (ZIGMon has no reason yet to trust the key round trip).
+   ZIGMon then sends a signed `GET /zigmon/v1/hello` straight away, and a correctly signed
+   answer to it is what confirms the pairing.
+3. **Error answers are signed too.** Every answer to a request with a well-formed
+   `X-Zigmon-Nonce` carries `X-Gw-Sig` whenever the gateway holds a device key, 4xx included
+   (401 for a bad signature, 404, 405, 409, 413, …). Unsigned are only: `/pair`, and answers
+   while not paired. ZIGMon trusts only the status code of an unsigned non-2xx answer and
+   refuses an unsigned 2xx. `/unpair`'s answer is signed with the key it is dropping.
+4. **Job ids in events.** The events a command causes carry `"job":"<id>"` (the id its 202
+   returned) next to `entity`; `what` is `"busy"` when the job starts and `"result"` when it
+   ends, and the result's `state.last.action` is the command's action. ZIGMon may also match by
+   entity and action.
+5. **`set` and number/select metadata.** A `set` action takes `args: {"value": v}`. An ENTITY may
+   carry optional `options` (for `select`: strings, or `{"value","label"}`), and `unit`, `min`,
+   `max` and `step` (for `number`).
+
+Additive fields the firmware sends (older ZIGMon ignores them):
+
+- `hello`: `boot` (the same 8 hex as the events' `boot`) and `modules` (the module ids).
+- `events`: `"gap": true` when events after `after` were already dropped from the ring (or
+  `after` is from another boot); re-read `/state` then. Each event may carry `at` (Unix s).
+- `events.what` is also `"state"` (a change not caused by a job), `"added"` and `"removed"` (an
+  entity appeared or went away: describe again).
+- STATE: `problem` (e.g. `"wrong_key"`: the lock rejected the sign key) and `last.problem`
+  (`not_found`, `connect`, `wrong_key`, `protocol`); Yeelock entities also carry the attr `rssi`.
+- Yeelock notifications are decoded (from aso824/yeehack): `0x02` UNLOCK_START, `0x03` UNLOCK_CMP,
+  `0x04` LOCK_START, `0x05` LOCK_CMP, `0x25 0x40` INVALID_OPCODE, `0xFF` TX_SIGN_INVALID (a wrong
+  sign key: the job fails at once, without a retry). `value` follows UNLOCK_CMP / LOCK_CMP; an
+  open (mode 00) ends with LOCK_CMP, so it ends `locked`.
+- mDNS: `_https._tcp` and `_zigmon-gw._tcp` on port 443, TXT `id`, `v`, `fw`.

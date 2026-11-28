@@ -1,0 +1,22 @@
+ZIGMon ESP32 Gateway firmware
+=============================
+
+The Yeelock module (esp32/ZigmonGateway/mod_yeelock.cpp, yeelock_proto.*, yeelock_codes.*,
+yeelock_cloud.*) implements protocol knowledge derived from:
+
+  * yeehack by aso824 - https://github.com/aso824/yeehack
+    Licensed under the Apache License, Version 2.0
+    (http://www.apache.org/licenses/LICENSE-2.0).
+    Used as reference: the BLE packet layout (packet.py), the notification codes
+    (connection.py), the GATT characteristics, and the Yeelock cloud endpoints, OAuth client
+    and fields (fetch.py). No Python code was copied; the firmware is an independent C++
+    implementation.
+
+  * yeelock by cnrd - https://github.com/cnrd/yeelock
+    The original reverse engineering of the Yeelock BLE protocol.
+
+The Yeelock protocol is unofficial. "Yeelock" and "Xiaomi" are trademarks of their owners;
+this project is not affiliated with them.
+
+esp32/tests/vendor/mini_sha.h (used only by the native unit tests) was written for this
+project and is released into the public domain (CC0).

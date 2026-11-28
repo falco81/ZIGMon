@@ -492,11 +492,11 @@ describe("1.3 commands", () => {
     assert.match(l.s.svg, /System/);
   });
 
-  it("Network security: acknowledged with nothing standing says all clear", async () => {
-    const { v, s } = view("security", all(), {}, { answer: () => ({ ok: false, why: "invalid", message: "there is no alert standing" }) });
+  it("Network security: acknowledged with nothing standing (the flag nothing) says no alert", async () => {
+    const { v, s } = view("security", all(), {}, { answer: () => ({ ok: false, why: "nothing", message: "there is no alert standing" }) });
     await press(v, HOLD_MS + 150);
     await tick(400);
-    assert.match(s.svg, /All clear/);
+    assert.match(s.svg, /No alert/);
   });
 
   it("Heating: Next mode steps at once and is sent once it stops; one mode for all at once; the dial steps", async () => {
@@ -639,13 +639,13 @@ describe("1.3 commands", () => {
     const k = view("sms", all(), {}, { answer });
     await press(k.v);
     await tick(20);
-    assert.match(texts(k.s.svg).join(" "), /No desktop app/);
+    assert.match(texts(k.s.svg).join(" "), /Desktop app not.*running/);
     assert.match(texts(k.s.svg).join(" "), /link one in ZIGMon/);
     assert.ok(k.s.alerts >= 1);
     const d = view("sms", all(), { smsMode: "compose" }, { answer }, "Encoder");
     await press(d.v, 0, true);
     await tick(20);
-    assert.match(JSON.stringify(d.s.feedbacks.at(-1)), /No desktop app running/);
+    assert.match(JSON.stringify(d.s.feedbacks.at(-1)), /Desktop app not running/);
   });
 });
 
