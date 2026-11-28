@@ -13,7 +13,9 @@ export class ProtocolError extends Error {
 
 export const CAPS = ["view", "switch", "dim", "climate", "cover", "scenes", "automations", "messages", "system", "status",
   // (1.3, ZIGMon 5.59.4) the deck's SMS keys that ask the desktop app (windows/PROTOCOL-SMS.md section 3)
-  "sms"] as const;
+  "sms",
+  // (1.3, ZIGMon 5.59.4) the locks of an ESP32 gateway (esp32/PROTOCOL.md): held to confirm by default
+  "locks"] as const;
 export type Cap = (typeof CAPS)[number];
 
 export const KINDS = [
@@ -21,12 +23,16 @@ export const KINDS = [
   "rule", "schedule", "message", "system", "sensor", "reading", "status",
   // (1.3, ZIGMon 5.59.4) the summaries (PROTOCOL-5.59.4.md sections 1-7, 9 and 10)
   "power", "security", "heatgroup", "away", "openings", "batteries", "zigbee", "room", "sms",
+  // (1.3) an ESP32 gateway's lock
+  "lock",
 ] as const;
 export type Kind = (typeof KINDS)[number];
 
 export const ACTIONS = ["toggle", "on", "off", "run", "set", "open", "close", "stop", "step",
   // (1.3, ZIGMon 5.59.4) a switch's timer; a status item's acknowledge, mute and unmute (granted under system)
-  "timer", "ack", "mute", "unmute"] as const;
+  "timer", "ack", "mute", "unmute",
+  // (1.3) an ESP32 gateway's lock and button
+  "unlock", "lock", "refresh", "press"] as const;
 export type ItemAction = (typeof ACTIONS)[number];
 
 export interface CapGrant {

@@ -197,3 +197,30 @@ describe("(1.3) a scene's state, on its keys and on a Reading", () => {
     assert.ok(img.includes("1/3 as set"), "the Classic Reading does not say it");
   });
 });
+
+describe("(1.3) a lock of an ESP32 gateway", () => {
+  function lockItem(value: "locked" | "unlocked"): Item {
+    return parseItem({
+      id: "esp:a1b2c3d4e5f6:yeelock.front", name: "Front drawer", room: null, kind: "lock", icon: "lock", cap: "locks",
+      actions: ["open", "unlock", "lock", "refresh"], attrs: [], allowed: true, hold: true,
+      state: { on: value === "unlocked", value: null, value_text: value, attrs: { battery: 87 }, online: true, battery: 87 },
+    });
+  }
+  it("is read with its own cap, kind and actions, and drawn locked or unlocked", () => {
+    const it0 = lockItem("locked");
+    assert.equal(it0.cap, "locks");
+    assert.equal(it0.kind, "lock");
+    assert.deepEqual(it0.actions, ["open", "unlock", "lock", "refresh"]);
+    assert.notEqual(key("control", lockItem("locked"), {}).s.svg, key("control", lockItem("unlocked"), {}).s.svg);
+  });
+  it("a press sends the chosen action, held as ZIGMon asks", async () => {
+    const sent: Sent[] = [];
+    const k = key("control", lockItem("locked"), { press: "unlock" }, sent);
+    assert.equal(k.v.face().hold, true);
+    k.v.keyDown();
+    await sleep(1700);
+    k.v.keyUp();
+    await until(() => sent.length >= 1, 3000, "the unlock");
+    assert.equal(sent[0]!.action, "unlock");
+  });
+});

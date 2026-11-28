@@ -110,7 +110,7 @@ export const SMS_TO_MOST = 20;
 
 /** The modes of a heated room, as the dashboard names them; a press may set one outright. */
 export const ROOM_MODES = ["plan", "comfort", "eco", "night", "max", "off", "manual"] as const;
-const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "cycle", "mode", "preset", "boost", "openclose", "details",
+const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "unlock", "lock", "refresh", "press", "cycle", "mode", "preset", "boost", "openclose", "details",
   ...ROOM_MODES.map((m) => "set:" + m),
   // (1.3) a Control key on a switch: on for `minutes`, a press again cancels it
   "timer"];

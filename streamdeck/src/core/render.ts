@@ -49,10 +49,11 @@ export function lookFor(kind: string, iconName?: string, on?: boolean | null): L
     sensor: { accent: P.water, icon: "sensor" },
     reading: { accent: P.water, icon: "gauge" },
     status: { accent: P.ok, icon: "heart" },
+    lock: { accent: P.purple, icon: on ? "unlock" : "lock" },   // (1.3) an ESP32 gateway's lock; on = unlocked
   };
   const l = by[kind] ?? { accent: P.info, icon: "sensor" };
   // keep the light's own on/off bulb; otherwise prefer the dashboard's icon for the item
-  if (iconName && kind !== "light" && kind !== "dimmer") return { accent: l.accent, icon: iconName };
+  if (iconName && kind !== "light" && kind !== "dimmer" && kind !== "lock") return { accent: l.accent, icon: iconName };
   return l;
 }
 

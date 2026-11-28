@@ -754,6 +754,7 @@ function optionsCard(): HTMLElement | null {
       const acts = (it?.actions ?? ["toggle", "on", "off"]).filter((a) => a !== "set" && a !== "step" && a !== "ack" && a !== "mute" && a !== "unmute");
       const words: Record<string, [string, string]> = {
         toggle: ["Toggle", "switch"], on: ["Turn on", "power"], off: ["Turn off", "power"], run: ["Run", "play"], open: ["Open", "blindsUp"], close: ["Close", "blindsDown"], stop: ["Stop", "stop"],
+        unlock: ["Unlock", "lock"], lock: ["Lock", "lock"], refresh: ["Refresh", "refresh"], press: ["Press", "play"],
         timer: ["Timer", "stopwatch"],
       };
       if (acts.length) card.append(...chips("A press of the key / dial", acts.map((a) => [a, words[a]?.[0] ?? a, words[a]?.[1]] as [string, string, string?]), press ?? acts[0], "press"));
