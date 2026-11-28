@@ -218,7 +218,7 @@ try:
     check(not any(i in st['items'] for i in NEW), 'the summaries in an older state')
     st = d.deck_state(inst(**EVERY), ['house:power'], None)
     check(list(st['items']) == ['house:power'], 'a summary asked by name: %r' % list(st['items']))
-    check(d.deck_hello(inst())['features'] == ['extended', 'timer', 'summaries-5.59.4'], 'hello features')
+    check(d.deck_hello(inst())['features'] == ['extended', 'timer', 'summaries-5.59.4', 'calc'], 'hello features')
 
     print('the extended catalogue')
     cat = catalog(**EVERY)

@@ -360,7 +360,7 @@ try:
                                                                                        whole_cat.get('sms_groups')])
     check('602111' not in json.dumps(whole_cat) and '777123' not in json.dumps(whole_cat), 'a number in the catalogue')
     check('sms_contacts' not in d.deck_catalog(inst(), False), 'the contacts to an older plugin')
-    check(d.deck_hello(inst())['features'] == ['extended', 'timer', 'summaries-5.59.4', 'sms'], 'hello features: %r'
+    check(d.deck_hello(inst())['features'] == ['extended', 'timer', 'summaries-5.59.4', 'calc', 'sms'], 'hello features: %r'
           % d.deck_hello(inst())['features'])
     one = cat['sms:compose']
     st = one['state']
