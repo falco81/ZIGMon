@@ -4,7 +4,7 @@
   "controller": "Encoder",
   "items": [
     {
-      "key": "art",
+      "key": "bg",
       "type": "pixmap",
       "rect": [
         0,
@@ -16,6 +16,18 @@
       "value": ""
     },
     {
+      "key": "art",
+      "type": "pixmap",
+      "rect": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "zOrder": 1,
+      "value": ""
+    },
+    {
       "key": "name",
       "type": "text",
       "rect": [
@@ -24,7 +36,7 @@
         112,
         18
       ],
-      "zOrder": 1,
+      "zOrder": 2,
       "value": "",
       "font": {
         "size": 12,
@@ -43,7 +55,7 @@
         112,
         34
       ],
-      "zOrder": 1,
+      "zOrder": 2,
       "value": "",
       "font": {
         "size": 28,
@@ -62,7 +74,7 @@
         112,
         20
       ],
-      "zOrder": 1,
+      "zOrder": 2,
       "value": "",
       "font": {
         "size": 15,
@@ -81,7 +93,7 @@
         112,
         18
       ],
-      "zOrder": 1,
+      "zOrder": 2,
       "value": "",
       "font": {
         "size": 12,

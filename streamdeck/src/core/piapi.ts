@@ -35,12 +35,17 @@ export function catalogMessage(hub: Hub, kind: ActionKind): PiReply {
   return { t: "catalog", kind, rooms: hub.allRooms().map((r) => r.name), items, phase: hub.currentPhase };
 }
 
-export function previewMessage(preview?: () => string | null): PiReply[] {
-  const img = preview?.();
-  return img ? [{ t: "preview", image: img }] : [];
+/** What a preview function gives: the key as it is, and (1.1) the Look section's pictures. */
+export type Preview = () => string | { image: string; looks?: unknown } | null;
+
+export function previewMessage(preview?: Preview): PiReply[] {
+  const p = preview?.();
+  if (!p) return [];
+  if (typeof p === "string") return [{ t: "preview", image: p }];
+  return [{ t: "preview", image: p.image, ...(p.looks ? { looks: p.looks } : {}) }];
 }
 
-export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview?: () => string | null): Promise<PiReply[]> {
+export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview?: Preview): Promise<PiReply[]> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const m = raw as Record<string, unknown>;
   switch (m.t) {

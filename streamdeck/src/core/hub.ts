@@ -4,7 +4,7 @@ import { parseAddress, type ServerAddress } from "./address.js";
 import { ZigmonClient, type Command, type Credentials, type DeckInfo } from "./client.js";
 import { ApiError, CertError, NetError, type CertSeen, type Transport } from "./http.js";
 import { IDLE, pairStep, pairView, type PairEvent, type PairState } from "./pairing.js";
-import { cleanText, ProtocolError, type Caps, type Hello, type Item, type ItemState, type Room } from "./protocol.js";
+import { cleanText, ProtocolError, type Caps, type Hello, type Item, type ItemState, type Room, type Series } from "./protocol.js";
 import type { Protector } from "./secrets.js";
 import { newInstallId, normalizeGlobal, type GlobalSettings } from "./settings.js";
 import { pinFor, withPin } from "./tls.js";
@@ -28,7 +28,13 @@ export interface HubView {
   ids(): string[];
   /** Redraw: state, phase or catalog changed. */
   refresh(): void;
+  /** (1.1) The series this key draws (ZIGMon sends them ready, over this span in seconds). */
+  series?(): { id: string; span: number }[];
 }
+
+/** How many points ZIGMon thins a series to, and how often it is asked again. */
+export const SERIES_POINTS = 48;
+export const SERIES_EVERY_MS = 5 * 60_000;
 
 export interface Store {
   load(): Promise<unknown>;
@@ -124,6 +130,10 @@ export class Hub {
   private readonly minBackoff: number;
   private readonly maxBackoff: number;
   private loaded = false;
+  /** id|span -> the series ZIGMon sent, with live values appended since. */
+  private seriesKept = new Map<string, Series & { fetchedAt: number }>();
+  private seriesTimer: ReturnType<typeof setInterval> | null = null;
+  private seriesBusy = false;
 
   constructor(private readonly d: HubDeps) {
     this.now = d.now ?? Date.now;
@@ -157,6 +167,8 @@ export class Hub {
 
   stop(): void {
     this.gen++;
+    if (this.seriesTimer) clearInterval(this.seriesTimer);
+    this.seriesTimer = null;
     this.loopAbort?.abort();
     this.waitAbort?.abort();
     this.loopAbort = null;
@@ -203,6 +215,7 @@ export class Hub {
     if (this.resubTimer) clearTimeout(this.resubTimer);
     this.resubTimer = setTimeout(() => {
       this.resubTimer = null;
+      void this.refreshSeries();
       const key = this.watchedIds().join(",");
       if (key === this.watchedKey) return;
       this.watchedKey = key;
@@ -264,6 +277,80 @@ export class Hub {
   private setState(id: string, st: ItemState): void {
     this.states.set(id, st);
     this.record(id, st);
+    if (st.value === null) return;
+    // a live value between two fetches goes on the end of the series ZIGMon sent
+    const t = Math.round((st.at && st.at > 1e9 ? st.at : this.now() / 1000));
+    for (const [k, se] of this.seriesKept) {
+      if (!k.startsWith(id + "|")) continue;
+      const last = se.points[se.points.length - 1];
+      if (last && t <= last[0]) continue;
+      se.points.push([t, st.value]);
+      const from = t - se.span;
+      while (se.points.length > 2 && se.points[0]![0] < from) se.points.shift();
+      if (se.points.length > SERIES_POINTS * 3) se.points.splice(0, se.points.length - SERIES_POINTS * 3);
+    }
+  }
+
+  /** (1.1) The values ZIGMon keeps for an item over `span` seconds, oldest first; null until it has sent them. */
+  series(id: string | undefined, span: number): number[] | null {
+    if (!id) return null;
+    const se = this.seriesKept.get(id + "|" + span);
+    return se && se.points.length ? se.points.map((p) => p[1]) : null;
+  }
+
+  private seriesWanted(): Map<number, string[]> {
+    const by = new Map<number, string[]>();
+    for (const v of this.views) {
+      for (const w of v.series?.() ?? []) {
+        if (!w.id || !(w.span > 0)) continue;
+        const l = by.get(w.span) ?? [];
+        if (!l.includes(w.id)) l.push(w.id);
+        by.set(w.span, l);
+      }
+    }
+    return by;
+  }
+
+  /** Ask ZIGMon for the series that are missing or older than SERIES_EVERY_MS. */
+  async refreshSeries(force = false): Promise<void> {
+    const creds = this.creds();
+    if (!creds || !this.client || this.phase !== "online" || this.seriesBusy) return;
+    this.seriesBusy = true;
+    try {
+      const now = this.now();
+      for (const [span, ids] of this.seriesWanted()) {
+        const due = ids.filter((id) => {
+          const se = this.seriesKept.get(id + "|" + span);
+          return force || !se || now - se.fetchedAt >= SERIES_EVERY_MS;
+        });
+        for (let i = 0; i < due.length; i += 40) {
+          const part = due.slice(i, i + 40);
+          let ans;
+          try {
+            ans = await this.client.history(creds, part, span, SERIES_POINTS, this.d.decks());
+          } catch {
+            break; // the next round tries again
+          }
+          const changed = new Set<string>();
+          for (const id of part) {
+            const se = ans.history.get(id);
+            // an older ZIGMon sends none: remember that it was asked, the key keeps its own few values
+            this.seriesKept.set(id + "|" + span, { span, points: se ? se.points : [], fetchedAt: now });
+            if (se) changed.add(id);
+          }
+          for (const [id, st] of ans.items) this.states.set(id, st);
+          if (changed.size) this.redrawIds(changed);
+        }
+      }
+    } finally {
+      this.seriesBusy = false;
+    }
+  }
+
+  private startSeries(): void {
+    if (this.seriesTimer) return;
+    this.seriesTimer = setInterval(() => void this.refreshSeries(), 30_000);
+    (this.seriesTimer as { unref?: () => void }).unref?.();
   }
 
   item(id: string | undefined): Item | undefined {
@@ -399,6 +486,8 @@ export class Hub {
     this.catalogAt = this.now();
     this.log("connected: " + this.items.size + " items");
     this.redrawAll();
+    this.startSeries();
+    setTimeout(() => void this.refreshSeries(true), 0);
   }
 
   private async fetchStates(creds: Credentials, ids: string[]): Promise<void> {

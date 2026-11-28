@@ -54,8 +54,11 @@ export abstract class ZigmonAction extends SingletonAction<JsonObject> {
   /** The key whose property inspector is open (it gets a live preview). */
   private piFor: string | null = null;
 
-  private preview(id: string | null): () => string | null {
-    return () => (id ? this.views.get(id)?.previewImage() ?? null : null);
+  private preview(id: string | null): () => { image: string; looks?: unknown } | null {
+    return () => {
+      const v = id ? this.views.get(id) : undefined;
+      return v ? { image: v.previewImage(), looks: v.previewSet() ?? undefined } : null;
+    };
   }
 
   override onWillAppear(ev: WillAppearEvent<JsonObject>): void {

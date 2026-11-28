@@ -107,6 +107,30 @@ export interface StateAnswer {
   boot: string;
   seq: number;
   items: Map<string, ItemState>;
+  /** (for Stream Deck 1.1) The recent values of readings and thermostats, when they were asked for. */
+  history: Map<string, Series>;
+}
+
+/** A thinned series ZIGMon keeps for an item: [unix seconds, value], oldest first. */
+export interface Series {
+  span: number;
+  points: [number, number][];
+}
+
+export function parseSeries(v: unknown): Series | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const span = num(o.span);
+  if (span === null || span <= 0 || span > 31 * 86400 || !Array.isArray(o.points)) return null;
+  const points: [number, number][] = [];
+  for (const p of o.points.slice(-200)) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const t = num(p[0]), x = num(p[1]);
+    if (t === null || x === null || Math.abs(x) > 1e9) continue;
+    if (points.length && t < points[points.length - 1]![0]) continue;
+    points.push([t, x]);
+  }
+  return { span, points };
 }
 
 export interface Change {
@@ -372,7 +396,14 @@ export function parseStateAnswer(v: unknown): StateAnswer {
       items.set(id, parseState(st));
     }
   }
-  return { boot: bootOf(o.boot), seq: int(o.seq, "seq"), items };
+  const history = new Map<string, Series>();
+  if (o.history && typeof o.history === "object" && !Array.isArray(o.history)) {
+    for (const [id, se] of Object.entries(o.history as Record<string, unknown>).slice(0, 64)) {
+      const x = ID_RE.test(id) ? parseSeries(se) : null;
+      if (x) history.set(id, x);
+    }
+  }
+  return { boot: bootOf(o.boot), seq: int(o.seq, "seq"), items, history };
 }
 
 export function parseWait(v: unknown): WaitAnswer {

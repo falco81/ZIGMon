@@ -8,6 +8,7 @@ import {
   blindsArt, fmtTemp, lookFor, sparkline, type BlindsModel, type ControlModel, type DimmerModel, type ReadingModel, type ThermoModel,
 } from "./render.js";
 import { arcPath, dataUri, icon, n, rect, svgDoc, text } from "./svg.js";
+import { graph, type Face, type Info } from "./themes.js";
 
 export type Feedback = Record<string, string | number | { value?: string | number; color?: string; enabled?: boolean; opacity?: number }>;
 
@@ -48,8 +49,9 @@ export function holdArt(w: number, h: number, p: number, colour: string): string
   return dataUri(svgDoc(w, h, s));
 }
 
-export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string, hint = ""): Feedback {
-  const look = lookFor(m.kind, m.icon, m.on);
+export function controlFeedback(m: ControlModel, mainFraction: number | null, mainText: string, hint = "", accent?: string): Feedback {
+  const l0 = lookFor(m.kind, m.icon, m.on);
+  const look = { ...l0, accent: accent ?? l0.accent };
   const active = m.on === true && m.online;
   const word = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—";
   return {
@@ -60,8 +62,8 @@ export function controlFeedback(m: ControlModel, mainFraction: number | null, ma
   };
 }
 
-export function readingFeedback(m: ReadingModel): Feedback {
-  const sp = sparkline(m.history, 0, 66, 200, 30, m.colour, "sp");
+export function readingFeedback(m: ReadingModel, info?: Info): Feedback {
+  const sp = info?.scale ? graph(seriesFace(m.history, null), info, 0, 66, 200, 30, m.colour, STRIP_INK, "sp") : sparkline(m.history, 0, 66, 200, 30, m.colour, "sp");
   let art = sp.body;
   if (m.trend && m.online) {
     const t = m.trend === "up" ? "trendUp" : m.trend === "down" ? "trendDown" : "trendFlat";
@@ -75,20 +77,37 @@ export function readingFeedback(m: ReadingModel): Feedback {
   };
 }
 
-export function thermoFeedback(m: ThermoModel): Feedback {
+const STRIP_INK = { bg: P.bg, bg2: P.panel2, line: P.line, text: P.text, dim: P.dim, muted: P.muted, crit: P.crit, warn: P.warn, badge: P.bg };
+function seriesFace(series: number[], target: number | null): Face {
+  return {
+    kind: "reading", name: "", room: null, icon: "", accent: P.info, active: false, state: "", unit: "", stateColour: null, detail: "", mode: "",
+    level: null, series, target, online: true, allowed: true, hold: false, battery: null,
+  };
+}
+
+export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info): Feedback {
   const cx = 158, cy = 54, r = 32;
   const span = Math.max(0.5, m.max - m.min);
   const f = (v: number | null) => (v === null ? 0 : Math.max(0, Math.min(1, (v - m.min) / span)));
   const a0 = -135, a1 = 135;
-  const accent = m.heating ? P.orange : P.info;
-  let s = `<path d="${arcPath(cx, cy, r, a0, a1)}" fill="none" stroke="${P.line}" stroke-width="7" stroke-linecap="round"/>`;
+  const heat = accent ?? P.orange;
+  accent = m.heating ? heat : P.info;
+  let s = "";
+  let gdefs = "";
+  if (info?.graph && (m.history?.length ?? 0) >= 2) {
+    // the measured temperature behind the words, the target dashed across it
+    const g = graph(seriesFace(m.history!, m.target), info, 4, 62, 116, 34, m.heating ? heat : P.water, STRIP_INK, "hist");
+    s += `<g opacity="0.55">${g.body}</g>`;
+    gdefs = g.defs;
+  }
+  s += `<path d="${arcPath(cx, cy, r, a0, a1)}" fill="none" stroke="${P.line}" stroke-width="7" stroke-linecap="round"/>`;
   if (m.target !== null && m.online) {
     s += `<path d="${arcPath(cx, cy, r, a0, a0 + (a1 - a0) * f(m.target))}" fill="none" stroke="url(#arc)" stroke-width="7" stroke-linecap="round"/>`;
     const ang = ((a0 + (a1 - a0) * f(m.target) - 90) * Math.PI) / 180;
     s += `<circle cx="${n(cx + r * Math.cos(ang))}" cy="${n(cy + r * Math.sin(ang))}" r="6" fill="${P.text}" stroke="${accent}" stroke-width="2.5"/>`;
   }
-  s += m.heating ? icon("flame", cx - 12, cy - 13, 24, P.orange, 2) : icon("thermo", cx - 11, cy - 12, 22, P.muted, 2);
-  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${P.info}"/><stop offset="1" stop-color="${m.heating ? P.orange : P.water}"/></linearGradient>`;
+  if (info?.icon !== false) s += m.heating ? icon("flame", cx - 12, cy - 13, 24, heat, 2) : icon("thermo", cx - 11, cy - 12, 22, P.muted, 2);
+  const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${P.info}"/><stop offset="1" stop-color="${m.heating ? heat : P.water}"/></linearGradient>` + gdefs;
   return {
     art: dataUri(svgDoc(200, 100, s, defs)),
     name: { value: m.name },
@@ -98,20 +117,20 @@ export function thermoFeedback(m: ThermoModel): Feedback {
   };
 }
 
-export function dimmerFeedback(m: DimmerModel): Feedback {
+export function dimmerFeedback(m: DimmerModel, accent: string = P.warn): Feedback {
   const active = m.on === true && m.online;
   const big = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.on === false ? "Off" : m.levelText || (m.on ? "On" : "—");
   return {
-    icon: iconPix(active ? "bulbOn" : "bulb", active ? P.warn : P.dim, 36, active ? P.warn : undefined),
+    icon: iconPix(active ? "bulbOn" : "bulb", active ? accent : P.dim, 36, active ? accent : undefined),
     name: { value: m.name },
     value: { value: big, color: !m.online || !m.allowed ? P.crit : active ? P.text : P.dim },
-    art: sliderArt(176, 32, m.level, P.warn, active),
+    art: sliderArt(176, 32, m.level, accent, active),
   };
 }
 
-export function blindsFeedback(m: BlindsModel): Feedback {
+export function blindsFeedback(m: BlindsModel, accent: string = P.purple): Feedback {
   const body = `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F3A5F"/><stop offset="1" stop-color="#2D4F6E"/></linearGradient></defs>`
-    + blindsArt(4, 6, 44, 74, m.online ? m.position : null, P.purple);
+    + blindsArt(4, 6, 44, 74, m.online ? m.position : null, accent);
   const big = !m.allowed ? "Not allowed" : !m.online ? "Offline" : m.position === null ? "—" : m.position >= 99.5 ? "Open" : m.position <= 0.5 ? "Closed" : Math.round(m.position) + "%";
   return {
     art: dataUri(svgDoc(52, 84, body)),

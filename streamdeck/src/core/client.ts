@@ -136,6 +136,12 @@ export class ZigmonClient {
     return parseStateAnswer((await this.call("state", { creds, query: { ids: ids.join(","), ...deckQuery(decks) } })).json);
   }
 
+  /** (for Stream Deck 1.1) The states with their recent history: ZIGMon thins it to `points` over `span` seconds. */
+  async history(creds: Credentials, ids: string[], span: number, points: number, decks: DeckInfo[] = []): Promise<StateAnswer> {
+    const body = { ids: ids.join(","), history: { span: Math.round(span), points: Math.round(points) } };
+    return parseStateAnswer((await this.call("state", { creds, query: deckQuery(decks), body })).json);
+  }
+
   async wait(creds: Credentials, after: number, boot: string, ids: string[], decks: DeckInfo[], signal?: AbortSignal): Promise<WaitAnswer> {
     const query: Record<string, string> = { after: String(after), boot, ...deckQuery(decks) };
     if (ids.length) query.ids = ids.join(",");

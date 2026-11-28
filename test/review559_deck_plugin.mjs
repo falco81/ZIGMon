@@ -156,6 +156,29 @@ try {
   room.v.rotate(-2);
   await until(() => hub.state("heat:temp:r1")?.attrs.target === wanted - 1, 6000, "the room one degree down");
 
+  say("(1.1) a heated room's own key: its target, its mode, by hand from the dial, a mode outright");
+  const rk = view("thermostat", { item: "heat:room:r2" });
+  await until(() => typeof hub.state("heat:room:r2")?.attrs.target === "number", 4000, "the room's target");
+  const rt = hub.state("heat:room:r2").attrs.target;
+  await until(() => rk.s.svg.includes("→ " + rt.toFixed(1)) && /Plan/.test(rk.s.svg), 3000, "the target and the mode drawn: " + rt);
+  const rd = view("thermostat", { item: "heat:room:r2" }, "Encoder", "PLUS-1");
+  rd.v.rotate(2);
+  await until(() => hub.state("heat:room:r2")?.attrs.by_hand === true && hub.state("heat:room:r2")?.attrs.target === rt + 1, 6000, "set by hand from the dial");
+  await until(() => /By hand until \d\d:\d\d/.test(rk.s.svg), 3000, "by hand until, on the key");
+  const rm = view("thermostat", { item: "heat:room:r2", press: "set:eco" });
+  await press(rm.v);
+  await until(() => hub.state("heat:room:r2")?.attrs.mode === "eco", 6000, "the room to eco");
+  await until(() => /Eco/.test(rk.s.svg), 3000, "Eco on the key");
+  await press(view("thermostat", { item: "heat:room:r2", press: "set:plan" }).v);
+  await until(() => hub.state("heat:room:r2")?.attrs.mode === "plan", 6000, "the room back on its plan");
+
+  say("(1.1) the graphs: ZIGMon's own history, at once");
+  const rg = view("reading", { item: "read:" + TEMP + ":temperature" });
+  await until(() => (hub.series("read:" + TEMP + ":temperature", 86400)?.length ?? 0) >= 40, 6000, "the reading's day from ZIGMon");
+  await until(() => (rg.s.svg.match(/ L /g)?.length ?? 0) >= 40, 3000, "drawn as a line of the day");
+  const rh = view("thermostat", { item: "heat:room:r2", showGraph: true, span: 21600 });
+  await until(() => (hub.series("heat:room:r2", 21600)?.length ?? 0) >= 10, 6000, "the room's thermometer over six hours");
+
   say("the head's mode and preset cycled, its boost");
   trv.v.dialDown(); trv.v.dialUp();
   f = await firedHas((x) => x[0] === "zb" && x[2] === "system_mode", "the mode");
@@ -217,7 +240,7 @@ try {
   await until(() => /Not allowed/.test(scene.s.svg), 3000, "drawn as not allowed");
 
   say("an update, signed with a throwaway key, downloaded and checked");
-  await until(() => hub.status().update?.version === "1.0.1", 4000, "the update offered");
+  await until(() => hub.status().update?.version === job.offer, 4000, "the update offered");
   await hub.installUpdate();
   assert.equal(hub.status().updating.state, "done", hub.status().updating.message);
   assert.equal(opened.length, 1);

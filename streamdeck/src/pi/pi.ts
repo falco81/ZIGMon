@@ -5,8 +5,9 @@
  * that came from the server is put in with textContent, never as HTML.
  */
 import { ICONS, iconMarkup } from "../core/icons.js";
-import { P } from "../core/palette.js";
+import { ACCENTS, P } from "../core/palette.js";
 import { lookFor } from "../core/render.js";
+import { THEMES } from "../core/themes.js";
 
 type Kind = "control" | "reading" | "thermostat" | "dimmer" | "blinds" | "scene" | "status";
 
@@ -41,6 +42,9 @@ let status: Status | null = null;
 let items: PiItem[] = [];
 let catalogLoaded = false;
 let preview = "";
+/** (1.1) The Look section's pictures, drawn by the plugin from the item's real state. */
+interface Looks { themes: { id: string; name: string; image: string }[]; on: string; off: string; words: [string, string] }
+let looks: Looks | null = null;
 let query = "";
 let pickerOpen = false;
 let connOpen = false;
@@ -130,6 +134,7 @@ function onMessage(ev: MessageEvent): void {
       catalogLoaded = true;
     } else if (p.t === "preview") {
       preview = typeof p.image === "string" && p.image.startsWith("data:image/svg+xml") ? p.image : "";
+      looks = cleanLooks(p.looks);
     } else if (p.t === "connect") {
       busy = false;
       connectError = p.ok ? "" : String(p.error ?? "");
@@ -159,6 +164,22 @@ function onMessage(ev: MessageEvent): void {
   ws.onmessage = onMessage;
   render();
 };
+
+/** Only pictures we drew (data:image/svg+xml) and our own look names get onto the page. */
+function cleanLooks(v: unknown): Looks | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const pic = (x: unknown) => (typeof x === "string" && x.startsWith("data:image/svg+xml") ? x : "");
+  const known = new Map(THEMES.map((t) => [t.id, t.name]));
+  const themes = Array.isArray(o.themes)
+    ? o.themes.flatMap((t) => {
+      const r = t as Record<string, unknown>;
+      return typeof r.id === "string" && known.has(r.id) && pic(r.image) ? [{ id: r.id, name: known.get(r.id)!, image: pic(r.image) }] : [];
+    })
+    : [];
+  const w = Array.isArray(o.words) ? o.words.map((x) => (typeof x === "string" ? x.slice(0, 20) : "")) : [];
+  return { themes, on: pic(o.on), off: pic(o.off), words: [w[0] || "On", w[1] || "Off"] };
+}
 
 // ------------------------------------------------------------------ words
 
@@ -576,7 +597,7 @@ function chips(label: string, options: [string, string, string?][], current: str
   for (const [v, word, iconName] of options) {
     const c = h("button", "chip" + (current === v ? " on" : ""), [iconName ? ic(iconName, "sm") : null, word]);
     c.type = "button";
-    c.addEventListener("click", () => saveSettings({ [key]: v }));
+    c.addEventListener("click", () => saveSettings({ [key]: key === "span" || key === "step" || key === "decimals" ? Number(v) : v }));
     wrap.append(c);
   }
   return [h("label", "f", [label]), wrap];
@@ -614,40 +635,157 @@ function optionsCard(): HTMLElement | null {
       };
       if (acts.length) card.append(...chips("A press of the key / dial", acts.map((a) => [a, words[a]?.[0] ?? a, words[a]?.[1]] as [string, string, string?]), press ?? acts[0], "press"));
       if (it?.attrs.some((a) => a.type === "number")) card.append(numberField("Dial: change per click (empty = automatic)", "step", "auto"));
-      card.append(toggle("Show the room on the key", "showRoom", true));
       break;
     }
     case "reading": {
-      const lab = h("input", "in") as HTMLInputElement;
-      lab.placeholder = it?.name ?? "The item's name";
-      lab.dataset.key = "label";
-      lab.value = String(settings.label ?? "");
-      lab.addEventListener("change", () => saveSettings({ label: lab.value || undefined }));
-      card.append(h("label", "f", ["Label"]), lab);
       card.append(...chips("Decimals", [["-1", "As ZIGMon"], ["0", "0"], ["1", "0.0"], ["2", "0.00"]], String(settings.decimals ?? -1), "decimals"));
       card.append(h("label", "f", ["Colours: amber and red outside these"]));
       card.append(h("div", "grid2", [numberField("Amber below", "warnBelow", "—"), numberField("Amber above", "warnAbove", "—"), numberField("Red below", "critBelow", "—"), numberField("Red above", "critAbove", "—")]));
       break;
     }
-    case "thermostat":
-      card.append(...chips("Push the dial / press the key", [["mode", "Next mode", "refresh"], ["preset", "Next preset", "layers"], ["boost", "Boost", "flame"]], press ?? "mode", "press"));
+    case "thermostat": {
+      card.append(...chips("Push the dial / press the key", [["mode", "Next mode", "refresh"], ["preset", "Next preset", "layers"], ["boost", "Boost", "flame"], ["details", "Show details (3 s)", "info"]], press ?? "mode", "press"));
+      const modes = it?.attrs.find((a) => a.type === "enum" && /mode/i.test(a.key))?.values ?? [];
+      const words: Record<string, [string, string]> = {
+        plan: ["Plan", "calendar"], comfort: ["Comfort", "sun"], eco: ["Eco", "leaf"], night: ["Night", "moon"], max: ["Max", "flame"], off: ["Off", "power"], manual: ["By hand", "hand"],
+      };
+      const set = modes.filter((m) => m in words);
+      if (set.length) card.append(...chips("…or set one mode", set.map((m) => ["set:" + m, words[m]![0], words[m]![1]] as [string, string, string]), press, "press"));
+      if (set.length) card.append(h("div", "note", [ic("info", "sm"), "Next mode goes round all of them, Plan and By hand included. Turning the dial sets the room by hand, as the dashboard's slider does."]));
       card.append(...chips("Setpoint per click", [["0.1", "0.1°"], ["0.5", "0.5°"], ["1", "1°"]], String(settings.step ?? "0.5"), "step"));
       card.append(h("div", "note", [ic("info", "sm"), "Touch the strip for boost (when the thermostat has one)."]));
       break;
+    }
     case "dimmer":
       card.append(...chips("Brightness per click", [["1", "1%"], ["5", "5%"], ["10", "10%"], ["20", "20%"]], String(settings.step ?? "5"), "step"));
-      card.append(toggle("Show the room on the key", "showRoom", true));
       break;
     case "blinds":
       card.append(...chips("Push the dial / press the key", [["openclose", "Open / close", "blinds"], ["stop", "Stop", "stop"], ["open", "Open", "blindsUp"], ["close", "Close", "blindsDown"]], press ?? "openclose", "press"));
       card.append(...chips("Position per click", [["5", "5%"], ["10", "10%"], ["20", "20%"], ["25", "25%"]], String(settings.step ?? "10"), "step"));
-      card.append(toggle("Show the room on the key", "showRoom", true));
       break;
     case "scene":
     case "status":
-      return null;
+      break;
+  }
+  if (KIND !== "reading" && KIND !== "status") card.append(holdSwitch(it));
+  if (card.childElementCount <= 1) return null;
+  return card;
+}
+
+// ------------------------------------------------------------------ (1.1) the look
+
+/** What each action calls its pieces of information, and which it has. */
+const INFO: Record<Kind, [string, string, string][]> = {
+  control: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "On / off", "power"], ["showDetail", "Value (W…)", "bolt"], ["showGraph", "Level bar", "dial"], ["showBattery", "Battery", "battery"]],
+  reading: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Value", "gauge"], ["showDetail", "Trend", "trendUp"], ["showGraph", "Graph", "pulse"], ["showBattery", "Battery", "battery"]],
+  thermostat: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Measured", "thermo"], ["showDetail", "Target", "thermostat"], ["showMode", "Mode / preset", "layers"], ["showGraph", "Temperature graph", "pulse"]],
+  dimmer: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "On / off", "power"], ["showDetail", "Brightness %", "sun"], ["showGraph", "Level bar", "dial"]],
+  blinds: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Position", "blinds"], ["showDetail", "Moving", "down"], ["showGraph", "Window", "window"]],
+  scene: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showRoom", "Room", "door"], ["showState", "Run / done", "play"]],
+  status: [["showIcon", "Icon", "grid"], ["showName", "Name", "edit"], ["showState", "Value", "heart"], ["showDetail", "Detail", "info"]],
+};
+const SPAN_WORDS: [number, string][] = [[3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [604800, "7 d"]];
+
+function shown(key: string): boolean {
+  const v = settings[key];
+  if (typeof v === "boolean") return v;
+  return key === "showGraph" ? KIND !== "thermostat" : key !== "showScale";
+}
+
+function picture(src: string, cls: string): HTMLImageElement {
+  const img = h("img", cls) as HTMLImageElement;
+  img.src = src;
+  img.alt = "";
+  return img;
+}
+
+function lookCard(): HTMLElement {
+  const it = items.find((i) => i.id === settings.item);
+  const card = h("div", "card look-card");
+  const theme = String(settings.theme ?? "classic");
+  card.append(h("h2", "", [ic("sparkle", "sm"), "Look", h("span", "count", [THEMES.find((t) => t.id === theme)?.name ?? "Classic"])]));
+  // lit and unlit, side by side
+  if (looks && looks.on && looks.off) {
+    card.append(h("div", "pair", [
+      h("figure", "", [picture(looks.on, "big"), h("figcaption", "", [h("span", "dot ok"), looks.words[0]])]),
+      h("figure", "", [picture(looks.off, "big"), h("figcaption", "", [h("span", "dot"), looks.words[1]])]),
+    ]));
+  }
+  // every look, drawn with the item as it is now
+  const grid = h("div", "looks");
+  for (const t of THEMES) {
+    const pic = looks?.themes.find((x) => x.id === t.id)?.image;
+    const b = h("button", "look" + (t.id === theme ? " sel" : ""), [pic ? picture(pic, "") : h("div", "ph", [ic("hourglass", "sm")]), h("span", "", [t.name])]);
+    b.type = "button";
+    b.title = t.name + " - " + t.hint;
+    b.addEventListener("click", () => saveSettings({ theme: t.id === "classic" ? undefined : t.id }));
+    grid.append(b);
+  }
+  card.append(grid);
+  // the accent
+  const sw = h("div", "swatches");
+  const auto = h("button", "sw auto" + (!settings.accent ? " sel" : ""), [h("span", "", ["Auto"])]);
+  auto.type = "button";
+  auto.title = "Auto - the item's own colour";
+  auto.addEventListener("click", () => saveSettings({ accent: undefined }));
+  sw.append(auto);
+  for (const [id, a] of Object.entries(ACCENTS)) {
+    const b = h("button", "sw" + (settings.accent === id ? " sel" : ""));
+    b.type = "button";
+    b.title = a.name;
+    b.style.setProperty("--c", a.colour);
+    b.addEventListener("click", () => saveSettings({ accent: id }));
+    sw.append(b);
+  }
+  card.append(h("label", "f", ["Accent colour"]), sw);
+  // the label
+  const lab = h("input", "in") as HTMLInputElement;
+  lab.placeholder = it?.name ?? "The item's name";
+  lab.maxLength = 40;
+  lab.dataset.key = "label";
+  lab.value = String(settings.label ?? "");
+  lab.addEventListener("change", () => saveSettings({ label: lab.value.trim() || undefined }));
+  card.append(h("label", "f", ["Label on the key (empty = the item's name)"]), lab);
+  const fitNow = String(settings.nameFit ?? (theme === "classic" ? "cut" : "fit"));
+  card.append(...chips("Long names", [["fit", "Shrink to fit", "search"], ["wrap", "Two lines", "layers"], ["cut", "One line", "edit"]], fitNow, "nameFit"));
+  // what is shown
+  card.append(h("div", "sep"));
+  card.append(h("h2", "", [ic("info", "sm"), "Shown on the key"]));
+  const wrap = h("div", "chips");
+  for (const [key, word, iconName] of INFO[KIND]) {
+    const on = shown(key);
+    const c = h("button", "chip tog" + (on ? " on" : ""), [ic(on ? "check" : iconName, "sm"), word]);
+    c.type = "button";
+    c.addEventListener("click", () => saveSettings({ [key]: !on }));
+    wrap.append(c);
+  }
+  card.append(wrap);
+  const keys = INFO[KIND].map((x) => x[0]);
+  card.append(h("div", "btns", [
+    btn("Everything", "ghost", "grid", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showGraph" && KIND === "thermostat" ? true : undefined])))),
+    btn("Icon only", "ghost", "sparkle", () => saveSettings(Object.fromEntries(keys.map((k) => [k, k === "showIcon"])))),
+  ]));
+  if ((KIND === "reading" || KIND === "thermostat") && shown("showGraph")) {
+    card.append(...chips("Graph over the last", SPAN_WORDS.map(([v, w]) => [String(v), w] as [string, string]), String(settings.span ?? 86400), "span"));
+    card.append(toggle("Min / max on the graph", "showScale", false));
+    if (KIND === "thermostat") card.append(toggle("The target as a dashed line", "showTarget", true));
+    card.append(h("p", "muted small", ["ZIGMon sends the graph ready from its own history and the key adds the live values; it is fetched again every few minutes."]));
   }
   return card;
+}
+
+/** Hold to confirm, per key - on and locked where ZIGMon asks for it. */
+function holdSwitch(it: PiItem | undefined): HTMLElement {
+  const forced = !!it?.hold;
+  const on = forced || settings.hold === true;
+  const s = h("div", "switch hold" + (on ? " on" : "") + (forced ? " locked" : ""), [
+    h("span", "hl", [h("span", "hand", [ic("hand")]), h("span", "", [h("b", "", ["Hold to confirm (1.5 s)"]), h("span", "muted small", [forced
+      ? "ZIGMon requires it for this item"
+      : "A short press does nothing; keep it pressed while the ring fills"])])]),
+    forced ? ic("lock", "sm") : h("span", "k"),
+  ]);
+  if (!forced) s.addEventListener("click", () => saveSettings({ hold: !on || undefined }));
+  return s;
 }
 
 // ------------------------------------------------------------------ the page
@@ -660,7 +798,7 @@ function render(): void {
   const sel = a instanceof HTMLInputElement && a.type !== "number" ? [a.selectionStart, a.selectionEnd] : null;
   const scroll = document.getElementById("list")?.scrollTop ?? 0;
   const parts: (HTMLElement | null)[] = [updateCard(), connectionCard(), picker()];
-  if (settings.item && !pickerOpen) parts.push(optionsCard());
+  if (settings.item && !pickerOpen) parts.push(lookCard(), optionsCard());
   parts.push(h("div", "foot", [ic("zigmon"), "ZIGMon for Stream Deck " + (status?.plugin ?? "")]));
   app.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
   if (focusKey) {

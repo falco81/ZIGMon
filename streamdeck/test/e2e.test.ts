@@ -16,6 +16,7 @@ import { Hub, type HubDeps } from "../src/core/hub.js";
 import { FakeProtector } from "../src/core/secrets.js";
 import { normalizePin } from "../src/core/tls.js";
 import { rawKey } from "../src/core/update.js";
+import { PLUGIN_VERSION } from "../src/core/version.js";
 import { ActionView, type ActionKind } from "../src/core/views.js";
 import { FakeZigmon, MemoryStore, MockSurface, until } from "./fake-zigmon.js";
 
@@ -77,7 +78,7 @@ describe("end to end against a fake ZIGMon", () => {
     const body = pairReq.body as Record<string, unknown>;
     assert.equal(body.install, store.value.install);
     assert.equal(body.computer, "OFFICE-PC");
-    assert.equal(body.plugin, "1.0.0");
+    assert.equal(body.plugin, PLUGIN_VERSION);
     assert.deepEqual(body.decks, [{ id: "XL-1", type: 2, name: "Office XL", cols: 8, rows: 4 }, { id: "PLUS-1", type: 7, name: "Stream Deck +", cols: 4, rows: 2 }]);
     assert.equal(hub.status().phase, "pairing");
     assert.equal(JSON.stringify(hub.status()).includes("zsp_"), false, "the pairing secret is never shown");
@@ -90,7 +91,7 @@ describe("end to end against a fake ZIGMon", () => {
     const hello = fake.seen.find((s) => s.do === "hello")!;
     assert.match(String(hello.headers["x-zigmon-deck"]), /^zsd_/);
     assert.equal(hello.headers["x-zigmon-deck-install"], store.value.install);
-    assert.match(String(hello.headers["x-zigmon-client"]), /^ZIGMon-StreamDeck\/1\.0\.0$/);
+    assert.match(String(hello.headers["x-zigmon-client"]), new RegExp("^ZIGMon-StreamDeck/" + PLUGIN_VERSION.replace(/\./g, "\\.") + "$"));
     assert.equal(hello.query.get("decks"), "XL-1,PLUS-1");
     assert.ok(hello.query.get("deck_info"));
     for (const s of fake.seen) assert.ok(!s.query.toString().includes("zsd_"), "the key is never in a URL");
@@ -170,17 +171,17 @@ describe("end to end against a fake ZIGMon", () => {
     // ---- an update: signed manifest, sha256, saved and opened
     const pkg = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(500, 7)]);
     const sha = createHash("sha256").update(pkg).digest("hex");
-    const manifest = Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.1.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11" }) + "\n");
-    fake.plugin = { version: "1.1.0" };
-    fake.update = { ok: true, available: true, version: "1.1.0", size: pkg.length, sha256: sha, manifest: manifest.toString("base64"), sig: sign(null, manifest, privateKey).toString("base64") };
+    const manifest = Buffer.from(JSON.stringify({ product: "ZIGMon for Stream Deck", file: "com.zigmon.streamdeck.streamDeckPlugin", version: "1.2.0", size: pkg.length, sha256: sha, requires: "Stream Deck 7.1, Windows 10/11" }) + "\n");
+    fake.plugin = { version: "1.2.0" };
+    fake.update = { ok: true, available: true, version: "1.2.0", size: pkg.length, sha256: sha, manifest: manifest.toString("base64"), sig: sign(null, manifest, privateKey).toString("base64") };
     fake.download = pkg;
     hub.retryNow();
     hub.stop();
     (hub as unknown as { runLoop(): void }).runLoop();
-    await until(() => hub.status().update?.version === "1.1.0", 4000, "the update offered");
+    await until(() => hub.status().update?.version === "1.2.0", 4000, "the update offered");
     await hub.installUpdate();
     assert.equal(hub.status().updating.state, "done", hub.status().updating.message);
-    assert.deepEqual(opened, [join(tmp, "ZIGMon-1.1.0.streamDeckPlugin")]);
+    assert.deepEqual(opened, [join(tmp, "ZIGMon-1.2.0.streamDeckPlugin")]);
     assert.deepEqual(readFileSync(opened[0]!), pkg);
     // tampered download: refused, nothing opened
     fake.download = Buffer.concat([pkg.subarray(0, -1), Buffer.from([8])]);
