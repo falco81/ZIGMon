@@ -10493,7 +10493,11 @@ class EspGateways(object):
                         'hello': {k: hello.get(k) for k in ('fw', 'model', 'mac_tail', 'rssi', 'uptime', 'time_set', 'name')
                                   if k in hello},
                         'online': rt.get('online'), 'error': rt.get('error') or '', 'cert_bad': rt.get('kind') == 'cert',
-                        'since': rt.get('since') or None, 'last_ok': rt.get('last_ok') or None, 'boot': r.get('boot') or ''})
+                        'since': rt.get('since') or None, 'last_ok': rt.get('last_ok') or None, 'boot': r.get('boot') or '',
+                        # (5.59.4) what it no longer describes: kept, offline, until removed here
+                        'gone': [{'id': eid, 'name': g.get('name') or eid, 'type': g.get('type') or 'unknown',
+                                  'module': g.get('module'), 'at': g.get('at'), 'device': self.esp_device_id(r['id'], eid)}
+                                 for eid, g in sorted((r.get('gone') or {}).items())]})
         return {'ok': True, 'gateways': out, 'most': self.ESP_MOST, 'types': list(ESP_TYPES)}
 
     def esp_dashboard(self):
@@ -10504,13 +10508,36 @@ class EspGateways(object):
             hello = dict(r.get('hello') or {}, **(rt.get('hello') or {}))
             used = self.esp_used(r) if r.get('enabled', True) is not False else []
             on = bool(rt.get('online')) and r.get('enabled', True) is not False
+            mods = (r.get('described') or {}).get('modules') or []
+            mod_names = {m.get('id'): m.get('name') or m.get('id') for m in mods}
             gws.append({'id': r['id'], 'name': r.get('name') or r['id'], 'online': on,
                         'enabled': r.get('enabled', True) is not False,
                         'fw': hello.get('fw'), 'rssi': hello.get('rssi'), 'entities': len(used),
-                        'modules': [m.get('name') or m.get('id') for m in (r.get('described') or {}).get('modules') or []]})
+                        'modules': [m.get('name') or m.get('id') for m in mods],
+                        # (5.59.4) for its tile: what it is, how long it has been up, whether its clock is set
+                        'device': self.esp_device_id(r['id']), 'model': hello.get('model'), 'uptime': hello.get('uptime'),
+                        'time_set': hello.get('time_set'), 'since': rt.get('since') or None,
+                        'last_ok': rt.get('last_ok') or None, 'error': (rt.get('error') or '') if not on else '',
+                        'cert_bad': rt.get('kind') == 'cert',
+                        'module_list': [{'id': m.get('id'), 'name': m.get('name') or m.get('id'), 'version': m.get('version'),
+                                         'entities': len(m.get('entities') or []),
+                                         'used': len([e for e in used if e.get('module') == m.get('id')])} for m in mods],
+                        'gone': len(r.get('gone') or {})})
+            for eid, g in sorted((r.get('gone') or {}).items()):
+                dev = self.store.device(self.esp_device_id(r['id'], eid)) or {}
+                if not dev or dev.get('removed'):
+                    continue
+                ents.append({'id': self.esp_device_id(r['id'], eid), 'gw': r['id'], 'gw_name': r.get('name') or r['id'],
+                             'entity': eid, 'module': g.get('module'), 'module_name': mod_names.get(g.get('module'))
+                             or g.get('module'), 'type': g.get('type') or 'unknown',
+                             'name': dev.get('alias') or dev.get('name') or g.get('name') or eid, 'actions': [], 'confirm': [],
+                             'attrs': [], 'value': None, 'busy': False, 'available': False, 'gw_online': on,
+                             'values': {}, 'last': None, 'asked': {}, 'gone': True, 'gone_at': g.get('at')})
             for e in used:
                 st = (rt.get('states') or {}).get(e['id']) or {}
                 ents.append({'id': self.esp_device_id(r['id'], e['id']), 'gw': r['id'], 'gw_name': r.get('name') or r['id'],
+                             'module_name': mod_names.get(e.get('module')) or e.get('module'),
+                             'gw_rssi': hello.get('rssi'),
                              'entity': e['id'], 'module': e.get('module'), 'type': e['type'],
                              'name': self._esp_name_of(r, e), 'actions': e.get('actions') or [],
                              'confirm': e.get('confirm') or [], 'attrs': e.get('attrs') or [],
@@ -10666,6 +10693,19 @@ class EspGateways(object):
             if row is None:
                 raise ValueError('the gateway was taken away meanwhile')
             before = {e['id']: e for e in self.esp_entities(row)}
+            before_mods = {m.get('id') for m in (row.get('described') or {}).get('modules') or []}
+            # (5.59.4) what it does not describe any more is kept, marked gone - its device offline,
+            # its history kept - until somebody removes it; what comes back is simply there again
+            gone_kept = dict(row.get('gone') or {})
+            used_before = {e['id'] for e in self.esp_used(row)}
+            for eid, e in before.items():
+                if eid not in seen and eid in used_before:
+                    gone_kept[eid] = {'name': e.get('name') or eid, 'type': e.get('type'), 'module': e.get('module'),
+                                      'at': int(time.time())}
+            for eid in list(gone_kept):
+                if eid in seen:
+                    gone_kept.pop(eid, None)
+            row['gone'] = gone_kept
             row['described'] = {'at': int(time.time()), 'modules': modules}
             use = dict(row.get('use') or {})
             for eid in list(use):
@@ -10677,6 +10717,14 @@ class EspGateways(object):
         self._esp_sync_devices(row)
         new = [e for e in self.esp_entities(row) if e['id'] not in before]
         gone = [e for eid, e in before.items() if eid not in seen]
+        self._esp_mark_gone(row)
+        if before:
+            # a module it did not have before: said on its own line, with how many devices it brings
+            for m in modules:
+                if m['id'] not in before_mods and m['entities']:
+                    n = len(m['entities'])
+                    self.store.add_event('device', 'ESP32 gateway %s: new module %s (%d device%s)' % (
+                        row.get('name'), m['name'] or m['id'], n, '' if n == 1 else 's'), 'info', self.esp_device_id(gwid))
         if not quiet or new or gone:
             bits = ['%d module(s), %d entit%s' % (len(modules), len(seen), 'y' if len(seen) == 1 else 'ies')]
             if new and before:
@@ -10743,6 +10791,8 @@ class EspGateways(object):
                 exposes['state']['values'] = list(e['options'])
             for a in e.get('attrs') or []:
                 exposes[a['key']] = {'label': a['label'], 'unit': a.get('unit') or ''}
+            if e['type'] == 'lock' and 'locked' not in exposes:
+                exposes['locked'] = {'label': 'Locked'}
             exposes['busy'] = {'label': 'Busy'}
             exposes['last_result'] = {'label': 'Last result'}
             self.store.upsert_device({'id': dev_id, 'name': e['name'], 'source': 'esp',
@@ -10752,6 +10802,150 @@ class EspGateways(object):
                                                      if m.get('id') == e.get('module')), None) or e.get('module'),
                                       'description': 'on the ESP32 gateway %s' % (row.get('name') or gwid),
                                       'exposes': exposes})
+
+    def _esp_mark_gone(self, row):
+        """(5.59.4) Each entity the gateway no longer describes: its device kept, offline."""
+        for eid, g in (row.get('gone') or {}).items():
+            dev_id = self.esp_device_id(row['id'], eid)
+            dev = self.store.device(dev_id)
+            if dev is None or dev.get('removed'):
+                continue
+            if (self.live.get(dev_id) or {}).get('availability') != 'offline':
+                self.set_availability(dev_id, 'offline', dev.get('alias') or dev.get('name') or g.get('name') or eid)
+
+    def esp_forget_entity(self, gwid, eid, by=''):
+        """(5.59.4) Remove one entity that is gone from its gateway: its device goes (its history stays)."""
+        with self._esp_lock:
+            rows = self.esp_rows()
+            row = next((r for r in rows if r['id'] == gwid), None)
+            if row is None:
+                raise ValueError('no such gateway')
+            gone = dict(row.get('gone') or {})
+            if eid not in gone:
+                raise ValueError('%s still has it - switch it off (not used) instead' % (row.get('name') or gwid))
+            g = gone.pop(eid)
+            row['gone'] = gone
+            self._esp_put(rows)
+        dev_id = self.esp_device_id(gwid, eid)
+        if self.store.device(dev_id):
+            self.store.mark_removed(dev_id)
+        self.live.pop(dev_id, None)
+        self.store.add_event('device', 'ESP32 gateway %s: %s removed - it is gone from the gateway (%s)' % (
+            row.get('name') or gwid, g.get('name') or eid, by or 'the dashboard'), 'info', self.esp_device_id(gwid))
+        self.bump()
+        return {'ok': True, 'message': '%s removed' % (g.get('name') or eid)}
+
+    def esp_entity_of(self, dev_id):
+        """(row, entity, state) of esp:<gw>:<entity> - None when it is not one in use."""
+        got = self.esp_split(dev_id)
+        row = self.esp_row(got[0]) if got else None
+        if row is None:
+            return None
+        ent = next((e for e in self.esp_used(row) if e['id'] == got[1]), None)
+        if ent is None:
+            return None
+        return row, ent, ((self._esp_rt_of(row['id']).get('states') or {}).get(ent['id']) or {})
+
+    # -- the object model: {Front drawer.state}, Front drawer.unlock() --
+    ESP_ACT_WORDS = {'open': 'unlocks it and lets it lock again by itself',
+                     'unlock': 'leaves it unlocked until it is locked again', 'lock': 'locks it',
+                     'refresh': 'asks it where it stands (and its battery)', 'press': 'presses it',
+                     'on': 'switches it on', 'off': 'switches it off', 'toggle': 'switches it over',
+                     'close': 'closes it', 'stop': 'stops it', 'set': 'sets it: set(VALUE)'}
+
+    def _esp_obj_members(self, oid, item, name, out, prop, func, proc, values):
+        """(5.59.4) What a gateway or one of its things has, beside a device's own members:
+        properties (its gateway, its module), functions (its state, its battery, the last thing done
+        and how it went) and a procedure for every action it described - by type alone."""
+        have = {m['name'] for m in out}
+        stamp = lambda at: time.strftime('%Y-%m-%d %H:%M', time.localtime(at)) if at else None
+        got = self.esp_split(oid)
+        if got is None:
+            gwid = str(oid)[4:]
+            row = self.esp_row(gwid) if ESP_ID_RE.match(gwid) else None
+            if row is None:
+                return
+            rt = self._esp_rt_of(gwid)
+            hello = dict(row.get('hello') or {}, **(rt.get('hello') or {}))
+            mods = (row.get('described') or {}).get('modules') or []
+            if 'firmware' not in have:
+                prop('firmware', hello.get('fw'), doc='the gateway\u2019s firmware')
+            prop('modules', [('%s %s' % (m.get('name') or m.get('id'), m.get('version') or '')).strip() for m in mods]
+                 if values else None, vtype='list', doc='what it carries')
+            func('online', bool(rt.get('online')) and row.get('enabled', True) is not False if values else None,
+                 vtype='yes/no', doc='answering ZIGMon now', use='{%s.online}' % name)
+            func('devices', len(self.esp_used(row)) if values else None, vtype='number',
+                 doc='its things in use as devices', use='{%s.devices}' % name)
+            func('time_set', hello.get('time_set') if values else None, vtype='yes/no',
+                 doc='its clock is set', use='{%s.time_set}' % name)
+            func('since', stamp(rt.get('since')) if values else None, doc='online or offline since',
+                 use='{%s.since}' % name)
+            proc('detect', '%s.detect()' % name, 'ask it again what its modules carry', direct=True)
+            return
+        info = self.esp_entity_of(oid)
+        row = self.esp_row(got[0])
+        if row is None:
+            return
+        gone = got[1] in (row.get('gone') or {})
+        ent = info[1] if info else None
+        st = info[2] if info else {}
+        mods = (row.get('described') or {}).get('modules') or []
+        module = (ent or (row.get('gone') or {}).get(got[1]) or {}).get('module')
+        prop('gateway', row.get('name') or row['id'], doc='the ESP32 gateway it is on')
+        prop('module', next((m.get('name') for m in mods if m.get('id') == module), None) or module,
+             doc='the module of the gateway it belongs to')
+        prop('type', (ent or (row.get('gone') or {}).get(got[1]) or {}).get('type'),
+             doc='lock, switch, sensor, binary_sensor, button, cover, number, select or text')
+        last = st.get('last') or {}
+        on = bool(self._esp_rt_of(row['id']).get('online')) and row.get('enabled', True) is not False
+        rows = (('state', st.get('value'), None, 'what it is now'),
+                ('available', (on and st.get('available', True) is not False and not gone), 'yes/no',
+                 'within the gateway\u2019s reach and answering'),
+                ('busy', bool(st.get('busy')), 'yes/no', 'doing something it was asked'),
+                ('last_action', last.get('action'), None, 'the last thing it was asked to do'),
+                ('last_ok', last.get('ok') if last else None, 'yes/no', 'whether that worked'),
+                ('last_msg', last.get('msg') or '' if last else None, None, 'what the gateway said about it'),
+                ('last_at', stamp(last.get('at')), None, 'when'))
+        for key, v, vtype, doc in rows:
+            if key in have:
+                continue
+            kw = {'doc': doc, 'use': '{%s.%s}' % (name, key)}
+            if vtype:
+                kw['vtype'] = vtype
+            func(key, v if values else None, **kw)
+        for a in (ent or {}).get('actions') or []:
+            if a in have or a in ('rename', 'alerts', 'look', 'enable', 'disable'):
+                continue
+            doc = self.ESP_ACT_WORDS.get(a, 'its own action %s' % a)
+            if a in ((ent or {}).get('confirm') or []):
+                doc += ' - sensitive: asked again before it is done'
+            if a == 'set':
+                proc(a, '%s.set(VALUE)' % name, doc, direct=True, takes='value')
+            else:
+                proc(a, '%s.%s()' % (name, a), doc, direct=True)
+
+    def _esp_obj_direct(self, oid, item, member, args, origin):
+        """Name.unlock(), Name.set(40), Gateway.detect() - or None when it is not one of these."""
+        name = item.get('alias') or item.get('name') or oid
+        member = str(member or '').lower()
+        got = self.esp_split(oid)
+        if got is None:
+            if member != 'detect':
+                return None
+            out = self.esp_detect(str(oid)[4:], by=origin)
+            return '%s: %d entities' % (name, out.get('entities') or 0)
+        info = self.esp_entity_of(oid)
+        if info is None or member not in (info[1].get('actions') or []):
+            return None
+        do = member
+        if member == 'set':
+            if not str(args or '').strip():
+                raise ValueError('%s.set() needs a value between its brackets' % name)
+            do = 'set:%s' % str(args).strip()
+        ok, words = self.esp_command(got[0], got[1], do, origin=origin)
+        if not ok:
+            raise ValueError(words)
+        return words
 
     # -- the state flowing in --
     def _esp_full_state(self, row):
@@ -10779,6 +10973,10 @@ class EspGateways(object):
         payload = {'state': st['value'], 'busy': st['busy']}
         for k, v in st['attrs'].items():
             payload[k] = v
+        # (5.59.4) a lock's state as yes/no as well: the words are not a number, so "locked" is what
+        # the history charts and what a rule watches ("when Front drawer becomes unlocked")
+        if ent['type'] == 'lock' and st['value'] in ('locked', 'unlocked') and 'locked' not in st['attrs']:
+            payload['locked'] = st['value'] == 'locked'
         if st['last']:
             payload['last_result'] = '%s %s' % (st['last']['action'], 'ok' if st['last']['ok'] else 'failed')
         if not st['available']:
@@ -10886,6 +11084,7 @@ class EspGateways(object):
         for r in rows:
             try:
                 self._esp_sync_devices(r)
+                self._esp_mark_gone(r)
             except Exception as e:                       # noqa: BLE001
                 log('ESP32 gateway %s: %s' % (r.get('name'), e), 'warn')
             if r.get('enabled', True) is not False:
@@ -11048,6 +11247,8 @@ class EspGateways(object):
             return out
         if act == 'use':
             return self.esp_use(gwid, body.get('use'), by)
+        if act == 'forget_entity':
+            return self.esp_forget_entity(gwid, str(body.get('entity') or ''), by)
         if act == 'rename':
             label = esp_words(body.get('name'), 40)
             if not label:
@@ -11094,7 +11295,7 @@ class EspGateways(object):
             self._esp_rt_of(gwid)['online'] = None
             self.esp_restart(gwid)
             return {'ok': True, 'message': 'asking %s again' % name}
-        raise ValueError('action is one of probe, pair, detect, use, rename, enable, disable, unpair, delete')
+        raise ValueError('action is one of probe, pair, detect, use, forget_entity, rename, enable, disable, unpair, delete')
 
     def _esp_forget(self, row, why, by):
         gwid = row['id']
@@ -11106,8 +11307,8 @@ class EspGateways(object):
             if rt.get('wake'):
                 rt['wake'].set()
             self._esp_rt.pop(gwid, None)
-        for e in self.esp_entities(row):
-            dev_id = self.esp_device_id(gwid, e['id'])
+        for eid in [e['id'] for e in self.esp_entities(row)] + list(row.get('gone') or {}):
+            dev_id = self.esp_device_id(gwid, eid)
             if self.store.device(dev_id):
                 self.store.mark_removed(dev_id)
             self.live.pop(dev_id, None)
@@ -43067,6 +43268,10 @@ class Daemon(EspGateways):
     # procedures that have no script line of their own: done here
     def _obj_direct(self, kind, oid, item, member, args, origin):
         name = item.get('name') or item.get('alias') or oid
+        if kind == 'device' and str(oid).startswith('esp:'):
+            done = self._esp_obj_direct(oid, item, member, args, origin)
+            if done is not None:
+                return done
         if kind == 'plug' and member in ('reboot', 'reset_counters'):
             self._fire_spec(oid, 'reboot' if member == 'reboot' else 'reset-counters', origin)
             return '%s: %s asked for' % (name, member.replace('_', ' '))
@@ -44266,6 +44471,10 @@ class Daemon(EspGateways):
             func('age', human_age(time.time() - entry['ts']) if values and entry.get('ts') else
                  ('never' if values else None), use='{%s.age}' % name)
             exposes = item.get('exposes') or {}
+            if item.get('source') == 'esp':
+                # (5.59.4) a thing of an ESP32 gateway: what it does is what it described, not on/off
+                self._esp_obj_members(oid, item, name, out, prop, func, proc, values)
+                exposes = {}
             for key, info in sorted(exposes.items()):
                 access = (info or {}).get('access')
                 settable = access is None or bool(access & 2)
