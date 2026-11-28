@@ -25,7 +25,7 @@ class Guard {
 uint32_t monoS();            // seconds since boot + 1 (never 0); for timeouts and sessions
 uint32_t nowUnix();          // wall clock, Unix s (may be "not set")
 bool clockSet();             // nowUnix() >= GW_CLOCK_VALID_FROM
-void setClock(uint32_t unix, const char* source);  // settimeofday + log
+void setClock(uint32_t t, const char* source);  // settimeofday + log
 
 // ---- Identity ----------------------------------------------------------------------------
 const char* gatewayId();     // 12 lowercase hex of the Wi-Fi STA MAC

@@ -105,6 +105,21 @@ esp_err_t zigmon(httpd_req_t* req) {
   const bool post = req->method == HTTP_POST;
   const char* method = post ? "POST" : "GET";
 
+  const bool isPair = strcmp(route, "/zigmon/v1/pair") == 0;
+  char ts[16], nonce[40], sig[72];
+  bool hTs = https::header(req, "X-Zigmon-Ts", ts, sizeof ts);
+  bool hNonce = https::header(req, "X-Zigmon-Nonce", nonce, sizeof nonce);
+  bool hSig = https::header(req, "X-Zigmon-Sig", sig, sizeof sig);
+  // PROTOCOL.md 8.3: every answer we can sign is signed (4xx too) - whenever a device key
+  // exists and the request brought a well-formed nonce. /pair is never signed (8.2).
+  if (!isPair && hNonce && isHex(nonce, 32)) {
+    Guard g;
+    if (config::paired()) {
+      r.sign = true;
+      copyStr(r.nonce, sizeof r.nonce, nonce);
+    }
+  }
+
   String body;
   int st = https::readBody(req, body);
   if (st) {
@@ -113,7 +128,7 @@ esp_err_t zigmon(httpd_req_t* req) {
   }
 
   // ---- pairing: the only unsigned endpoint -------------------------------------------------
-  if (strcmp(route, "/zigmon/v1/pair") == 0) {
+  if (isPair) {
     if (!post) {
       https::error(r, 405, "POST expected");
     } else {
@@ -123,11 +138,6 @@ esp_err_t zigmon(httpd_req_t* req) {
     return https::send(req, r);
   }
 
-  char ts[16], nonce[40], sig[72];
-  bool hTs = https::header(req, "X-Zigmon-Ts", ts, sizeof ts);
-  bool hNonce = https::header(req, "X-Zigmon-Nonce", nonce, sizeof nonce);
-  bool hSig = https::header(req, "X-Zigmon-Sig", sig, sizeof sig);
-
   bool waitForEvents = false;
   uint32_t after = 0, wait = 0;
   {
@@ -135,11 +145,6 @@ esp_err_t zigmon(httpd_req_t* req) {
     if (!config::paired()) {
       https::error(r, 401, "not paired");
       return https::send(req, r);
-    }
-    // Errors are signed too (with the nonce as sent), whenever the nonce is well-formed.
-    if (hNonce && isHex(nonce, 32)) {
-      r.sign = true;
-      copyStr(r.nonce, sizeof r.nonce, nonce);
     }
     uint32_t reqTs = 0;
     proto::Verdict v = proto::verifyRequest(

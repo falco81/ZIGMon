@@ -35,18 +35,25 @@ echo
 echo "== syntax check of the whole sketch against tests/stubs"
 fails=0
 # Each target the firmware supports gets its own pass, so per-target #ifs are exercised.
-for target in ESP32S3 ESP32 ESP32C3; do
-  defs="-DESP_PLATFORM -DARDUINO=10819 -DARDUINO_ARCH_ESP32 -DCONFIG_IDF_TARGET_${target}=1"
+check() {  # check <label> <extra defines...>
+  local label="$1"; shift
   for f in "$sketch"/*.cpp "$sketch"/ZigmonGateway.ino; do
-    if ! "$CXX" -std=gnu++17 -fsyntax-only $WARN -Werror $defs \
+    if ! "$CXX" -std=gnu++17 -fsyntax-only $WARN -Werror "$@" \
         -I"$here/stubs" -I"$sketch" -x c++ -include Arduino.h "$f" 2>"$out/syntax.log"; then
-      echo "FAIL [$target] $(basename "$f")"
+      echo "FAIL [$label] $(basename "$f")"
       cat "$out/syntax.log"
       fails=$((fails + 1))
     fi
   done
-  echo "  $target: checked $(ls "$sketch"/*.cpp | wc -l) .cpp files + the .ino"
+  echo "  $label: checked $(ls "$sketch"/*.cpp | wc -l) .cpp files + the .ino"
+}
+base="-DESP_PLATFORM -DARDUINO=10819 -DARDUINO_ARCH_ESP32"
+for target in ${TARGETS:-ESP32S3 ESP32 ESP32C3}; do
+  check "$target" $base -DCONFIG_IDF_TARGET_${target}=1
 done
+# The optional builds: no async long poll (IDF < 5.1), no cloud import.
+check "ESP32S3, GW_HTTPD_ASYNC=0" $base -DCONFIG_IDF_TARGET_ESP32S3=1 -DGW_HTTPD_ASYNC=0
+check "ESP32S3, GW_YEELOCK_CLOUD=0" $base -DCONFIG_IDF_TARGET_ESP32S3=1 -DGW_YEELOCK_CLOUD=0
 if [ "$fails" -ne 0 ]; then
   echo "$fails syntax failure(s)"
   exit 1

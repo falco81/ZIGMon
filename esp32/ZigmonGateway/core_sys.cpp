@@ -40,12 +40,12 @@ uint32_t nowUnix() {
 
 bool clockSet() { return nowUnix() >= GW_CLOCK_VALID_FROM; }
 
-void setClock(uint32_t unix, const char* source) {
+void setClock(uint32_t t, const char* source) {
   struct timeval tv;
-  tv.tv_sec = (time_t)unix;
+  tv.tv_sec = (time_t)t;
   tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
-  LOGI("time", "clock set from %s: %lu", source, (unsigned long)unix);
+  LOGI("time", "clock set from %s: %lu", source, (unsigned long)t);
 }
 
 static char g_id[13], g_tail[7], g_boot[9];

@@ -67,19 +67,25 @@ void handlePair(const String& body, https::Response& r) {
     case PairGate::OK:
       break;
     case PairGate::LOCKED: {
-      String m = String("pairing is locked for ") + g_gate.lockedFor(now) + " s";
-      https::error(r, 429, m.c_str());
+      // PROTOCOL.md 8.1: 429 with the seconds left as retry_in.
+      uint32_t left = g_gate.lockedFor(now);
+      JsonDocument e(jsonAlloc());
+      e["ok"] = false;
+      e["error"] = String("pairing locked for ") + left + " s";
+      e["retry_in"] = left;
+      r.status = 429;
+      serializeJson(e, r.body);
       return;
     }
     case PairGate::NO_CODE:
-      https::error(r, 403, "no pairing code is active: start pairing on the gateway first");
+      https::error(r, 401, "no pairing code is active: start pairing on the gateway first");
       return;
     case PairGate::EXPIRED:
-      https::error(r, 403, "the pairing code expired: start pairing again");
+      https::error(r, 401, "the pairing code expired: start pairing again");
       return;
     case PairGate::BAD_PROOF:
       LOGW("pair", "wrong pairing proof (the code is spent; start pairing again)");
-      https::error(r, 403, "wrong code (or a different certificate): start pairing again");
+      https::error(r, 401, "wrong code (or a different certificate): start pairing again");
       return;
   }
   bool was = config::paired();
@@ -98,10 +104,8 @@ void handlePair(const String& body, https::Response& r) {
   out["fw"] = GW_FW_VERSION;
   serializeJson(out, r.body);
   r.status = 200;
-  // Additive: the answer is signed with the new key over the pairing nonce, so ZIGMon can
-  // confirm the gateway stored the key it sent.
-  r.sign = true;
-  copyStr(r.nonce, sizeof r.nonce, nonce);
+  // PROTOCOL.md 8.2: this answer is not signed; ZIGMon proves the key with a signed /hello.
+  r.sign = false;
 }
 
 }  // namespace pairing

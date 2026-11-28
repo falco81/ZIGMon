@@ -25,6 +25,8 @@ typedef uint8_t byte;
 unsigned long millis();
 unsigned long micros();
 void delay(uint32_t ms);
+void configTime(long gmtOffset_sec, int daylightOffset_sec, const char* server1,
+                const char* server2 = nullptr, const char* server3 = nullptr);
 
 class StringSumHelper;
 
