@@ -16,6 +16,7 @@ import {
   renderStatus, renderThermostat, renderToast, type BlindsModel, type ClassicOpts, type ControlModel, type DimmerModel, type NoticeModel, type ReadingModel,
   type StatusModel, type ThermoModel,
 } from "./render.js";
+import { levelIn, quantityOf, readingLevel, seriesScale } from "./scale.js";
 import { normalizeAction, ROOM_MODES, type ActionSettings } from "./settings.js";
 import { ALL_INFO, renderDetails, renderLook, THEMES, type Face, type Info } from "./themes.js";
 import type { NameFit } from "./svg.js";
@@ -518,7 +519,10 @@ export class ActionView implements HubView {
     if (v !== null && s.decimals !== undefined && s.decimals >= 0) value = formatNumber(v, s.decimals);
     else if (st.valueText) value = unit && st.valueText.endsWith(unit) ? st.valueText.slice(0, -unit.length).trim() : st.valueText;
     else value = v !== null ? formatNumber(v, -1) : st.on === true ? "On" : st.on === false ? "Off" : "";
-    const showUnit = unit && !value.endsWith(unit) ? unit : "";
+    // (1.3) a word (a room's mode "max", On, Off) is no number: no unit after it, no history or level under it -
+    // a room's series is its temperature, which drew a random-looking graph under its mode
+    const numeric = v !== null || /^[-+−]?\d/.test(value);
+    const showUnit = numeric && unit && !value.endsWith(unit) ? unit : "";
     // (1.3) a thing with no number - a scene, a rule, a group: its state as the value, a word under it
     if (v === null && !attr && (st.on !== null || it.kind === "scene")) {
       const lk = lookFor(it.kind, it.icon);
@@ -531,17 +535,24 @@ export class ActionView implements HubView {
         online: this.forced ? true : st.online, lit: this.forced ? this.forced === "on" : st.on === true, ...(note ? { note } : {}),
       };
     }
-    const h = this.historyOf(it.id);
+    // the attribute's range is the value's only when it is that attribute (a radiator's value is its temperature, its number its set point)
+    const own = attr ? numOf(st.attrs[attr.key]) : null;
+    const q = quantityOf(attr, own === null || own === v);
+    const h = numeric ? this.historyOf(it.id) : [];
     let trend: ReadingModel["trend"] = null;
     if (h.length >= 3 && v !== null) {
       const ref = h[Math.max(0, h.length - 6)]!;
-      const span = Math.max(...h) - Math.min(...h);
+      // (1.3) steady within 8 % of the graph's honest scale, not of the lowest to the highest value
+      const sc = seriesScale(h, q);
       const d = v - ref;
-      trend = Math.abs(d) <= Math.max(1e-9, span * 0.08) ? "flat" : d > 0 ? "up" : "down";
+      trend = Math.abs(d) <= Math.max(1e-9, (sc.hi - sc.lo) * 0.08) ? "flat" : d > 0 ? "up" : "down";
     }
-    return {
+    const m: ReadingModel = {
       label: s.label || it.name, value, unit: showUnit, colour, accent: look.accent, icon: look.icon, trend, history: h, online: this.forced ? true : st.online,
+      scale: q, level: v !== null ? readingLevel(v, q) : null,
     };
+    if (!numeric && st.on !== null) m.lit = this.forced ? this.forced === "on" : st.on === true;
+    return m;
   }
 
   /** The values to draw: the series ZIGMon sent (with live values since), else the few this plugin saw. */
@@ -577,7 +588,8 @@ export class ActionView implements HubView {
       min: sp?.min ?? 5, max: sp?.max ?? 30, online: st.online, hold: this.needsHold(it), allowed: it.allowed,
     };
     if (room) m.modeFirst = true;
-    if (this.info().graph) m.history = this.historyOf(it.id);
+    // the history is of the temperature shown: none without one (a room with no thermometer says its mode)
+    if (this.info().graph && current !== null) m.history = this.historyOf(it.id);
     const src = st.attrs.thermometer;
     if (typeof src === "string" && src) m.source = src;
     if (this.forced) {
@@ -913,7 +925,8 @@ export class ActionView implements HubView {
         return {
           ...base, name: m.name, icon: look.icon, accent: acc ?? look.accent, active: m.on === true && m.online, online: m.online,
           state: m.on === true ? "On" : m.on === false ? "Off" : m.valueText || "—", detail: m.on !== null ? m.valueText : "",
-          level: a && raw !== null ? fraction(raw, a.min, a.max) : null,
+          // (1.3) within the attribute's real range (a percentage: 0..100), else no level - 0..100 was assumed
+          level: a && raw !== null ? levelIn(raw, a.min, a.max) ?? (a.unit === "%" ? levelIn(raw, 0, 100) : null) : null,
         };
       }
       case "reading": {
@@ -921,17 +934,19 @@ export class ActionView implements HubView {
         const t = m.trend === "up" ? "↑ rising" : m.trend === "down" ? "↓ falling" : m.trend === "flat" ? "→ steady" : "";
         return {
           ...base, name: m.label, icon: m.icon, accent: m.accent, active: m.lit ?? m.colour !== m.accent, online: m.online, state: m.value, unit: m.unit,
-          stateColour: m.colour, detail: m.note ?? t, series: m.history,
+          stateColour: m.colour, detail: m.note ?? t, series: m.history, scale: m.scale ?? null, level: m.level ?? null,
         };
       }
       case "thermostat": {
         const m = this.thermoModel();
         const u = m.unit ? " " + m.unit : "";
-        const span = Math.max(0.5, m.max - m.min);
+        // (1.3) the level is the temperature the key shows big, within the set point's range; the target is
+        // marked on it (it was the target, under the current temperature); no temperature, no graph
         return {
           ...base, name: m.name, icon: m.heating ? "flame" : "thermostat", accent: acc ?? (m.heating ? P.orange : P.info), active: m.heating, online: m.online,
           state: fmtTemp(m.current), unit: m.current !== null ? m.unit : "", detail: m.target !== null ? "→ " + fmtTemp(m.target) + u : "", mode: m.mode,
-          level: m.target !== null ? Math.max(0, Math.min(1, (m.target - m.min) / span)) : null, series: m.history ?? [], target: m.target,
+          level: levelIn(m.current, m.min, m.max), mark: levelIn(m.target, m.min, m.max),
+          series: m.current !== null ? m.history ?? [] : [], target: m.target, scale: { unit: m.unit },
         };
       }
       case "dimmer": {

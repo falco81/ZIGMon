@@ -9,7 +9,7 @@ import { P } from "./palette.js";
 import { keySvg, sparkline, type ClassicOpts } from "./render.js";
 import { arcPath, dataUri, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth } from "./svg.js";
 import { graph, type Info } from "./themes.js";
-import type { Summary, Tone } from "./extra.js";
+import { POWER_SCALE, type Summary, type Tone } from "./extra.js";
 import type { Feedback } from "./strip.js";
 
 const SHOW: Info = { icon: true, name: true, room: true, state: true, detail: true, mode: true, graph: true, battery: true, scale: false, target: false };
@@ -230,7 +230,7 @@ function powerKey(s: Summary, o: ClassicOpts): string {
   let defs = "";
   if (gOn) {
     const top = det || span ? 100 : 92;
-    const g = i.scale ? graph({ ...faceLite(s), kind: "reading" }, i, 14, top, 116, 128 - top, c, INK, "pw") : sparkline(s.series, 14, top, 116, 128 - top, c, "pw");
+    const g = i.scale ? graph({ ...faceLite(s), kind: "reading" }, i, 14, top, 116, 128 - top, c, INK, "pw") : sparkline(s.series, 14, top, 116, 128 - top, c, "pw", POWER_SCALE);
     body += g.body;
     defs = g.defs;
   }
@@ -240,7 +240,7 @@ function powerKey(s: Summary, o: ClassicOpts): string {
 function faceLite(s: Summary) {
   return {
     kind: s.kind, name: "", room: null, icon: "", accent: s.accent, active: false, state: "", unit: "", stateColour: null, detail: "", mode: "",
-    level: null, series: s.series, target: null, online: true, allowed: true, hold: false, battery: null,
+    level: null, series: s.series, target: null, online: true, allowed: true, hold: false, battery: null, scale: POWER_SCALE,
   };
 }
 
@@ -414,7 +414,7 @@ export function extraFeedback(s: Summary, hint: string, member: { name: string; 
   const ic = (name: string, size: number) => iconPx(name, s.online ? c : P.crit, size, lit || s.tone === "ok" || !!s.offAccent ? c : undefined);
   switch (s.kind) {
     case "power": {
-      const g = sparkline(s.series, 0, 74, 200, 24, lit ? s.accent : c, "sp");
+      const g = sparkline(s.series, 0, 74, 200, 24, lit ? s.accent : c, "sp", POWER_SCALE);
       return {
         art: dataUri(svgDoc(200, 100, `<g opacity="0.9">${g.body}</g>`, g.defs)),
         icon: ic("bolt", 22),

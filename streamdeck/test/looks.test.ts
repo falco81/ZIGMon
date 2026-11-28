@@ -296,8 +296,9 @@ describe("the clear looks (1.2)", () => {
       assert.ok(/35\.0/.test(thermo) && /Max/.test(thermo), t + ": the target and the mode");
       assert.ok(!/35\.0/.test(key("thermostat", th, { theme: t, showDetail: false }).s.svg), t + ": the target off");
       assert.ok(!/Max/.test(key("thermostat", th, { theme: t, showMode: false }).s.svg), t + ": the mode off");
-      const r = key("reading", variant("read:0xe5:temperature", "on"), { theme: t }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
-      const noGraph = key("reading", variant("read:0xe5:temperature", "on"), { theme: t, showGraph: false }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
+      // (1.3) a reading with a true level (a percentage): a temperature has none, so a look without a sparkline draws nothing for it
+      const r = key("reading", variant("read:0xe5:humidity", "on"), { theme: t }, [], () => [70, 74, 79, 77, 80, 81]).s.svg;
+      const noGraph = key("reading", variant("read:0xe5:humidity", "on"), { theme: t, showGraph: false }, [], () => [70, 74, 79, 77, 80, 81]).s.svg;
       assert.notEqual(r, noGraph, t + ": the graph switched off is not drawn");
       const dim = key("dimmer", variant("zb:0xb2:light", "on"), { theme: t }).s.svg;
       assert.notEqual(dim, key("dimmer", variant("zb:0xb2:light", "on"), { theme: t, showGraph: false }).s.svg, t + ": the level is drawn, and goes with the graph");
@@ -398,8 +399,9 @@ describe("the twenty more looks (1.3)", () => {
       assert.ok(/35\.0/.test(thermo) && /Max/.test(thermo), t + ": the target and the mode");
       assert.ok(!/35\.0/.test(key("thermostat", th, { theme: t, showDetail: false }).s.svg), t + ": the target off");
       assert.ok(!/Max/.test(key("thermostat", th, { theme: t, showMode: false }).s.svg), t + ": the mode off");
-      const r = key("reading", variant("read:0xe5:temperature", "on"), { theme: t }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
-      const noGraph = key("reading", variant("read:0xe5:temperature", "on"), { theme: t, showGraph: false }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
+      // (1.3) a reading with a true level (a percentage): a temperature has none, so a look without a sparkline draws nothing for it
+      const r = key("reading", variant("read:0xe5:humidity", "on"), { theme: t }, [], () => [70, 74, 79, 77, 80, 81]).s.svg;
+      const noGraph = key("reading", variant("read:0xe5:humidity", "on"), { theme: t, showGraph: false }, [], () => [70, 74, 79, 77, 80, 81]).s.svg;
       assert.notEqual(r, noGraph, t + ": the graph switched off is not drawn");
       const dim = key("dimmer", variant("zb:0xb2:light", "on"), { theme: t }).s.svg;
       assert.notEqual(dim, key("dimmer", variant("zb:0xb2:light", "on"), { theme: t, showGraph: false }).s.svg, t + ": the level is drawn, and goes with the graph");

@@ -6,6 +6,7 @@
  */
 import { P } from "./palette.js";
 import { arcPath, esc, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth, wrap2, type NameFit } from "./svg.js";
+import { seriesScale, type Quantity } from "./scale.js";
 import { graph, type Face, type Info } from "./themes.js";
 
 /**
@@ -198,19 +199,22 @@ export interface ReadingModel {
   note?: string;
   /** (1.3) For a thing that is on or off: whether it is - the looks draw it lit. */
   lit?: boolean;
+  /** (1.3) What the value measures, for an honest scale under its history (scale.ts). */
+  scale?: Quantity;
+  /** (1.3) Where the value stands in its true range (an attribute's min / max, a percentage); null without one. */
+  level?: number | null;
 }
 
-/** A sparkline of the last values, filled underneath. */
-export function sparkline(values: number[], x: number, y: number, w: number, h: number, colour: string, id: string): { defs: string; body: string } {
+/**
+ * A sparkline of the last values, filled underneath - (1.3) on an honest scale (scale.ts): the
+ * quantity's range, from 0, or a sensible span for its unit; 1.0 stretched it from min to max.
+ */
+export function sparkline(values: number[], x: number, y: number, w: number, h: number, colour: string, id: string, q?: Quantity | null): { defs: string; body: string } {
   const v = values.filter((a) => Number.isFinite(a)).slice(-40);
   if (v.length < 2) {
     return { defs: "", body: `<path d="M ${n(x)} ${n(y + h - 1)} H ${n(x + w)}" stroke="${P.line}" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 5"/>` };
   }
-  let lo = Math.min(...v), hi = Math.max(...v);
-  if (hi - lo < 1e-9) {
-    lo -= 1;
-    hi += 1;
-  }
+  const { lo, hi } = seriesScale(v, q);
   const pts = v.map((a, i) => [x + (i / (v.length - 1)) * w, y + h - ((a - lo) / (hi - lo)) * (h - 4) - 2] as const);
   const line = pts.map((p, i) => (i ? "L " : "M ") + n(p[0]) + " " + n(p[1])).join(" ");
   const area = line + ` L ${n(x + w)} ${n(y + h)} L ${n(x)} ${n(y + h)} Z`;
@@ -242,19 +246,19 @@ export function renderReading(m: ReadingModel, o: ClassicOpts = {}): string {
   }
   if (!i.graph) return keySvg(body);
   if (i.scale) {
-    const g = graph(seriesFace(m.history, null), i, 14, 98, 116, 30, m.colour, CLASSIC_INK, "spark");
+    const g = graph(seriesFace(m.history, null, m.scale), i, 14, 98, 116, 30, m.colour, CLASSIC_INK, "spark");
     return keySvg(body + g.body, undefined, g.defs);
   }
-  const sp = sparkline(m.history, 14, 98, 116, 30, m.colour, "spark");
+  const sp = sparkline(m.history, 14, 98, 116, 30, m.colour, "spark", m.scale);
   body += sp.body;
   return keySvg(body, undefined, sp.defs);
 }
 
 const CLASSIC_INK = { bg: P.bg, bg2: P.panel2, line: P.line, text: P.text, dim: P.dim, muted: P.muted, crit: P.crit, warn: P.warn, badge: P.bg };
-function seriesFace(series: number[], target: number | null): Face {
+export function seriesFace(series: number[], target: number | null, scale?: Quantity | null): Face {
   return {
     kind: "reading", name: "", room: null, icon: "", accent: P.info, active: false, state: "", unit: "", stateColour: null, detail: "", mode: "",
-    level: null, series, target, online: true, allowed: true, hold: false, battery: null,
+    level: null, series, target, online: true, allowed: true, hold: false, battery: null, scale: scale ?? null,
   };
 }
 
@@ -311,7 +315,7 @@ export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
   if (m.online && i.detail) body += text(cx, 99, "→ " + fmtTemp(m.target) + (m.unit ? " " + m.unit : ""), { size: 14, weight: 700, fill: accent, anchor: "middle" });
   let gdefs = "";
   if (graphed) {
-    const g = graph(seriesFace(m.history!, m.target), i, 34, 104, 76, 14, m.heating ? heat : off ?? P.water, CLASSIC_INK, "hist");
+    const g = graph(seriesFace(m.history!, m.target, { unit: m.unit }), i, 34, 104, 76, 14, m.heating ? heat : off ?? P.water, CLASSIC_INK, "hist");
     body += g.body;
     gdefs = g.defs;
   }
@@ -390,10 +394,11 @@ export interface BlindsModel {
   allowed: boolean;
 }
 
-/** A window with its blind let down to the position. */
+/** A window with its blind let down to the position; (1.3) with no position known (or offline), an empty frame - 1.0 drew it half down. */
 export function blindsArt(x: number, y: number, w: number, h: number, position: number | null, accent: string): string {
-  const open = position === null ? 0.5 : Math.max(0, Math.min(1, position / 100));
   let s = rect(x, y, w, h, 6, P.bg, `stroke="${P.line}" stroke-width="2"`);
+  if (position === null) return s + `<path d="M ${n(x - 3)} ${n(y + 1)} H ${n(x + w + 3)}" stroke="${P.dim}" stroke-width="3" stroke-linecap="round"/>`;
+  const open = Math.max(0, Math.min(1, position / 100));
   // the sky behind
   s += rect(x + 4, y + 4, w - 8, h - 8, 3, "url(#sky)");
   const cover = (h - 8) * (1 - open);

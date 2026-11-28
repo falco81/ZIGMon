@@ -5,10 +5,10 @@
  */
 import { P } from "./palette.js";
 import {
-  blindsArt, fmtTemp, lookFor, sparkline, type BlindsModel, type ControlModel, type DimmerModel, type ReadingModel, type ThermoModel,
+  blindsArt, fmtTemp, lookFor, seriesFace, sparkline, type BlindsModel, type ControlModel, type DimmerModel, type ReadingModel, type ThermoModel,
 } from "./render.js";
 import { arcPath, dataUri, icon, n, rect, svgDoc, text } from "./svg.js";
-import { graph, type Face, type Info } from "./themes.js";
+import { graph, type Info } from "./themes.js";
 
 export type Feedback = Record<string, string | number | { value?: string | number; color?: string; enabled?: boolean; opacity?: number }>;
 
@@ -67,7 +67,7 @@ export function controlFeedback(m: ControlModel, mainFraction: number | null, ma
 }
 
 export function readingFeedback(m: ReadingModel, info?: Info): Feedback {
-  const sp = info?.scale ? graph(seriesFace(m.history, null), info, 0, 66, 200, 30, m.colour, STRIP_INK, "sp") : sparkline(m.history, 0, 66, 200, 30, m.colour, "sp");
+  const sp = info?.scale ? graph(seriesFace(m.history, null, m.scale), info, 0, 66, 200, 30, m.colour, STRIP_INK, "sp") : sparkline(m.history, 0, 66, 200, 30, m.colour, "sp", m.scale);
   let art = sp.body;
   if (m.trend && m.online) {
     const t = m.trend === "up" ? "trendUp" : m.trend === "down" ? "trendDown" : "trendFlat";
@@ -82,12 +82,6 @@ export function readingFeedback(m: ReadingModel, info?: Info): Feedback {
 }
 
 const STRIP_INK = { bg: P.bg, bg2: P.panel2, line: P.line, text: P.text, dim: P.dim, muted: P.muted, crit: P.crit, warn: P.warn, badge: P.bg };
-function seriesFace(series: number[], target: number | null): Face {
-  return {
-    kind: "reading", name: "", room: null, icon: "", accent: P.info, active: false, state: "", unit: "", stateColour: null, detail: "", mode: "",
-    level: null, series, target, online: true, allowed: true, hold: false, battery: null,
-  };
-}
 
 export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info, offAccent?: string): Feedback {
   const cx = 158, cy = 54, r = 32;
@@ -101,7 +95,7 @@ export function thermoFeedback(m: ThermoModel, accent?: string, info?: Info, off
   let gdefs = "";
   if (info?.graph && (m.history?.length ?? 0) >= 2) {
     // the measured temperature behind the words, the target dashed across it
-    const g = graph(seriesFace(m.history!, m.target), info, 4, 62, 116, 34, m.heating ? heat : off ?? P.water, STRIP_INK, "hist");
+    const g = graph(seriesFace(m.history!, m.target, { unit: m.unit }), info, 4, 62, 116, 34, m.heating ? heat : off ?? P.water, STRIP_INK, "hist");
     s += `<g opacity="0.55">${g.body}</g>`;
     gdefs = g.defs;
   }

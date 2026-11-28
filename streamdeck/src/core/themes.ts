@@ -6,6 +6,7 @@
  * Colours come only from palette.ts; every piece of text goes through esc() (svg.ts text()).
  */
 import { colourOf, P, X } from "./palette.js";
+import { seriesScale, type Quantity } from "./scale.js";
 import { arcPath, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth, type NameFit } from "./svg.js";
 
 export const THEMES: readonly { id: string; name: string; hint: string }[] = [
@@ -108,11 +109,18 @@ export interface Face {
   stateColour: string | null;
   detail: string;
   mode: string;
-  /** 0..1 - a brightness, a position, a target within its range. */
+  /**
+   * 0..1 - where the shown value stands in its true range: a brightness, a position, a battery, a
+   * thermostat's temperature within its set point's range. Null without a real range (scale.ts).
+   */
   level: number | null;
-  /** History, oldest first, and the value to draw dashed across it. */
+  /** History of the shown value - the same quantity - oldest first, and the value to draw dashed across it. Empty when the state is a word. */
   series: number[];
   target: number | null;
+  /** (1.3) What the series measures, for an honest scale (scale.ts); none: from its unit alone. */
+  scale?: Quantity | null;
+  /** (1.3) The target on the level's scale (0..1): a thermostat's set point, marked on its arc. */
+  mark?: number | null;
   online: boolean;
   allowed: boolean;
   hold: boolean;
@@ -209,15 +217,8 @@ export function graph(f: Face, info: Info, x: number, y: number, w: number, h: n
   const v = f.series.filter((a) => Number.isFinite(a)).slice(-96);
   if (v.length >= 2) {
     const tgt = info.target && f.target !== null && Number.isFinite(f.target) ? f.target : null;
-    let lo = Math.min(...v), hi = Math.max(...v);
-    if (tgt !== null) {
-      lo = Math.min(lo, tgt);
-      hi = Math.max(hi, tgt);
-    }
-    if (hi - lo < 1e-9) {
-      lo -= 1;
-      hi += 1;
-    }
+    // (1.3) an honest scale: the quantity's own range, from 0, or a sensible span - never min to max
+    const { lo, hi } = seriesScale(v, f.scale ?? { unit: f.unit }, tgt !== null ? [tgt] : []);
     const lw = info.scale ? 26 : 0;
     const gw = w - lw;
     const Y = (a: number) => y + h - ((a - lo) / (hi - lo)) * (h - 4) - 2;
@@ -239,7 +240,7 @@ export function graph(f: Face, info: Info, x: number, y: number, w: number, h: n
       body,
     };
   }
-  if (f.level !== null && f.kind !== "reading") {
+  if (f.level !== null) {
     const r = Math.min(4, h / 2);
     return { defs: "", body: rect(x, y + h / 2 - r, w, 2 * r, r, ink.line) + (f.online ? rect(x, y + h / 2 - r, Math.max(2 * r, w * Math.max(0, Math.min(1, f.level))), 2 * r, r, f.active ? colour : ink.muted) : "") };
   }
@@ -299,7 +300,7 @@ function minimal(f: Face, o: LookOpts): string {
     body += g.body;
     defs += g.defs;
     bottom -= 24;
-  } else if (i.graph && f.level !== null && f.kind !== "reading") {
+  } else if (i.graph && f.level !== null) {
     body += graph(f, i, 40, bottom - 4, 64, 4, c, ink, "mg").body;
     bottom -= 10;
   }
@@ -439,9 +440,11 @@ function ring(f: Face, o: LookOpts): string {
   const cx = 72, cy = named ? 60 : 72, r = named ? 40 : 52;
   let b = rect(0, 0, 144, 144, 0, "url(#bg)") + frame(ink, P.line);
   b += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${offInk(f, P.line)}"${offLit(f) ? ' stroke-opacity="0.45"' : ""} stroke-width="8"/>`;
-  const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : lit ? 1 : 0;
+  const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : onFill(f, lit);
   if (f.online && lv > 0) b += lv >= 1 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${c}" stroke-width="8"/>`
     : `<path d="${arcPath(cx, cy, r, 0, 360 * lv)}" fill="none" stroke="${c}" stroke-width="8" stroke-linecap="round"/>`;
+  const mk = f.level !== null ? markOf(f, i) : null;
+  if (mk !== null) b += notch(cx, cy, r, 360 * mk, 7, X.white, P.bg);
   if (lit) b += `<circle cx="${cx}" cy="${cy}" r="${r - 9}" fill="${c}" fill-opacity="0.1"/>`;
   const st = i.state;
   if (i.icon) {
@@ -533,7 +536,7 @@ function label(f: Face, o: LookOpts): string {
     b += text(72, y, l, { size: nl.size, weight: 800, fill: lit ? P.text : P.dim, anchor: "middle", spacing: -0.3 });
     y += nl.size * 1.08;
   }
-  const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : lit ? 1 : 0;
+  const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : onFill(f, lit);
   b += rect(36, 102, 72, 5, 2.5, offInk(f, P.line), offLit(f) ? 'fill-opacity="0.5"' : "");
   if (lv > 0 && f.online) b += rect(36, 102, Math.max(5, 72 * lv), 5, 2.5, c);
   const sub = subline(f, i);
@@ -680,16 +683,36 @@ function drawBig(b: Big, f: Face, x: number, y: number, fill: string, unitFill: 
   return (extra ? t.replace("<text ", "<text " + extra + " ") : t).replace(/<\/text>$/, u + "</text>");
 }
 
-/** The level a look may draw: the item's own (a brightness, a position, a target), else where a reading stands in its history. */
+/**
+ * The level a look may draw: the item's own, in its true range (a brightness, a position, a battery,
+ * a thermostat's temperature) - (1.3) never where a reading stands between the lowest and highest
+ * of its history, which drew a random-looking level. None: the look shows on / off, or nothing.
+ */
 function levelOf(f: Face, i: Info): number | null {
-  if (!i.graph || !f.online) return null;
-  if (f.level !== null && f.kind !== "reading") return Math.max(0, Math.min(1, f.level));
-  const v = f.series.filter((a) => Number.isFinite(a));
-  if (f.kind === "reading" && v.length >= 2) {
-    const lo = Math.min(...v), hi = Math.max(...v);
-    return hi - lo < 1e-9 ? 0.5 : (v[v.length - 1]! - lo) / (hi - lo);
-  }
-  return null;
+  if (!i.graph || !f.online || f.level === null || !Number.isFinite(f.level)) return null;
+  return Math.max(0, Math.min(1, f.level));
+}
+
+/**
+ * (1.3) How far a look fills with no level: whole when on (a switch, a mode word) - but never under
+ * a number, where a whole ring or tube would read as its maximum (1.84 kW drawn as a full gauge).
+ */
+function onFill(f: Face, on: boolean): number {
+  return on && !/^[-+−]?\d/.test(f.state) ? 1 : 0;
+}
+
+/** (1.3) The target's place on the level's scale, to mark on an arc - when the level and the target are shown. */
+function markOf(f: Face, i: Info): number | null {
+  if (!i.graph || !i.target || !f.online || f.mark === null || f.mark === undefined || !Number.isFinite(f.mark)) return null;
+  return Math.max(0, Math.min(1, f.mark));
+}
+
+/** (1.3) A notch across an arc at angle `a` (degrees, 0 at the top): where the target stands. */
+function notch(cx: number, cy: number, r: number, a: number, w: number, colour: string, bg: string): string {
+  const rad = ((a - 90) * Math.PI) / 180;
+  const c = Math.cos(rad), s = Math.sin(rad);
+  const d = `M ${n(cx + (r - w) * c)} ${n(cy + (r - w) * s)} L ${n(cx + (r + w) * c)} ${n(cy + (r + w) * s)}`;
+  return `<path d="${d}" stroke="${bg}" stroke-width="5" stroke-linecap="round"/><path d="${d}" stroke="${colour}" stroke-width="2.4" stroke-linecap="round" data-mark="${n(a)}"/>`;
 }
 
 /** A colour of ours that sits well beside the accent in a gradient. */
@@ -799,6 +822,8 @@ function orb(f: Face, o: LookOpts): string {
   if (lv !== null) {
     b += `<circle cx="72" cy="${n(cy)}" r="${n(r + ringR)}" fill="none" stroke="${P.line}" stroke-width="3.5"/>`;
     if (lv > 0) b += `<path d="${arcPath(72, cy, r + ringR, 0, 360 * lv)}" fill="none" stroke="${lit ? base : P.muted}" stroke-width="3.5" stroke-linecap="round"/>`;
+    const mk = markOf(f, i);
+    if (mk !== null) b += notch(72, cy, r + ringR, 360 * mk, 5, X.white, X.night);
   }
   if (i.icon) {
     const s = r * 1.05;
@@ -864,13 +889,15 @@ function gauge(f: Face, o: LookOpts): string {
   let b = rect(0, 0, 144, 144, 0, X.night);
   if (lit) b += `<circle cx="${cx}" cy="${cy}" r="64" fill="url(#glow)"/>`;
   b += `<path d="${arcPath(cx, cy, r, a0, a1)}" fill="none" stroke="${f.online ? P.line : P.crit}" stroke-opacity="${f.online ? 1 : 0.4}" stroke-width="12" stroke-linecap="round"/>`;
-  const lv = levelOf(f, i) ?? (lit ? 1 : 0);
+  const lv = levelOf(f, i) ?? onFill(f, lit);
   if (f.online && lv > 0.005) {
     const end = a0 + (a1 - a0) * lv;
     b += `<path d="${arcPath(cx, cy, r, a0, end)}" fill="none" stroke="${lit ? "url(#arc)" : offInk(f, P.muted)}" stroke-width="12" stroke-linecap="round"/>`;
     const rad = ((end - 90) * Math.PI) / 180;
     b += `<circle cx="${n(cx + r * Math.cos(rad))}" cy="${n(cy + r * Math.sin(rad))}" r="3.6" fill="${X.white}" fill-opacity="${lit ? 0.95 : 0.5}"/>`;
   }
+  const mk = markOf(f, i);
+  if (mk !== null) b += notch(cx, cy, r, a0 + (a1 - a0) * mk, 9, X.white, X.night);
   const tg = tag(f, i);
   const big = bigWords(f, i, [40, 36, 32, 28, 24, 20], 86);
   if (!big.size && i.icon) b += icon(f.icon, cx - 22, cy - 22, 44, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.1);
@@ -902,8 +929,9 @@ function bars(f: Face, o: LookOpts): string {
   const lv = levelOf(f, i);
   let cols: { h: number; on: boolean; last: boolean }[] = [];
   if (i.graph && f.online && v.length >= 2) {
-    const lo = Math.min(...v), hi = Math.max(...v);
-    cols = v.map((a, k) => ({ h: hi - lo < 1e-9 ? 0.5 : (a - lo) / (hi - lo), on: true, last: k === v.length - 1 }));
+    // (1.3) on the same honest scale as the sparklines: a flat series stands as flat columns
+    const { lo, hi } = seriesScale(v, f.scale ?? { unit: f.unit });
+    cols = v.map((a, k) => ({ h: Math.max(0, Math.min(1, (a - lo) / (hi - lo))), on: true, last: k === v.length - 1 }));
   } else if (lv !== null) {
     const k = lv <= 0 ? 0 : Math.max(1, Math.round(lv * 6));
     cols = [0, 1, 2, 3, 4, 5].map((j) => ({ h: (j + 1) / 6, on: j < k, last: false }));
@@ -933,12 +961,12 @@ function bars(f: Face, o: LookOpts): string {
   return doc(b, defs);
 }
 
-/** Wave: the key fills with the accent like water - to the level, or two thirds when on - big white words over it. */
+/** Wave: the key fills with the accent like water - to the level, or (1.3) to the brim when on with no level - big white words over it. */
 function wave(f: Face, o: LookOpts): string {
   const i = o.info, ink = DARK, c = f.online ? f.accent : P.crit;
   const lit = f.active && f.online;
   const base = f.stateColour && lit ? f.stateColour : c;
-  const lv = !f.online ? 0 : levelOf(f, i) ?? (lit ? 0.64 : 0);
+  const lv = !f.online ? 0 : levelOf(f, i) ?? onFill(f, lit);
   const defs = grad("water", base, 0.95, base, 0.6) + grad("back", base, 0.5, base, 0.22);
   let b = rect(0, 0, 144, 144, 0, X.night);
   if (lv > 0.003) {
@@ -1174,7 +1202,7 @@ function hex(f: Face, o: LookOpts): string {
 function stripe(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const W = 16;
-  const fillTo = b.lit ? b.lv ?? 1 : b.lv ?? (b.off ? 1 : 0);
+  const fillTo = b.lv ?? onFill(f, b.lit || !!b.off);
   const defs = grad("st", b.base, 0.75, b.base, 1);
   let s = rect(0, 0, 144, 144, 0, P.bg) + rect(0, 0, W, 144, 0, f.online ? P.panel2 : P.crit, f.online ? "" : 'fill-opacity="0.35"');
   if (f.online && fillTo > 0.003) s += rect(0, 144 - 144 * fillTo, W, 144 * fillTo, 0, b.lit ? "url(#st)" : greyOr(b, P.muted));
@@ -1260,7 +1288,7 @@ function dial(f: Face, o: LookOpts): string {
   const tTop = bottom - need - 6;
   const Ro = b.alone ? 60 : Math.max(26, Math.min(44, (tTop - 10) / 2));
   const cx = 72, cy = b.alone ? 72 : 6 + Ro + Math.max(0, (tTop - 10 - 2 * Ro) / 2);
-  const shown = b.lv ?? (b.lit ? 1 : 0);
+  const shown = b.lv ?? onFill(f, b.lit);
   let s = rect(0, 0, 144, 144, 0, X.night);
   const defs = radial("knob", [[0, P.panel2, 1], [1, P.bg, 1]], 0.4, 0.35, 0.7);
   for (let k = 0; k <= 24; k++) {
@@ -1269,8 +1297,10 @@ function dial(f: Face, o: LookOpts): string {
     const r0 = Ro - (k % 6 === 0 ? 10 : 7);
     s += `<path d="M ${n(cx + r0 * Math.cos(a))} ${n(cy + r0 * Math.sin(a))} L ${n(cx + Ro * Math.cos(a))} ${n(cy + Ro * Math.sin(a))}" stroke="${on ? (b.lit ? b.base : greyOr(b, P.muted)) : !f.online ? P.crit : b.off && !b.lv ? b.off : P.line}" stroke-width="3" stroke-linecap="round"${!f.online || (!on && b.off && !b.lv) ? ' stroke-opacity="0.45"' : ""}/>`;
   }
+  const mk = b.lv !== null ? markOf(f, i) : null;
+  if (mk !== null) s += notch(cx, cy, Ro - 5, -135 + 270 * mk, 7, X.white, X.night);
   const kr = Ro - 14;
-  if (b.lit) s += `<circle cx="${cx}" cy="${n(cy)}" r="${n(kr + 3)}" fill="${b.base}" fill-opacity="0.18"/>`;
+  if (b.lit) s +=`<circle cx="${cx}" cy="${n(cy)}" r="${n(kr + 3)}" fill="${b.base}" fill-opacity="0.18"/>`;
   s += `<circle cx="${cx}" cy="${n(cy)}" r="${n(kr)}" fill="url(#knob)" stroke="${b.lit ? b.base : !f.online ? P.crit : greyOr(b, P.line)}" stroke-width="1.6"/>`;
   const pa = ((-135 + 270 * shown - 90) * Math.PI) / 180;
   s += `<circle cx="${n(cx + (kr - 5) * Math.cos(pa))}" cy="${n(cy + (kr - 5) * Math.sin(pa))}" r="2.6" fill="${b.lit ? b.base : greyOr(b, P.muted)}"/>`;
@@ -1394,18 +1424,18 @@ function line(f: Face, o: LookOpts): string {
   const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120, 13, "", true).svg;
   s += rect(14, uy, 116, b.off ? 3 : 2, 1, !f.online ? P.crit : b.off ?? P.line);
-  const len = b.lit ? b.lv ?? 1 : b.lv ?? 0;
+  const len = b.lv ?? onFill(f, b.lit);
   if (f.online && len > 0.005) s += rect(14, uy - 1, Math.max(4, 116 * len), 4, 2, b.lit ? b.base : greyOr(b, P.muted));
   s += cap;
   s += badges(f, i, DARK, 12, true);
   return doc(s);
 }
 
-/** Tube: a thermometer tube at the side, filled as far as the level (most of the way when on), the value beside it. */
+/** Tube: a thermometer tube at the side, filled as far as the level ((1.3) full when on with no level), the value beside it. */
 function tube(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const tx = 106, tw = 18, t0 = b.alone ? 20 : 40, t1 = b.alone ? 104 : 96, by = t1 + 10, br = 12;
-  const h = b.lv ?? (b.lit ? 0.72 : 0);
+  const h = b.lv ?? onFill(f, b.lit);
   const col = b.lit ? b.base : !f.online ? P.crit : b.off ?? (b.lv !== null ? P.muted : P.line);
   let s = rect(0, 0, 144, 144, 0, P.bg);
   s += rect(tx, t0, tw, t1 - t0 + 6, tw / 2, P.panel2, `stroke="${P.line}" stroke-width="1.5"`);
@@ -1476,7 +1506,7 @@ function carbon(f: Face, o: LookOpts): string {
   const defs = `<pattern id="cf" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="${P.bg}"/><rect width="4" height="4" fill="${P.panel2}"/><rect x="4" y="4" width="4" height="4" fill="${P.panel2}"/></pattern>`
     + grad("sh", X.white, 0.12, X.white, 0);
   let s = `<rect width="144" height="144" fill="url(#cf)"/><rect width="144" height="72" fill="url(#sh)"/>`;
-  const len = b.lit ? b.lv ?? 1 : b.lv ?? (b.off ? 1 : 0);
+  const len = b.lv ?? onFill(f, b.lit || !!b.off);
   s += rect(14, 130, 116, 6, 3, X.night);
   if (b.lit && len > 0.005) s += rect(10, 126, Math.max(14, 116 * len + 8), 14, 7, b.base, 'fill-opacity="0.25"');
   if (len > 0.005 && f.online) s += rect(14, 130, Math.max(6, 116 * len), 6, 3, b.lit ? b.base : greyOr(b, P.muted));
@@ -1496,17 +1526,20 @@ function carbon(f: Face, o: LookOpts): string {
 /** Grid: a grid of lamps that light row by row as far as the level (all of them when on), the words edged over them. */
 function grid(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
-  const shown = b.lv ?? (b.lit ? 1 : 0);
+  const shown = b.lv ?? onFill(f, b.lit);
+  // (1.3) as many rows as the level has eighths (one at least for any level) - it lit one too many
+  const rows = shown > 0.005 ? Math.max(1, Math.round(shown * 8)) : 0;
   let s = rect(0, 0, 144, 144, 0, X.night);
   for (let r = 0; r < 8; r++) {
-    const on = f.online && shown > 0.005 && (7 - r + 0.5) / 8 <= shown + 0.0625;
+    const on = f.online && 7 - r < rows;
     for (let k = 0; k < 8; k++) {
       const fill = on ? (b.lit ? b.base : greyOr(b, P.muted)) : !f.online && (r + k) % 3 === 0 ? P.crit : b.off ?? P.panel2;
       const op = on ? (b.lit ? 0.6 : 0.55) : !f.online ? 0.35 : b.off ? 0.3 : 1;
       s += `<circle cx="${16 + k * 16}" cy="${16 + r * 16}" r="5" fill="${fill}"${op < 1 ? ` fill-opacity="${n(op)}"` : ""}/>`;
     }
   }
-  const ic = iconInk(f, b, b.lit ? X.white : b.base);
+  // on with no lamps to light (a number with no range): the icon says it in the accent
+  const ic = iconInk(f, b, b.lit && rows > 0 ? X.white : b.base);
   if (b.alone) return doc(s + `<circle cx="72" cy="72" r="40" fill="${X.night}" fill-opacity="0.8"/>` + icon(f.icon, 44, 44, 56, ic, 2.2) + badges(f, i, DARK, 12, true));
   if (i.icon) s += `<circle cx="26" cy="26" r="16" fill="${X.night}" fill-opacity="0.85"/>` + icon(f.icon, 15, 15, 22, ic, 2.2);
   const cap = caption(f, o, 72, 134, 124, 14, b.lit ? P.text : P.dim, "middle", 700);
@@ -1545,7 +1578,8 @@ function tab(f: Face, o: LookOpts): string {
 /** Rise: a sun rising from the foot of the key - as high as the level, glowing when on - the value in the sky above it. */
 function rise(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
-  const H = b.lit ? 26 + 24 * (b.lv ?? 1) : b.lv !== null ? 12 + 24 * b.lv : 12;
+  // (1.3) as high as the level, lit or not (it rose higher for the same level when lit); full when on with no level
+  const H = 12 + 38 * (b.lv ?? onFill(f, b.lit));
   const R = 96, cy = 144 - H + R;
   const defs = grad("sky", P.panel2, 1, X.night, 1) + radial("sun", [[0, b.base, 1], [1, b.base, 0.7]], 0.5, 0.1, 0.6);
   let s = rect(0, 0, 144, 144, 0, "url(#sky)");
@@ -2091,7 +2125,8 @@ function lined(f: Face, o: LookOpts): string {
   if (col.ns) {
     const nw = Math.min(118, Math.max(...col.ns.lines.map((l) => textWidth(l, col.ns!.size, 800))));
     const y = col.nameEnd + 3;
-    const w = b.lit ? (b.lv !== null ? Math.max(14, nw * b.lv) : nw) : 22;
+    // (1.3) the level, else the name's width when on - but not under a number with no range, where it would read as full
+    const w = b.lit ? (b.lv !== null ? Math.max(14, nw * b.lv) : onFill(f, true) ? nw : 22) : 22;
     if (b.lit && b.lv !== null) s += rect(14, y, nw, 5, 2.5, P.line);
     s += f.online ? rect(14, y, w, 5, 2.5, b.lit ? b.c : greyOr(b, P.muted)) : `<path d="M 14 ${n(y + 2.5)} H ${n(14 + nw)}" stroke="${P.crit}" stroke-width="3" stroke-dasharray="5 4"/>`;
   }
@@ -2136,7 +2171,8 @@ function terminal(f: Face, o: LookOpts): string {
 function marquee(f: Face, o: LookOpts): string {
   const b = nf(f, o), i = b.i;
   let s = rect(0, 0, 144, 144, 0, X.night) + rect(4, 4, 136, 136, 14, P.panel2) + rect(16, 16, 112, 112, 8, P.bg, `${edge(f, b, b.c)} stroke-width="1.2"`);
-  const on = b.lit ? (b.lv !== null ? b.lv : 1) : 0;
+  // (1.3) as many bulbs as the level, all when on with no level - none under a number with no range
+  const on = b.lit ? b.lv ?? onFill(f, true) : 0;
   const pts: [number, number][] = [];
   for (let k = 0; k < 9; k++) pts.push([10 + k * 15.5, 10]);
   for (let k = 1; k < 9; k++) pts.push([134, 10 + k * 15.5]);

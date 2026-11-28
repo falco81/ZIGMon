@@ -8,7 +8,11 @@
 import { countdown, minutesWord, spanWord, type NewKind } from "./kinds.js";
 import { P, X, A } from "./palette.js";
 import type { AttrValue, Item, ItemState, SmsBook } from "./protocol.js";
+import type { Quantity } from "./scale.js";
 import type { Face } from "./themes.js";
+
+/** (1.3) The house's power series is in watts and stands on 0: its graph's honest scale. */
+export const POWER_SCALE: Quantity = { unit: "W", min: 0 };
 
 export interface Member {
   item: Item;
@@ -164,7 +168,8 @@ function summaryRaw(c: ExtraCtx): Summary {
       return {
         ...base, room: null, icon: "bolt", accent: c.accent ?? P.warn, tone: on ? "info" : "idle", active: on && base.online, state: p.num, unit: p.unit,
         detail: kwh !== null ? (kwh >= 100 ? Math.round(kwh) : Math.round(kwh * 10) / 10).toString() + " kWh today" : "", mode: spanWord(c.span),
-        series: c.series, level: levelOfSeries(c.series),
+        // (1.3) no level: the watts have no top, and "a share of the highest seen" made one up
+        series: c.series, level: null,
         x: { kwh, socketsW: numOf(a.sockets_w), lightsW: numOf(a.lights_w), socketsOn: numOf(a.sockets_on), lightsOn: numOf(a.lights_on), span: spanWord(c.span) },
       };
     }
@@ -228,7 +233,8 @@ function summaryRaw(c: ExtraCtx): Summary {
       return {
         ...base, room: null, icon: lit ? "batteryLow" : "battery", accent: c.accent ?? (crit ? P.crit : P.warn), tone, active: lit && base.online,
         state: lit ? String(low) : "All OK", unit: lit ? "low" : "", stateColour: lit ? null : P.ok,
-        detail: who && pct !== null ? who + " " + Math.round(pct) + " %" : "", level: pct !== null ? Math.max(0, Math.min(1, pct / 100)) : null,
+        // the level is the lowest battery's - drawn only when the key says whose, and how much
+        detail: who && pct !== null ? who + " " + Math.round(pct) + " %" : "", level: who && pct !== null ? Math.max(0, Math.min(1, pct / 100)) : null,
         x: { low, crit, pct, who, below10: intOf(a.below_10) },
       };
     }
@@ -315,13 +321,6 @@ function smsSummary(c: ExtraCtx, base: Summary): Summary {
   };
 }
 
-function levelOfSeries(v: number[]): number | null {
-  const s = v.filter((x) => Number.isFinite(x));
-  if (s.length < 2) return null;
-  const hi = Math.max(...s);
-  return hi > 0 ? Math.max(0, Math.min(1, s[s.length - 1]! / hi)) : 0;
-}
-
 // ------------------------------------------------------------------ for the other looks
 
 /** A long unit word as the 41 other looks say it beside a giant number (Classic keeps the word). */
@@ -333,7 +332,7 @@ export function faceOfSummary(s: Summary): Face {
   const unit = SHORT_UNIT[s.unit] ?? s.unit;
   return {
     kind: s.kind, name: s.name, room: s.room, icon: s.icon, accent: s.accent, active: s.active, state: s.state, unit,
-    stateColour: s.stateColour, detail: s.detail, mode: s.mode, level: s.level, series: s.series, target: null, online: s.online,
+    stateColour: s.stateColour, detail: s.detail, mode: s.mode, level: s.level, series: s.series, target: null, online: s.online, scale: s.kind === "power" ? POWER_SCALE : null,
     allowed: s.allowed, hold: s.hold, battery: s.battery, taken: s.taken, offAccent: s.offAccent, badge: s.badge,
   };
 }
