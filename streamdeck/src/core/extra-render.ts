@@ -434,7 +434,7 @@ export function extraFeedback(s: Summary, hint: string, member: { name: string; 
       art += icon("stopwatch", cx - 11, cy - 11, 22, run ? c : P.muted, 2);
       return {
         art: dataUri(svgDoc(200, 100, art)),
-        name: { value: s.name + (s.room ? " · " + s.room : "") },
+        name: { value: s.name },
         value: { value: s.online ? (run ? s.state : s.state + " min") : "Offline", color: !s.online ? P.crit : run ? P.text : P.dim },
         sub: { value: run ? s.detail : s.x.swOn ? "on now" : "off now", color: run ? c : P.dim },
         mode: { value: hint, color: P.dim },
@@ -485,7 +485,7 @@ export function extraFeedback(s: Summary, hint: string, member: { name: string; 
           const al = Number(s.x.alerts) || 0;
           if (al) for (let j = 0; j < Math.min(14, al); j++) art += `<circle cx="${n(6 + j * 12.5)}" cy="8" r="4" fill="${c}"/>`;
           else art = bar(0, 4, W, 8, 1, P.ok, P.line);
-        } else if (s.kind === "away") art = bar(0, 4, W, 8, lit ? 1 : 0, c, P.line);
+        } else if (s.kind === "away") art = bar(0, 4, W, 8, lit ? 1 : null, c, P.line);
         else if (s.kind === "sms") art = s.badge ? segments(0, 4, W, 8, Math.min(16, Math.max(s.badge, 1)), Math.min(16, s.badge), s.accent) : bar(0, 4, W, 8, s.x.muted ? 1 : null, c, P.line);
       }
       return {

@@ -15,14 +15,15 @@ a administrátor povoluje funkce jednu po druhé.
 
 - Windows 10 nebo 11 s aplikací Stream Deck **7.1 nebo novější**.
 - ZIGMon **5.59 nebo novější**, dostupný z počítače přes **https** (čisté http jen když
-  ZIGMon běží na stejném počítači).
+  ZIGMon běží na stejném počítači). Deset akcí nových ve verzi 1.3 potřebuje **ZIGMon 5.59.4**
+  (ostatní fungují se starším jako dosud).
 - Ostatní modely Stream Decku fungují také (jen tlačítka); plugin je navržený pro XL a +.
 
 ## 1. Stažení a instalace
 
 1. V ZIGMonu jako administrátor: **Nastavení → Messages → Stream Deck**.
 2. Zapněte **Povolit ovládání ze Stream Decku**.
-3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.2.0**. Pokud chcete, porovnejte SHA-256
+3. Klikněte na **Stáhnout ZIGMon for Stream Deck 1.3.0**. Pokud chcete, porovnejte SHA-256
    zobrazený tamtéž se souborem (`Get-FileHash ZIGMon.streamDeckPlugin` v PowerShellu).
 4. Stažený `.streamDeckPlugin` otevřete dvojklikem. Stream Deck se zeptá na instalaci,
    potvrďte. V seznamu akcí přibude kategorie **ZIGMon for Stream Deck**.
@@ -68,6 +69,16 @@ ovládat nedovolí, mají zámek, a živý náhled ukazuje, jak bude tlačítko 
 | **Blinds** | Okno se žaluzií v její poloze, Otevřeno/Zavřeno/procenta, Otevírá se…/Zavírá se…. Stisk: otevřít/zavřít (podle polohy), stop, otevřít nebo zavřít. | Otočení = poloha, stisk = stop/otevřít/zavřít, dotyk = stop. |
 | **Scene** | Spustí scénu, sekvenci nebo skupinu akcí. Zelená fajfka = hotovo, červený křížek = nepovedlo se. | Stisk nebo dotyk = spustit. |
 | **ZIGMon status** | Zdraví ZIGMonu: otevřené výstrahy, blokované adresy, proxy, Zigbee brána, zdraví - zeleně, oranžově nebo červeně. | Lišta: totéž se stavem. |
+| **House power** *(1.3)* | Příkon domu teď, dnešní kWh, graf za 1 h / 6 h / 24 h / 7 dní. | Otočení = rozsah grafu. |
+| **Network security** *(1.3)* | Nevyřízené výstrahy a blokované adresy; červený štít při výstraze. Podržený stisk = potvrdit poslední. | Stisk (podržený) = potvrdit. |
+| **Heating everywhere** *(1.3)* | Topí n/m místností, společný režim nebo Mixed, min–max °C. Stisk = další režim nebo jeden režim všem. | Otočení / stisk = režim. |
+| **Away / Home** *(1.3)* | Pryč nebo doma, zapnutá světla, topící místnosti. Stisk = přepnout a vypnout vybrané. | Stisk = přepnout. |
+| **Windows & doors** *(1.3)* | Kolik je otevřených a která; červeně, když jde teplo ven. | Lišta: počet, jména, pruh čidel. |
+| **Batteries** *(1.3)* | Kolik baterií je slabých, nejslabší jménem a v %. | Lišta: totéž se stavem. |
+| **Zigbee network** *(1.3)* | Online / offline, které vypadlo naposledy. | Lišta: totéž s pruhem. |
+| **Timer** *(1.3)* | Vypínač zapnutý na N minut s živým odpočtem; další stisk = vypnout. | Otočení = minuty, stisk = spustit / zrušit. |
+| **Room** *(1.3)* | Teplota, vlhkost, co je zapnuté, topení. | Otočení = položky místnosti, stisk = přepnout vybranou. |
+| **SMS** *(1.3)* | Ukázat poslední / napsat novou v desktopové aplikaci, nebo stav SMS se ztlumením (podržení). | Stisk = totéž. |
 
 Otáčení ovladačem posune hodnotu na liště okamžitě; cvaky se sečtou a do ZIGMonu odejdou
 jako jedna změna (ZIGMon ji udrží v rozsahu a kroku položky).
@@ -170,6 +181,108 @@ a plány ho nechají být. Když ho jím vypnete, převezmou ho zpátky. Malá p
 ukazuje, že je zařízení převzaté, ať už tímto tlačítkem, jiným, nebo tlačítkem v ZIGMonu.
 Starší ZIGMon přepínač ignoruje.
 
+### Deset nových akcí (1.3, ZIGMon 5.59.4)
+
+Deset dalších akcí ukazuje, co ZIGMon 5.59.4 shrnuje za celý dům, a umí s tím pracovat. Každá
+funguje na tlačítkách i na ovladačích Stream Decku + (s vlastním rozvržením dotykové lišty), má
+vlastní kresbu v Classic i všech 42 vzhledů, barvy pro zapnuto / vypnuto, popisek, dlouhá jména
+a volbu, co tlačítko ukazuje - přesně jako akce výše. V jejich nastavení je karta **Now**
+s tím, co se na tlačítko nevejde (všechna otevřená okna, celý text poslední výstrahy, položky
+místnosti...).
+
+Potřebují **ZIGMon 5.59.4 nebo novější**: plugin se na ně ptá jen ZIGMonu, který je nabízí,
+a se starším tlačítka napíšou **Needs ZIGMon 5.59.4 or newer** a nic nedělají. Souhrny domu se
+nevybírají: stačí akci položit na tlačítko a ukáže je (pokud je ZIGMon tomuto decku dovolí vidět).
+
+#### House power - příkon domu (1.3, ZIGMon 5.59.4)
+
+Příkon domu teď velkým písmem (**452 W**, **1.84 kW**), pod ním dnešní **kWh** a graf za
+**1 h, 6 h, 24 h nebo 7 dní** (ze ZIGMonu: minutová maxima pro 1 h, hodinové průměry měřených
+zásuvek pro delší). Svítí, když něco odebírá. Stisk obnoví. Na ovladači **otočení = rozsah grafu**;
+lišta ukazuje číslo nad grafem. Karta **Now** ho rozdělí na zásuvky a světla.
+
+#### Network security - zabezpečení sítě (1.3, ZIGMon 5.59.4)
+
+Nevyřízené výstrahy (**2 alerts**, za každou tečka) a blokované adresy (**14 blocked · 37 in
+24 h**); štít **zčervená** při výstraze, a když žádná není, napíše zeleně **Quiet**. Karta **Now**
+ukáže **text poslední výstrahy** (adresy a čísla ZIGMon skryje) a kdy přišla. Stisk **podržený
+1,5 s potvrdí poslední výstrahu** - jako *viděno* v dashboardu; starší zůstanou. Potřebuje
+oprávnění **System** pro tento deck (pro vše, nebo jménem pro *Network security*) a **vždy se
+drží**; bez něj tlačítko dál vše ukazuje a po stisku napíše *needs System in ZIGMon*. Když žádná
+výstraha nečeká, napíše *All clear*.
+
+#### Heating everywhere - topení všude (1.3, ZIGMon 5.59.4)
+
+Kolik vytápěných místností právě chce topit (**1/4**, za každou místnost dílek), jejich **společný
+režim** - nebo **Mixed** - a nejnižší a nejvyšší teplota v místnostech (**18.5–21.0°**). Stisk:
+**další režim** pro všechny místnosti (ukáže se hned a odejde 1,2 s po posledním stisku, jako
+u termostatu; z Mixed začíná na Plan) nebo **jeden režim pro všechny** (Plan, Comfort, Eco,
+Night, Max, Off nebo By hand). Otočení ovladačem režim posouvá stejně. Pod oprávněním *climate*
+a jeho podržením.
+
+#### Away / Home - pryč / doma (1.3, ZIGMon 5.59.4)
+
+**Away** nebo **Home** (přepínač nepřítomnosti v topení; *by the dates*, když platí data
+nepřítomnosti) se **zapnutými světly** a **místnostmi, které topí**. Stisk přepne. V nastavení můžete
+navíc zaškrtnout **vypínače a světla, která se při odchodu vypnou**: odejdou po přepnutí na Away,
+každé jako vlastní příkaz pod vlastním oprávněním - co tento deck vypínat nesmí, se přeskočí
+(tlačítko řekne kolik), a co vyžaduje podržení, způsobí, že ho při odchodu vyžaduje i tlačítko
+Away. Návrat domů nic zpátky nezapíná.
+
+#### Windows & doors - okna a dveře (1.3, ZIGMon 5.59.4)
+
+Kolik je **otevřených** a která - první jedno dvě na tlačítku, všechna na kartě **Now** - nebo
+zeleně **Closed**. Za každé čidlo dílek. **Červeně, s plamenem na dlaždici, když je otevřené okno
+v místnosti, která topí** (teplo jde ven oknem). Stisk obnoví.
+
+#### Batteries - baterie (1.3, ZIGMon 5.59.4)
+
+Kolik baterií je **slabých** (pod 20 %) a nejslabší jménem s procenty a baterkou nakreslenou podle
+stavu - oranžově, červeně, když je některá pod 10 %; jinak zeleně **All OK**.
+
+#### Zigbee network - síť Zigbee (1.3, ZIGMon 5.59.4)
+
+Kolik zařízení Zigbee je **online**, nebo kolik je **offline** (oranžově), s tím, které **vypadlo**
+naposledy a kdy, a pruhem online proti offline.
+
+#### Timer - časovač (1.3, ZIGMon 5.59.4)
+
+Na vypínači (zásuvka, světlo, relé): stisk ho **zapne na 5, 10, 15, 30, 60 nebo 120 minut** - nebo
+na libovolný počet 1-720, který napíšete - a ZIGMon ho po nich **vypne** (i když počítač spí; je to
+vlastní časovač ZIGMonu a přežije i restart). Během běhu ukazuje tlačítko **živé odpočítávání**
+v ubývajícím kruhu; **další stisk vypne**, a tím časovač zruší. Na ovladači **otočení = minuty**
+(5, 10, 15, 20... až 12 h), **stisk = spustit** (nebo zrušit). By hand a podržení fungují jako
+u Control. Tlačítka **Control** na vypínači dostala také volbu stisku **Timer** se stejnými minutami
+a odpočet ukazují u stavu.
+
+#### Room - místnost (1.3, ZIGMon 5.59.4)
+
+Místnost na jeden pohled: velká **teplota**, **vlhkost**, kolik jejích vypínačů je zapnutých
+(**1/3**) a **topení** - režim a cíl (*Comfort → 21°*, oranžově, když chce topit). Stisk tlačítka
+obnoví. Na ovladači Stream Decku + **otočení = procházení položek místnosti** (těch, které ZIGMon
+tomuto decku dovolí vidět, v pořadí ZIGMonu); lišta ukáže vybranou se stavem a řadou teček
+a **stisk ji přepne nebo spustí** podle jejích vlastních pravidel - vlastní oprávnění, vlastní
+podržení.
+
+#### SMS (1.3, ZIGMon 5.59.4)
+
+Jedna akce, tři režimy:
+
+- **Show latest** - kolik zpráv dnes přišlo, kdo poslal poslední (jméno kontaktu nebo `…123`)
+  a kdy, s odznakem **nepřečtených**. Stisk ukáže poslední SMS s možností odpovědět
+  v **desktopové aplikaci ZIGMon propojené s tímto Stream Deckem**.
+- **Write new** - stisk otevře v té aplikaci novou zprávu, adresovanou číslům a skupinám kontaktů,
+  které přidáte v nastavení (`+420 777 123 456` nebo `group:Rodina`, nejvýš 20), nebo nikomu.
+  Deck seznam kontaktů nemá: čísla skupiny si dohledá ZIGMon sám.
+- **Status** - odesílatel poslední SMS (skrytý) a dnešní počet, červeně *modem offline*, když brána
+  nejde, a **Muted until 15:47**, dokud jsou výstrahy ztlumené. Stisk **podržený 1,5 s ztlumí
+  všechny výstrahy** na 15 min - 4 h (podle volby) a během ztlumení ho zruší. Pod **System**, vždy
+  s podržením.
+
+*Show latest* a *Write new* potřebují oprávnění **sms** a ZIGMon je předá desktopové aplikaci
+propojené s touto instalací Stream Decku (ZIGMon → Nastavení → Messages → Stream Deck). Když žádná
+neběží, tlačítko napíše **No desktop app running** - *link one in ZIGMon*.
+
 ### Co tlačítka říkají
 
 | Tlačítko | Význam |
@@ -183,6 +296,9 @@ Starší ZIGMon přepínač ignoruje.
 | **Disconnected** | Instalace byla v ZIGMonu odvolána - spárujte znovu. |
 | zámek | Položka je vidět, ale tomuto decku není povolena. |
 | ruka | Potvrzení podržením. |
+| **Needs ZIGMon 5.59.4 or newer** | Jedna z akcí 1.3 se starším ZIGMonem. |
+| **No desktop app running** | Tlačítko SMS: neběží žádná desktopová aplikace ZIGMon propojená s tímto Stream Deckem. |
+| číslo v oválku | Nepřečtené SMS. |
 
 ## Bezpečnost
 

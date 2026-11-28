@@ -787,7 +787,7 @@ export class ActionView implements HubView {
   private extraStrip(): Feedback {
     const s = this.summary();
     const m = this.kind === "room" ? this.member() : null;
-    const hint = this.kind === "timer" ? (s.x.running ? "push: cancel · turn: minutes" : "push: start · turn: minutes")
+    const hint = this.kind === "timer" ? (s.x.running ? "push = off" : "turn · push = on")
       : this.kind === "power" ? "turn: " + POWER_SPANS.map(spanWord).join(" / ") : "";
     let mem = null;
     if (m) {
