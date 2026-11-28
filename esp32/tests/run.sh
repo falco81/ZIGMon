@@ -59,3 +59,9 @@ if [ "$fails" -ne 0 ]; then
   exit 1
 fi
 echo "syntax OK"
+
+echo
+echo "== web UI: web_assets.h matches web/, and the served JavaScript parses"
+python3 "$here/../../tools/esp32-embed-web.py" --check
+python3 "$here/unpack_assets.py" "$out/web" >/dev/null
+if command -v node >/dev/null; then node --check "$out/web/app.js" && echo "app.js (as served) parses"; else echo "node not found: skipped"; fi
