@@ -2083,7 +2083,22 @@ H&T Gen3 and a Plug M Gen3 over `shellies/`:
 * a polled sensor, GET and POST webhook pushes, and a push carrying nothing usable
 * the installer's dry run
 
-Current version: **5.59.3**
+Current version: **5.59.4**
+
+5.59.4 — SMS and contacts in the desktop app and on the Stream Deck, ESP32 gateways with Xiaomi Yeelock locks, and ZIGMon for Stream Deck 1.3.0.
+
+- **Contacts.** SMS → Contacts keeps an address book: up to 2000 people, each with up to five labelled numbers, a group, a note and a favourite star. Import reads vCard 2.1/3.0/4.0 (phones, Google, Outlook, iCloud, Czech letters included) and Google or Outlook CSV, with a preview before saving and merge or replace. Export writes vCard 3.0 or Google CSV. **Write a message** picks recipients as chips (names, groups, numbers); the send API takes `contact:<id>` and `group:<name>` and sends once per phone. Contacts are for administrators and never written to the log.
+- **SMS in the desktop app** (ZIGMon Notifier 1.4.0, updates itself): an incoming SMS pops up with Reply; a Messages window with conversations and a new message with contacts. Each app key is granted *SMS: read*, *SMS: send* and *Contacts* separately, all off by default; sends go through ZIGMon's own SMS limits, at most 10 recipients and 10 messages a minute per key, and the events never carry the text. The desktop app key editor is now laid out like the Stream Deck's: presets, a summary and a card per permission.
+- **The Stream Deck asks the desktop app**: an SMS key shows the latest SMS or opens a new message (pre-addressed to chosen contacts) in the desktop app on the same computer; pressed again it closes what it opened, without sending. Each Stream Deck installation is linked to desktop apps (by computer name, or chosen by hand); it needs the new `sms` permission and the app its SMS permission.
+- **ESP32 gateways** (Settings → Devices): an ESP32 (first target ESP32-S3-N16R8) running ZIGMon's own firmware, `esp32/ZigmonGateway` for the Arduino IDE, with a serial CLI, a password-protected web UI and settings kept in flash (factory reset from the CLI). It is paired with a 6-digit code and its certificate's fingerprint, and from then on every request and answer is signed, over HTTPS pinned to that certificate. The gateway is modular: ZIGMon detects its modules and turns their entities into devices by type, with their own Overview cards, history, rule conditions, script objects, and the gateway → module → device tree in Settings. **The first module drives Xiaomi Yeelock locks** over Bluetooth, several per gateway: open, unlock, lock, the battery and the lock's own result (wrong key included); locks can be imported from the Yeelock account on the gateway itself. On the Stream Deck locks need the new `locks` permission, and opening or unlocking is always held to confirm. *The firmware has not yet been built for or run on real hardware; see `esp32/NAVOD.md`.*
+- **The Stream Deck catalogue** (asked for by plugin 1.3.0 only, so 1.2.0 is unchanged): house power, network security (acknowledge, held), heating in every room, away/home, windows and doors, batteries, the Zigbee network, a timer on switches, a room summary, SMS, locks, and **computed values** — sums, averages, minimums, maximums, counts and shares over the house, inside, outside, a kind or a room (`streamdeck/PROTOCOL-CALC.md`). A scene now has a state (everything as it leaves it, or not) and takes toggle / on / off.
+- **A Stream Deck key no longer misses a change that comes right after another** (a socket's watts right after switching it on stayed at "0 W").
+- **ZIGMon for Stream Deck 1.3.0** (updates itself):
+  - new actions: House power, Network security, Heating everywhere, Away / Home, Windows & doors, Batteries, Zigbee network, Timer, Room, SMS and **Computed**; Control keys on locks and a Timer press on switches;
+  - 60 looks (38 new, 18 of them putting the name first and the state under it), 24 colours plus any colour of your own, separate On and Off colours, and the size of every kind of text, per key or per action type;
+  - every bar, scale, arc and fill now stands for the real value on a real scale, and a key that shows a word draws no meter;
+  - Next mode can go round only the modes you choose; By hand on the Light action too; a scene's state on its keys and on a Reading; a thermostat shows heating only when it heats;
+  - no Stream Deck green tick over a key after a press.
 
 5.59.3 — The desktop app and the Stream Deck are for the home network only, with a second lock behind the front server.
 
