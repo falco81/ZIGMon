@@ -15,6 +15,9 @@
 
     python3 test/review5591_desktop_switch.py < /dev/null
 
+  * (5.59.2) Test alert: an event of kind "test" for that key only, an administrator's, refused while
+    off, written into the events; the button on each key's row.
+
 Ports 20290-20291. Every secret here is made up.
 """
 import json
@@ -167,6 +170,37 @@ try:
     code, out = call('/api/notifier/wait?after=%d&boot=%s' % (seq, boot), key=KEY)
     check(code == 200 and out.get('reset') is True and not out.get('events'),
           'the app is not told to start again: %s %r' % (code, out))
+
+    print('a test alert (5.59.2): to this key only, of kind test')
+    code, out = call('/api/notifier/hello', key=KEY)
+    boot, seq = out.get('boot'), out.get('seq', 0)
+    code, out = call('/api/notifier/keys', {'action': 'create', 'name': 'Other PC'}, session=S)
+    OTHER = out.get('key') or ''
+    oid = out.get('id')
+    kid = next(k['id'] for k in call('/api/notifier/keys', session=S)[1]['keys'] if k['name'] == 'Office PC')
+    code, out = call('/api/notifier/keys', {'action': 'test', 'id': kid}, session=SO)
+    check(code == 403, 'an operator sent a test alert: %s' % code)
+    code, out = call('/api/notifier/keys', {'action': 'test', 'id': kid}, session=S)
+    check(code == 200 and 'test alert' in str(out.get('message')), 'no test alert: %s %r' % (code, out))
+    code, out = call('/api/notifier/wait?after=%d&boot=%s' % (seq, boot), key=KEY, timeout=10)
+    evs = out.get('events') or []
+    check(code == 200 and len(evs) == 1 and evs[0].get('kind') == 'test' and evs[0].get('device') == 'zigmon-test'
+          and evs[0].get('name') == 'Test alert' and evs[0].get('active') is True
+          and 'by owner' in str(evs[0].get('what')), 'the test alert as the app gets it: %s %r' % (code, out))
+    d.NOTIFIER_WAIT_S = 1.0
+    code, out = call('/api/notifier/wait?after=%d&boot=%s' % (seq, boot), key=OTHER, timeout=10)
+    check(code == 200 and not out.get('events'), 'another key got the test alert: %r' % out)
+    d.NOTIFIER_WAIT_S = 25.0
+    check("owner sent a test alert to the desktop app 'Office PC'" in json.dumps(d.store.events(limit=50), default=str),
+          'the test alert is not in the events')
+    call('/api/notifier/keys', {'action': 'delete', 'id': oid}, session=S)
+    code, out = call('/api/notifier/keys', {'action': 'disable'}, session=S)
+    code, out = call('/api/notifier/keys', {'action': 'test', 'id': kid}, session=S)
+    check(code == 400 and 'switched off' in str(out.get('error')), 'a test alert while off: %s %r' % (code, out))
+    call('/api/notifier/keys', {'action': 'enable'}, session=S)
+    page = (HERE / 'web' / 'index.php').read_text()
+    check("ntfAsk({action: 'test', id: k.id}, tb)" in page and "cmdButton('Test alert', 'bell'" in page,
+          'no Test alert button on the page')
 
     print('how many keys')
     check(zigmon.CONFIG.get('notifier_keys_most') == '20', 'not 20 as it comes')

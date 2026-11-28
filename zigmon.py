@@ -12443,6 +12443,26 @@ class Daemon(object):
             on = self._ntf_on = v == '1'
         return on
 
+    def notifier_test(self, key, by):
+        """(5.59.2) A test alert for the computer holding this key: an event of kind "test" in the
+        ring, for this key only. ZIGMon Notifier 1.3 shows it whatever it watches, pauses or
+        mutes; an older one, which does not know the kind, lets it pass by."""
+        self._ntf_setup()
+        if not self.notifier_enabled():
+            raise ValueError('the desktop app is switched off - switch it on first')
+        who = re.sub(r'[\x00-\x1f\x7f]', '', str(by or 'somebody'))[:60]
+        with self._ntf_cond:
+            self._ntf_seq += 1
+            extra = {'kid': key['id'], 'dev': 'zigmon-test', 'label': 'Test alert', 'value': None,
+                     'value_text': None, 'rule_text': None}
+            self._ntf_ring.append((self._ntf_seq, time.time(), 'zigmon-test', 'test', 'test', True,
+                                   ('sent from the dashboard by %s' % who)[:120], extra))
+            self._ntf_cond.notify_all()
+        self.store.add_event('control', "%s sent a test alert to the desktop app '%s'" % (who, key['name']), 'info')
+        live = key['id'] in self._ntf_seen and time.time() - self._ntf_seen[key['id']][0] < 600
+        return {'message': ("a test alert is on its way to '%s'" % key['name']) if live else
+                ("a test alert is waiting for '%s' - it shows when the computer is connected" % key['name'])}
+
     def notifier_set_enabled(self, on, by):
         self._ntf_setup()
         self.store.set_meta('notifier_enabled', '1' if on else '0')
@@ -12570,6 +12590,8 @@ class Daemon(object):
             raise ValueError('there is no such key')
         if act in ('rule_add', 'rule_update', 'rule_delete'):
             return self._ntf_rules_post(act, mine, rows, body, by)          # (5.58)
+        if act == 'test':
+            return self.notifier_test(mine, by)                              # (5.59.2)
         if act == 'delete':
             rows = [r for r in rows if r['id'] != kid]
             self._ntf_put(rows)
@@ -12590,7 +12612,7 @@ class Daemon(object):
             self.store.add_event('control', "%s changed the desktop notifier key '%s' (%s)"
                                  % (by or 'somebody', mine['name'], said(mine['devices'])), 'info')
             return {'message': "the key '%s' is saved" % mine['name']}
-        raise ValueError('what with the key? (create, update, delete, rule_add, rule_update, rule_delete; '
+        raise ValueError('what with the key? (create, update, delete, test, rule_add, rule_update, rule_delete; '
                          'enable or disable the desktop app)')
 
     # -- what a key sees --

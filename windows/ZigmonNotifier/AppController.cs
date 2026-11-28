@@ -160,7 +160,7 @@ internal sealed class AppController : IDisposable
         foreach (var e in events)
         {
             var d = AlertFilter.Decide(Settings, e, now);
-            if (d == AlertDecision.Alert) Alerts.Show(e, test: false);
+            if (d == AlertDecision.Alert) Alerts.Show(e, test: e.Kind == SensorKinds.Test);
         }
     }
 

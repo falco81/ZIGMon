@@ -40,6 +40,7 @@ public sealed record KindStyle(string Kind, string Label, string Accent, string 
         [SensorKinds.Vibration] = new(SensorKinds.Vibration, "Vibration", Palette.Load, Icons.Vibration, "Vibrating", "Still"),
         [SensorKinds.Button] = new(SensorKinds.Button, "Button", Palette.Ok, Icons.Hand, "Pressed", "Ready"),
         [SensorKinds.Rule] = new(SensorKinds.Rule, "Condition", Palette.Rule, Icons.Gauge, "Met", "Not met"),
+        [SensorKinds.Test] = new(SensorKinds.Test, "Test from ZIGMon", Palette.Info, Icons.Alert, "Test", "Test"),
         [SensorKinds.Other] = new(SensorKinds.Other, "Sensor", Palette.TextDim, Icons.Pulse, "Active", "Quiet"),
     };
 

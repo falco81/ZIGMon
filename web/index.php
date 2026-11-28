@@ -38049,6 +38049,16 @@ function ntfRow(k) {
   l.appendChild(seen);
   r.appendChild(l);
   var a = el('div', 'ntf-acts');
+  /* (5.59.2) a test alert on that computer, from here: ZIGMon Notifier 1.3 or newer shows it */
+  var tb = cmdButton('Test alert', 'bell', 'small');
+  tb.classList.add('ntf-test');
+  tb.disabled = !NTF.d.enabled;
+  tb.title = NTF.d.enabled ? 'Show a test alert on this computer now (ZIGMon Notifier 1.3 or newer; an older one updates '
+    + 'itself first). It shows whatever the app watches, pauses or mutes.' : 'Switch the desktop app on first';
+  tb.onclick = function () {
+    ntfAsk({action: 'test', id: k.id}, tb).then(function (x) { if (x.message) toast(x.message, true); }, zoops);
+  };
+  a.appendChild(tb);
   var ed = cmdButton('Edit', 'edit', 'small');
   ed.classList.add('ntf-edit');
   ed.onclick = function () { ntfEdit(k); };

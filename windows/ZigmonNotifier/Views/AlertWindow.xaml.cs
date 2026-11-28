@@ -92,7 +92,9 @@ public partial class AlertWindow : Window
     {
         var now = DateTimeOffset.UtcNow;
         string when = TimeText.Ago(_event.At, now);
-        if (_test) Meta.Text = "This is how alerts will look · " + when;
+        if (_test && _event.Kind == SensorKinds.Test)
+            Meta.Text = (string.IsNullOrEmpty(_event.What) ? "Sent from ZIGMon" : _event.What) + " · " + when;
+        else if (_test) Meta.Text = "This is how alerts will look · " + when;
         else Meta.Text = string.IsNullOrEmpty(_event.Room) ? when : _event.Room + " · " + when;
 
         int after = _app.Settings.AutoCloseSeconds;
