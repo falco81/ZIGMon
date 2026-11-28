@@ -37885,7 +37885,7 @@ function ntfHero(d, keys) {
   hero.appendChild(ntfHeroArt(on));
   var hm = el('div', 'dk-hero-main');
   hm.appendChild(el('div', 'dk-hero-title', 'ZIGMon Notifier'));
-  hm.appendChild(el('p', 'dk-hero-lede', 'A small app for Windows. It sits by the clock and brings an alert to the front of '
+  hm.appendChild(el('p', 'dk-hero-lede ntf-lede', 'A small app for Windows. It sits by the clock and brings an alert to the front of '
     + 'the screen the moment a sensor is triggered - motion, a door opened, water on the floor, smoke, a button pressed - or '
     + 'a condition of yours comes true. It signs in with a key made here, one for each computer. A key is read-only: it '
     + 'hears what the sensors it was given do, and cannot switch, change or read anything else. The key is shown once, when '
