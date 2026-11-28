@@ -86,7 +86,8 @@ export interface ActionSettings {
 export const ROOM_MODES = ["plan", "comfort", "eco", "night", "max", "off", "manual"] as const;
 const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "cycle", "mode", "preset", "boost", "openclose", "details",
   ...ROOM_MODES.map((m) => "set:" + m)];
-export const THEME_IDS = ["classic", "minimal", "bigvalue", "fill", "neon", "ring", "split", "glass", "label", "dot", "light", "contrast"] as const;
+export const THEME_IDS = ["classic", "minimal", "bigvalue", "fill", "neon", "ring", "split", "glass", "label", "dot", "light", "contrast",
+  "huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono"] as const;
 export const ACCENT_IDS = ["blue", "green", "amber", "red", "purple", "orange", "teal", "pink", "yellow", "silver"] as const;
 export const NAME_FITS = ["cut", "fit", "wrap"] as const;
 export const SPANS = [3600, 6 * 3600, 24 * 3600, 7 * 86400] as const;

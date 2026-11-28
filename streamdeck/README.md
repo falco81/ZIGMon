@@ -100,7 +100,9 @@ dashed line. ZIGMon 5.59.0 sends no history; then the graph grows from what the 
 Every action's settings have a **Look** section with live thumbnails of the item as it is now:
 **Classic** (1.0's key - keys set up before 1.1 look exactly as they did), **Minimal**,
 **Big value**, **Solid fill**, **Neon**, **Ring gauge**, **Two-tone**, **Glass**, **Bold label**,
-**Status dot**, **Light** and **High contrast**, with an On / Off pair above them. Then an
+**Status dot**, **Light** and **High contrast** - and ten clear ones that say one thing big
+with at most one small line: **Huge**, **Pill**, **Orb**, **Tile**, **Gauge**, **Bars**,
+**Wave**, **Aurora**, **Outline** and **Mono** - with an On / Off pair above them. Then an
 **accent** (Auto by kind, or one of 10 colours), a **label** for every action (40 characters),
 how **long names** are laid out (shrink to fit, two lines breaking at hyphens, or one line cut as
 in 1.0), and **what the key shows**, each on its own: icon, name, room, state / value, the second
