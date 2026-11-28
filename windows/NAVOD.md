@@ -7,6 +7,11 @@ dveře, voda, kouř, plyn, CO, sabotáž, vibrace, stisk tlačítka – nebo
 „teplota ≥ 25 °C“ nebo „hlavice přepnuta na eco“), ukáže vpravo dole na
 zvoleném monitoru nad vším ostatním upozornění se zvoleným zvukem.
 
+Od verze 1.4.0 (se ZIGMonem 5.59.4) umí i **SMS**: příchozí SMS ukáže
+v okénku s tlačítkem Odpovědět, v okně **Messages** jsou konverzace a nové SMS
+se píší kontaktům uloženým v ZIGMonu, a klávesa na **Stream Decku** umí ukázat
+poslední SMS nebo otevřít novou zprávu. Viz „SMS a Stream Deck“ níže.
+
 ## Instalace
 
 1. **Stáhněte aplikaci ze svého ZIGMonu:** Settings → Messages → Desktop app →
@@ -90,6 +95,41 @@ Pravé tlačítko → **Alert settings…** (vše se ukládá hned a aplikace si
   Messages → Desktop app má každý klíč tlačítko **Test alert**. Počítač s tímto
   klíčem hned ukáže upozornění „Test alert“ – i když nesleduje žádné čidlo, je
   pozastavený nebo ztlumený. Starší verze aplikace se nejdřív sama aktualizuje.
+
+## SMS a Stream Deck (od verze 1.4.0)
+
+Potřebuje ZIGMon 5.59.4 nebo novější a svolení správce pro daný klíč:
+Settings → Messages → Desktop app → klíč → **SMS** (číst, posílat, kontakty;
+vše je ve výchozím stavu vypnuté). Se starším ZIGMonem se nic z toho neukáže.
+
+* **Okénko s SMS.** Příchozí SMS se ukáže jako karta mezi upozorněními na
+  zvoleném monitoru: avatar s iniciálami, jméno nebo číslo, čas a text (dlouhý
+  se posouvá). **Reply** otevře přímo v kartě pole pro odpověď s počítadlem
+  znaků a dílů SMS (160 / 153 znaků na díl; s diakritikou nebo emoji jde zpráva
+  jako Unicode, 70 / 67 na díl – počítá se stejně jako v ZIGMonu). **Send**
+  (nebo Ctrl+Enter), **Copy**, **Dismiss** (nebo Esc) a tlačítko, které otevře
+  celou konverzaci. Další SMS od stejného člověka se přidají do téže karty.
+  Bez oprávnění posílat tlačítko Reply chybí. Když jsou upozornění pozastavená,
+  okénko nevyskočí (v Messages SMS najdete).
+* **Messages** (pravé tlačítko → Messages…; jen když to ZIGMon dovolí): vlevo
+  konverzace podle kontaktu nebo čísla, nejnovější nahoře, nepřečtené s
+  tečkou; vpravo vybraná konverzace v bublinách (vaše vpravo, neodeslaná
+  červeně) a pole pro psaní s počítadlem. **New** (Ctrl+N nebo pravé tlačítko
+  → Write an SMS…) píše komukoli: pole Komu se „štítky“ a našeptávačem podle
+  jmen, čísel a skupin z kontaktů (kontakt s více čísly se nabídne pro každé
+  číslo), oblíbení jako rychlé štítky, a jde napsat i libovolné číslo. Po
+  odeslání se ukáže výsledek slovy – i hlášení ZIGMonu, např. o denním limitu.
+  F5 načte seznam znovu.
+* **Stream Deck.** Instalace Stream Decku se v ZIGMonu propojí s jednou nebo
+  více aplikacemi (Settings → Messages → Stream Deck). Klávesa **poslední SMS**
+  ukáže na tomto počítači poslední příchozí SMS (i už viděnou), klávesa **napsat
+  SMS** otevře novou zprávu rovnou adresovanou lidem z klávesy – kurzor je v
+  textu a okno vepředu, stačí napsat text a odeslat.
+* **Přepínače** (Alert settings → Messages (SMS), uložené v tomto počítači):
+  okénka s SMS zapnout/vypnout, zvuk SMS (Chime, Doorbell, Bell nebo Beeps,
+  jednou) a zda vůbec reagovat na SMS klávesy Stream Decku.
+* Text SMS, čísla ani kontakty se nikam neukládají ani nelogují; aplikace je
+  drží jen v paměti, dokud běží.
 
 ## Bezpečnost
 

@@ -35,6 +35,20 @@ public sealed class FakeZigmon : HttpMessageHandler
     /// <summary>hello's "app": absent (an older ZIGMon) unless set; <see cref="HelloAppNull"/> sends "app": null.</summary>
     public string? HelloAppVersion { get; set; }
     public bool HelloAppNull { get; set; }
+
+    // ---- SMS (5.59.4) ----
+    /// <summary>hello's "sms" block; null leaves it out, as a ZIGMon before 5.59.4 does.</summary>
+    public object? HelloSms { get; set; }
+    /// <summary>What GET sms answers with (its "messages"), newest first.</summary>
+    public List<object> SmsMessages { get; } = new();
+    /// <summary>The raw answer to GET contacts; null answers 403 like a key without sms.contacts.</summary>
+    public string? ContactsJson { get; set; }
+    /// <summary>The bodies POSTed to sms-send, as text.</summary>
+    public ConcurrentQueue<string> SentBodies { get; } = new();
+    /// <summary>How sms-send answers (status, body); the default sends to every "to".</summary>
+    public Func<JsonElement, (int Status, string Body)>? SendAnswer { get; set; }
+    public ConcurrentQueue<string> Methods { get; } = new();
+    public ConcurrentQueue<string?> ContentTypes { get; } = new();
     /// <summary>The /update answer (JSON); null answers 400 like a ZIGMon from before updates.</summary>
     public string? UpdateJson { get; set; }
     /// <summary>The /download body; null answers 404.</summary>
@@ -64,6 +78,30 @@ public sealed class FakeZigmon : HttpMessageHandler
         _news.Release();
     }
 
+    /// <summary>An SMS comes in, as an event of kind "sms" in the wait.</summary>
+    public void PushSms(string id, string from, string text, object? contact = null)
+    {
+        lock (Events)
+        {
+            Seq++;
+            Events.Add((Seq, new { seq = Seq, at = 1764340000.1, kind = "sms", device = "sms", key = "in", active = true, what = "sms",
+                sms = new { id, from, contact, text, at = 1764340000 } }));
+        }
+        _news.Release();
+    }
+
+    /// <summary>A Stream Deck key asks, as an event of kind "deck" in the wait.</summary>
+    public void PushDeck(string what, object[]? to = null)
+    {
+        lock (Events)
+        {
+            Seq++;
+            Events.Add((Seq, new { seq = Seq, kind = "deck", device = "deck", key = "sms", active = true, what,
+                deck = new { install = "inst_1a2b", computer = "OFFICE-PC", to = to ?? Array.Empty<object>() } }));
+        }
+        _news.Release();
+    }
+
     /// <summary>The daemon restarted: new boot id, buffer gone.</summary>
     public void Restart(string newBoot)
     {
@@ -87,7 +125,21 @@ public sealed class FakeZigmon : HttpMessageHandler
         if (!request.Headers.TryGetValues(AppInfo.KeyHeader, out var keys) || keys.Single() != GoodKey)
             return Json(401, "{\"ok\":false,\"error\":\"wrong key\"}");
 
+        Methods.Enqueue(request.Method.Method);
+        ContentTypes.Enqueue(request.Content?.Headers.ContentType?.ToString());
         var q = HttpUtility.ParseQueryString(request.RequestUri!.Query);
+        if (q["do"] == "sms-send")
+        {
+            if (request.Method != HttpMethod.Post) return Json(405, "{\"ok\":false,\"error\":\"by POST\"}");
+            string text = await request.Content!.ReadAsStringAsync(ct);
+            SentBodies.Enqueue(text);
+            using var sent = JsonDocument.Parse(text);
+            var (st, body) = SendAnswer?.Invoke(sent.RootElement)
+                ?? (200, JsonSerializer.Serialize(new { ok = true, sent = sent.RootElement.GetProperty("to").EnumerateArray().Select(x => x.GetString()).ToArray(),
+                    failed = Array.Empty<string>(), message = "1 sent", error = (string?)null }));
+            return Json(st, body);
+        }
+        if (request.Method != HttpMethod.Get) return Json(405, "{\"ok\":false,\"error\":\"the notifier asks by GET\"}");
         if (q["api"] != "notifier") return Json(400, "{\"ok\":false,\"error\":\"no such api\"}");
         switch (q["do"])
         {
@@ -98,6 +150,7 @@ public sealed class FakeZigmon : HttpMessageHandler
                     ["key"] = new { name = "Office PC", devices = Sensors.Count, hint = "xQ" }, ["boot"] = Boot, ["seq"] = Seq,
                 };
                 if (HelloAppNull) hello["app"] = null;
+                if (HelloSms is not null) hello["sms"] = HelloSms;
                 else if (HelloAppVersion is not null) hello["app"] = new { version = HelloAppVersion };
                 return Json(200, JsonSerializer.Serialize(hello));
             case "update":
@@ -110,6 +163,11 @@ public sealed class FakeZigmon : HttpMessageHandler
                 bin.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
                 if (DownloadLength is { } len) bin.Content.Headers.ContentLength = len;
                 return bin;
+            case "sms":
+                int limit = int.Parse(q["limit"] ?? "50");
+                return Json(200, JsonSerializer.Serialize(new { ok = true, messages = SmsMessages.Take(limit) }));
+            case "contacts":
+                return ContactsJson is null ? Json(403, "{\"ok\":false,\"error\":\"this key may not see the contacts\"}") : Json(200, ContactsJson);
             case "sensors":
                 return Json(200, JsonSerializer.Serialize(new { ok = true, boot = Boot, seq = Seq, sensors = Sensors }));
             case "wait":

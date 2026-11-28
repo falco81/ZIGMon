@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace ZigmonNotifier.Core;
@@ -68,7 +69,7 @@ public static class ProtocolParser
             && AppVersions.TryParse(Str(app, "version", 24, clean: false), out var v))
             appVersion = AppVersions.Format(v);
         return new HelloInfo(api, "zigmon", Str(root, "version", 24), Str(root, "house", NameMax), key,
-            Boot(root), Seq(root)) { AdvertisesApp = advertises, AppVersion = appVersion };
+            Boot(root), Seq(root)) { AdvertisesApp = advertises, AppVersion = appVersion, Sms = SmsPerms(root) };
     }
 
     /// <summary>
@@ -154,6 +155,14 @@ public static class ProtocolParser
                 long seq = Long(e, "seq") ?? -1;
                 string device = SafeText.Identifier(Str(e, "device", 200, clean: false));
                 if (seq < 0 || device.Length == 0) continue;
+                string rawKind = Str(e, "kind", 20).ToLowerInvariant();
+                if (rawKind == SensorKinds.Sms || rawKind == SensorKinds.Deck)
+                {
+                    // not a sensor: an SMS, or a Stream Deck's ask - kept only when its payload is whole
+                    var special = Special(e, seq, device, rawKind);
+                    if (special is not null) list.Add(special);
+                    continue;
+                }
                 string name = Str(e, "name", NameMax);
                 list.Add(new TriggerEvent(
                     seq,
@@ -170,6 +179,166 @@ public static class ProtocolParser
         list.Sort((a, b) => a.Seq.CompareTo(b.Seq));
         bool reset = root.TryGetProperty("reset", out var r) && r.ValueKind == JsonValueKind.True;
         return new WaitResult(Boot(root), Seq(root), reset, list);
+    }
+
+    // ---- SMS, contacts and the Stream Deck (5.59.4) ------------------------------------
+
+    public const int MaxSms = 200;
+    public const int SmsTextMax = 4000;
+    public const int MaxContacts = 2000;
+    public const int MaxGroups = 500;
+    public const int MaxNumbersPerContact = 5;
+    public const int MaxDeckTo = 20;
+
+    /// <summary>hello.sms; absent (an older ZIGMon) or not an object: nothing allowed.</summary>
+    private static SmsPermissions SmsPerms(JsonElement root)
+    {
+        if (!root.TryGetProperty("sms", out var o) || o.ValueKind != JsonValueKind.Object) return SmsPermissions.None;
+        return new SmsPermissions(Bool(o, "read") == true, Bool(o, "send") == true, Bool(o, "contacts") == true, Bool(o, "ready") == true);
+    }
+
+    private static TriggerEvent? Special(JsonElement e, long seq, string device, string kind)
+    {
+        var at = Time(e, "at") ?? DateTimeOffset.UtcNow;
+        string key = SafeText.Identifier(Str(e, "key", 40, clean: false), 40);
+        string what = SafeText.Identifier(Str(e, "what", 20, clean: false), 20);
+        if (kind == SensorKinds.Sms)
+        {
+            if (!e.TryGetProperty("sms", out var o) || o.ValueKind != JsonValueKind.Object) return null;
+            var m = SmsObject(o, incomingByDefault: true);
+            if (m is null) return null;
+            return new TriggerEvent(seq, at, device, m.Who, null, SensorKinds.Sms, key, true, "sms") { Sms = m };
+        }
+        if (key != "sms" || what is not (DeckAsk.Last or DeckAsk.Compose)) return null;
+        string install = "", computer = "";
+        var to = new List<DeckRecipient>();
+        if (e.TryGetProperty("deck", out var d) && d.ValueKind == JsonValueKind.Object)
+        {
+            install = SafeText.Identifier(Str(d, "install", 80, clean: false), 80);
+            computer = Str(d, "computer", NameMax);
+            if (d.TryGetProperty("to", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var r in arr.EnumerateArray())
+                {
+                    if (to.Count >= MaxDeckTo) break;
+                    if (r.ValueKind != JsonValueKind.Object) continue;
+                    string number = SmsNumbers.Clean(Str(r, "number", 64, clean: false));
+                    if (number.Length == 0 || to.Any(x => SmsNumbers.Key(x.Number) == SmsNumbers.Key(number))) continue;
+                    string id = Str(r, "id", 20, clean: false);
+                    to.Add(new DeckRecipient(ContactIds.IsValid(id) ? id : "", Str(r, "name", NameMax), number));
+                }
+            }
+        }
+        return new TriggerEvent(seq, at, device, "Stream Deck", null, SensorKinds.Deck, key, true, what)
+        {
+            Deck = new DeckAsk(what, install, computer, to),
+        };
+    }
+
+    /// <summary>One SMS object (an event's "sms", or a row of the list); null when it has neither a number nor text.</summary>
+    private static SmsMessage? SmsObject(JsonElement o, bool incomingByDefault)
+    {
+        string id = SafeText.Identifier(Str(o, "id", 64, clean: false), 64);
+        string dir = Str(o, "dir", 8, clean: false);
+        bool incoming = dir switch { "in" => true, "out" => false, _ => incomingByDefault };
+        string number = SmsNumbers.Clean(Str(o, "number", 64, clean: false));
+        if (number.Length == 0) number = SmsNumbers.Clean(Str(o, "from", 64, clean: false));
+        SmsContactRef? contact = null;
+        if (o.TryGetProperty("contact", out var c) && c.ValueKind == JsonValueKind.Object)
+        {
+            string cid = Str(c, "id", 20, clean: false);
+            string cname = Str(c, "name", NameMax);
+            if (cname.Length > 0) contact = new SmsContactRef(ContactIds.IsValid(cid) ? cid : "", cname);
+        }
+        string text = o.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String
+            ? SafeText.CleanMultiline(t.GetString(), SmsTextMax) : "";
+        if (number.Length == 0 && text.Length == 0) return null;
+        return new SmsMessage(id, incoming, number, contact, text, Time(o, "at") ?? DateTimeOffset.UtcNow, Bool(o, "ok"));
+    }
+
+    /// <summary>GET /api/notifier/sms: {"messages":[...]}, returned newest first.</summary>
+    public static IReadOnlyList<SmsMessage> SmsList(JsonElement root)
+    {
+        var list = new List<SmsMessage>();
+        if (root.TryGetProperty("messages", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var m in arr.EnumerateArray())
+            {
+                if (list.Count >= MaxSms) break;
+                if (m.ValueKind != JsonValueKind.Object) continue;
+                var s = SmsObject(m, incomingByDefault: true);
+                if (s is null || s.Id.Length > 0 && !seen.Add(s.Id)) continue;
+                list.Add(s);
+            }
+        }
+        return list.OrderByDescending(m => m.At).ToList();
+    }
+
+    /// <summary>GET /api/notifier/contacts: {"contacts":[...],"groups":[...]}, every field checked.</summary>
+    public static ContactBook Contacts(JsonElement root)
+    {
+        var list = new List<Contact>();
+        var groups = new List<string>();
+        if (root.TryGetProperty("contacts", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var c in arr.EnumerateArray())
+            {
+                if (list.Count >= MaxContacts) break;
+                if (c.ValueKind != JsonValueKind.Object) continue;
+                string id = Str(c, "id", 20, clean: false);
+                string name = Str(c, "name", NameMax);
+                if (!ContactIds.IsValid(id) || name.Length == 0 || !ids.Add(id)) continue;
+                var numbers = new List<ContactNumber>();
+                if (c.TryGetProperty("numbers", out var ns) && ns.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var n in ns.EnumerateArray())
+                    {
+                        if (numbers.Count >= MaxNumbersPerContact) break;
+                        if (n.ValueKind != JsonValueKind.Object) continue;
+                        string number = SmsNumbers.Clean(Str(n, "number", 64, clean: false));
+                        if (number.Length == 0 || numbers.Any(x => x.Number == number)) continue;
+                        numbers.Add(new ContactNumber(Str(n, "label", 20), number));
+                    }
+                }
+                if (numbers.Count == 0) continue; // nothing to write to
+                list.Add(new Contact(id, name, numbers, Str(c, "group", Recipients.GroupMax), Str(c, "note", 200), Bool(c, "favourite") == true));
+            }
+        }
+        if (root.TryGetProperty("groups", out var gs) && gs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var g in gs.EnumerateArray())
+            {
+                if (groups.Count >= MaxGroups) break;
+                if (g.ValueKind != JsonValueKind.String) continue;
+                string name = SafeText.Clean(g.GetString(), Recipients.GroupMax);
+                if (name.Length > 0 && !groups.Contains(name, StringComparer.OrdinalIgnoreCase)) groups.Add(name);
+            }
+        }
+        // a group a contact names but the list left out is still a group
+        foreach (var c in list)
+            if (c.Group.Length > 0 && groups.Count < MaxGroups && !groups.Contains(c.Group, StringComparer.OrdinalIgnoreCase)) groups.Add(c.Group);
+        list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
+        return new ContactBook(list, groups);
+    }
+
+    /// <summary>POST /api/notifier/sms/send's answer: ok, the numbers sent and failed, ZIGMon's words.</summary>
+    public static SmsSendResult SendResult(JsonElement root)
+    {
+        bool ok = IsOk(root);
+        int sent = Count(root, "sent"), failed = Count(root, "failed");
+        string words = ok ? Str(root, "message", 200) : Str(root, "error", 200);
+        if (words.Length == 0) words = ok ? Str(root, "error", 200) : Str(root, "message", 200);
+        if (words.Length == 0) words = ok ? "Sent." : "ZIGMon did not send it, without saying why.";
+        return new SmsSendResult(ok, sent, failed, words);
+    }
+
+    private static int Count(JsonElement o, string name)
+    {
+        if (!o.TryGetProperty(name, out var v)) return 0;
+        if (v.ValueKind == JsonValueKind.Array) return Math.Min(v.GetArrayLength(), 10000);
+        return Math.Clamp(Int(o, name) ?? 0, 0, 10000);
     }
 
     // ---- small readers -------------------------------------------------------------

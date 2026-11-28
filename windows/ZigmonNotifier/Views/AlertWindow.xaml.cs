@@ -9,7 +9,7 @@ using ZigmonNotifier.Core;
 namespace ZigmonNotifier.Views;
 
 /// <summary>One alert card. Shown on top without taking the keyboard (unless the user asked for that).</summary>
-public partial class AlertWindow : Window
+public partial class AlertWindow : Window, IStackCard
 {
     private readonly AppController _app;
     private readonly bool _test;
@@ -120,7 +120,7 @@ public partial class AlertWindow : Window
         Attention(takeFocus);
     }
 
-    internal void MoveTo(double left, double top)
+    public void MoveTo(double left, double top)
     {
         if (!_shown)
         {
@@ -151,7 +151,7 @@ public partial class AlertWindow : Window
         }
     }
 
-    internal void Dismiss()
+    public void Dismiss()
     {
         if (IsClosing) return;
         IsClosing = true;
