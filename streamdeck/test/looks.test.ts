@@ -11,12 +11,12 @@ import type { Hub } from "../src/core/hub.js";
 import { Hub as RealHub } from "../src/core/hub.js";
 import { NodeTransport } from "../src/core/http.js";
 import { LAYOUTS } from "../src/core/layouts.js";
-import { ACCENTS, ALLOWED_COLOURS } from "../src/core/palette.js";
+import { ACCENTS, ALLOWED_COLOURS, P } from "../src/core/palette.js";
 import { parseItem, parseStateAnswer, type Item } from "../src/core/protocol.js";
 import { FakeProtector } from "../src/core/secrets.js";
 import { cleanLabel, LABEL_MOST, normalizeAction, THEME_IDS } from "../src/core/settings.js";
 import { nameLines, smartWrap } from "../src/core/svg.js";
-import { THEMES } from "../src/core/themes.js";
+import { ALL_INFO, renderLook, THEMES } from "../src/core/themes.js";
 import { ActionView, clockOf, type ActionKind } from "../src/core/views.js";
 import { FakeZigmon, MemoryStore, MockSurface, sampleItems, until } from "./fake-zigmon.js";
 import { goldenCases } from "./golden.js";
@@ -209,6 +209,8 @@ const HAND = ICONS.hand!;
 
 /** (1.2) The ten clear looks: one thing big, at most one small line. */
 const CLEAR = ["huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono"];
+/** (1.3) Twenty more, as clear, each with its own shape. */
+const MORE = ["diagonal", "hex", "stripe", "switch", "lcd", "dial", "ticket", "bubble", "frame", "shadow", "line", "tube", "stamp", "pastel", "carbon", "grid", "tab", "rise", "spot", "button"];
 const ALL_KINDS: [ActionKind, string][] = [
   ["control", "Lampa"], ["control", "zb:0xa1:state_l1"], ["dimmer", "zb:0xb2:light"], ["reading", "read:0xe5:temperature"], ["thermostat", "zb:0xc3:trv"],
   ["blinds", "zb:0xd4:cover"], ["scene", "scene:3"], ["status", "status:alerts"], ["status", "status:gateway"],
@@ -226,11 +228,12 @@ const sizes = (svg: string) => {
 };
 
 describe("the clear looks (1.2)", () => {
-  it("there are 22 looks: the twelve and ten more, each known to the settings, with a short name and a hint", () => {
-    assert.equal(THEMES.length, 22);
-    assert.deepEqual(THEMES.slice(12).map((t) => t.id), CLEAR);
+  it("there are 42 looks: the twelve, ten clear ones and twenty more, each known to the settings, with a short name and a hint", () => {
+    assert.equal(THEMES.length, 42);
+    assert.deepEqual(THEMES.slice(12, 22).map((t) => t.id), CLEAR);
+    assert.deepEqual(THEMES.slice(22).map((t) => t.id), MORE);
     assert.deepEqual([...THEME_IDS], THEMES.map((t) => t.id), "the settings keep exactly the looks there are");
-    assert.equal(new Set(THEMES.map((t) => t.name)).size, 22, "names differ");
+    assert.equal(new Set(THEMES.map((t) => t.name)).size, 42, "names differ");
     for (const t of THEMES.slice(12)) {
       assert.ok(t.name.length <= 8, t.id + ": a name short enough for the inspector's grid");
       assert.ok(t.hint.length > 5, t.id + ": a hint");
@@ -334,6 +337,142 @@ describe("the clear looks (1.2)", () => {
       const bg = svgOf(String(s.feedbacks.at(-1)!.bg));
       assert.match(bg, /width="200" height="100"/, t + ": the strip's paper");
       v.dispose();
+    }
+  });
+});
+
+
+describe("the twenty more looks (1.3)", () => {
+  it("every one of the twenty x every action x on / off / offline / locked / hold: valid SVG, our colours, the badges", () => {
+    for (const t of MORE) {
+      for (const [kind, id] of ALL_KINDS) {
+        for (const st of ["on", "off", "offline", "locked", "hold"]) {
+          const svg = key(kind, variant(id, st), { theme: t }).s.svg;
+          const where = `${t}/${kind}/${st}`;
+          wellFormed(svg);
+          ownColours(svg, where);
+          assert.match(svg, /^<svg[^>]*width="144" height="144"/, where);
+          if (st === "offline" && kind !== "scene" && kind !== "status") assert.match(svg, />(Offline|OFFLINE)</, where + ": offline is said");
+          if (st === "locked" && kind !== "status") assert.ok(svg.includes(LOCK), where + ": the lock");
+          if (st === "hold" && kind !== "reading" && kind !== "status") assert.ok(svg.includes(HAND), where + ": the hand");
+        }
+        // with every choice off but one, and the accent - still drawn
+        for (const only of INFO_KEYS) {
+          wellFormed(key(kind, variant(id, "on"), { theme: t, accent: "yellow", ...Object.fromEntries(INFO_KEYS.map((k) => [k, k === only])) }).s.svg);
+        }
+      }
+    }
+  });
+
+  it("the state is the biggest thing on the key, and little else is written", () => {
+    for (const t of MORE) {
+      for (const [kind, id] of ALL_KINDS) {
+        const svg = key(kind, variant(id, "on"), { theme: t }).s.svg;
+        const all = sizes(svg);
+        const top = all.reduce((a, b) => (b.size > a.size ? b : a));
+        assert.ok(top.size >= 28, `${t}/${kind}: the state big (${top.size})`);
+        assert.ok(all.filter((x) => x !== top).every((x) => x.size <= top.size * 0.62), `${t}/${kind}: one big thing`);
+        // the state, the name - and only a thermostat's or a moving blind's tag besides
+        assert.ok(all.length <= (kind === "thermostat" || kind === "blinds" ? 3 : 2), `${t}/${kind}: ${texts(svg).join(" | ")}`);
+      }
+      const lamp = key("control", variant("Lampa", "on"), { theme: t }).s.svg;
+      assert.ok(texts(lamp).some((x) => x.toLowerCase() === "on") && texts(lamp).includes("Lampa obývák"), t + ": the state and the name");
+      assert.ok(!lamp.includes("42 W") && !lamp.includes("Obývák<"), t + ": no power, no room - only the essentials");
+    }
+  });
+
+  it("each piece switched off disappears; with no name the room takes its line", () => {
+    for (const t of MORE) {
+      const it = variant("Lampa", "on");
+      assert.ok(!key("control", it, { theme: t, showName: false, showRoom: false }).s.svg.includes("Lampa"), t + ": name off");
+      assert.ok(texts(key("control", it, { theme: t, showName: false }).s.svg).includes("Obývák"), t + ": the room instead");
+      assert.ok(!texts(key("control", it, { theme: t, showState: false, showDetail: false }).s.svg).some((x) => x.toLowerCase() === "on"), t + ": state off");
+      assert.ok(!key("control", it, { theme: t, showIcon: false }).s.svg.includes("<g transform"), t + ": icon off");
+      const th = roomItem({});
+      const thermo = key("thermostat", th, { theme: t }).s.svg;
+      assert.ok(/35\.0/.test(thermo) && /Max/.test(thermo), t + ": the target and the mode");
+      assert.ok(!/35\.0/.test(key("thermostat", th, { theme: t, showDetail: false }).s.svg), t + ": the target off");
+      assert.ok(!/Max/.test(key("thermostat", th, { theme: t, showMode: false }).s.svg), t + ": the mode off");
+      const r = key("reading", variant("read:0xe5:temperature", "on"), { theme: t }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
+      const noGraph = key("reading", variant("read:0xe5:temperature", "on"), { theme: t, showGraph: false }, [], () => [20, 21, 23, 22, 24, 21.5]).s.svg;
+      assert.notEqual(r, noGraph, t + ": the graph switched off is not drawn");
+      const dim = key("dimmer", variant("zb:0xb2:light", "on"), { theme: t }).s.svg;
+      assert.notEqual(dim, key("dimmer", variant("zb:0xb2:light", "on"), { theme: t, showGraph: false }).s.svg, t + ": the level is drawn, and goes with the graph");
+      const low = parseItem({ ...sampleItems()[0]!, state: { ...sampleItems()[0]!.state, battery: 8 } });
+      assert.ok(key("control", low, { theme: t }).s.svg.includes(ICONS.battery!), t + ": a low battery");
+      assert.ok(!key("control", low, { theme: t, showBattery: false }).s.svg.includes(ICONS.battery!), t + ": battery off");
+    }
+  });
+
+  it("on and off differ, and every accent is used", () => {
+    for (const t of MORE) {
+      for (const [kind, id] of ALL_KINDS) {
+        if (kind === "reading" || kind === "status") continue;
+        const p = key(kind, variant(id, "on"), { theme: t }).v.previewSet()!;
+        assert.notEqual(p.on, p.off, t + "/" + kind);
+      }
+      for (const [name, a] of Object.entries(ACCENTS)) {
+        assert.ok(key("control", variant("Lampa", "on"), { theme: t, accent: name }).s.svg.includes(a.colour), t + ": the accent " + name);
+      }
+    }
+  });
+
+  it("user text is escaped: a name like <b>&\"x\"", () => {
+    for (const t of MORE) {
+      for (const [kind, id] of ALL_KINDS) {
+        const svg = key(kind, variant(id, "on"), { theme: t, label: '<b>&"x"' }).s.svg;
+        wellFormed(svg);
+        assert.ok(!svg.includes("<b>") && !svg.includes('&"x"'), t + "/" + kind);
+        if (kind !== "status") assert.ok(svg.includes("&lt;b&gt;&amp;&quot;x&quot;"), t + "/" + kind + ": the label, escaped");
+        const evil = key(kind, variant(id, "evil"), { theme: t }).s.svg;
+        wellFormed(evil);
+        assert.ok(!evil.includes("<script"), t + "/" + kind);
+      }
+    }
+  });
+
+  it("each has its own paper on a dial's strip", () => {
+    for (const t of MORE) {
+      const s = new MockSurface("Encoder", "D");
+      const v = new ActionView("dimmer", stubHub([variant("zb:0xb2:light", "on")]), s, { item: "zb:0xb2:light", theme: t });
+      v.draw(true);
+      const bg = svgOf(String(s.feedbacks.at(-1)!.bg));
+      assert.match(bg, /width="200" height="100"/, t + ": the strip's paper");
+      v.dispose();
+    }
+  });
+
+  it("an off key takes the off colour the user chose, and an on key keeps its accent", () => {
+    const off = P.pink;
+    for (const t of MORE) {
+      for (const [kind, id] of [["control", "Lampa"], ["dimmer", "zb:0xb2:light"], ["thermostat", "zb:0xc3:trv"]] as const) {
+        const onFace = key(kind, variant(id, "on"), { theme: t }).v.face();
+        // the sample radiator heats whatever its state says: an idle one, by hand
+        const offFace = kind === "thermostat" ? { ...onFace, active: false, icon: "thermostat" } : key(kind, variant(id, "off"), { theme: t }).v.face();
+        assert.ok(!offFace.active && onFace.active, t + "/" + kind);
+        const o = { info: ALL_INFO, fit: "fit" as const };
+        const plain = renderLook(t, offFace, o);
+        const tinted = renderLook(t, { ...offFace, offAccent: off }, o);
+        assert.ok(!plain.includes(off), t + "/" + kind + ": not pink of itself");
+        assert.ok(tinted.includes(off), t + "/" + kind + ": off, in the chosen colour");
+        wellFormed(tinted);
+        ownColours(tinted, t + "/" + kind);
+        const on = renderLook(t, onFace, o);
+        assert.equal(renderLook(t, { ...onFace, offAccent: off }, o), on, t + "/" + kind + ": on, the accent stays");
+        assert.ok(on.includes(onFace.accent), t + "/" + kind + ": the on accent");
+        // offline is not off: it stays red
+        const gone = { ...offFace, online: false };
+        assert.equal(renderLook(t, { ...gone, offAccent: off }, o), renderLook(t, gone, o), t + "/" + kind + ": offline keeps its red");
+      }
+    }
+  });
+
+  it("look different from each other and from the 22 before them", () => {
+    for (const [kind, id] of [["control", "Lampa"], ["thermostat", "zb:0xc3:trv"], ["reading", "read:0xe5:temperature"]] as const) {
+      for (const st of ["on", "off"]) {
+        const seen = new Set(THEMES.map((t) => key(kind, variant(id, st), { theme: t.id }).s.svg));
+        assert.equal(seen.size, THEMES.length, kind + "/" + st);
+      }
     }
   });
 });

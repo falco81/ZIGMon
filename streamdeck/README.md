@@ -107,7 +107,15 @@ Every action's settings have a **Look** section with live thumbnails of the item
 **Big value**, **Solid fill**, **Neon**, **Ring gauge**, **Two-tone**, **Glass**, **Bold label**,
 **Status dot**, **Light** and **High contrast** - and ten clear ones that say one thing big
 with at most one small line: **Huge**, **Pill**, **Orb**, **Tile**, **Gauge**, **Bars**,
-**Wave**, **Aurora**, **Outline** and **Mono** - with an On / Off pair above them. Then an
+**Wave**, **Aurora**, **Outline** and **Mono** - and twenty more as clear, each with its own
+shape: **Diagonal** (a coloured corner), **Hex** (a hexagon plate), **Stripe** (a side stripe
+that fills), **Switch** (a toggle switch), **LCD** (a retro screen), **Dial** (a knob in a ring
+of ticks), **Ticket** (a coloured stub), **Bubble** (a speech bubble), **Frame** (corner
+brackets), **Shadow** (a card with a coloured shadow), **Line** (the value on one line),
+**Tube** (a thermometer tube), **Stamp** (a giant faint icon), **Pastel** (soft colour, dark
+type), **Carbon** (carbon weave and a light strip), **Grid** (a grid of lamps), **Tab** (a
+folder with the name on its tab), **Rise** (a rising sun), **Spot** (a spotlight) and
+**Button** (a real key, pressed when on) - with an On / Off pair above them. Then an
 **accent** (Auto by kind, or one of 10 colours), a **label** for every action (40 characters),
 how **long names** are laid out (shrink to fit, two lines breaking at hyphens, or one line cut as
 in 1.0), and **what the key shows**, each on its own: icon, name, room, state / value, the second

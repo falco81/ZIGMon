@@ -1139,6 +1139,39 @@ function stripPaper(theme: string, lit: boolean, c: string): string {
       return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="4" y="4" width="192" height="92" rx="16" fill="none" stroke="${lit ? c : P.line}" stroke-width="${lit ? 5 : 2}"/>`);
     case "mono":
       return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<rect width="200" height="100" fill="${c}" fill-opacity="0.12"/>` : ""));
+    // (1.3) twenty more
+    case "diagonal":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><path d="M 0 0 H 46 L 0 46 Z" fill="${lit ? c : P.panel2}"/>`);
+    case "hex":
+    case "bubble":
+    case "ticket":
+    case "tab":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><rect x="4" y="4" width="192" height="92" rx="14" fill="${P.panel2}" stroke="${lit ? c : P.line}" stroke-width="2"/>`);
+    case "stripe":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect width="8" height="100" fill="${lit ? c : P.panel2}"/>`);
+    case "switch":
+    case "line":
+    case "stamp":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${theme === "line" ? X.night : P.bg}"/><rect x="0" y="97" width="200" height="3" fill="${lit ? c : P.line}"/>`);
+    case "lcd":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel2}"/><rect x="4" y="4" width="192" height="92" rx="8" fill="${X.night}" stroke="${lit ? c : P.line}" stroke-width="2"/>`
+        + (lit ? `<rect x="5" y="5" width="190" height="90" rx="7" fill="${c}" fill-opacity="0.12"/>` : ""));
+    case "dial":
+    case "spot":
+    case "rise":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/>` + (lit ? `<ellipse cx="100" cy="${theme === "spot" ? 0 : 100}" rx="120" ry="50" fill="${c}" fill-opacity="0.16"/>` : ""));
+    case "frame":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${X.night}"/><path d="M 4 24 V 4 H 24 M 176 4 H 196 V 24 M 196 76 V 96 H 176 M 24 96 H 4 V 76" fill="none" stroke="${lit ? c : P.muted}" stroke-width="${lit ? 4 : 2}"/>`);
+    case "shadow":
+    case "button":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect x="8" y="8" width="188" height="88" rx="14" fill="${lit ? c : P.line}"${lit ? ' fill-opacity="0.5"' : ""}/><rect x="4" y="4" width="188" height="88" rx="14" fill="${P.panel2}"/>`);
+    case "tube":
+    case "grid":
+    case "carbon":
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.bg}"/><rect x="0" y="94" width="200" height="6" fill="${lit ? c : P.panel2}"/>`);
+    case "pastel":
+      // dark like the others: the strip's words keep their own (light) ink
+      return svgDoc(200, 100, `<rect width="200" height="100" fill="${P.panel}"/><rect width="200" height="100" fill="${lit ? c : P.panel2}" fill-opacity="${lit ? 0.18 : 1}"/>`);
     default:
       return svgDoc(4, 4, "");
   }
