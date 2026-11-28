@@ -33,6 +33,8 @@ public partial class SmsWindow : Window, IStackCard
     public string ThreadKey { get; }
     public bool IsClosing { get; private set; }
     public bool IsReplying => ReplyPanel.Visibility == Visibility.Visible;
+    /// <summary>The answer typed so far (empty when none).</summary>
+    public string ReplyText => ReplyBox.Text ?? "";
     internal double TargetScale { get; init; } = 1;
     public double ExpectedHeight => ActualHeight > 0 ? ActualHeight : 230;
 

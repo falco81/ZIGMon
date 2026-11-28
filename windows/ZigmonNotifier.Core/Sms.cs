@@ -43,7 +43,21 @@ public sealed record DeckAsk(string What, string Install, string Computer, IRead
 {
     public const string Last = "last";
     public const string Compose = "compose";
+
+    /// <summary>What a press of "the latest SMS" does (1.4.0): shows it - unless its card is up
+    /// already, when it closes it. A card with an answer being typed in it is never closed by a
+    /// key: it only comes to the front, so no words are lost.</summary>
+    public static LastPress OnLastPress(bool cardOpen, bool typingAnswer) =>
+        !cardOpen ? LastPress.Show : typingAnswer ? LastPress.Focus : LastPress.Close;
+
+    /// <summary>What a press of "write an SMS" does (1.4.0): opens the message - or, pressed again while
+    /// the Messages window is up, closes it without sending anything.</summary>
+    public static ComposePress OnComposePress(bool windowOpen) => windowOpen ? ComposePress.Close : ComposePress.Open;
 }
+
+public enum ComposePress { Open, Close }
+
+public enum LastPress { Show, Close, Focus }
 
 public sealed record ContactNumber(string Label, string Number);
 

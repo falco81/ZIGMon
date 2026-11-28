@@ -129,6 +129,16 @@ public class SmsParserTests
     }
 
     [Fact]
+    public void TheLatestSmsKeyShowsThenClosesButNeverLosesAnAnswer()
+    {
+        Assert.Equal(LastPress.Show, DeckAsk.OnLastPress(cardOpen: false, typingAnswer: false));
+        Assert.Equal(LastPress.Close, DeckAsk.OnLastPress(cardOpen: true, typingAnswer: false));
+        Assert.Equal(LastPress.Focus, DeckAsk.OnLastPress(cardOpen: true, typingAnswer: true));
+        Assert.Equal(ComposePress.Open, DeckAsk.OnComposePress(windowOpen: false));
+        Assert.Equal(ComposePress.Close, DeckAsk.OnComposePress(windowOpen: true));
+    }
+
+    [Fact]
     public void SensorEventsStillWorkBesideThem()
     {
         var w = Wait("{\"seq\":4,\"kind\":\"motion\",\"device\":\"0xa1\",\"name\":\"PIR\",\"active\":true,\"what\":\"motion\"},"

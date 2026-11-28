@@ -124,7 +124,9 @@ vše je ve výchozím stavu vypnuté). Se starším ZIGMonem se nic z toho neuk�
   více aplikacemi (Settings → Messages → Stream Deck). Klávesa **poslední SMS**
   ukáže na tomto počítači poslední příchozí SMS (i už viděnou), klávesa **napsat
   SMS** otevře novou zprávu rovnou adresovanou lidem z klávesy – kurzor je v
-  textu a okno vepředu, stačí napsat text a odeslat.
+  textu a okno vepředu, stačí napsat text a odeslat. Druhý stisk téže klávesy okno
+  zavře: u poslední SMS kartu se zprávou (rozepsanou odpověď nezavře, jen ji
+  přenese dopředu), u napsat SMS okno Messages – bez odeslání.
 * **Přepínače** (Alert settings → Messages (SMS), uložené v tomto počítači):
   okénka s SMS zapnout/vypnout, zvuk SMS (Chime, Doorbell, Bell nebo Beeps,
   jednou) a zda vůbec reagovat na SMS klávesy Stream Decku.

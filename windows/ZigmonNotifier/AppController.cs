@@ -354,6 +354,12 @@ internal sealed class AppController : IDisposable
         }
         if (ask.What == DeckAsk.Compose)
         {
+            // pressed again while Messages is up: the key closes it, nothing is sent
+            if (DeckAsk.OnComposePress(_messagesWindow is { IsVisible: true }) == ComposePress.Close)
+            {
+                _messagesWindow!.Close();
+                return;
+            }
             if (!_sms.CanSend)
             {
                 ShowMessages();
@@ -370,6 +376,17 @@ internal sealed class AppController : IDisposable
         {
             ShowMessages();
             return;
+        }
+        // pressed again while its card is up: the key closes it (an answer being typed only comes forward)
+        var card = Alerts.SmsCard(latest.ThreadKey);
+        switch (DeckAsk.OnLastPress(card is not null, card is { IsReplying: true } c && c.ReplyText.Trim().Length > 0))
+        {
+            case LastPress.Close:
+                card!.Dismiss();
+                return;
+            case LastPress.Focus:
+                card!.Attention(true, true);
+                return;
         }
         MarkRead(latest.ThreadKey);
         Alerts.ShowSms(latest, asked: true);

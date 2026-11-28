@@ -87,6 +87,10 @@ internal sealed class AlertManager
         return existing;
     }
 
+    /// <summary>The SMS card of this conversation that is up now, or null.</summary>
+    public SmsWindow? SmsCard(string threadKey) =>
+        Live.OfType<SmsWindow>().FirstOrDefault(w => w.ThreadKey == threadKey && !w.IsClosing);
+
     private void ToNewest(Window w)
     {
         _open.Remove(w);

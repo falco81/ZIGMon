@@ -139,7 +139,9 @@ with an older ZIGMon (no `sms` in hello) every SMS feature stays hidden.
   more desktop apps (Settings → Messages → Stream Deck). Its latest-SMS key (`sms:last`)
   makes this app show the latest incoming SMS (even one already seen); its
   write-an-SMS key (`sms:compose`) opens a new message, addressed to the people the
-  key names, with the cursor in the text and the window in front.
+  key names, with the cursor in the text and the window in front. Pressed again, a
+  key closes what it opened: the latest-SMS card (one with an answer being typed only
+  comes to the front, so nothing is lost), or the Messages window, without sending.
 * **The switches** (Alert settings → Messages (SMS), kept on this computer):
   SMS pop-ups on/off, the SMS sound on/off (Chime, Doorbell, Bell or Beeps,
   once), and whether to answer the Stream Deck's SMS keys at all.
