@@ -6,7 +6,7 @@ import { ApiError, CertError, NetError, type CertSeen, type Transport } from "./
 import { IDLE, pairStep, pairView, type PairEvent, type PairState } from "./pairing.js";
 import { cleanText, ProtocolError, type Caps, type Hello, type Item, type ItemState, type Room, type Series, type SmsBook } from "./protocol.js";
 import type { Protector } from "./secrets.js";
-import { newInstallId, normalizeGlobal, type GlobalSettings } from "./settings.js";
+import { ACTION_KINDS, newInstallId, normalizeGlobal, textSizesOf, type GlobalSettings, type TextDefaults } from "./settings.js";
 import { pinFor, withPin } from "./tls.js";
 import { checkPackage, embeddedKeys, packageFileName, UpdateError, verifyOffer, type ReleaseKey } from "./update.js";
 import { isNewer, PLUGIN_VERSION } from "./version.js";
@@ -244,6 +244,25 @@ export class Hub {
   unwatch(v: HubView): void {
     this.views.delete(v);
     this.resubscribe();
+  }
+
+  /** (1.3) The text sizes an action type draws with unless a key sets its own ({ textValue: 150, ... }), or null. */
+  textDefaults(kind: string): Record<string, number> | null {
+    const t = this.g.textSizes;
+    return t && Object.prototype.hasOwnProperty.call(t, kind) ? { ...t[kind]! } : null;
+  }
+
+  /** (1.3) Keeps new defaults for an action type (an empty set clears them) and redraws every key. */
+  async setTextDefaults(kind: string, sizes: Record<string, unknown>): Promise<void> {
+    if (!(ACTION_KINDS as readonly string[]).includes(kind)) return;
+    const clean = textSizesOf(sizes);
+    const t: TextDefaults = { ...(this.g.textSizes ?? {}) };
+    if (Object.keys(clean).length) t[kind] = clean;
+    else delete t[kind];
+    if (Object.keys(t).length) this.g.textSizes = t;
+    else delete this.g.textSizes;
+    this.redrawAll();
+    if (this.loaded) await this.persist();
   }
 
   onStatus(fn: () => void): () => void {

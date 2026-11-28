@@ -5,7 +5,7 @@
  * Every piece of text passes through esc(); colours and icons come from our own tables only.
  */
 import { P } from "./palette.js";
-import { arcPath, esc, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth, wrap2, type NameFit } from "./svg.js";
+import { arcPath, esc, fit, fitSize, fitSizeK, grow, growAll, icon, mixLine, n, nameLines, ONE, rect, roleAttr, svgDoc, text, textWidth, wrap2, type NameFit, type TextRole, type TextScale } from "./svg.js";
 import { seriesScale, type Quantity } from "./scale.js";
 import { graph, type Face, type Info } from "./themes.js";
 
@@ -20,8 +20,27 @@ export interface ClassicOpts {
   fit?: NameFit;
   /** (1.3) The colour an off key is drawn in (its tile, icon, dot, edge); none = grey, as before. */
   offAccent?: string;
+  /** (1.3) The size of each kind of text; none = as before. */
+  ts?: TextScale;
 }
 const SHOW_ALL: Info = { icon: true, name: true, room: true, state: true, detail: true, mode: true, graph: true, battery: true, scale: false, target: false };
+
+/** (1.3) How far a size may grow where Classic has fixed places: the role's own limit on its size. */
+const CAPF: Record<TextRole, number> = { value: 1.4, name: 1.45, room: 1.5, detail: 1.5, mode: 1.5, unit: 1.6, badge: 1.4 };
+/** A size in its role at these factors, held to `cap` px (else the role's own limit). */
+export function sized(t: TextScale, role: TextRole, size: number, cap?: number): number {
+  return grow(size, t[role], cap ?? size * CAPF[role]);
+}
+/** Candidate sizes alike. */
+export function sizedAll(t: TextScale, role: TextRole, sizes: number[], cap?: number): number[] {
+  return growAll(sizes, t[role], (z) => cap ?? z * CAPF[role]);
+}
+/** fitSize over candidates in their role's size (smaller, never bigger than that times the size at 100 %). */
+export function fitSized(t: TextScale, role: TextRole, text: string, sizes: number[], maxW: number, weight: number, cap?: number): { text: string; size: number } {
+  return fitSizeK(text, sizes, t[role], maxW, weight, (z) => cap ?? z * CAPF[role]);
+}
+/** The largest size whose capitals stay below `top`, on a baseline at y. */
+const roomAbove = (y: number, top: number): number => (y - top) / 0.74;
 
 export const KEY = 144;
 const MONO = "Cascadia Mono, Consolas, JetBrains Mono, DejaVu Sans Mono, monospace";
@@ -115,26 +134,31 @@ function badges(o: { online?: boolean; battery?: number | null; hold?: boolean; 
   return out;
 }
 
-function nameAndRoom(name: string, room: string | null, show: boolean, fitMode?: NameFit, showName = true): string {
-  if (!showName) return room && show ? text(14, 132, fit(room, 12.5, 118, 500), { size: 12.5, weight: 500, fill: P.dim }) : "";
+function nameAndRoom(name: string, room: string | null, show: boolean, fitMode?: NameFit, showName = true, t: TextScale = ONE): string {
+  const rs = sized(t, "room", 12.5), ns = sized(t, "name", 16);
+  // (1.3) a bigger room lifts the name over it; a much bigger name keeps to one line
+  const lift = (rs - 12.5) * 0.76;
+  const one = ns > 16 * 1.25;
+  const roomText = () => text(14, 132, fit(room!, rs, 118, 500), { size: rs, weight: 500, fill: P.dim, role: "room" });
+  if (!showName) return room && show ? roomText() : "";
   if (fitMode && fitMode !== "cut") {
-    const nl = nameLines(name, fitMode, 16, 118, 650, room && show ? 1 : 2);
+    const nl = nameLines(name, fitMode, ns, 118, 650, room && show || one ? 1 : 2);
     let o2 = "";
-    const base = room && show ? 114 : 128;
-    nl.lines.forEach((l, i) => (o2 += text(14, base - (nl.lines.length - 1 - i) * nl.size * 1.12, l, { size: nl.size, weight: 650, fill: P.text })));
-    if (room && show) o2 += text(14, 132, fit(room, 12.5, 118, 500), { size: 12.5, weight: 500, fill: P.dim });
+    const base = room && show ? 114 - lift : 128;
+    nl.lines.forEach((l, i) => (o2 += text(14, base - (nl.lines.length - 1 - i) * nl.size * 1.12, l, { size: nl.size, weight: 650, fill: P.text, role: "name" })));
+    if (room && show) o2 += roomText();
     return o2;
   }
-  const lines = room && show ? [fit(name, 16, 118, 650)] : wrap2(name, 16, 118, 650);
+  const lines = room && show || one ? [fit(name, ns, 118, 650)] : wrap2(name, ns, 118, 650);
   let out = "";
   if (room && show) {
-    out += text(14, 114, lines[0]!, { size: 16, weight: 650, fill: P.text });
-    out += text(14, 132, fit(room, 12.5, 118, 500), { size: 12.5, weight: 500, fill: P.dim });
+    out += text(14, 114 - lift, lines[0]!, { size: ns, weight: 650, fill: P.text, role: "name" });
+    out += roomText();
   } else if (lines.length === 2) {
-    out += text(14, 113, lines[0]!, { size: 16, weight: 650, fill: P.text });
-    out += text(14, 131, lines[1]!, { size: 16, weight: 650, fill: P.text });
+    out += text(14, 113 - (ns - 16) * 1.12, lines[0]!, { size: ns, weight: 650, fill: P.text, role: "name" });
+    out += text(14, 131, lines[1]!, { size: ns, weight: 650, fill: P.text, role: "name" });
   } else {
-    out += text(14, 128, lines[0]!, { size: 16, weight: 650, fill: P.text });
+    out += text(14, 128, lines[0]!, { size: ns, weight: 650, fill: P.text, role: "name" });
   }
   return out;
 }
@@ -159,6 +183,7 @@ export interface ControlModel {
 
 export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: string; glow?: string; edge?: string } {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const l0 = lookFor(m.kind, m.icon, m.on);
   const look = { ...l0, accent: o.accent ?? l0.accent };
   const active = m.on === true && m.online;
@@ -169,12 +194,22 @@ export function controlBody(m: ControlModel, o: ClassicOpts = {}): { body: strin
   // the state: a pill with a dot, then the value if there is one
   if (i.state || value) {
     const both = !!value && i.state;
-    const wordFit = fitSize(i.state ? word : value, [26, 22, 18], 116, 750);
-    body += `<circle cx="20" cy="${both ? 76 : 82}" r="5" fill="${active ? look.accent : !m.online ? P.crit : off ?? P.muted}"/>`;
-    body += text(32, both ? 84 : 90, wordFit.text, { size: wordFit.size, weight: 750, fill: active ? P.text : P.dim });
-    if (both) body += text(32 + Math.min(70, wordFit.text.length * wordFit.size * 0.62) + 6, 84, fit(value, 15, 60, 600), { size: 15, weight: 600, fill: active ? look.accent : off ?? P.muted });
+    const wrole: TextRole = i.state ? "value" : "detail";
+    // (1.3) bigger words sit a little lower, into the room over the name
+    // (where the name over the foot begins, at its size now: two lines unless the room is under it)
+    const nz = sized(T, "name", 16), withRoom = !!(m.room && m.showRoom && i.room);
+    const nameTop = !i.name ? 132 - sized(T, "room", 12.5) * 0.74 : withRoom ? 114 - (sized(T, "room", 12.5) - 12.5) * 0.76 - nz * 0.74 : nz > 20 ? 128 - nz * 0.74 : 113 - (nz - 16) * 1.12 - nz * 0.74;
+    const shift = T[wrole] > 1 ? Math.max(0, Math.min(8, (T[wrole] - 1) * 16, nameTop - 4 - (both ? 84 : 90))) : 0;
+    const wy = (both ? 84 : 90) + shift;
+    const wordFit = fitSized(T, wrole, i.state ? word : value, [26, 22, 18], T[wrole] === 1 ? 116 : 104, 750, i.icon ? roomAbove(wy, 62) : undefined);
+    const cy = (both ? 76 : 82) + (shift ? shift - (wordFit.size - 26) * 0.3 : 0);
+    body += `<circle cx="20" cy="${n(cy)}" r="5" fill="${active ? look.accent : !m.online ? P.crit : off ?? P.muted}"/>`;
+    body += text(32, wy, wordFit.text, { size: wordFit.size, weight: 750, fill: active ? P.text : P.dim, role: wrole });
+    const ds = sized(T, "detail", 15, 19);
+    const dx = 32 + Math.min(70, wordFit.text.length * wordFit.size * 0.62) + 6;
+    if (both) body += text(dx, wy, fit(value, ds, T.detail === 1 && shift === 0 ? 60 : Math.max(24, Math.min(60, 140 - dx)), 600), { size: ds, weight: 600, fill: active ? look.accent : off ?? P.muted, role: "detail" });
   }
-  body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name);
+  body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name, T);
   return { body, glow: active ? look.accent : undefined, edge: off };
 }
 
@@ -229,24 +264,28 @@ export function sparkline(values: number[], x: number, y: number, w: number, h: 
 
 export function renderReading(m: ReadingModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   if (!i.detail) m = { ...m, trend: null };
   let body = i.icon ? icon(m.icon, 14, 14, 20, m.accent, 2) : "";
-  if (i.name) body += text(i.icon ? 40 : 14, 29, fit(m.label, 13.5, (m.trend && m.online ? 66 : 92) + (i.icon ? 0 : 26), 600), { size: 13.5, weight: 600, fill: P.dim });
+  const ls = sized(T, "name", 13.5, 18), ly = 29 + (ls - 13.5) * 0.6;
+  if (i.name) body += text(i.icon ? 40 : 14, ly, fit(m.label, ls, (m.trend && m.online ? 66 : 92) + (i.icon ? 0 : 26), 600), { size: ls, weight: 600, fill: P.dim, role: "name" });
   const v = m.online ? m.value || "—" : "Offline";
-  const vf = fitSize(v, [44, 38, 32, 26, 20], m.unit ? 92 : 118, 750);
-  const unit = m.unit && m.online ? `<tspan dx="4" font-size="16" font-weight="600" fill="${P.dim}" letter-spacing="0">${esc(fit(m.unit, 16, 40, 600))}</tspan>` : "";
-  if (i.state) body += text(14, 82, vf.text, { size: vf.size, weight: 750, fill: m.online ? m.colour : P.crit, spacing: -0.5 }).replace(/<\/text>$/, unit + "</text>");
+  const us = sized(T, "unit", 16), uk = us / 16;
+  const vf = fitSized(T, "value", v, [44, 38, 32, 26, 20], m.unit ? 118 - 26 * uk : 118, 750, roomAbove(82, i.name ? ly + 6 : 14));
+  const unit = m.unit && m.online ? `<tspan dx="4" font-size="${us}" font-weight="600" fill="${P.dim}" letter-spacing="0"${roleAttr("unit")}>${esc(fit(m.unit, us, 40 * uk, 600))}</tspan>` : "";
+  if (i.state) body += text(14, 82, vf.text, { size: vf.size, weight: 750, fill: m.online ? m.colour : P.crit, spacing: -0.5, role: "value" }).replace(/<\/text>$/, unit + "</text>");
   if (m.trend && m.online) {
     const t = m.trend === "up" ? "trendUp" : m.trend === "down" ? "trendDown" : "trendFlat";
     body += icon(t, 110, 13, 20, m.trend === "flat" ? P.muted : m.colour, 2.2);
   }
   if (m.note && m.online && i.detail) {
-    body += text(14, 116, fit(m.note, 14, 116, 600), { size: 14, weight: 600, fill: P.dim });
+    const ns = sized(T, "detail", 14);
+    body += text(14, 116 + (ns - 14) * 0.5, fit(m.note, ns, 116, 600), { size: ns, weight: 600, fill: P.dim, role: "detail" });
     return keySvg(body);
   }
   if (!i.graph) return keySvg(body);
   if (i.scale) {
-    const g = graph(seriesFace(m.history, null, m.scale), i, 14, 98, 116, 30, m.colour, CLASSIC_INK, "spark");
+    const g = graph(seriesFace(m.history, null, m.scale), i, 14, 98, 116, 30, m.colour, CLASSIC_INK, "spark", T.detail);
     return keySvg(body + g.body, undefined, g.defs);
   }
   const sp = sparkline(m.history, 14, 98, 116, 30, m.colour, "spark", m.scale);
@@ -290,6 +329,7 @@ export function fmtTemp(v: number | null): string {
 
 export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const graphed = !!o.info && i.graph && (m.history?.length ?? 0) >= 2;
   const heat = o.accent ?? P.orange;
   const cx = 72, cy = 70, r = 50;
@@ -310,22 +350,29 @@ export function renderThermostat(m: ThermoModel, o: ClassicOpts = {}): string {
   }
   if (i.icon) body += m.heating ? icon("flame", 62, 26, 20, heat, 2) : icon("thermo", 62, 26, 20, off ?? P.muted, 2);
   const big = m.online ? fmtTemp(m.current) : "Offline";
-  const bf = fitSize(big, [34, 28, 22], 86, 750);
-  if (i.state) body += text(cx, 80, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit, anchor: "middle", spacing: -0.5 });
-  if (m.online && i.detail) body += text(cx, 99, "→ " + fmtTemp(m.target) + (m.unit ? " " + m.unit : ""), { size: 14, weight: 700, fill: accent, anchor: "middle" });
+  const bf = fitSized(T, "value", big, [34, 28, 22], 86, 750, roomAbove(80, i.icon ? 48 : 22));
+  if (i.state) body += text(cx, 80, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit, anchor: "middle", spacing: -0.5, role: "value" });
+  const ds = sized(T, "detail", 14, 19);
+  if (m.online && i.detail) {
+    const d = "→ " + fmtTemp(m.target) + (m.unit ? " " + m.unit : "");
+    body += text(cx, 99 + (ds - 14) * 0.6, T.detail === 1 ? d : fit(d, ds, 124, 700), { size: ds, weight: 700, fill: accent, anchor: "middle", role: "detail" });
+  }
   let gdefs = "";
   if (graphed) {
-    const g = graph(seriesFace(m.history!, m.target, { unit: m.unit }), i, 34, 104, 76, 14, m.heating ? heat : off ?? P.water, CLASSIC_INK, "hist");
+    const g = graph(seriesFace(m.history!, m.target, { unit: m.unit }), i, 34, 104, 76, 14, m.heating ? heat : off ?? P.water, CLASSIC_INK, "hist", T.detail);
     body += g.body;
     gdefs = g.defs;
   }
-  let bottom = [i.name ? m.name : "", i.mode ? m.mode : ""].filter(Boolean).join(" · ");
+  // (1.3) the name and the mode, each in its own size
+  const nz = sized(T, "name", 13), mz = sized(T, "mode", 13);
+  const nm = i.name ? m.name : "", md = i.mode ? m.mode : "";
+  let bottom: [string, TextRole][] = nm && md ? [[nm, "name"], [" · " + md, "mode"]] : nm ? [[nm, "name"]] : md ? [[md, "mode"]] : [];
   if (m.modeFirst && i.name && i.mode && m.mode) {
-    const room = 124 - textWidth(" · " + m.mode, 13, 600);
+    const room = 124 - textWidth(" · " + m.mode, mz, 600);
     // too little left for the name: the mode alone ("By hand until 14:30")
-    bottom = room < 48 ? m.mode : fit(m.name, 13, room, 600) + " · " + m.mode;
+    bottom = room < 48 ? [[m.mode, "mode"]] : [[fit(m.name, nz, room, 600), "name"], [" · " + m.mode, "mode"]];
   }
-  if (bottom) body += text(cx, 134, fit(bottom, 13, 124, 600), { size: 13, weight: 600, fill: P.dim, anchor: "middle" });
+  if (bottom.length) body += mixLine(cx, 134, bottom, [13], 124, { weight: 600, fill: P.dim, anchor: "middle" }, T, (z) => z * CAPF.name).svg;
   body += badges({ hold: m.hold, allowed: m.allowed });
   const defs = `<linearGradient id="arc" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="${off ?? P.info}"/><stop offset="1" stop-color="${m.heating ? heat : off ?? P.water}"/></linearGradient>` + gdefs;
   return keySvg(body, m.heating && m.online ? heat : undefined, defs, off);
@@ -349,6 +396,7 @@ export interface DimmerModel {
 
 export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const A = o.accent ?? P.warn;
   const active = m.on === true && m.online;
   let body = "";
@@ -361,20 +409,27 @@ export function renderDimmer(m: DimmerModel, o: ClassicOpts = {}): string {
   if (i.icon) body += tile(active ? "bulbOn" : "bulb", A, active, 14, 14, 46, off);
   body += badges({ online: m.online, hold: m.hold, allowed: m.allowed, taken: m.taken });
   const big = !m.online ? "Offline" : m.on === false ? "Off" : m.levelText || (m.on ? "On" : "—");
-  const bf = fitSize(big, [32, 26, 20], 120, 750);
-  if (i.state) body += text(14, 88, bf.text, { size: bf.size, weight: 750, fill: active ? P.text : P.dim });
+  const bf = fitSized(T, "value", big, [32, 26, 20], 120, 750, roomAbove(88, i.icon ? 62 : 14));
+  if (i.state) body += text(14, 88, bf.text, { size: bf.size, weight: 750, fill: active ? P.text : P.dim, role: "value" });
   // the level bar
   const w = 116;
   if (i.graph) {
     body += rect(14, 97, w, 7, 3.5, P.line);
     if (m.level !== null && m.online) body += rect(14, 97, Math.max(7, w * m.level), 7, 3.5, active ? "url(#lvl)" : off ?? P.muted);
   }
-  const nm = [i.name ? m.name : "", m.room && m.showRoom && i.room ? m.room : ""].filter(Boolean).join(" · ");
+  const nmName = i.name ? m.name : "", nmRoom = m.room && m.showRoom && i.room ? m.room : "";
+  const nm = [nmName, nmRoom].filter(Boolean).join(" · ");
   if (nm) {
-    if (o.fit && o.fit !== "cut") {
-      const nl = nameLines(nm, o.fit, 14.5, 118, 650, 2);
-      nl.lines.forEach((l, k) => (body += text(14, 129 - (nl.lines.length - 1 - k) * nl.size * 1.1 + (nl.lines.length > 1 ? 6 : 0), l, { size: nl.size, weight: 650, fill: P.text })));
-    } else body += text(14, 129, fit(nm, 14.5, 118, 650), { size: 14.5, weight: 650, fill: P.text });
+    // (1.3) the name and the room in one size while theirs agree; else each its own, on one line
+    const role: TextRole = nmName ? "name" : "room";
+    const tagged = (svg: string) => (nmName && nmRoom && roleAttr(role) ? svg.replace(roleAttr(role), ' data-role="name room"') : svg);
+    if (nmName && nmRoom && T.name !== T.room) {
+      body += mixLine(14, 129, [[nmName, "name"], [" · " + nmRoom, "room"]], [14.5], 118, { weight: 650, fill: P.text }, T, (z) => z * CAPF.name).svg;
+    } else if (o.fit && o.fit !== "cut") {
+      const z = sized(T, role, 14.5);
+      const nl = nameLines(nm, o.fit, z, 118, 650, z > 14.5 * 1.25 ? 1 : 2);
+      nl.lines.forEach((l, k) => (body += tagged(text(14, 129 - (nl.lines.length - 1 - k) * nl.size * 1.1 + (nl.lines.length > 1 ? 6 : 0), l, { size: nl.size, weight: 650, fill: P.text, role }))));
+    } else body += tagged(text(14, 129, fit(nm, sized(T, role, 14.5), 118, 650), { size: sized(T, role, 14.5), weight: 650, fill: P.text, role }));
   }
   const defs = `<radialGradient id="halo"><stop offset="0" stop-color="${A}" stop-opacity="0.55"/><stop offset="1" stop-color="${A}" stop-opacity="0"/></radialGradient>`
     + `<linearGradient id="lvl" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${o.accent ?? P.orange}"/><stop offset="1" stop-color="${o.accent ?? "#F2CC60"}"/></linearGradient>`;
@@ -414,16 +469,21 @@ export function blindsArt(x: number, y: number, w: number, h: number, position: 
 
 export function renderBlinds(m: BlindsModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const accent = o.accent ?? P.purple;
   const off = m.online && !m.moving && m.position !== null && m.position <= 0.5 ? o.offAccent : undefined;
   let body = `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F3A5F"/><stop offset="1" stop-color="#2D4F6E"/></linearGradient></defs>`;
   if (i.graph) body += blindsArt(84, 18, 44, 64, m.online ? m.position : null, off ?? accent);
   if (i.icon) body += icon(m.moving === "up" ? "up" : m.moving === "down" ? "down" : "blinds", 14, 16, 24, m.moving ? accent : off ?? P.dim, 2);
   const big = !m.online ? "Offline" : m.position === null ? "—" : m.position >= 99.5 ? "Open" : m.position <= 0.5 ? "Closed" : Math.round(m.position) + "%";
-  const bf = fitSize(big, [30, 24, 18], i.graph ? 70 : 116, 750);
-  if (i.state) body += text(14, 76, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit });
-  if (m.moving && i.detail) body += text(14, 96, m.moving === "up" ? "Opening…" : "Closing…", { size: 12.5, weight: 600, fill: accent });
-  body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name).replace(/y="113"/, 'y="115"');
+  const bf = fitSized(T, "value", big, [30, 24, 18], i.graph ? 70 : 116, 750, roomAbove(76, i.icon ? 42 : 14));
+  if (i.state) body += text(14, 76, bf.text, { size: bf.size, weight: 750, fill: m.online ? P.text : P.crit, role: "value" });
+  const ms = sized(T, "detail", 12.5, 17);
+  if (m.moving && i.detail) {
+    const w = m.moving === "up" ? "Opening…" : "Closing…";
+    body += text(14, 96 + (ms - 12.5) * 0.5, T.detail === 1 ? w : fit(w, ms, i.graph ? 70 : 116, 600), { size: ms, weight: 600, fill: accent, role: "detail" });
+  }
+  body += nameAndRoom(m.name, m.room, m.showRoom && i.room, o.fit, i.name, T).replace(/y="113"/, 'y="115"');
   body += badges({ hold: m.hold, allowed: m.allowed });
   return keySvg(body, m.moving ? accent : undefined, "", off);
 }
@@ -444,6 +504,7 @@ export interface SceneModel {
 
 export function renderScene(m: SceneModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const look = lookFor(m.kind, m.icon);
   const accent = m.flash === "fail" ? P.crit : m.flash === "ok" ? P.ok : o.accent ?? look.accent;
   const lit = !m.flash && m.on === true;
@@ -453,17 +514,23 @@ export function renderScene(m: SceneModel, o: ClassicOpts = {}): string {
   else if (i.icon) body += icon(look.icon, 52, 36, 40, accent, 1.9);
   if (!m.flash && i.state) body += `<circle cx="98" cy="82" r="11" fill="${lit ? accent : P.bg}" stroke="${accent}" stroke-width="1.8"/>` + icon(lit ? "check" : "play", 92.2, 76.2, 11.6, lit ? P.bg : accent, 2);
   if (!i.name) {
-    if (m.room && i.room) body += text(72, 128, fit(m.room, 13, 124, 500), { size: 13, weight: 500, fill: P.dim, anchor: "middle" });
+    const rz = sized(T, "room", 13);
+    if (m.room && i.room) body += text(72, 128, fit(m.room, rz, 124, 500), { size: rz, weight: 500, fill: P.dim, anchor: "middle", role: "room" });
     body += badges({ hold: m.hold, allowed: m.allowed });
     return keySvg(body, m.flash || lit ? accent : undefined);
   }
-  const lines = o.fit && o.fit !== "cut" ? nameLines(m.name, o.fit, 15.5, 124, 650, 2).lines : wrap2(m.name, 15.5, 124, 650);
+  const ns = sized(T, "name", 15.5), rs = sized(T, "room", 12, 15);
+  const two = ns <= 15.5 * 1.25;
+  const nl = o.fit && o.fit !== "cut" ? nameLines(m.name, o.fit, ns, 124, 650, two ? 2 : 1) : null;
+  const lines = nl ? nl.lines : two ? wrap2(m.name, ns, 124, 650) : [fit(m.name, ns, 124, 650)];
+  // (1.3) drawn at the size the lines were made for (at 100 % as before: the name's own size)
+  const lz = T.name === 1 || !nl ? ns : nl.size;
   if (lines.length === 2) {
-    body += text(72, 117, lines[0]!, { size: 15.5, weight: 650, fill: P.text, anchor: "middle" });
-    body += text(72, 135, lines[1]!, { size: 15.5, weight: 650, fill: P.text, anchor: "middle" });
+    body += text(72, 117 - (ns - 15.5) * 1.16, lines[0]!, { size: lz, weight: 650, fill: P.text, anchor: "middle", role: "name" });
+    body += text(72, 135, lines[1]!, { size: lz, weight: 650, fill: P.text, anchor: "middle", role: "name" });
   } else {
-    body += text(72, 121, lines[0]!, { size: 15.5, weight: 650, fill: P.text, anchor: "middle" });
-    if (m.room && i.room) body += text(72, 137, fit(m.room, 12, 124, 500), { size: 12, weight: 500, fill: P.dim, anchor: "middle" });
+    body += text(72, 121 - (m.room && i.room ? (rs - 12) * 0.76 : 0), lines[0]!, { size: lz, weight: 650, fill: P.text, anchor: "middle", role: "name" });
+    if (m.room && i.room) body += text(72, 137, fit(m.room, rs, 124, 500), { size: rs, weight: 500, fill: P.dim, anchor: "middle", role: "room" });
   }
   body += badges({ hold: m.hold, allowed: m.allowed });
   return keySvg(body, m.flash || lit ? accent : undefined);
@@ -481,14 +548,16 @@ export interface StatusModel {
 
 export function renderStatus(m: StatusModel, o: ClassicOpts = {}): string {
   const i = o.info ?? SHOW_ALL;
+  const T = o.ts ?? ONE;
   const c = m.level === "ok" ? o.accent ?? P.ok : m.level === "warn" ? P.warn : m.level === "crit" ? P.crit : P.muted;
   let body = i.icon ? icon(m.icon, 14, 14, 26, c, 2) : "";
   body += `<circle cx="122" cy="24" r="6" fill="${c}"/>`;
   if (m.level === "crit") body += `<circle cx="122" cy="24" r="10.5" fill="none" stroke="${c}" stroke-opacity="0.45" stroke-width="2"/>`;
-  const vf = fitSize(m.value, [44, 36, 28, 22], 118, 750);
-  if (i.state) body += text(14, 90, vf.text, { size: vf.size, weight: 750, fill: m.level === "unknown" ? P.dim : P.text, spacing: -0.5 });
-  if (i.detail) body += text(14, 113, fit(m.detail, 12.5, 118, 500), { size: 12.5, weight: 500, fill: c });
-  if (i.name) body += text(14, 132, o.fit && o.fit !== "cut" ? nameLines(m.label, "fit", 14, 118, 650, 1).lines[0]! : fit(m.label, 14, 118, 650), { size: 14, weight: 650, fill: P.dim });
+  const vf = fitSized(T, "value", m.value, [44, 36, 28, 22], 118, 750, roomAbove(90, i.icon ? 44 : 14));
+  if (i.state) body += text(14, 90, vf.text, { size: vf.size, weight: 750, fill: m.level === "unknown" ? P.dim : P.text, spacing: -0.5, role: "value" });
+  const ds = sized(T, "detail", 12.5, 16), ns = sized(T, "name", 14, 18);
+  if (i.detail) body += text(14, 113 + (ds - 12.5) * 0.3 - (ns - 14) * 0.5, fit(m.detail, ds, 118, 500), { size: ds, weight: 500, fill: c, role: "detail" });
+  if (i.name) body += text(14, 132, o.fit && o.fit !== "cut" ? nameLines(m.label, "fit", ns, 118, 650, 1).lines[0]! : fit(m.label, ns, 118, 650), { size: ns, weight: 650, fill: P.dim, role: "name" });
   return keySvg(body, m.level === "crit" || m.level === "warn" ? c : undefined);
 }
 

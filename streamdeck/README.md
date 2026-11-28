@@ -165,6 +165,22 @@ them; offline, the lock, the hand and the hold ring stay readable in all of them
 Stream Deck + the look, accent and choices reach the touch strip as far as its layout allows
 (its paper, the ink of its words, the icon's tile; a hidden part is left empty).
 
+### Text sizes (1.3)
+
+The Look section's **Text sizes** group sets the size of each kind of text on the key by itself,
+50-200 % in steps of 5: the **value** (the big state or number), the **name** (or the label), the
+**room**, the **detail** (the W under a light, a thermostat's target, the trend, "1/3 as set"),
+the **mode** (a thermostat's mode or preset, a room's heating), the **unit** beside the value and
+the **badge** (an unread count). Only the kinds the action draws are listed, each with a slider,
+- / + and *Reset*; *Reset all* clears them, and the key beside them redraws as you drag. Unset,
+everything is 100 % and every key draws exactly as before. Bigger text still has to fit: it
+shrinks back or is cut with "…" where its place on the key is too small, and nothing runs off the
+key in any look; on the Stream Deck + the strip's words follow, as tall as their place allows.
+**Use for every <action> key** stores the sizes as the default of that action type (in the
+plugin's global settings): every key of the type without sizes of its own then draws with them -
+on every page and profile - and *Clear the default* removes it. A key's own size wins over the
+default; 100 % is never stored, so a key follows the default for a size it has not changed.
+
 ### Hold to confirm
 
 When the administrator ticks **Hold to confirm** for a function (system actions always have

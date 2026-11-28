@@ -7,10 +7,13 @@ import { P } from "./palette.js";
 import {
   blindsArt, fmtTemp, lookFor, seriesFace, sparkline, type BlindsModel, type ControlModel, type DimmerModel, type ReadingModel, type ThermoModel,
 } from "./render.js";
-import { arcPath, dataUri, icon, n, rect, svgDoc, text } from "./svg.js";
+import { arcPath, dataUri, icon, n, rect, svgDoc, text, type TextRole } from "./svg.js";
 import { graph, type Info } from "./themes.js";
 
-export type Feedback = Record<string, string | number | { value?: string | number; color?: string; enabled?: boolean; opacity?: number }>;
+export type Feedback = Record<string, string | number | { value?: string | number; color?: string; enabled?: boolean; opacity?: number; font?: { size: number; weight: number } }>;
+
+/** (1.3) What each text of the strip's layouts is, for its size. */
+export const STRIP_ROLES: Readonly<Record<string, TextRole>> = { name: "name", top: "name", value: "value", sub: "detail", target: "detail", mode: "mode", span: "mode" };
 
 export function iconPix(name: string, colour: string, size: number, tint?: string): string {
   const pad = Math.round(size * 0.18);

@@ -6,8 +6,8 @@
  * comes from palette.ts or the user's own setting.
  */
 import { P } from "./palette.js";
-import { keySvg, sparkline, type ClassicOpts } from "./render.js";
-import { arcPath, dataUri, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth } from "./svg.js";
+import { fitSized, keySvg, sized, sparkline, type ClassicOpts } from "./render.js";
+import { arcPath, dataUri, fit, fitSize, icon, n, nameLines, ONE, rect, roleAttr, svgDoc, text, textWidth, type TextScale } from "./svg.js";
 import { graph, type Info } from "./themes.js";
 import { POWER_SCALE, type Summary, type Tone } from "./extra.js";
 import type { Feedback } from "./strip.js";
@@ -52,26 +52,29 @@ function badges(s: Summary, i: Info): { svg: string; count: number } {
 }
 
 /** The unread count on the corner of the tile, as an app's badge. */
-function cornerBadge(s: Summary, cx: number, cy: number): string {
+function cornerBadge(s: Summary, cx: number, cy: number, T: TextScale = ONE): string {
   if (!s.badge) return "";
   const t = s.badge > 99 ? "99+" : String(s.badge);
-  const w = Math.max(20, textWidth(t, 12, 800) + 11);
-  return rect(cx - w / 2 - 2, cy - 12, w + 4, 24, 12, P.bg) + rect(cx - w / 2, cy - 10, w, 20, 10, s.online ? s.accent : P.crit)
-    + text(cx, cy + 4.3, t, { size: 12, weight: 800, fill: P.bg, anchor: "middle" });
+  // (1.3) the count in the badge's own size, the pill round it
+  const z = sized(T, "badge", 12), d = z - 12;
+  const w = Math.max(20 + d, textWidth(t, z, 800) + 11);
+  return rect(cx - w / 2 - 2, cy - 12 - d / 2, w + 4, 24 + d, 12 + d / 2, P.bg) + rect(cx - w / 2, cy - 10 - d / 2, w, 20 + d, 10 + d / 2, s.online ? s.accent : P.crit)
+    + text(cx, cy + 4.3 + d * 0.36, t, { size: z, weight: 800, fill: P.bg, anchor: "middle", role: "badge" });
 }
 
 /** The big words with their unit as a smaller tspan. */
-function big(s: Summary, x: number, y: number, sizes: number[], maxW: number, fill: string, anchor: "start" | "middle" = "start"): string {
+function big(s: Summary, x: number, y: number, sizes: number[], maxW: number, fill: string, anchor: "start" | "middle" = "start", T: TextScale = ONE, cap?: number): string {
   const words = s.online ? s.state || "—" : "Offline";
   const unit = s.online && s.unit ? s.unit : "";
-  const uw = unit ? textWidth(unit, 15, 600) + 5 : 0;
-  const vf = fitSize(words, sizes, maxW - uw, 750);
-  const u = unit ? `<tspan dx="4" font-size="15" font-weight="600" fill="${P.dim}" letter-spacing="0">${escTspan(unit)}</tspan>` : "";
-  return text(x, y, vf.text, { size: vf.size, weight: 750, fill: s.online ? fill : P.crit, anchor, spacing: -0.5 }).replace(/<\/text>$/, u + "</text>");
+  const us = sized(T, "unit", 15), uk = us / 15;
+  const uw = unit ? textWidth(unit, us, 600) + 5 : 0;
+  const vf = fitSized(T, "value", words, sizes, maxW - uw, 750, cap);
+  const u = unit ? `<tspan dx="4" font-size="${n(us)}" font-weight="600" fill="${P.dim}" letter-spacing="0"${roleAttr("unit")}>${escTspan(unit, uk)}</tspan>` : "";
+  return text(x, y, vf.text, { size: vf.size, weight: 750, fill: s.online ? fill : P.crit, anchor, spacing: -0.5, role: "value" }).replace(/<\/text>$/, u + "</text>");
 }
 
-function escTspan(t: string): string {
-  return text(0, 0, fit(t, 15, 50, 600), { size: 1, fill: P.text }).replace(/^<text[^>]*>/, "").replace(/<\/text>$/, "");
+function escTspan(t: string, k = 1): string {
+  return text(0, 0, fit(t, 15 * k, 50 * k, 600), { size: 1, fill: P.text }).replace(/^<text[^>]*>/, "").replace(/<\/text>$/, "");
 }
 
 /** A bar of `n` segments, `lit` of them coloured (rooms heating, windows open). */
@@ -95,8 +98,8 @@ function bar(x: number, y: number, w: number, h: number, f: number | null, colou
 /** The name at the foot of the key: one line, shrunk or cut as the key's setting says. */
 function footName(s: Summary, o: ClassicOpts, i: Info, y = 132): string {
   if (!i.name || !s.name) return "";
-  const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", 13.5, 118, 650, 1);
-  return text(14, y, l.lines[0]!, { size: l.size, weight: 650, fill: P.dim });
+  const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", sized(o.ts ?? ONE, "name", 13.5, 18), 118, 650, 1);
+  return text(14, y, l.lines[0]!, { size: l.size, weight: 650, fill: P.dim, role: "name" });
 }
 
 /** Where a summary's small picture goes: beside the tile, under the badges (or across the top without a tile). */
@@ -108,14 +111,16 @@ interface Mini { x: number; w: number }
  */
 function summaryKey(s: Summary, o: ClassicOpts, mini: (i: Info, c: string, m: Mini) => string, detailFill?: string, detailSvg?: (i: Info, c: string) => string, corner = ""): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const c = toneColour(s);
   const b = badges(s, i);
-  let body = i.icon ? tile(s) + corner + cornerBadge(s, 58, 16) : "";
+  let body = i.icon ? tile(s) + corner + cornerBadge(s, 58, 16, T) : "";
   body += b.svg;
   if (s.online) body += mini(i, c, i.icon ? { x: 72, w: 58 } : { x: 14, w: 116 });
-  if (i.state) body += big(s, 14, 93, [38, 32, 27, 22], 118, s.active && s.online ? P.text : s.stateColour ?? (s.offAccent ?? P.dim));
+  if (i.state) body += big(s, 14, 93, [38, 32, 27, 22], 118, s.active && s.online ? P.text : s.stateColour ?? (s.offAccent ?? P.dim), "start", T, (93 - (i.icon ? 63 : 30)) / 0.74);
+  const dz = sized(T, "detail", 13, 17);
   if (detailSvg) body += detailSvg(i, c);
-  else if (i.detail && s.detail && s.online) body += text(14, 113, fit(s.detail, 13, 118, 600), { size: 13, weight: 600, fill: detailFill ?? (s.active ? c : P.dim) });
+  else if (i.detail && s.detail && s.online) body += text(14, 113 + (dz - 13) * 0.4, fit(s.detail, dz, 118, 600), { size: dz, weight: 600, fill: detailFill ?? (s.active ? c : P.dim), role: "detail" });
   body += footName(s, o, i);
   const glow = s.active && s.online ? s.accent : undefined;
   return keySvg(body, glow, "", !glow && s.online && s.offAccent ? s.offAccent : undefined);
@@ -140,9 +145,11 @@ export function renderExtra(s: Summary, o: ClassicOpts = {}): string {
           // the modem: a lamp and a word
           if (!i.graph) return "";
           const down = s.x.modemDown === true;
-          return `<circle cx="${n(m.x + 5)}" cy="51" r="4.5" fill="${down ? P.crit : P.ok}"/>` + text(m.x + 14, 55, down ? "modem off" : "modem", { size: 11.5, weight: 650, fill: down ? P.crit : P.muted });
+          const z = sized(o.ts ?? ONE, "mode", 11.5, 14);
+          return `<circle cx="${n(m.x + 5)}" cy="51" r="4.5" fill="${down ? P.crit : P.ok}"/>` + text(m.x + 14, 55, (o.ts ?? ONE).mode === 1 ? (down ? "modem off" : "modem") : fit(down ? "modem off" : "modem", z, m.w - 14, 650), { size: z, weight: 650, fill: down ? P.crit : P.muted, role: "mode" });
         }
-        return i.mode && s.mode ? text(m.x, 55, fit(s.mode, 12, m.w, 750), { size: 12, weight: 750, fill: s.badge ? s.accent : c }) : "";
+        const mz = sized(o.ts ?? ONE, "mode", 12, 15);
+        return i.mode && s.mode ? text(m.x, 55, fit(s.mode, mz, m.w, 750), { size: mz, weight: 750, fill: s.badge ? s.accent : c, role: "mode" }) : "";
       });
     case "security":
       return summaryKey(s, o, (i, c, m) => {
@@ -154,8 +161,9 @@ export function renderExtra(s: Summary, o: ClassicOpts = {}): string {
           for (let j = 0; j < k; j++) out += `<circle cx="${n(m.x + 4 + j * 11)}" cy="50" r="4" fill="${c}"/>`;
           return out;
         }
-        if (i.mode && s.mode) return text(m.x, 55, fit(s.mode, 11.5, m.w, 700), { size: 11.5, weight: 700, fill: c });
-        if (i.graph && s.x.guarding) return icon("shieldOk", m.x, 43, 14, s.offAccent ?? P.ok, 2) + text(m.x + 17, 55, fit("guard", 11.5, m.w - 17, 650), { size: 11.5, weight: 650, fill: P.muted });
+        const mz = sized(o.ts ?? ONE, "mode", 11.5, 14);
+        if (i.mode && s.mode) return text(m.x, 55, fit(s.mode, mz, m.w, 700), { size: mz, weight: 700, fill: c, role: "mode" });
+        if (i.graph && s.x.guarding) return icon("shieldOk", m.x, 43, 14, s.offAccent ?? P.ok, 2) + text(m.x + 17, 55, fit("guard", mz, m.w - 17, 650), { size: mz, weight: 650, fill: P.muted, role: "mode" });
         return "";
       }, s.active ? P.dim : undefined);
     case "heatgroup":
@@ -167,9 +175,11 @@ export function renderExtra(s: Summary, o: ClassicOpts = {}): string {
         const md = i.mode ? s.mode : "";
         const d = i.detail ? s.detail : "";
         if (!s.online || (!md && !d)) return "";
-        const mw = md ? Math.min(80, textWidth(md, 13.5, 750)) : 0;
-        let out = md ? text(14, 113, fit(md, 13.5, 80, 750), { size: 13.5, weight: 750, fill: s.x.mode === "mixed" ? P.dim : s.active ? c : s.offAccent ?? P.orange }) : "";
-        if (d) out += text(md ? 14 + mw + 8 : 14, 113, fit(d, 12, 118 - (md ? mw + 8 : 0), 600), { size: 12, weight: 600, fill: P.dim });
+        const T = o.ts ?? ONE;
+        const mz = sized(T, "mode", 13.5, 17), dz = sized(T, "detail", 12, 15);
+        const mw = md ? Math.min(80, textWidth(md, mz, 750)) : 0;
+        let out = md ? text(14, 113, fit(md, mz, 80, 750), { size: mz, weight: 750, fill: s.x.mode === "mixed" ? P.dim : s.active ? c : s.offAccent ?? P.orange, role: "mode" }) : "";
+        if (d) out += text(md ? 14 + mw + 8 : 14, 113, fit(d, dz, 118 - (md ? mw + 8 : 0), 600), { size: dz, weight: 600, fill: P.dim, role: "detail" });
         return out;
       });
     case "openings": {
@@ -205,32 +215,35 @@ function batteryBar(x: number, y: number, w: number, h: number, f: number, colou
 /** House power: the figure big, today's kWh under it, the graph over its span at the foot. */
 function powerKey(s: Summary, o: ClassicOpts): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const lit = s.active && s.online;
   const c = lit ? s.accent : s.offAccent && s.online ? s.offAccent : P.muted;
   const b = badges(s, i);
   let body = i.icon ? icon("bolt", 13, 13, 22, s.online ? (lit ? s.accent : c) : P.crit, 2.1) : "";
   const nameW = 116 - (i.icon ? 26 : 0) - b.count * 22;
   if (i.name && s.name) {
-    const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", 13.5, nameW, 600, 1);
-    body += text(i.icon ? 40 : 14, 29, l.lines[0]!, { size: l.size, weight: 600, fill: P.dim });
+    const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", sized(T, "name", 13.5, 18), nameW, 600, 1);
+    body += text(i.icon ? 40 : 14, 29 + (sized(T, "name", 13.5, 18) - 13.5) * 0.6, l.lines[0]!, { size: l.size, weight: 600, fill: P.dim, role: "name" });
   }
   body += b.svg;
   const gOn = i.graph && s.online;
-  if (i.state) body += big(s, 14, gOn ? 74 : 86, gOn ? [42, 36, 30, 24] : [48, 42, 36, 28], 118, lit ? P.text : s.online ? P.dim : P.crit);
+  if (i.state) body += big(s, 14, gOn ? 74 : 86, gOn ? [42, 36, 30, 24] : [48, 42, 36, 28], 118, lit ? P.text : s.online ? P.dim : P.crit, "start", T, ((gOn ? 74 : 86) - 40) / 0.74);
   const det = i.detail && s.detail && s.online;
   const span = gOn && i.mode ? s.mode : "";
   if (det) {
     // "12.4 kWh today", or just "12.4 kWh" beside the span
     const w = span ? 92 : 118;
-    const d = textWidth(s.detail, 13, 650) <= w ? s.detail : s.detail.replace(/ today$/, "");
-    body += text(14, gOn ? 93 : 110, fit(d, 13, w, 650), { size: 13, weight: 650, fill: lit ? s.accent : P.dim });
+    const dz = sized(T, "detail", 13, 16);
+    const d = textWidth(s.detail, dz, 650) <= w ? s.detail : s.detail.replace(/ today$/, "");
+    body += text(14, gOn ? 93 : 110, fit(d, dz, w, 650), { size: dz, weight: 650, fill: lit ? s.accent : P.dim, role: "detail" });
   }
   // the graph's span at the right of the line over it
-  if (span) body += text(130, 93, span, { size: 11, weight: 700, fill: P.muted, anchor: "end" });
+  const sz = sized(T, "mode", 11, 14);
+  if (span) body += text(130, 93, T.mode === 1 ? span : fit(span, sz, 24, 700), { size: sz, weight: 700, fill: P.muted, anchor: "end", role: "mode" });
   let defs = "";
   if (gOn) {
     const top = det || span ? 100 : 92;
-    const g = i.scale ? graph({ ...faceLite(s), kind: "reading" }, i, 14, top, 116, 128 - top, c, INK, "pw") : sparkline(s.series, 14, top, 116, 128 - top, c, "pw", POWER_SCALE);
+    const g = i.scale ? graph({ ...faceLite(s), kind: "reading" }, i, 14, top, 116, 128 - top, c, INK, "pw", T.detail) : sparkline(s.series, 14, top, 116, 128 - top, c, "pw", POWER_SCALE);
     body += g.body;
     defs = g.defs;
   }
@@ -247,6 +260,7 @@ function faceLite(s: Summary) {
 /** Away / Home: the house (or the suitcase) big in a ring, the word under it, what is still on below. */
 function awayKey(s: Summary, o: ClassicOpts): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const lit = s.active && s.online;
   const c = toneColour(s);
   const b = badges(s, i);
@@ -261,24 +275,26 @@ function awayKey(s: Summary, o: ClassicOpts): string {
   const top = i.icon ? cy + 50 : 70;
   if (i.state) {
     const words = s.online ? s.state : "Offline";
-    const vf = fitSize(words, [26, 22, 18], 124, 750);
-    body += text(72, top, vf.text, { size: vf.size, weight: 750, fill: !s.online ? P.crit : lit ? P.text : s.stateColour ?? P.dim, anchor: "middle" });
+    const vf = fitSized(T, "value", words, [26, 22, 18], 124, 750, i.icon ? (top - cy - 32) / 0.74 : undefined);
+    body += text(72, top, vf.text, { size: vf.size, weight: 750, fill: !s.online ? P.crit : lit ? P.text : s.stateColour ?? P.dim, anchor: "middle", role: "value" });
   }
   if (i.detail && s.online) {
     // what is still on: a bulb and its count, a flame and its count
     const lights = Number(s.x.lights) || 0, heat = Number(s.x.heating) || 0;
     const parts: [string, string, string][] = [["bulbOn", String(lights), lights ? P.warn : P.muted], ["flame", String(heat), heat ? P.orange : P.muted]];
-    const y = top + 19;
-    const widths = parts.map(([, t]) => 15 + textWidth(t, 13, 700));
+    const dz = sized(T, "detail", 13, 16), mz = sized(T, "mode", 11, 13);
+    const y = top + 19 + (dz - 13) * 0.4;
+    const widths = parts.map(([, t]) => 15 + textWidth(t, dz, 700));
     const total = widths.reduce((a, w) => a + w, 0) + 14 * (parts.length - 1);
     let x = 72 - total / 2;
     parts.forEach(([ic, t, col], k) => {
-      body += icon(ic, x, y - 11, 14, col, 2) + text(x + 16, y, t, { size: 13, weight: 700, fill: col === P.muted ? P.muted : P.text });
+      body += icon(ic, x, y - 11, 14, col, 2) + text(x + 16, y, t, { size: dz, weight: 700, fill: col === P.muted ? P.muted : P.text, role: "detail" });
       x += widths[k]! + 14;
     });
-    if (s.mode) body += text(72, y + 15, fit(s.mode, 11, 120, 600), { size: 11, weight: 600, fill: c, anchor: "middle" });
+    if (s.mode) body += text(72, Math.min(140, y + 15 + (mz - 11) * 0.5), fit(s.mode, mz, 120, 600), { size: mz, weight: 600, fill: c, anchor: "middle", role: "mode" });
   }
-  if (hasName && !(i.detail && s.mode && s.online)) body += text(72, 137, fit(s.name, 12, 124, 600), { size: 12, weight: 600, fill: P.muted, anchor: "middle" });
+  const nz = sized(T, "name", 12, 15);
+  if (hasName && !(i.detail && s.mode && s.online)) body += text(72, 137, fit(s.name, nz, 124, 600), { size: nz, weight: 600, fill: P.muted, anchor: "middle", role: "name" });
   body += b.svg;
   return keySvg(body, lit ? s.accent : undefined, "", !lit && s.online && s.offAccent ? s.offAccent : undefined);
 }
@@ -286,6 +302,7 @@ function awayKey(s: Summary, o: ClassicOpts): string {
 /** Timer: a ring that drains as the minutes go, the countdown in it; idle, the minutes a press starts. */
 function timerKey(s: Summary, o: ClassicOpts): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const run = s.x.running === true && s.online;
   const c = run ? s.accent : s.online && s.offAccent ? s.offAccent : P.muted;
   const hasName = (i.name && !!s.name) || (i.room && !!s.room);
@@ -313,18 +330,26 @@ function timerKey(s: Summary, o: ClassicOpts): string {
   if (i.icon) body += icon("stopwatch", cx - 9, cy - (i.state ? 33 : 12), 18, run ? c : s.online ? c : P.crit, 2);
   if (i.state) {
     const words = s.online ? s.state : "Offline";
-    const vf = fitSize(words, run ? [28, 24, 20, 17] : [34, 28, 22], r * 1.62, 750);
-    body += text(cx, cy + (run ? 9 : 10), vf.text, { size: vf.size, weight: 750, fill: !s.online ? P.crit : run ? P.text : P.dim, anchor: "middle", spacing: -0.5 });
+    const vy = cy + (run ? 9 : 10);
+    const vf = fitSized(T, "value", words, run ? [28, 24, 20, 17] : [34, 28, 22], r * 1.62, 750, (vy - (i.icon ? cy - 14 : cy - r + 14)) / 0.74);
+    body += text(cx, vy, vf.text, { size: vf.size, weight: 750, fill: !s.online ? P.crit : run ? P.text : P.dim, anchor: "middle", spacing: -0.5, role: "value" });
     if (s.online && (run ? i.detail : true)) {
+      // running, the time it goes off (a detail); idle, "min" - the unit of the minutes over it
       const sub = run ? s.detail.replace(/^off at /, "→ ") : "min";
-      body += text(cx, cy + 26, fit(sub, 12, r * 1.4, 650), { size: 12, weight: 650, fill: run ? c : P.muted, anchor: "middle" });
+      const role = run ? "detail" : "unit";
+      const z = sized(T, role, 12, 16);
+      body += text(cx, cy + 26 + (z - 12) * 0.6, fit(sub, z, r * 1.4, 650), { size: z, weight: 650, fill: run ? c : P.muted, anchor: "middle", role });
     }
-  } else if (i.detail && s.online) body += text(cx, cy + 6, fit(s.detail, 12, r * 1.5, 650), { size: 12, weight: 650, fill: run ? c : P.dim, anchor: "middle" });
+  } else if (i.detail && s.online) {
+    const z = sized(T, "detail", 12, 16);
+    body += text(cx, cy + 6, fit(s.detail, z, r * 1.5, 650), { size: z, weight: 650, fill: run ? c : P.dim, anchor: "middle", role: "detail" });
+  }
   if (hasName) {
     // the switch's name (its room only when the name is not shown: the key has one line for it)
     const t = i.name && s.name ? s.name : s.room ?? "";
-    const l = nameLines(t, o.fit && o.fit !== "cut" ? "fit" : "cut", 13.5, 124, 650, 1);
-    body += text(72, 136, l.lines[0]!, { size: l.size, weight: 650, fill: P.text, anchor: "middle" });
+    const role = i.name && s.name ? "name" : "room";
+    const l = nameLines(t, o.fit && o.fit !== "cut" ? "fit" : "cut", sized(T, role, 13.5, 17), 124, 650, 1);
+    body += text(72, 136, l.lines[0]!, { size: l.size, weight: 650, fill: P.text, anchor: "middle", role });
   }
   body += badges(s, i).svg;
   if (!run && s.online && s.x.swOn) body += `<circle cx="20" cy="20" r="5" fill="${P.ok}"/>`;
@@ -335,29 +360,32 @@ function timerKey(s: Summary, o: ClassicOpts): string {
 /** Room: its name, the temperature big, humidity and what is on, its heating at the foot. */
 function roomKey(s: Summary, o: ClassicOpts): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const lit = s.active && s.online;
   const calling = s.x.calling === true;
   const c = lit ? s.accent : s.online && s.offAccent ? s.offAccent : P.info;
   const b = badges(s, i);
   let body = i.icon ? icon(s.icon, 13, 12, 22, s.online ? c : P.crit, 2) : "";
   if (i.name && s.name) {
-    const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", 14, 116 - (i.icon ? 26 : 0) - b.count * 22, 650, 1);
-    body += text(i.icon ? 40 : 14, 29, l.lines[0]!, { size: l.size, weight: 650, fill: P.text });
+    const nz = sized(T, "name", 14, 18);
+    const l = nameLines(s.name, o.fit && o.fit !== "cut" ? "fit" : "cut", nz, 116 - (i.icon ? 26 : 0) - b.count * 22, 650, 1);
+    body += text(i.icon ? 40 : 14, 29 + (nz - 14) * 0.6, l.lines[0]!, { size: l.size, weight: 650, fill: P.text, role: "name" });
   }
   body += b.svg;
-  if (i.state) body += big({ ...s, unit: s.unit ? "°C" : "" }, 14, 76, [44, 38, 32, 26], 118, s.online ? P.text : P.crit);
-  let y = 99;
+  if (i.state) body += big({ ...s, unit: s.unit ? "°C" : "" }, 14, 76, [44, 38, 32, 26], 118, s.online ? P.text : P.crit, "start", T, (76 - 38) / 0.74);
+  const dz = sized(T, "detail", 13, 16);
+  let y = 99 + (dz - 13) * 0.5;
   if (i.detail && s.online) {
     let x = 14;
     const h = s.x.h as number | null;
     if (h !== null) {
-      body += icon("drop", x, y - 12, 15, P.water, 2) + text(x + 17, y, Math.round(h) + " %", { size: 13, weight: 650, fill: P.text });
-      x += 17 + textWidth(Math.round(h) + " %", 13, 650) + 12;
+      body += icon("drop", x, y - 12, 15, P.water, 2) + text(x + 17, y, Math.round(h) + " %", { size: dz, weight: 650, fill: P.text, role: "detail" });
+      x += 17 + textWidth(Math.round(h) + " %", dz, 650) + 12;
     }
     const sAll = Number(s.x.sAll) || 0;
     if (sAll) {
       const on = Number(s.x.sOn) || 0;
-      body += icon(on ? "bulbOn" : "bulb", x, y - 12, 15, on ? P.warn : P.muted, 2) + text(x + 17, y, on + "/" + sAll, { size: 13, weight: 650, fill: on ? P.text : P.dim });
+      body += icon(on ? "bulbOn" : "bulb", x, y - 12, 15, on ? P.warn : P.muted, 2) + text(x + 17, y, on + "/" + sAll, { size: dz, weight: 650, fill: on ? P.text : P.dim, role: "detail" });
     }
     y += 20;
   }
@@ -365,7 +393,7 @@ function roomKey(s: Summary, o: ClassicOpts): string {
     const fy = i.detail ? 126 : 112;
     body += rect(14, fy - 15, 116, 22, 11, calling ? P.orange : P.panel2, `fill-opacity="${calling ? 0.18 : 1}" stroke="${calling ? P.orange : P.line}" stroke-opacity="${calling ? 0.6 : 1}" stroke-width="1.2"`)
       + icon(calling ? "flame" : "thermostat", 20, fy - 11.5, 15, calling ? P.orange : P.muted, 2)
-      + text(39, fy + 0.5, fitSize(s.mode, [12.5, 11.5, 10.5], 88, 650).text, { size: fitSize(s.mode, [12.5, 11.5, 10.5], 88, 650).size, weight: 650, fill: calling ? P.text : P.dim });
+      + text(39, fy + 0.5, fitSized(T, "mode", s.mode, [12.5, 11.5, 10.5], 88, 650, 15).text, { size: fitSized(T, "mode", s.mode, [12.5, 11.5, 10.5], 88, 650, 15).size, weight: 650, fill: calling ? P.text : P.dim, role: "mode" });
   }
   return keySvg(body, lit ? s.accent : undefined, "", !lit && s.online && s.offAccent ? s.offAccent : undefined);
 }
@@ -373,21 +401,24 @@ function roomKey(s: Summary, o: ClassicOpts): string {
 /** SMS, Write new: the send mark big in a ring, "New SMS", and whom to. */
 function composeKey(s: Summary, o: ClassicOpts): string {
   const i = o.info ?? SHOW;
+  const T = o.ts ?? ONE;
   const c = !s.online ? P.crit : s.active || !s.offAccent ? s.accent : s.offAccent;
   const lit = s.active && s.online;
   let body = "";
   if (i.icon) {
     body += `<circle cx="72" cy="50" r="32" fill="${c}" fill-opacity="${lit ? 0.3 : 0.14}" stroke="${c}" stroke-opacity="${lit ? 0.95 : 0.55}" stroke-width="2"/>`;
     body += icon("send", 52, 30, 40, c, 1.9);
-    body += cornerBadge(s, 98, 26);
+    body += cornerBadge(s, 98, 26, T);
   }
-  const lines: string[] = [];
-  if (i.name && s.name) lines.push(s.name);
-  if (i.detail && s.detail && s.online) lines.push(s.detail);
-  if (!s.online) lines.unshift("Offline");
+  const lines: [string, "name" | "detail" | "value"][] = [];
+  if (i.name && s.name) lines.push([s.name, "name"]);
+  if (i.detail && s.detail && s.online) lines.push([s.detail, "detail"]);
+  if (!s.online) lines.unshift(["Offline", "value"]);
   const y0 = i.icon ? 108 : 72;
-  lines.slice(0, 2).forEach((l, k) => {
-    body += text(72, y0 + k * 19, fit(l, k === 0 ? 15.5 : 12.5, 126, k === 0 ? 700 : 600), { size: k === 0 ? 15.5 : 12.5, weight: k === 0 ? 700 : 600, fill: k === 0 ? (s.online ? P.text : P.crit) : P.dim, anchor: "middle" });
+  const z0 = lines[0] ? sized(T, lines[0][1], 15.5, 20) : 15.5;
+  lines.slice(0, 2).forEach(([l, role], k) => {
+    const z = k === 0 ? z0 : sized(T, role, 12.5, 16);
+    body += text(72, y0 + k * 19 + (k === 0 ? (z0 - 15.5) * 0.3 : (z0 - 15.5) * 0.5 + (z - 12.5) * 0.6), fit(l, z, 126, k === 0 ? 700 : 600), { size: z, weight: k === 0 ? 700 : 600, fill: k === 0 ? (s.online ? P.text : P.crit) : P.dim, anchor: "middle", role });
   });
   body += badges(s, i).svg;
   return keySvg(body, lit ? c : undefined, "", !lit && s.online && s.offAccent ? s.offAccent : undefined);

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cleanHex } from "./colour.js";
-import { cleanRecipient } from "./kinds.js";
+import { cleanRecipient, NEW_KINDS } from "./kinds.js";
+import { textSizesOf } from "./textsizes.js";
 import { normalizePin, type Pins } from "./tls.js";
 
 /**
@@ -8,7 +9,7 @@ import { normalizePin, type Pins } from "./tls.js";
  * stored as a DPAPI blob (`tokenBlob`); everything else here is not secret.
  */
 export interface GlobalSettings {
-  [k: string]: string | number | boolean | Pins | null | undefined;
+  [k: string]: string | number | boolean | Pins | TextDefaults | null | undefined;
   /** The dashboard address as the user typed it (normalised). */
   address?: string;
   /** Random 32 hex, made once per installation. */
@@ -17,7 +18,13 @@ export interface GlobalSettings {
   tokenBlob?: string;
   /** host:port -> SHA-256 of a certificate the user chose to trust. */
   pins?: Pins;
+  /** (1.3) Text sizes each action type draws with, unless a key sets its own: kind -> { textValue: 150, ... }. */
+  textSizes?: TextDefaults;
 }
+
+export type TextDefaults = Record<string, Record<string, number>>;
+/** (1.3) The action types (as the views name them) that may have default text sizes. */
+export const ACTION_KINDS = ["control", "reading", "thermostat", "dimmer", "blinds", "scene", "status", ...NEW_KINDS, "computed"] as const;
 
 export function normalizeGlobal(raw: unknown): GlobalSettings {
   const o = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -33,6 +40,16 @@ export function normalizeGlobal(raw: unknown): GlobalSettings {
     }
   }
   g.pins = pins;
+  if (o.textSizes && typeof o.textSizes === "object" && !Array.isArray(o.textSizes)) {
+    const t: TextDefaults = {};
+    for (const k of ACTION_KINDS) {
+      const v = Object.prototype.hasOwnProperty.call(o.textSizes, k) ? (o.textSizes as Record<string, unknown>)[k] : undefined;
+      if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+      const sz = textSizesOf(v as Record<string, unknown>);
+      if (Object.keys(sz).length) t[k] = sz;
+    }
+    if (Object.keys(t).length) g.textSizes = t;
+  }
   return g;
 }
 
@@ -97,7 +114,17 @@ export interface ActionSettings {
   smsTo?: string[];
   /** (1.3) SMS status: how long a held press hushes the alerts, 15-240 minutes. */
   muteMinutes?: number;
+  /** (1.3) Text sizes, each role its own: a percentage 50-200 in steps of 5; none = 100 (or this action type's default). */
+  textValue?: number;
+  textName?: number;
+  textRoom?: number;
+  textDetail?: number;
+  textMode?: number;
+  textUnit?: number;
+  textBadge?: number;
 }
+
+export { cleanTextSize, TEXT_KEYS, TEXT_MAX, TEXT_MIN, TEXT_STEP, textScaleOf, textSizesOf } from "./textsizes.js";
 
 /** (1.3) The SMS key's modes, and the item each one is. */
 export const SMS_MODES = ["last", "compose", "status"] as const;
@@ -200,5 +227,7 @@ export function normalizeAction(raw: unknown): ActionSettings {
   }
   const mute = finiteOrNull(o.muteMinutes);
   if (mute !== null && (MUTE_MINUTES as readonly number[]).includes(mute)) s.muteMinutes = mute;
+  // (1.3) the text sizes: 50-200 in steps of 5; 100, the default, is not kept
+  Object.assign(s, textSizesOf(o));
   return s;
 }

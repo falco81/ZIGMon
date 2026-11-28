@@ -177,6 +177,22 @@ V nastavení každé akce je oddíl **Look**:
 Na **Stream Decku +** se vzhled, barva a volby promítnou i do dotykové lišty, kam to rozvržení
 dovolí: podklad lišty, barvy písma, dlaždice ikony, skryté části zůstanou prázdné.
 
+### Velikost textů (1.3)
+
+Ve vzhledu je skupina **Text sizes**: velikost každého druhu textu zvlášť, 50-200 % po 5 %.
+**Value** je velký stav nebo hodnota („0 W", „23.6", „On"), **Name** jméno (nebo popisek),
+**Room** místnost, **Detail** druhá hodnota (W pod světlem, cílová teplota, trend, „1/3 as
+set"), **Mode** režim nebo předvolba („Comfort", „By hand until 14:30"), **Unit** jednotka vedle
+hodnoty („°C", „%", „W") a **Badge** odznak s počtem nepřečtených. Nabídnou se jen ty, které
+daná akce kreslí - každý má posuvník, − / +, procenta a *Reset*; *Reset all* vrátí všechny.
+Tlačítko vedle se při tažení hned překresluje. Bez nastavení je všechno 100 % a tlačítka vypadají
+přesně jako dřív. Větší text se musí vejít: kde na něj není místo, zase se zmenší nebo se zkrátí
+třemi tečkami, a v žádném vzhledu nepřeteče z tlačítka; na Stream Decku + se zvětší i texty lišty,
+nejvýš na výšku svého místa. Tlačítko **Use for every … key** uloží velikosti jako výchozí pro
+všechna tlačítka téže akce (v globálním nastavení pluginu, tedy i na jiných stránkách a profilech)
+a *Clear the default* je zase smaže. Vlastní velikost tlačítka má přednost; 100 % se neukládá,
+takže tlačítko, které velikost nezměnilo, se řídí výchozí hodnotou akce.
+
 ### Potvrzení podržením
 
 Když administrátor u funkce zaškrtne **Potvrdit podržením** (systémové akce ho mají vždy),

@@ -17,11 +17,11 @@ import {
   type StatusModel, type ThermoModel,
 } from "./render.js";
 import { levelIn, quantityOf, readingLevel, seriesScale } from "./scale.js";
-import { normalizeAction, ROOM_MODES, type ActionSettings } from "./settings.js";
+import { normalizeAction, ROOM_MODES, textScaleOf, type ActionSettings } from "./settings.js";
 import { ALL_INFO, renderDetails, renderLook, THEMES, type Face, type Info } from "./themes.js";
-import type { NameFit } from "./svg.js";
+import { unscaled, type NameFit, type TextScale } from "./svg.js";
 import {
-  blindsFeedback, controlFeedback, iconPix, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
+  blindsFeedback, controlFeedback, iconPix, STRIP_ROLES, pillArt, dimmerFeedback, holdArt, noticeFeedback, pairFeedback, readingFeedback, thermoFeedback, type Feedback,
 } from "./strip.js";
 import { dataUri, svgDoc } from "./svg.js";
 import { factsOf, faceOfSummary, recipientWord, summaryOf, type Member, type Summary } from "./extra.js";
@@ -193,6 +193,8 @@ export class ActionView implements HubView {
   private forced: "on" | "off" | null = null;
   /** A look other than Classic was drawn on this dial's strip: Classic must put its colours back. */
   private styledStrip = false;
+  /** (1.3) Text sizes other than 100 % were sent to this dial's strip: going back, the layout's own are sent once. */
+  private sizedStrip = false;
   /** (1.2) "Next mode" pressed round: the mode stepped to so far, shown at once and sent only once
    * the presses stop - going round to Max no longer switches the room through Off on the way. */
   private cycle: { attr: string; value: string; id: string } | null = null;
@@ -320,8 +322,15 @@ export class ActionView implements HubView {
   }
 
   private classicOpts(): ClassicOpts {
-    if (this.plain()) return {};
-    return { info: this.info(), accent: this.accentOverride(), fit: (this.settings.nameFit as NameFit | undefined) ?? "cut", offAccent: this.offOverride() };
+    const ts = this.textScale();
+    if (this.plain()) return ts ? { ts } : {};
+    return { info: this.info(), accent: this.accentOverride(), fit: (this.settings.nameFit as NameFit | undefined) ?? "cut", offAccent: this.offOverride(), ...(ts ? { ts } : {}) };
+  }
+
+  /** (1.3) The size of each kind of text: this key's own, else its action type's default; undefined when all are 100 %. */
+  textScale(): TextScale | undefined {
+    const t = textScaleOf(this.settings, this.hub.textDefaults?.(this.kind));
+    return unscaled(t) ? undefined : t;
   }
 
   /** The On colour the user chose (by name, or their own #RRGGBB); none = the item's own. */
@@ -408,6 +417,7 @@ export class ActionView implements HubView {
       } else if (this.holdProgress !== null) {
         fb.value = { value: this.holdProgress >= 1 ? "Confirmed" : "Hold… " + Math.round(this.holdProgress * 100) + "%", color: P.text };
       }
+      fb = this.sizeStrip(fb, layout);
       const key = JSON.stringify(fb);
       if (force || key !== this.lastFeedback) {
         this.lastFeedback = key;
@@ -713,7 +723,7 @@ export class ActionView implements HubView {
   }
 
   private keyImage(): string {
-    if (this.theme !== "classic") return renderLook(this.theme, this.face(), { info: this.info(), fit: this.nameFit() });
+    if (this.theme !== "classic") return renderLook(this.theme, this.face(), { info: this.info(), fit: this.nameFit(), ts: this.textScale() });
     const o = this.classicOpts();
     if (isNewKind(this.kind)) return renderExtra(this.summary(), o);
     switch (this.kind) {
@@ -1070,6 +1080,28 @@ export class ActionView implements HubView {
         ? iconPix(f.icon, t === "light" ? (lit ? c : X.inkDim) : P.bg, size, t === "light" && lit ? c : undefined)
         : t === "contrast" ? iconPix(f.icon, off ?? X.white, size) : t === "minimal" || t === "mono" ? iconPix(f.icon, lit ? c : off ?? P.muted, size)
         : t === "aurora" && lit ? iconPix(f.icon, X.white, size) : iconPix(f.icon, lit ? c : off ?? P.dim, size, lit ? c : off);
+    }
+    return out;
+  }
+
+  /**
+   * (1.3) The text sizes on the strip: each text item of the layout in its role's size (Stream Deck
+   * draws the text; a bigger size is held to the item's height and the rest is ellipsized there).
+   * Never set, nothing is added; set and then all back to 100 %, the layout's sizes are sent once.
+   */
+  private sizeStrip(fb: Feedback, layout: keyof typeof LAYOUTS): Feedback {
+    const t = this.textScale();
+    if (!t && !this.sizedStrip) return fb;
+    this.sizedStrip = !!t;
+    const out: Feedback = { ...fb };
+    for (const it of LAYOUTS[layout]!.items) {
+      if (it.type !== "text" || !it.font || !(it.key in out)) continue;
+      const role = STRIP_ROLES[it.key] ?? "detail";
+      const k = t ? t[role] : 1;
+      const size = Math.max(6, Math.round(Math.min(it.font.size * k, k > 1 ? Math.max(it.font.size, it.rect[3]) : it.font.size * k)));
+      const v = out[it.key];
+      const o = typeof v === "object" && v !== null ? v : { value: v as string | number };
+      out[it.key] = { ...o, font: { size, weight: it.font.weight } };
     }
     return out;
   }

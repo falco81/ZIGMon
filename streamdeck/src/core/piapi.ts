@@ -16,7 +16,9 @@ export type PiRequest =
   | { t: "unpin" }
   | { t: "disconnect" }
   | { t: "retry" }
-  | { t: "update" };
+  | { t: "update" }
+  /** (1.3) This action type's default text sizes ({ textValue: 150, ... }; {} clears them). */
+  | { t: "textDefaults"; sizes: Record<string, number> };
 
 export type PiReply = Record<string, unknown> & { t: string };
 
@@ -52,6 +54,11 @@ export function awayChoices(hub: Hub): Record<string, unknown>[] {
   }));
 }
 
+/** (1.3) The text sizes every key of this action type draws with unless it sets its own. */
+export function textDefaultsMessage(hub: Hub, kind: ActionKind): PiReply {
+  return { t: "textDefaults", kind, sizes: hub.textDefaults(kind) ?? {} };
+}
+
 /** What a preview function gives: the key as it is, and (1.1) the Look section's pictures. */
 export type Preview = () => string | { image: string; looks?: unknown; facts?: unknown } | null;
 
@@ -67,7 +74,7 @@ export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview
   const m = raw as Record<string, unknown>;
   switch (m.t) {
     case "hello":
-      return [statusMessage(hub), catalogMessage(hub, kind), ...previewMessage(preview)];
+      return [statusMessage(hub), catalogMessage(hub, kind), textDefaultsMessage(hub, kind), ...previewMessage(preview)];
     case "preview":
       return previewMessage(preview);
     case "catalog":
@@ -95,6 +102,11 @@ export async function handlePi(hub: Hub, kind: ActionKind, raw: unknown, preview
     case "update":
       void hub.installUpdate();
       return [statusMessage(hub)];
+    case "textDefaults": {
+      const sizes = m.sizes && typeof m.sizes === "object" && !Array.isArray(m.sizes) ? (m.sizes as Record<string, unknown>) : {};
+      await hub.setTextDefaults(kind, sizes);
+      return [textDefaultsMessage(hub, kind), ...previewMessage(preview)];
+    }
     default:
       return [];
   }

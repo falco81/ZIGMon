@@ -7,7 +7,9 @@
  */
 import { colourOf, P, X } from "./palette.js";
 import { seriesScale, type Quantity } from "./scale.js";
-import { arcPath, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth, type NameFit } from "./svg.js";
+import {
+  arcPath, fit, fitSize, fitSizeK, grow, growAll, smallerThan, icon, mixLine, n, nameLines, ONE, pairParts, rect, roleAttr, svgDoc, text, textWidth, type NameFit, type Part, type TextRole, type TextScale,
+} from "./svg.js";
 
 export const THEMES: readonly { id: string; name: string; hint: string }[] = [
   { id: "classic", name: "Classic", hint: "ZIGMon's dashboard tile" },
@@ -139,7 +141,25 @@ const TAGGED = new Set(["power", "security", "heatgroup", "away", "openings", "b
 export interface LookOpts {
   info: Info;
   fit: NameFit;
+  /** (1.3) The size of each kind of text; none = as before. */
+  ts?: TextScale;
 }
+
+/** (1.3) The text sizes of the key being drawn (renderLook sets them; drawing is synchronous). */
+let T: TextScale = ONE;
+/** How far a size may grow where a look has fixed places: the role's own limit on its size. */
+const CAPF: Record<TextRole, number> = { value: 1.4, name: 1.45, room: 1.5, detail: 1.5, mode: 1.5, unit: 1.6, badge: 1.4 };
+/** A size in its role, held to `cap` px (else to the role's own limit; null: as big as asked). */
+const S = (role: TextRole, size: number, cap?: number | null): number => grow(size, T[role], cap === null ? undefined : cap ?? size * CAPF[role]);
+/** Candidate sizes in their role, alike. */
+const SS = (role: TextRole, sizes: number[], cap?: number | null): number[] =>
+  growAll(sizes, T[role], (s) => (cap === null ? undefined : cap ?? s * CAPF[role]));
+/** The room a fixed baseline leaves for big text under `top`: the largest size whose capitals stay below it. */
+const room = (y: number, top: number): number => (y - top) / 0.74;
+/** (1.3) Some text is drawn bigger than at 100 %: what is near it may have to give way. */
+const bigger = (): boolean => T.value > 1 || T.name > 1 || T.room > 1 || T.detail > 1 || T.mode > 1 || T.unit > 1 || T.badge > 1;
+/** How much taller a size grew (0 at 100 %). */
+const dz = (z: number, base: number): number => z - base;
 
 /** The ink of a look: its paper and the colours written on it. */
 interface Ink {
@@ -197,15 +217,18 @@ function stateText(f: Face): string {
 function nameBlock(f: Face, o: LookOpts, x: number, bottom: number, maxW: number, ink: Ink, size = 15.5, anchor: "start" | "middle" = "start", lines = 2, nameColour?: string): { svg: string; top: number } {
   let svg = "";
   let y = bottom;
+  const ns = S("name", size);
+  if (ns > size * 1.25) lines = 1;
   if (o.info.room && f.room) {
-    svg += text(x, y, fit(f.room, size * 0.8, maxW, 500), { size: size * 0.8, weight: 500, fill: ink.dim, anchor });
-    y -= size * 1.12;
+    const rs = S("room", size * 0.8);
+    svg += text(x, y, fit(f.room, rs, maxW, 500), { size: rs, weight: 500, fill: ink.dim, anchor, role: "room" });
+    y -= size * 1.12 + dz(ns, size) * 0.76 + dz(rs, size * 0.8) * 0.2;
     lines = 1;
   }
   if (o.info.name && f.name) {
-    const nl = nameLines(f.name, o.fit, size, maxW, 650, lines);
+    const nl = nameLines(f.name, o.fit, ns, maxW, 650, lines);
     for (let i = nl.lines.length - 1; i >= 0; i--) {
-      svg += text(x, y, nl.lines[i]!, { size: nl.size, weight: 650, fill: nameColour ?? ink.text, anchor });
+      svg += text(x, y, nl.lines[i]!, { size: nl.size, weight: 650, fill: nameColour ?? ink.text, anchor, role: "name" });
       y -= nl.size * 1.14;
     }
   }
@@ -213,7 +236,7 @@ function nameBlock(f: Face, o: LookOpts, x: number, bottom: number, maxW: number
 }
 
 /** The graph: the history (with its target dashed and min / max when asked), else a level bar. */
-export function graph(f: Face, info: Info, x: number, y: number, w: number, h: number, colour: string, ink: Ink, id: string): { defs: string; body: string } {
+export function graph(f: Face, info: Info, x: number, y: number, w: number, h: number, colour: string, ink: Ink, id: string, labelK = T.detail): { defs: string; body: string } {
   const v = f.series.filter((a) => Number.isFinite(a)).slice(-96);
   if (v.length >= 2) {
     const tgt = info.target && f.target !== null && Number.isFinite(f.target) ? f.target : null;
@@ -232,8 +255,10 @@ export function graph(f: Face, info: Info, x: number, y: number, w: number, h: n
     body += `<circle cx="${n(last[0])}" cy="${n(last[1])}" r="3.2" fill="${colour}" stroke="${ink.bg}" stroke-width="1.4"/>`;
     if (info.scale) {
       const fmt = (a: number) => (Math.abs(a) >= 100 ? String(Math.round(a)) : String(Math.round(a * 10) / 10));
-      body += text(x + w, y + 8, fmt(hi), { size: 9.5, weight: 600, fill: ink.dim, anchor: "end" });
-      body += text(x + w, y + h, fmt(lo), { size: 9.5, weight: 600, fill: ink.dim, anchor: "end" });
+      // as far as the two labels stay apart in the graph's height
+      const ls = grow(9.5, labelK, Math.min(9.5 * 1.2, 9.5 + Math.max(0, h - 22)));
+      body += text(x + w, y + 8 + dz(ls, 9.5) * 0.7, fmt(hi), { size: ls, weight: 600, fill: ink.dim, anchor: "end", role: "detail" });
+      body += text(x + w, y + h, fmt(lo), { size: ls, weight: 600, fill: ink.dim, anchor: "end", role: "detail" });
     }
     return {
       defs: `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${colour}" stop-opacity="0.34"/><stop offset="1" stop-color="${colour}" stop-opacity="0"/></linearGradient>`,
@@ -251,12 +276,44 @@ export function graph(f: Face, info: Info, x: number, y: number, w: number, h: n
 }
 
 /** The value with its unit as a smaller tspan, sized to fit. */
-function value(f: Face, x: number, y: number, maxW: number, sizes: number[], fill: string, ink: Ink, anchor: "start" | "middle" | "end" = "start", weight = 750): string {
+/**
+ * (1.3) The value and its unit at other sizes than 100 %: the largest of `cands` with which both
+ * fit maxW - the unit at its own size (`uz`), else back at its size by the value's (`uz0`) - else the
+ * smallest, cut. Returns the value's words and size and the unit's size.
+ */
+function fitWithUnit(v: string, cands: number[], unit: string, uz0: number, uz: number, maxW: number, weight: number, uweight: number, dx: number): { text: string; size: number; usize: number } {
+  if (!unit) {
+    const f = fitSize(v, cands, maxW, weight);
+    return { text: f.text, size: f.size, usize: uz };
+  }
+  for (const u of uz > uz0 ? [uz, uz0] : [uz]) {
+    const uw = textWidth(unit, u, uweight) + dx;
+    for (const c of cands) if (textWidth(v, c, weight) + uw <= maxW) return { text: v, size: c, usize: u };
+  }
+  const c = cands[cands.length - 1]!, u = Math.min(uz, uz0);
+  return { text: fit(v, c, Math.max(20, maxW - textWidth(unit, u, uweight) - dx), weight), size: c, usize: u };
+}
+
+function value(f: Face, x: number, y: number, maxW: number, sizes: number[], fill: string, ink: Ink, anchor: "start" | "middle" | "end" = "start", weight = 750, cap?: number | null): string {
   const v = stateText(f);
   const unit = f.unit && f.online ? f.unit : "";
-  const vf = fitSize(v, sizes, unit ? maxW - Math.min(40, unit.length * 9) : maxW, weight);
-  const u = unit ? `<tspan dx="3" font-size="${n(Math.max(11, vf.size * 0.42))}" font-weight="600" fill="${ink.dim}">${escText(fit(unit, 14, 40, 600))}</tspan>` : "";
-  return text(x, y, vf.text, { size: vf.size, weight, fill: f.online ? fill : ink.crit, anchor, spacing: -0.4 }).replace(/<\/text>$/, u + "</text>");
+  const uk = T.unit === 1 ? 1 : S("unit", 14) / 14;
+  const room0 = unit ? maxW - Math.min(40, unit.length * 9) : maxW;
+  let vf = fitSize(v, sizes, room0, weight);
+  // the unit's size from the value as it would be at 100 %: the value's own size leaves it be
+  const uz0 = Math.max(11, vf.size * 0.42);
+  let uz = uz0;
+  const ut = unit ? fit(unit, 14 * uk, 40 * uk, 600) : "";
+  if (T.value !== 1 || uk !== 1) {
+    const r = fitWithUnit(v, T.value < 1 ? smallerThan(SS("value", sizes), vf.size * T.value) : SS("value", sizes, cap), ut, uz0, uz0 * uk, maxW, weight, 600, 3);
+    // (never smaller than at 100 % for being asked to be bigger: as at 100 %, then)
+    if (!(T.value > 1 && r.size < vf.size)) {
+      vf = { text: r.text, size: r.size };
+      uz = r.usize;
+    }
+  }
+  const u = unit ? `<tspan dx="3" font-size="${n(uz)}" font-weight="600" fill="${ink.dim}"${roleAttr("unit")}>${escText(ut)}</tspan>` : "";
+  return text(x, y, vf.text, { size: vf.size, weight, fill: f.online ? fill : ink.crit, anchor, spacing: -0.4, role: "value" }).replace(/<\/text>$/, u + "</text>");
 }
 
 function escText(s: string): string {
@@ -267,6 +324,22 @@ function escText(s: string): string {
 function subline(f: Face, info: Info): string {
   if (!f.online) return "";
   return [info.detail ? f.detail : "", info.mode ? f.mode : ""].filter(Boolean).join(" · ");
+}
+
+/** (1.3) The pieces of the subline: the detail and the mode, as far as each is shown. */
+function subParts(f: Face, info: Info): Part[] {
+  if (!f.online) return [];
+  return pairParts(info.detail ? f.detail : "", info.mode ? f.mode : "");
+}
+
+/** The size the subline is drawn at, at its biggest piece (for what is laid out round it). */
+function partsSize(parts: Part[], size: number): number {
+  return parts.reduce((z, p) => Math.max(z, S(p[1], size)), 0) || size;
+}
+
+/** (1.3) The subline drawn in one line at `size`, its pieces each in their own size, fitted to maxW. */
+function subText(f: Face, info: Info, x: number, y: number, size: number, maxW: number, o: { weight: number; fill: string; anchor?: "start" | "middle" | "end"; opacity?: number }): string {
+  return mixLine(x, y, subParts(f, info), [size], maxW, o, T, (z) => z * CAPF.detail).svg;
 }
 
 function frame(ink: Ink, stroke: string, op = 1, w = 2, rx = 20): string {
@@ -291,9 +364,10 @@ function minimal(f: Face, o: LookOpts): string {
   let defs = "";
   let bottom = 138;
   if (i.name && f.name) {
-    const nl = nameLines(f.name, o.fit, 13, 128, 600, 1);
-    body += text(72, 136, nl.lines[0]!, { size: nl.size, weight: 600, fill: ink.dim, anchor: "middle" });
-    bottom = 120;
+    const ns = S("name", 13);
+    const nl = nameLines(f.name, o.fit, ns, 128, 600, 1);
+    body += text(72, 136, nl.lines[0]!, { size: nl.size, weight: 600, fill: ink.dim, anchor: "middle", role: "name" });
+    bottom = 120 - dz(ns, 13) * 0.76;
   }
   if (i.graph && f.series.length >= 2) {
     const g = graph(f, i, 24, bottom - 18, 96, 18, f.stateColour ?? c, ink, "mg");
@@ -305,19 +379,20 @@ function minimal(f: Face, o: LookOpts): string {
     bottom -= 10;
   }
   if (i.state || (i.detail && f.detail) || (i.mode && f.mode)) {
-    const w = i.state ? stateText(f) + (f.unit && f.online ? " " + f.unit : "") : subline(f, i);
+    const w: Part[] = i.state ? [[stateText(f), "value"], [f.unit && f.online ? " " + f.unit : "", "unit"]] : subParts(f, i).length ? subParts(f, i) : [["", "detail"]];
     const big = !i.icon;
     if (!big && i.state && subline(f, i)) {
       // the detail and the mode small under the state, the icon a little smaller for them
-      body += text(72, bottom - 1, fit(subline(f, i), 11, 128, 600), { size: 11, weight: 600, fill: ink.dim, anchor: "middle" });
-      bottom -= 14;
+      body += subText(f, i, 72, bottom - 1, 11, 128, { weight: 600, fill: ink.dim, anchor: "middle" });
+      bottom -= 14 + dz(partsSize(subParts(f, i), 11), 11) * 0.76;
     }
-    const fs = fitSize(w, big ? [40, 32, 26, 20] : [17, 15, 13], 124, 700);
-    body += text(72, bottom - 3, fs.text, { size: fs.size, weight: 700, fill: !f.online ? ink.crit : f.stateColour ?? (lit ? c : offInk(f, ink.dim)), anchor: "middle" });
+    const fs = mixLine(72, bottom - 3, w, big ? [40, 32, 26, 20] : [17, 15, 13], 124, { weight: 700, fill: !f.online ? ink.crit : f.stateColour ?? (lit ? c : offInk(f, ink.dim)), anchor: "middle" }, T,
+      (z) => z * CAPF.value);
+    body += fs.svg;
     bottom -= fs.size + 6;
     if (big && i.state && subline(f, i)) {
-      body += text(72, bottom - 2, fit(subline(f, i), 12.5, 124, 500), { size: 12.5, weight: 500, fill: ink.dim, anchor: "middle" });
-      bottom -= 18;
+      body += subText(f, i, 72, bottom - 2, 12.5, 124, { weight: 500, fill: ink.dim, anchor: "middle" });
+      bottom -= 18 + dz(partsSize(subParts(f, i), 12.5), 12.5) * 0.76;
     }
   }
   if (i.icon) {
@@ -340,21 +415,24 @@ function bigvalue(f: Face, o: LookOpts): string {
     b += icon(f.icon, 13, 13, 20, f.active ? c : offInk(f, ink.dim), 2);
     x0 = 39;
   }
+  let nameFoot = 0;
   if (i.name && f.name) {
-    const nl = nameLines(f.name, o.fit, 13, 128 - x0 - (f.hold || !f.online || !f.allowed ? 26 : 0), 650, 1);
-    b += text(x0, 29, nl.lines[0]!, { size: nl.size, weight: 650, fill: ink.dim });
+    const ns = S("name", 13, 18);
+    const nl = nameLines(f.name, o.fit, ns, 128 - x0 - (f.hold || !f.online || !f.allowed ? 26 : 0) - (T.name !== 1 && f.badge ? 30 : 0), 650, 1);
+    nameFoot = dz(ns, 13) * 0.6;
+    b += text(x0, 29 + nameFoot, nl.lines[0]!, { size: nl.size, weight: 650, fill: ink.dim, role: "name" });
   }
   const hasGraph = i.graph && (f.series.length >= 2 || f.level !== null || f.kind === "reading");
   const sub = subline(f, i);
   const vy = hasGraph ? (sub ? 76 : 84) : sub ? 88 : 96;
-  if (i.state) b += value(f, 72, vy, 124, [54, 46, 38, 30, 24, 19], f.stateColour ?? (f.active ? c : offInk(f, ink.text)), ink, "middle", 800);
-  if (sub) b += text(72, vy + 20, fit(sub, 13.5, 126, 600), { size: 13.5, weight: 600, fill: f.active ? c : ink.dim, anchor: "middle" });
+  if (i.state) b += value(f, 72, vy, 124, [54, 46, 38, 30, 24, 19], f.stateColour ?? (f.active ? c : offInk(f, ink.text)), ink, "middle", 800, room(vy, (i.name && f.name ? 36 : 14) + nameFoot));
+  if (sub) b += subText(f, i, 72, vy + 20 + dz(partsSize(subParts(f, i), 13.5), 13.5) * 0.5, 13.5, 126, { weight: 600, fill: f.active ? c : ink.dim, anchor: "middle" });
   let defs = grad("bg", P.panel2, 1, P.bg, 1);
   if (hasGraph) {
     const g = graph(f, i, 14, 110, 116, 22, f.stateColour ?? c, ink, "g");
     b += g.body;
     defs += g.defs;
-  } else if (i.room && f.room) b += text(72, 132, fit(f.room, 12, 124, 500), { size: 12, weight: 500, fill: ink.muted, anchor: "middle" });
+  } else if (i.room && f.room) b += text(72, 132, fit(f.room, S("room", 12), 124, 500), { size: S("room", 12), weight: 500, fill: ink.muted, anchor: "middle", role: "room" });
   b += badges(f, i, ink);
   return doc(b, defs);
 }
@@ -373,12 +451,17 @@ function solid(f: Face, o: LookOpts): string {
   }
   const sub = subline(f, i);
   let y = 86;
-  if (i.state) {
-    b += value(f, 14, sub ? 82 : 88, 120, [30, 26, 22, 18], lit ? P.bg : f.stateColour ?? offInk(f, P.dim), ink, "start", 800);
-    y = sub ? 82 : 88;
-  }
-  if (sub) b += text(14, y + 17, fit(sub, 13, 120, 650), { size: 13, weight: 650, fill: lit ? P.panel2 : f.active ? c : P.muted });
   const nb = nameBlock(f, o, 14, 133, 118, ink, 14.5, "start", i.state || sub ? 1 : 2);
+  // (1.3) a taller name block lifts the value and the line under it
+  const zs = partsSize(subParts(f, i), 13);
+  let sy = (i.state ? (sub ? 82 : 88) : 86) + 17 + dz(zs, 13) * 0.6;
+  const lift = T === ONE ? 0 : Math.max(0, (sub ? sy : (sub ? 82 : 88)) - (nb.top + 2));
+  if (i.state) {
+    y = (sub ? 82 : 88) - lift;
+    b += value(f, 14, y, 120, [30, 26, 22, 18], lit ? P.bg : f.stateColour ?? offInk(f, P.dim), ink, "start", 800, room(y, i.icon ? 60 : 14));
+  }
+  sy -= lift;
+  if (sub) b += subText(f, i, 14, sy, 13, 120, { weight: 650, fill: lit ? P.panel2 : f.active ? c : P.muted });
   b += nb.svg;
   if (i.graph && f.level !== null && f.series.length < 2) {
     const g = graph(f, i, 76, 34, 54, 6, lit ? P.bg : c, ink, "g");
@@ -411,13 +494,16 @@ function neon(f: Face, o: LookOpts): string {
   }
   let y = i.icon ? 84 : 66;
   if (i.state) {
-    if (lit) b += value(f, 72, y, 116, [26, 22, 18, 15], c, ink, "middle").replace(/fill="([^"]+)"/, 'fill="$1" fill-opacity="0.25" stroke="' + c + '" stroke-opacity="0.25" stroke-width="3"');
-    b += value(f, 72, y, 116, [26, 22, 18, 15], f.stateColour ?? (lit ? c : offInk(f, P.dim)), ink, "middle");
+    const cap = room(y, i.icon ? cy + sz / 2 + 2 : 14);
+    if (lit) b += value(f, 72, y, 116, [26, 22, 18, 15], c, ink, "middle", 750, cap).replace(/fill="([^"]+)"/, 'fill="$1" fill-opacity="0.25" stroke="' + c + '" stroke-opacity="0.25" stroke-width="3"');
+    b += value(f, 72, y, 116, [26, 22, 18, 15], f.stateColour ?? (lit ? c : offInk(f, P.dim)), ink, "middle", 750, cap);
     y += 18;
   }
   const sub = subline(f, i);
   if (sub) {
-    b += text(72, y, fit(sub, 12, 116, 600), { size: 12, weight: 600, fill: lit ? P.text : P.muted, anchor: "middle" });
+    const zs = partsSize(subParts(f, i), 12);
+    y += dz(zs, 12) * 0.76;
+    b += subText(f, i, 72, y, 12, 116, { weight: 600, fill: lit ? P.text : P.muted, anchor: "middle" });
     y += 14;
   }
   const nb = nameBlock(f, sub ? { ...o, info: { ...i, room: false } } : o, 72, 128, 112, ink, 13.5, "middle", 1, lit ? P.text : P.dim);
@@ -452,13 +538,16 @@ function ring(f: Face, o: LookOpts): string {
     b += icon(f.icon, cx - s / 2, st ? cy - 30 : cy - s / 2, s, lit ? c : offInk(f, P.dim), 2);
   }
   if (st) {
-    b += value(f, cx, i.icon ? cy + 10 : cy + 7, r * 1.55, named ? [24, 20, 16, 13] : [30, 26, 20, 16], f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), ink, "middle");
+    const vy = i.icon ? cy + 10 : cy + 7;
+    b += value(f, cx, vy, r * 1.55, named ? [24, 20, 16, 13] : [30, 26, 20, 16], f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), ink, "middle", 750, room(vy, i.icon ? cy - 7 : cy - r + 12));
     const sub = i.detail && f.online ? f.detail : "";
-    if (sub) b += text(cx, cy + (i.icon ? 25 : 24), fit(sub, 10.5, r * 1.45, 600), { size: 10.5, weight: 600, fill: lit ? c : P.muted, anchor: "middle" });
+    const ds = S("detail", 10.5, 13);
+    if (sub) b += text(cx, cy + (i.icon ? 25 : 24) + dz(ds, 10.5) * 0.5, fit(sub, ds, r * 1.45, 600), { size: ds, weight: 600, fill: lit ? c : P.muted, anchor: "middle", role: "detail" });
   }
   const modeLine = i.mode && f.online ? f.mode : "";
-  if (modeLine && named) b += text(72, cy + r + 15, fit(modeLine, 11, 124, 700), { size: 11, weight: 700, fill: lit ? c : P.dim, anchor: "middle" });
-  else if (modeLine) b += text(cx, cy + r - 8, fit(modeLine, 10, r * 1.2, 700), { size: 10, weight: 700, fill: lit ? c : P.dim, anchor: "middle" });
+  const ms = S("mode", named ? 11 : 10, named ? 14 : 12);
+  if (modeLine && named) b += text(72, cy + r + 15 + dz(ms, 11) * 0.5, fit(modeLine, ms, 124, 700), { size: ms, weight: 700, fill: lit ? c : P.dim, anchor: "middle", role: "mode" });
+  else if (modeLine) b += text(cx, cy + r - 8, fit(modeLine, ms, r * 1.2, 700), { size: ms, weight: 700, fill: lit ? c : P.dim, anchor: "middle", role: "mode" });
   if (named) b += nameBlock(f, modeLine ? { ...o, info: { ...i, room: false } } : o, 72, 136, 124, ink, modeLine ? 12 : 13.5, "middle", 1).svg;
   b += badges(f, i, ink, 10);
   return doc(b, grad("bg", P.panel2, 1, P.bg, 1));
@@ -477,21 +566,22 @@ function split(f: Face, o: LookOpts): string {
   if (i.icon) b += icon(f.icon, 13, band >= 144 ? 14 : 14, band >= 144 ? 34 : 30, lit ? P.bg : f.online ? offInk(f, P.dim) : P.crit, 2);
   if (i.state) {
     const ink: Ink = lit ? { ...DARK, dim: P.panel2, crit: P.bg } : DARK;
-    b += value(f, 131, band >= 144 ? 96 : 56, i.icon ? 80 : 118, band >= 144 ? [40, 32, 26, 20] : [24, 20, 16, 13], f.stateColour && !lit ? f.stateColour : on, ink, "end", 800);
+    b += value(f, 131, band >= 144 ? 96 : 56, i.icon ? 80 : 118, band >= 144 ? [40, 32, 26, 20] : [24, 20, 16, 13], f.stateColour && !lit ? f.stateColour : on, ink, "end", 800,
+      band >= 144 ? room(96, f.badge ? 36 : 14) : room(56, f.badge ? 34 : 10));
   }
   const sub = subline(f, i);
   let defs = grad("band", c, 1, c, 0.78, 1, 1);
   const ink = DARK;
   if (band < 144) {
-    const nb = nameBlock(f, o, 14, sub || i.graph ? 118 : 132, 118, ink, 15, "start", sub || i.graph ? 1 : 2);
+    const nb = nameBlock(f, o, 14, (sub || i.graph ? 118 : 132) - (sub ? dz(partsSize(subParts(f, i), 12.5), 12.5) * 0.76 : 0), 118, ink, 15, "start", sub || i.graph ? 1 : 2);
     b += nb.svg;
-    if (sub) b += text(14, 135, fit(sub, 12.5, 118, 600), { size: 12.5, weight: 600, fill: lit ? c : P.muted });
+    if (sub) b += subText(f, i, 14, 135, 12.5, 118, { weight: 600, fill: lit ? c : P.muted });
     else if (i.graph) {
       const g = graph(f, i, 14, 124, 116, 12, c, ink, "g");
       b += g.body;
       defs += g.defs;
     }
-  } else if (sub) b += text(131, 118, fit(sub, 13, 118, 600), { size: 13, weight: 600, fill: lit ? P.panel2 : P.muted, anchor: "end" });
+  } else if (sub) b += subText(f, i, 131, 118 + dz(partsSize(subParts(f, i), 13), 13) * 0.6, 13, 118, { weight: 600, fill: lit ? P.panel2 : P.muted, anchor: "end" });
   b += frame(ink, lit ? c : offInk(f, P.line), lit || offLit(f) ? 0.5 : 1);
   b += badges(f, i, lit && band >= 144 ? { ...DARK, badge: P.bg } : DARK, band >= 144 ? 13 : 13, lit);
   return doc(b, defs);
@@ -510,8 +600,8 @@ function glass(f: Face, o: LookOpts): string {
   b += `<path d="M 30 8 H 114 A 22 22 0 0 1 136 30 V 52 C 96 40 52 44 8 60 V 30 A 22 22 0 0 1 30 8 Z" fill="url(#sheen)"/>`;
   if (i.icon) b += icon(f.icon, 20, 20, 30, lit ? X.white : f.online ? offInk(f, P.dim) : P.crit, 2);
   const sub = subline(f, i);
-  if (i.state) b += value(f, 128, 58, i.icon ? 70 : 110, [26, 22, 18, 14], f.stateColour ?? (lit ? X.white : offInk(f, P.dim)), ink, "end", 750);
-  if (sub) b += text(128, 74, fit(sub, 12, 108, 600), { size: 12, weight: 600, fill: lit ? c : P.muted, anchor: "end" });
+  if (i.state) b += value(f, 128, 58, i.icon ? 70 : 110, [26, 22, 18, 14], f.stateColour ?? (lit ? X.white : offInk(f, P.dim)), ink, "end", 750, room(58, f.badge ? 34 : 14));
+  if (sub) b += subText(f, i, 128, 74 + dz(partsSize(subParts(f, i), 12), 12) * 0.5, 12, 108, { weight: 600, fill: lit ? c : P.muted, anchor: "end" });
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
     const g = graph(f, i, 20, 80, 104, 14, lit ? c : P.muted, ink, "g");
     b += g.body;
@@ -528,12 +618,13 @@ function label(f: Face, o: LookOpts): string {
   const lit = f.active && f.online;
   let b = rect(0, 0, 144, 144, 0, P.bg) + frame(ink, lit ? c : offInk(f, P.line), lit || offLit(f) ? 0.6 : 1);
   if (i.icon) b += icon(f.icon, 14, 14, 20, lit ? c : offInk(f, P.dim), 2.1);
+  const wrole: TextRole = i.name && f.name ? "name" : i.room && f.room ? "room" : "value";
   const words = i.name && f.name ? f.name : i.room && f.room ? f.room : i.state ? stateText(f) : "";
-  const nl = nameLines(words, o.fit === "cut" ? "cut" : "fit", 25, 124, 800, 3);
+  const nl = nameLines(words, o.fit === "cut" ? "cut" : "fit", S(wrole, 25, 30), 124, 800, 3);
   const lines = nl.lines.length > 2 ? nl.lines.slice(0, 2) : nl.lines;
   let y = 74 - (lines.length - 1) * nl.size * 0.55;
   for (const l of lines) {
-    b += text(72, y, l, { size: nl.size, weight: 800, fill: lit ? P.text : P.dim, anchor: "middle", spacing: -0.3 });
+    b += text(72, y, l, { size: nl.size, weight: 800, fill: lit ? P.text : P.dim, anchor: "middle", spacing: -0.3, role: wrole });
     y += nl.size * 1.08;
   }
   const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : onFill(f, lit);
@@ -541,10 +632,13 @@ function label(f: Face, o: LookOpts): string {
   if (lv > 0 && f.online) b += rect(36, 102, Math.max(5, 72 * lv), 5, 2.5, c);
   const sub = subline(f, i);
   if (i.state) {
-    const st = stateText(f) + (f.unit && f.online ? " " + f.unit : "");
-    b += text(72, sub ? 122 : 127, fit(st, 13, 124, 700), { size: 13, weight: 700, fill: !f.online ? P.crit : f.stateColour ?? (lit ? c : offInk(f, P.muted)), anchor: "middle" });
-    if (sub) b += text(72, 137, fit(sub, 11, 124, 600), { size: 11, weight: 600, fill: P.muted, anchor: "middle" });
-  } else if (sub) b += text(72, 127, fit(sub, 12.5, 124, 600), { size: 12.5, weight: 600, fill: P.muted, anchor: "middle" });
+    const st: Part[] = [[stateText(f), "value"], [f.unit && f.online ? " " + f.unit : "", "unit"]];
+    const zs = sub ? partsSize(subParts(f, i), 11) : 11;
+    const sy = 137 + Math.min(4, dz(zs, 11) * 0.3);
+    b += mixLine(72, (sub ? 122 : 127) + (sub ? dz(zs, 11) * 0.6 : 0), st, [13], 124, { weight: 700, fill: !f.online ? P.crit : f.stateColour ?? (lit ? c : offInk(f, P.muted)), anchor: "middle" }, T,
+      (z) => z * 1.5).svg;
+    if (sub) b += subText(f, i, 72, sy, 11, 124, { weight: 600, fill: P.muted, anchor: "middle" });
+  } else if (sub) b += subText(f, i, 72, 127, 12.5, 124, { weight: 600, fill: P.muted, anchor: "middle" });
   b += badges(f, i, ink);
   return doc(b);
 }
@@ -558,10 +652,13 @@ function dot(f: Face, o: LookOpts): string {
   if (lit || !f.online) b += `<circle cx="25" cy="27" r="14" fill="${lamp}" fill-opacity="0.18"/>`;
   b += lit || !f.online || f.stateColour ? `<circle cx="25" cy="27" r="8" fill="${lamp}"/>` : `<circle cx="25" cy="27" r="7" fill="none" stroke="${lamp}" stroke-width="2.4"/>`;
   const nb = (!f.allowed ? 1 : 0) + (!f.online ? 1 : 0) + (f.hold ? 1 : 0) + (i.battery && f.battery !== null && f.battery <= 20 ? 1 : 0);
-  if (i.state) b += value(f, 42, 35, 86 - nb * 22, [22, 19, 16, 13], lit || !f.online ? P.text : f.stateColour ?? P.dim, ink, "start", 700);
+  const vz = i.state ? grow(22, T.value, 28) : 22;
+  if (i.state) b += value(f, 42, 35 + dz(vz, 22) * 0.6, 86 - nb * 22 - ((T.value !== 1 || T.unit !== 1) && f.badge ? 30 : 0), [22, 19, 16, 13], lit || !f.online ? P.text : f.stateColour ?? P.dim, ink, "start", 700, 28);
   const det = i.detail && f.online ? f.detail : "", md = i.mode && f.online ? f.mode : "";
-  if (det) b += text(42, 53, fit(det, 12.5, i.icon ? 56 : 88, 600), { size: 12.5, weight: 600, fill: lit ? c : P.muted });
-  if (md) b += text(42, det ? 68 : 53, fit(md, 11.5, i.icon ? 56 : 88, 700), { size: 11.5, weight: 700, fill: P.dim });
+  const dsz = S("detail", 12.5, 16), msz = S("mode", 11.5, 15);
+  const dy = 53 + dz(vz, 22) * 0.6 + dz(dsz, 12.5) * 0.6;
+  if (det) b += text(42, dy, fit(det, dsz, i.icon ? 56 : 88, 600), { size: dsz, weight: 600, fill: lit ? c : P.muted, role: "detail" });
+  if (md) b += text(42, det ? dy + 15 + dz(msz, 11.5) * 0.8 : 53 + dz(vz, 22) * 0.6 + dz(msz, 11.5) * 0.6, fit(md, msz, i.icon ? 56 : 88, 700), { size: msz, weight: 700, fill: P.dim, role: "mode" });
   if (i.icon) b += icon(f.icon, 100, 44, 30, lit ? c : offInk(f, P.muted), 1.9);
   let defs = "";
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
@@ -586,14 +683,18 @@ function light(f: Face, o: LookOpts): string {
     b += icon(f.icon, 22, 22, 28, lit ? X.ink : f.online ? offInk(f, X.inkDim) : X.inkCrit, 2);
   }
   const sub = subline(f, i);
-  if (i.state) b += value(f, 14, sub ? 82 : 88, 118, [28, 24, 20, 16], f.stateColour ? f.stateColour : lit ? X.ink : X.inkDim, ink, "start", 800);
-  if (sub) b += text(14, 99, fit(sub, 13, 118, 650), { size: 13, weight: 650, fill: lit ? X.ink : X.inkMuted });
+  const nb = nameBlock(f, o, 14, 133, 118, ink, 14.5, "start", i.state || sub ? 1 : 2);
+  // (1.3) a taller name block lifts the value and the line under it
+  const sy0 = 99 + dz(partsSize(subParts(f, i), 13), 13) * 0.6;
+  const lift = T === ONE ? 0 : Math.max(0, (sub ? sy0 : sub ? 82 : 88) - (nb.top + 2));
+  if (i.state) b += value(f, 14, (sub ? 82 : 88) - lift, 118, [28, 24, 20, 16], f.stateColour ? f.stateColour : lit ? X.ink : X.inkDim, ink, "start", 800, room((sub ? 82 : 88) - lift, i.icon ? 61 : 14));
+  if (sub) b += subText(f, i, 14, sy0 - lift, 13, 118, { weight: 650, fill: lit ? X.ink : X.inkMuted });
   if (i.graph && (f.series.length >= 2 || (f.level !== null && f.kind !== "control"))) {
     const g = graph(f, i, 66, 22, 64, 26, c, ink, "g");
     b += g.body;
     defs += g.defs;
   }
-  b += nameBlock(f, o, 14, 133, 118, ink, 14.5, "start", i.state || sub ? 1 : 2).svg;
+  b += nb.svg;
   b += badges(f, i, ink, 13, true);
   return doc(b, defs);
 }
@@ -609,10 +710,12 @@ function contrast(f: Face, o: LookOpts): string {
   const sub = subline(f, i);
   if (i.state) {
     const t = stateText(f).toUpperCase();
-    const vf = fitSize(t + (f.unit && f.online ? " " + f.unit : ""), [30, 26, 22, 18, 15], 116, 900);
-    b += text(16, sub ? 86 : 92, vf.text, { size: vf.size, weight: 900, fill: !f.online ? X.hcRed : lit ? X.black : f.stateColour ? X.hcYellow : offInk(f, X.white) });
+    const vy = sub ? 86 : 92;
+    const top = i.icon ? 54 : 14;
+    b += mixLine(16, vy, [[t, "value"], [f.unit && f.online ? " " + f.unit : "", "unit"]], [30, 26, 22, 18, 15], 116,
+      { weight: 900, fill: !f.online ? X.hcRed : lit ? X.black : f.stateColour ? X.hcYellow : offInk(f, X.white) }, T, () => room(vy, top)).svg;
   }
-  if (sub) b += text(16, 104, fit(sub, 13.5, 114, 800), { size: 13.5, weight: 800, fill: lit ? X.black : X.hcYellow });
+  if (sub) b += subText(f, i, 16, 104 + dz(partsSize(subParts(f, i), 13.5), 13.5) * 0.6, 13.5, 114, { weight: 800, fill: lit ? X.black : X.hcYellow });
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
     const g = graph(f, i, 64, 24, 64, 22, lit ? X.black : X.hcYellow, ink, "g");
     b += g.body.replace(/url\(#g\)/, lit ? X.white : X.black);
@@ -633,53 +736,126 @@ function contrast(f: Face, o: LookOpts): string {
 /** The one small line: the name, else the room. */
 function caption(f: Face, o: LookOpts, x: number, y: number, maxW: number, size: number, fill: string, anchor: "start" | "middle" | "end" = "middle", weight = 650, opacity?: number): string {
   const i = o.info;
+  const role: TextRole = i.name && f.name ? "name" : "room";
   const t = i.name && f.name ? f.name : i.room && f.room ? f.room : "";
   if (!t) return "";
-  const nl = nameLines(t, o.fit, size, maxW, weight, 1);
-  return text(x, y, nl.lines[0]!, { size: nl.size, weight, fill, anchor, opacity });
+  const nl = nameLines(t, o.fit, S(role, size), maxW, weight, 1);
+  return text(x, y, nl.lines[0]!, { size: nl.size, weight, fill, anchor, opacity, role });
+}
+
+/** (1.3) How much the caption grew (what is laid out above it moves up as much). */
+function capLift(f: Face, o: LookOpts, size: number): number {
+  const i = o.info;
+  const role: TextRole = i.name && f.name ? "name" : "room";
+  return i.name && f.name || i.room && f.room ? dz(S(role, size), size) * 0.76 : 0;
+}
+
+/** (1.3) A tag: its words, and its pieces (a detail and / or a mode) for their sizes. */
+interface Tag { s: string; parts: Part[] }
+
+function mkTag(d: string, m: string): Tag | "" {
+  const parts = pairParts(d, m);
+  return parts.length ? { s: parts.map((p) => p[0]).join(""), parts } : "";
 }
 
 /** What is essential besides the state: a thermostat's target and mode, a blind on its way. */
-function tag(f: Face, i: Info): string {
+function tag(f: Face, i: Info): Tag | "" {
   if (!f.online || !i.state) return "";
   if (f.kind === "thermostat") {
     // "→ 22.0 °C" said as "→ 22.0°": the unit is already by the big value
     const d = i.detail ? f.detail.replace(/\s*°[CF]$/, "°") : "";
-    return [d, i.mode ? f.mode : ""].filter(Boolean).join(" · ");
+    return mkTag(d, i.mode ? f.mode : "");
   }
-  if (f.kind === "blinds") return i.detail ? f.detail : "";
-  if (TAGGED.has(f.kind)) return i.detail ? f.detail : i.mode ? f.mode : "";
+  if (f.kind === "blinds") return mkTag(i.detail ? f.detail : "", "");
+  if (TAGGED.has(f.kind)) return i.detail ? mkTag(f.detail, "") : mkTag("", i.mode ? f.mode : "");
   return "";
 }
 
-/** The tag in one line, a little smaller before it is cut. */
-function tagText(x: number, y: number, t: string, maxW: number, size: number, fill: string, anchor: "start" | "middle" | "end" = "start", opacity?: number): string {
-  const s = fitSize(t, [size, size * 0.9, size * 0.8], maxW, 700);
-  return text(x, y, s.text, { size: s.size, weight: 700, fill, anchor, opacity });
+/** The tag's size as drawn (its biggest piece), for what is laid out under or round it. */
+function tagSize(t: Tag | "", size: number): number {
+  return t ? partsSize(t.parts, size) : size;
 }
 
-interface Big { words: string; unit: string; size: number }
+/** (1.3) How much taller the tag grew, for what sits above it. */
+function tagLift(t: Tag | "", size: number): number {
+  return t ? dz(tagSize(t, size), size) * 0.76 : 0;
+}
 
-/** The big words: the state and its unit (with the state hidden, the detail and the mode, smaller). Size 0: nothing to say. */
-function bigWords(f: Face, i: Info, sizes: number[], maxW: number, weight = 800, upper = false): Big {
+/** The tag in one line, a little smaller before it is cut. */
+function tagText(x: number, y: number, t: Tag, maxW: number, size: number, fill: string, anchor: "start" | "middle" | "end" = "start", opacity?: number): string {
+  return mixLine(x, y, t.parts, [size, size * 0.9, size * 0.8], maxW, { weight: 700, fill, anchor, opacity }, T, (z) => z * CAPF.detail).svg;
+}
+
+interface Big {
+  words: string;
+  unit: string;
+  size: number;
+  /** (1.3) The unit's size, and what the words are (the value; with the state hidden, the detail or the mode). */
+  usize: number;
+  role: TextRole;
+  /** (1.3) The detail and the mode as their own pieces, when they differ in size (the state hidden). */
+  svgParts?: Part[];
+  /** (tests) the roles one text holds, when it holds several */
+  multi?: string;
+  cands?: number[];
+  maxW?: number;
+}
+
+/**
+ * The big words: the state and its unit (with the state hidden, the detail and the mode, smaller). Size 0: nothing to say.
+ * (1.3) `band`: the sizes the layout has room for, of those the value's factor makes (the base sizes are what the unit goes by).
+ */
+function bigWords(f: Face, i: Info, sizes: number[], maxW: number, weight = 800, upper = false, band?: (s: number) => boolean, cap?: number | null, grown?: (s: number) => boolean): Big {
+  const within = (l: number[]) => {
+    if (!band) return l;
+    const ok = l.filter(band);
+    return ok.length ? ok : [l[l.length - 1]!];
+  };
+  const base = within(sizes);
   if (!i.state) {
-    const s = subline(f, i);
-    if (!s) return { words: "", unit: "", size: 0 };
-    const t = fitSize(s, sizes.map((a) => Math.round(a * 0.55)), maxW, weight);
-    return { words: t.text, unit: "", size: t.size };
+    const parts = subParts(f, i);
+    if (!parts.length) return { words: "", unit: "", size: 0, usize: 0, role: "detail" };
+    const s = parts.map((p) => p[0]).join("");
+    const role = parts[0]![1];
+    const cands = base.map((a) => Math.round(a * 0.55));
+    if (parts.every((p) => T[p[1]] === T[role])) {
+      // as big as the value's own sizes, at most
+      const t = fitSizeK(s, cands, T[role], maxW, weight, (z) => z / 0.55);
+      return { words: t.text, unit: "", size: t.size, usize: 0, role, ...(parts.length > 1 ? { multi: parts.map((p) => p[1]).join(" ") } : {}) };
+    }
+    return { words: s, unit: "", size: partsSize(parts, cands[0]!), usize: 0, role, svgParts: parts, cands, maxW };
   }
   const v = upper ? stateText(f).toUpperCase() : stateText(f);
   const unit = f.unit && f.online ? f.unit : "";
-  const room = unit ? maxW - Math.min(44, textWidth(unit, Math.max(11, sizes[0]! * 0.42), 650) + 4) : maxW;
-  const vf = fitSize(v, sizes, room, weight);
-  return { words: vf.text, unit, size: vf.size };
+  const uk = T.unit === 1 ? 1 : S("unit", 14) / 14;
+  const room0 = unit ? maxW - Math.min(44, textWidth(unit, Math.max(11, base[0]! * 0.42), 650) + 4) : maxW;
+  // bigger, as far as the place has room - and never smaller than at 100 %
+  const b0 = T.value > 1 && grown ? fitSize(v, base, room0, weight).size : 0;
+  const scaled0 = T.value === 1 ? base : within(SS("value", sizes, cap)).filter((s) => !grown || grown(s) || s <= b0);
+  const scaled = T.value < 1 && scaled0.length ? smallerThan(scaled0, fitSize(v, base, room0, weight).size * T.value) : scaled0;
+  if (T.value === 1 && uk === 1) {
+    const vf = fitSize(v, base, room0, weight);
+    return { words: vf.text, unit, size: vf.size, usize: Math.max(11, vf.size * 0.42), role: "value" };
+  }
+  const f0 = fitSize(v, base, room0, weight);
+  const uz0 = Math.max(11, f0.size * 0.42);
+  const r = fitWithUnit(v, scaled.length ? scaled : base, unit ? fit(unit, 14 * uk, 44 * uk, 650) : "", uz0, uz0 * uk, maxW, weight, 650, 3);
+  // never smaller than at 100 % for being asked to be bigger: as at 100 %, then
+  if (T.value > 1 && r.size < f0.size) return { words: f0.text, unit, size: f0.size, usize: uz0, role: "value" };
+  return { words: r.text, unit, size: r.size, usize: r.usize, role: "value" };
 }
 
 /** Draws the big words: the unit a smaller tspan, offline in red. */
 function drawBig(b: Big, f: Face, x: number, y: number, fill: string, unitFill: string, anchor: "start" | "middle" | "end", extra = "", spacing = -0.6): string {
   if (!b.size) return "";
-  const u = b.unit ? `<tspan dx="3" font-size="${n(Math.max(11, b.size * 0.42))}" font-weight="650" fill="${unitFill}">${escText(fit(b.unit, 14, 44, 650))}</tspan>` : "";
-  const t = text(x, y, b.words, { size: b.size, weight: 800, fill: f.online ? fill : P.crit, anchor, spacing });
+  if (b.svgParts) {
+    const t = mixLine(x, y, b.svgParts, b.cands!, b.maxW!, { weight: 800, fill: f.online ? fill : P.crit, anchor, spacing }, T, (z) => z / 0.55).svg;
+    return extra ? t.replace("<text ", "<text " + extra + " ") : t;
+  }
+  const uk = T.unit === 1 ? 1 : S("unit", 14) / 14;
+  const u = b.unit ? `<tspan dx="3" font-size="${n(b.usize)}" font-weight="650" fill="${unitFill}"${roleAttr("unit")}>${escText(fit(b.unit, 14 * uk, 44 * uk, 650))}</tspan>` : "";
+  let t = text(x, y, b.words, { size: b.size, weight: 800, fill: f.online ? fill : P.crit, anchor, spacing, role: b.role });
+  if (b.multi && roleAttr(b.role)) t = t.replace(roleAttr(b.role), ` data-role="${b.multi}"`);
   return (extra ? t.replace("<text ", "<text " + extra + " ") : t).replace(/<\/text>$/, u + "</text>");
 }
 
@@ -748,12 +924,12 @@ function huge(f: Face, o: LookOpts): string {
     b += `<g opacity="${lit ? 0.5 : 0.32}">${g.body}</g>`;
     defs += g.defs;
   } else if (lv !== null) b += rect(0, 140, 144, 4, 0, P.line) + rect(0, 140, Math.max(4, 144 * lv), 4, 0, lit ? c : offInk(f, P.muted));
-  const bottom = (cap ? 114 : 136) - (tg ? 18 : 0);
-  const big = bigWords(f, i, [80, 72, 64, 56, 48, 42, 36, 30, 26], 130);
+  const bottom = (cap ? 114 - capLift(f, o, 14) : 136) - (tg ? 18 + tagLift(tg, 14) : 0);
   const top = i.icon ? 40 : 12;
+  const big = bigWords(f, i, [80, 72, 64, 56, 48, 42, 36, 30, 26], 130, 800, false, undefined, null, (z) => z * 0.72 <= bottom - top);
   const vy = (top + bottom) / 2 + big.size * 0.36;
   b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? c : offInk(f, P.dim)), lit ? P.text : P.muted, "middle");
-  if (tg) b += tagText(72, bottom + 14, tg, 128, 14, lit ? c : P.dim, "middle");
+  if (tg) b += tagText(72, bottom + 14 + tagLift(tg, 14), tg, 128, 14, lit ? c : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink);
   return doc(b, defs);
@@ -770,11 +946,14 @@ function pill(f: Face, o: LookOpts): string {
   const cap = caption(f, o, 72, 134, 124, 14, P.dim);
   const tg = tag(f, i);
   const lv = levelOf(f, i);
-  const big = bigWords(f, i, [36, 32, 28, 24, 20, 17], 104);
-  const below = tg ? 22 : lv !== null ? 16 : 0;
-  const room = (cap ? 116 : 136) - 10;
-  const tight = (i.icon ? 40 : 0) + 56 + below > room;
-  const ph = tight ? 48 : 56;
+  const below = tg ? 22 + tagLift(tg, 13) : lv !== null ? 16 : 0;
+  const room = (cap ? 116 - capLift(f, o, 14) : 136) - 10;
+  // (1.3) bigger words make the pill taller, as far as the key has room
+  const big0 = T.value === 1 ? null : bigWords(f, i, [36, 32, 28, 24, 20, 17], 104);
+  const grownBy = big0 && big0.size > 36 ? Math.min(big0.size - 36, Math.max(0, room - (i.icon ? 32 : 0) - 48 - below - 10) / 0.72) : 0;
+  const big = bigWords(f, i, [36, 32, 28, 24, 20, 17], 104, 800, false, undefined, null, (z) => z <= 36 + grownBy);
+  const tight = (i.icon ? 40 : 0) + 56 + (big.size > 36 ? (big.size - 36) * 0.72 : 0) + below > room;
+  const ph = (tight ? 48 : 56) + (big.size > 36 ? (big.size - 36) * 0.72 : 0);
   const pillH = big.size ? ph : 0;
   const iconH = i.icon ? (tight ? 32 : 40) : 0;
   const is = big.size ? (tight ? 24 : 30) : 44;
@@ -804,11 +983,13 @@ function orb(f: Face, o: LookOpts): string {
   const base = lit && f.stateColour ? f.stateColour : c;
   const cap = caption(f, o, 72, 136, 124, 13, P.dim);
   const tg = tag(f, i);
-  const big = bigWords(f, i, [32, 28, 24, 20, 16], 124);
   const lv = levelOf(f, i);
   const ringR = lv !== null ? 7 : 0;
-  const below = (big.size ? big.size + 6 : 0) + (tg ? 16 : 0);
-  const room = (cap ? 120 : 138) - 8;
+  const room = (cap ? 120 - capLift(f, o, 13) : 138) - 8;
+  const tagH = tg ? 16 + tagLift(tg, 12.5) : 0;
+  // (1.3) the words no bigger than leaves the sphere its smallest
+  const big = bigWords(f, i, [32, 28, 24, 20, 16], 124, 800, false, undefined, 46, (z) => z + 6 + tagH <= room - 2 * ringR - 50);
+  const below = (big.size ? big.size + 6 : 0) + tagH;
   const r = Math.max(22, Math.min(46, (room - below - 2 * ringR - 6) / 2));
   const cy = 8 + ringR + r + Math.max(0, (room - below - 2 * ringR - 2 * r) / 2);
   const defs = radial("halo", [[0, base, 0.5], [0.55, base, 0.14], [1, base, 0]])
@@ -834,7 +1015,7 @@ function orb(f: Face, o: LookOpts): string {
     y += big.size + 4;
     b += drawBig(big, f, 72, y, f.stateColour ?? (lit ? P.text : P.dim), P.muted, "middle");
   }
-  if (tg) b += tagText(72, y + 16, tg, 124, 12.5, lit ? base : P.dim, "middle");
+  if (tg) b += tagText(72, y + 16 + tagLift(tg, 12.5), tg, 124, 12.5, lit ? base : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink, 12, true);
   return doc(b, defs);
@@ -855,9 +1036,10 @@ function tile(f: Face, o: LookOpts): string {
   }
   const cap = caption(f, o, 14, 134, 118, 14, P.dim, "start");
   const tg = tag(f, i);
-  const big = bigWords(f, i, [42, 36, 30, 26, 22, 18], 118);
   const lv = levelOf(f, i);
   const t = cap && tg ? 54 : cap || tg ? 62 : 68;
+  const by0 = (cap ? 114 - capLift(f, o, 14) : 132) - (tg ? 18 + tagLift(tg, 13) : 0);
+  const big = bigWords(f, i, [42, 36, 30, 26, 22, 18], 118, 800, false, undefined, null, (z) => z * 0.72 <= by0 - (i.icon || lv !== null ? 12 + t + 4 : 12));
   if (i.icon) {
     b += lit ? rect(14, 12, t, t, t * 0.29, "url(#tile)") + rect(19, 14, t - 10, t * 0.4, t * 0.2, "url(#sheen)")
       : rect(14, 12, t, t, t * 0.29, P.panel2, `stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="2"${dash}`);
@@ -870,9 +1052,9 @@ function tile(f: Face, o: LookOpts): string {
     b += i.icon ? rect(14 + t + 9, 12, 6, t, 3, P.line) + rect(14 + t + 9, 12 + t - h, 6, h, 3, lit ? base : P.muted)
       : rect(14, 18, 116, 6, 3, P.line) + rect(14, 18, Math.max(6, 116 * lv), 6, 3, lit ? base : P.muted);
   }
-  const by = (cap ? 114 : 132) - (tg ? 18 : 0);
+  const by = by0;
   b += drawBig(big, f, 12, by, f.stateColour ?? (lit ? P.text : P.dim), P.muted, "start");
-  if (tg) b += tagText(14, by + 18, tg, 118, 13, lit ? base : P.dim);
+  if (tg) b += tagText(14, by + 18 + tagLift(tg, 13), tg, 118, 13, lit ? base : P.dim);
   b += cap;
   b += badges(f, i, ink, 12, true);
   return doc(b, defs);
@@ -899,14 +1081,14 @@ function gauge(f: Face, o: LookOpts): string {
   const mk = markOf(f, i);
   if (mk !== null) b += notch(cx, cy, r, a0 + (a1 - a0) * mk, 9, X.white, X.night);
   const tg = tag(f, i);
-  const big = bigWords(f, i, [40, 36, 32, 28, 24, 20], 86);
+  const big = bigWords(f, i, [40, 36, 32, 28, 24, 20], 86, 800, false, undefined, null, (z) => z * 0.72 <= (i.icon ? 88 - 60 : 82 - 26) + 6);
   if (!big.size && i.icon) b += icon(f.icon, cx - 22, cy - 22, 44, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.1);
   else {
     if (i.icon) b += icon(f.icon, cx - 11, 36, 22, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.2);
     b += drawBig(big, f, cx, i.icon ? 88 : 82, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
   }
   // the target and the mode in the gap under the arc, the name below them
-  if (tg) b += tagText(cx, 125, tg, 120, 13, lit ? base : P.dim, "middle");
+  if (tg) b += tagText(cx, 125 - capLift(f, o, 12) * (tg ? 1 : 0), tg, 120, 13, lit ? base : P.dim, "middle");
   b += caption(f, o, 72, tg ? 140 : 136, 120, tg ? 12 : 13.5, lit ? P.text : P.dim);
   b += badges(f, i, ink, 10, true);
   return doc(b, defs);
@@ -923,7 +1105,7 @@ function bars(f: Face, o: LookOpts): string {
   if (iconAlone(f, o)) return doc(b + icon(f.icon, 36, 36, 72, lit ? c : offInk(f, P.muted), 2) + badges(f, i, ink), defs);
   if (i.icon) b += icon(f.icon, 13, 12, 22, lit ? c : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const cap = caption(f, o, 72, 136, 124, 13.5, P.dim);
-  const foot = cap ? 118 : 132;
+  const foot = cap ? 118 - capLift(f, o, 13.5) : 132;
   // the bars: the recent values, else the level, else none
   const v = f.series.filter((a) => Number.isFinite(a)).slice(-9);
   const lv = levelOf(f, i);
@@ -938,11 +1120,11 @@ function bars(f: Face, o: LookOpts): string {
   }
   const tg = tag(f, i);
   const has = cols.length > 0;
-  const big = bigWords(f, i, has ? [48, 44, 38, 32, 26, 22] : [60, 54, 48, 42, 36, 30, 24], 124);
   const barH = has ? (tg ? 24 : 30) : 0;
-  const vy = has ? foot - barH - (tg ? 30 : 12) : foot - (tg ? 30 : 22) + (cap ? 0 : -6);
+  const vy = has ? foot - barH - (tg ? 30 + tagLift(tg, 13) : 12) : foot - (tg ? 30 + tagLift(tg, 13) : 22) + (cap ? 0 : -6);
+  const big = bigWords(f, i, has ? [48, 44, 38, 32, 26, 22] : [60, 54, 48, 42, 36, 30, 24], 124, 800, false, undefined, null, (z) => z * 0.72 <= vy - (i.icon ? 38 : 12));
   b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
-  if (tg) b += tagText(72, vy + 18, tg, 124, 13, lit ? c : P.dim, "middle");
+  if (tg) b += tagText(72, vy + 18 + tagLift(tg, 13), tg, 124, 13, lit ? c : P.dim, "middle");
   if (has) {
     const top = foot - barH, gap = cols.length > 6 ? 4 : 6;
     const w = (116 - gap * (cols.length - 1)) / cols.length;
@@ -988,11 +1170,11 @@ function wave(f: Face, o: LookOpts): string {
   const tg = tag(f, i);
   if (iconAlone(f, o)) b += icon(f.icon, 36, 22, 72, lit ? X.white : offInk(f, P.muted), 2);
   else if (i.icon) b += icon(f.icon, 14, 14, 24, lit && lv > 0.82 ? X.white : lit ? c : f.online ? offInk(f, P.muted) : P.crit, 2.2);
-  const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 124);
-  const vy = (tg ? 76 : 84) + (cap ? 0 : 6);
+  const vy = (tg ? 76 : 84) + (cap ? 0 : 6) - (tg ? tagLift(tg, 13.5) : 0) - capLift(f, o, 14);
+  const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 124, 800, false, undefined, null, (z) => z * 0.72 <= vy - (i.icon ? 42 : 12));
   if (big.size && lit) b += drawBig(big, f, 73.5, vy + 2, X.night, X.night, "middle", 'fill-opacity="0.3"');
   b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? offInk(f, P.dim), lit ? X.white : P.muted, "middle");
-  if (tg) b += tagText(72, vy + 21, tg, 124, 13.5, lit ? X.white : P.dim, "middle");
+  if (tg) b += tagText(72, vy + 21 + tagLift(tg, 13.5), tg, 124, 13.5, lit ? X.white : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink, 12, true);
   return doc(b, defs);
@@ -1013,10 +1195,10 @@ function aurora(f: Face, o: LookOpts): string {
   else if (i.icon) b += icon(f.icon, 14, 14, 26, lit ? X.white : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const lv = levelOf(f, i);
   const spark = i.graph && f.online && f.series.length >= 2 && !tg;
-  const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 126);
-  const vy = (tg || spark ? 80 : 88) + (cap ? 0 : 8);
+  const vy = (tg || spark ? 80 : 88) + (cap ? 0 : 8) - (tg ? tagLift(tg, 13.5) : 0) - capLift(f, o, 14.5);
+  const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 126, 800, false, undefined, null, (z) => z * 0.72 <= vy - (i.icon ? 44 : 12));
   b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? offInk(f, P.dim), lit ? X.white : P.muted, "middle");
-  if (tg) b += tagText(72, vy + 20, tg, 124, 13.5, lit ? X.white : P.dim, "middle", lit ? 0.92 : undefined);
+  if (tg) b += tagText(72, vy + 20 + tagLift(tg, 13.5), tg, 124, 13.5, lit ? X.white : P.dim, "middle", lit ? 0.92 : undefined);
   if (spark) {
     const g = graph(f, { ...i, scale: false, target: false }, 24, 92, 96, 18, lit ? X.white : P.muted, lit ? { ...ink, bg: base } : ink, "g");
     b += `<g opacity="0.85">${g.body}</g>`;
@@ -1050,11 +1232,11 @@ function outline(f: Face, o: LookOpts): string {
   const tg = tag(f, i);
   if (iconAlone(f, o)) b += icon(f.icon, 38, 38, 68, lit ? base : offInk(f, P.muted), 2);
   else if (i.icon) b += icon(f.icon, 60, 22, 24, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.2);
-  const big = bigWords(f, i, [46, 40, 34, 28, 24, 20], 106);
-  const top = i.icon ? 48 : 20, bottom = (cap ? 100 : 124) - (tg ? 16 : 0);
+  const top = i.icon ? 48 : 20, bottom = (cap ? 100 - capLift(f, o, 14) : 124) - (tg ? 16 + tagLift(tg, 12.5) : 0);
+  const big = bigWords(f, i, [46, 40, 34, 28, 24, 20], 106, 800, false, undefined, null, (z) => z * 0.72 <= bottom - top);
   const vy = (top + bottom) / 2 + big.size * 0.36;
   b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
-  if (tg) b += tagText(72, bottom + 12, tg, 104, 12.5, lit ? base : P.dim, "middle");
+  if (tg) b += tagText(72, bottom + 12 + tagLift(tg, 12.5), tg, 104, 12.5, lit ? base : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink, 13, true);
   return doc(b);
@@ -1070,15 +1252,15 @@ function mono(f: Face, o: LookOpts): string {
   if (lit) b += rect(0, 0, 144, 144, 0, m, 'fill-opacity="0.1"') + `<rect width="144" height="144" fill="url(#tint)"/>`;
   const cap = caption(f, o, 72, 134, 124, 12.5, m, "middle", 650, lit ? 0.75 : 0.85);
   const tg = tag(f, i);
-  const big = bigWords(f, i, [30, 26, 22, 18, 15], 124, 800, true);
-  const lower = (cap ? 116 : 136) - (big.size ? big.size + 8 : 0) - (tg ? 16 : 0);
+  const big = bigWords(f, i, [30, 26, 22, 18, 15], 124, 800, true, undefined, 46);
+  const lower = (cap ? 116 - capLift(f, o, 12.5) : 136) - (big.size ? big.size + 8 : 0) - (tg ? 16 + tagLift(tg, 12) : 0);
   if (i.icon) {
     const s = Math.max(30, Math.min(84, lower - 16));
     b += icon(f.icon, 72 - s / 2, (8 + lower) / 2 - s / 2, s, m, lit ? 2.1 : 1.7);
   }
   const y = i.icon ? lower + big.size + 4 : (cap ? 66 : 76) + big.size * 0.36 - (tg ? 8 : 0);
   b += drawBig(big, f, 72, y, m, m, "middle", "", 1.6);
-  if (tg) b += tagText(72, y + 17, tg, 124, 12, m, "middle", 0.85);
+  if (tg) b += tagText(72, y + 17 + tagLift(tg, 12), tg, 124, 12, m, "middle", 0.85);
   const lv = levelOf(f, i);
   if (lv !== null) b += rect(0, 141, 144, 3, 0, m, 'fill-opacity="0.25"') + rect(0, 141, Math.max(3, 144 * lv), 3, 0, m);
   b += cap;
@@ -1103,7 +1285,7 @@ interface Bits {
   base: string;
   /** The off colour the user chose, for an off key that is online; else null. */
   off: string | null;
-  tg: string;
+  tg: Tag | "";
   lv: number | null;
   alone: boolean;
 }
@@ -1118,21 +1300,23 @@ function bits(f: Face, o: LookOpts): Bits {
 }
 
 /** The big words for a band `band` high: no size so big that the words and the tag leave it. */
-function fitBig(f: Face, i: Info, sizes: number[], maxW: number, band: number, tg: string, tagSize = 13, upper = false): Big {
-  const th = tg ? tagSize + 7 : 0;
-  const ok = sizes.filter((s) => s * 0.72 + th <= band);
-  return bigWords(f, i, ok.length ? ok : [sizes[sizes.length - 1]!], maxW, 800, upper);
+function fitBig(f: Face, i: Info, sizes: number[], maxW: number, band: number, tg: Tag | "", tagSz = 13, upper = false): Big {
+  const th = tg ? tagSize(tg, tagSz) + 7 : 0;
+  // (1.3) bigger words as far as the band has room for them, no further
+  return bigWords(f, i, sizes, maxW, 800, upper, (s) => s * 0.72 + th <= band, null);
 }
 
 /** The big words and the tag under them in the band top..bottom: centred in it, or sat on its foot. */
-function words(f: Face, big: Big, tg: string, x: number, top: number, bottom: number, anchor: "start" | "middle" | "end", fill: string, unitFill: string, tagFill: string, tagW: number,
-  tagSize = 13, extra = "", foot = false): { svg: string; end: number } {
+function words(f: Face, big: Big, tg: Tag | "", x: number, top: number, bottom: number, anchor: "start" | "middle" | "end", fill: string, unitFill: string, tagFill: string, tagW: number,
+  tagSz = 13, extra = "", foot = false): { svg: string; end: number } {
   if (!big.size) return { svg: "", end: top };
   const capH = big.size * 0.72;
-  const th = tg ? tagSize + 7 : 0;
-  const vy = (foot ? Math.max(top, bottom - capH - th) : top + Math.max(0, (bottom - top - capH - th) / 2)) + capH;
+  const th = tg ? tagSize(tg, tagSz) + 7 : 0;
+  let vy = (foot ? Math.max(top, bottom - capH - th) : top + Math.max(0, (bottom - top - capH - th) / 2)) + capH;
+  // (1.3) bigger text than the band holds: it rises rather than run into what is under the band
+  if (T !== ONE) vy = Math.min(vy, bottom - th);
   let svg = drawBig(big, f, x, vy, fill, unitFill, anchor, extra);
-  if (tg) svg += tagText(x, vy + th, tg, tagW, tagSize, tagFill, anchor);
+  if (tg) svg += tagText(x, vy + th, tg, tagW, tagSz, tagFill, anchor);
   return { svg, end: vy + th };
 }
 
@@ -1163,7 +1347,7 @@ function diagonal(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 14, 14, 56, ic, 2.2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 11, 11, 30, ic, 2.2);
   const cap = caption(f, o, 132, 134, 120, 14, P.dim, "end");
-  const top = i.icon ? 56 : 36, bottom = cap ? 114 : 134;
+  const top = i.icon ? 56 : 36, bottom = cap ? 114 - capLift(f, o, 14) : 134;
   const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 132, top, bottom, "end", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
   s += cap;
@@ -1211,7 +1395,7 @@ function stripe(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 44, 38, 68, ic, 2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 30, 14, 24, ic, 2.2);
   const cap = caption(f, o, 28, 134, 110, 14, P.dim, "start");
-  const top = i.icon ? 46 : 16, bottom = cap ? 114 : 134;
+  const top = i.icon ? 46 : 16, bottom = cap ? 114 - capLift(f, o, 14) : 134;
   const big = fitBig(f, i, [54, 48, 42, 36, 32, 28, 24], 104, bottom - top, b.tg);
   s += words(f, big, b.tg, 29, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 104).svg;
   s += cap;
@@ -1237,7 +1421,7 @@ function toggle(f: Face, o: LookOpts): string {
   if (i.icon) s += icon(f.icon, kx - is / 2, ky - is / 2, is, b.lit ? b.base : P.bg, 2.2);
   if (b.alone) return doc(s + badges(f, i, DARK, 12, true), defs);
   const cap = caption(f, o, 14, 134, 118, 14, P.dim, "start");
-  const top = ty + th + 8, bottom = cap ? 114 : 134;
+  const top = ty + th + 8, bottom = cap ? 114 - capLift(f, o, 14) : 134;
   const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
   s += cap;
@@ -1249,7 +1433,7 @@ function toggle(f: Face, o: LookOpts): string {
 function lcd(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const cap = b.alone ? "" : caption(f, o, 72, 134, 124, 12.5, P.dim, "middle", 700);
-  const sb = cap ? 114 : 134;
+  const sb = cap ? 114 - capLift(f, o, 12.5) : 134;
   const defs = radial("scr", [[0, b.base, 0.3], [1, b.base, 0.08]], 0.5, 0.45, 0.75)
     + `<pattern id="sl" width="4" height="3" patternUnits="userSpaceOnUse"><rect width="4" height="1" fill="${X.black}" fill-opacity="0.35"/></pattern>`;
   let s = rect(0, 0, 144, 144, 0, P.panel2);
@@ -1282,8 +1466,8 @@ function lcd(f: Face, o: LookOpts): string {
 function dial(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const cap = b.alone ? "" : caption(f, o, 72, 136, 124, 13.5, P.dim);
-  const bottom = cap ? 120 : 138;
-  const big = b.alone ? { words: "", unit: "", size: 0 } : fitBig(f, i, [44, 40, 36, 32, 28, 24], 124, b.tg ? 44 : 50, b.tg);
+  const bottom = cap ? 120 - capLift(f, o, 13.5) : 138;
+  const big: Big = b.alone ? { words: "", unit: "", size: 0, usize: 0, role: "value" } : fitBig(f, i, [44, 40, 36, 32, 28, 24], 124, b.tg ? 44 : 50, b.tg);
   const need = big.size ? big.size * 0.72 + (b.tg ? 20 : 0) : 0;
   const tTop = bottom - need - 6;
   const Ro = b.alone ? 60 : Math.max(26, Math.min(44, (tTop - 10) / 2));
@@ -1330,7 +1514,7 @@ function ticket(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 46, 62, 52, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 13, true), defs);
   if (i.icon) s += icon(f.icon, 17, 16, 26, ic, 2.2);
   const cap = caption(f, o, 72, 127, 120, 13.5, P.dim);
-  const top = py + 8, bottom = cap ? 110 : 128;
+  const top = py + 8, bottom = cap ? 110 - capLift(f, o, 13.5) : 128;
   const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
   s += cap;
@@ -1342,7 +1526,7 @@ function ticket(f: Face, o: LookOpts): string {
 function bubble(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const cap = b.alone ? "" : caption(f, o, 40, 128, 96, 13.5, P.dim, "start");
-  const y1 = cap ? 100 : 112, x0 = 8, y0 = 8, x1 = 136, r = 22;
+  const y1 = cap ? 100 - capLift(f, o, 13.5) : 112, x0 = 8, y0 = 8, x1 = 136, r = 22;
   const d = `M ${x0 + r} ${y0} H ${x1 - r} A ${r} ${r} 0 0 1 ${x1} ${y0 + r} V ${y1 - r} A ${r} ${r} 0 0 1 ${x1 - r} ${y1} H 42 L 18 ${y1 + 18} L 26 ${y1} H ${x0 + r} A ${r} ${r} 0 0 1 ${x0} ${y1 - r} V ${y0 + r} A ${r} ${r} 0 0 1 ${x0 + r} ${y0} Z`;
   const defs = grad("bub", b.base, 1, b.base, 0.76, 1, 1);
   let s = rect(0, 0, 144, 144, 0, P.bg);
@@ -1379,7 +1563,7 @@ function brackets(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 38, 38, 68, ic, 2) + badges(f, i, DARK, 14, true));
   if (i.icon) s += icon(f.icon, 60, 20, 24, ic, 2.2);
   const cap = caption(f, o, 72, 122, 108, 13.5, b.lit ? P.text : P.dim);
-  const top = i.icon ? 50 : 22, bottom = cap ? 104 : 124;
+  const top = i.icon ? 50 : 22, bottom = cap ? 104 - capLift(f, o, 13.5) : 124;
   const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 108, bottom - top, b.tg);
   s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 108).svg;
   s += cap;
@@ -1399,7 +1583,7 @@ function shadow(f: Face, o: LookOpts): string {
   const cap = caption(f, o, 20, 115, 100, 13.5, P.dim, "start");
   const showLv = b.lv !== null && !b.tg;
   const bar = cap ? 98 : 110;
-  const top = i.icon ? 50 : 22, bottom = (cap ? 98 : 116) - (showLv ? 8 : 0);
+  const top = i.icon ? 50 : 22, bottom = (cap ? 98 - capLift(f, o, 13.5) : 116) - (showLv ? 8 : 0);
   const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 100, bottom - top, b.tg);
   s += words(f, big, b.tg, 19, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 100).svg;
   if (showLv) s += rect(20, bar, 94, 4, 2, P.line) + rect(20, bar, Math.max(4, 94 * b.lv!), 4, 2, b.lit ? b.base : greyOr(b, P.muted));
@@ -1419,7 +1603,7 @@ function line(f: Face, o: LookOpts): string {
   }
   if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
   const cap = caption(f, o, 14, 134, 120, 14, P.dim, "start");
-  const uy = cap ? 104 : 122;
+  const uy = cap ? 104 - capLift(f, o, 14) : 122;
   const top = i.icon ? 44 : 16, bottom = uy - 10;
   const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120, 13, "", true).svg;
@@ -1447,7 +1631,7 @@ function tube(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 14, 42, 60, ic, 2) + badges(f, i, DARK, 12, true));
   if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
   const cap = caption(f, o, 13, 136, 120, 14, P.dim, "start");
-  const top = i.icon ? 44 : 16, bottom = cap ? 116 : 134;
+  const top = i.icon ? 44 : 16, bottom = cap ? 116 - capLift(f, o, 14) : 134;
   const big = fitBig(f, i, [48, 42, 38, 34, 30, 28, 24], 88, bottom - top, b.tg);
   s += words(f, big, b.tg, 12, top, bottom, "start", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 88).svg;
   s += cap;
@@ -1472,7 +1656,7 @@ function stamp(f: Face, o: LookOpts): string {
   if (b.lv !== null) s += rect(14, 16, 88, 6, 3, P.panel2) + rect(14, 16, Math.max(6, 88 * b.lv), 6, 3, b.lit ? b.base : b.off ?? P.muted);
   else s += rect(14, 16, 26, 6, 3, b.lit ? b.base : !f.online ? P.crit : b.off ?? P.line);
   const cap = caption(f, o, 14, 134, 120, 14, b.lit ? P.text : P.dim, "start");
-  const top = 30, bottom = cap ? 114 : 134;
+  const top = 30, bottom = cap ? 114 - capLift(f, o, 14) : 134;
   const big = fitBig(f, i, [56, 50, 44, 38, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b), P.dim, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
   s += cap;
@@ -1491,7 +1675,7 @@ function pastel(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + `<circle cx="72" cy="72" r="46" fill="${X.white}"/>` + icon(f.icon, 44, 44, 56, ic, 2.2) + badges(f, i, PAPER, 12, true));
   if (i.icon) s += `<circle cx="33" cy="33" r="20" fill="${X.white}"/>` + icon(f.icon, 21, 21, 24, ic, 2.2);
   const cap = caption(f, o, 14, 134, 120, 14, X.inkDim, "start");
-  const top = i.icon ? 62 : 18, bottom = cap ? 114 : 132;
+  const top = i.icon ? 62 : 18, bottom = cap ? 114 - capLift(f, o, 14) : 132;
   const big = fitBig(f, i, [50, 44, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", b.lit ? X.ink : f.stateColour ?? (b.off ? X.ink : X.inkDim), X.inkDim, b.lit ? X.ink : X.inkDim, 120).svg;
   if (b.lv !== null) s += rect(0, 140, 144, 4, 0, X.paperLine) + rect(0, 140, Math.max(4, 144 * b.lv), 4, 0, b.lit ? b.base : b.off ?? X.inkMuted);
@@ -1515,7 +1699,7 @@ function carbon(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 36, 28, 72, ic, 2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 14, 14, 22, ic, 2.2);
   const cap = caption(f, o, 14, 120, 120, 13.5, P.dim, "start");
-  const top = i.icon ? 44 : 16, bottom = cap ? 102 : 120;
+  const top = i.icon ? 44 : 16, bottom = cap ? 102 - capLift(f, o, 13.5) : 120;
   const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 118, bottom - top, b.tg);
   s += words(f, big, b.tg, 13, top, bottom, "start", ink(f, b, X.white), P.dim, b.lit ? b.base : greyOr(b, P.dim), 118, 13, 'font-style="italic"').svg;
   s += cap;
@@ -1543,7 +1727,7 @@ function grid(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + `<circle cx="72" cy="72" r="40" fill="${X.night}" fill-opacity="0.8"/>` + icon(f.icon, 44, 44, 56, ic, 2.2) + badges(f, i, DARK, 12, true));
   if (i.icon) s += `<circle cx="26" cy="26" r="16" fill="${X.night}" fill-opacity="0.85"/>` + icon(f.icon, 15, 15, 22, ic, 2.2);
   const cap = caption(f, o, 72, 134, 124, 14, b.lit ? P.text : P.dim, "middle", 700);
-  const top = i.icon ? 44 : 14, bottom = cap ? 114 : 132;
+  const top = i.icon ? 44 : 14, bottom = cap ? 114 - capLift(f, o, 14) : 132;
   const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 124, bottom - top, b.tg);
   s += edged(words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b, X.white), b.lit ? P.text : P.muted, b.lit ? X.white : greyOr(b, P.dim), 124).svg + cap, X.night, 6);
   s += badges(f, i, DARK, 12, true);
@@ -1554,7 +1738,10 @@ function grid(f: Face, o: LookOpts): string {
 function tab(f: Face, o: LookOpts): string {
   const b = bits(f, o), i = b.i;
   const t = b.alone ? "" : i.name && f.name ? f.name : i.room && f.room ? f.room : "";
-  const nl = t ? nameLines(t, o.fit, 13.5, 100, 700, 1) : null;
+  const trole: TextRole = i.name && f.name ? "name" : "room";
+  const nl0 = t ? nameLines(t, o.fit, S(trole, 13.5, 17), 100 - (T[trole] > 1 && f.badge ? 34 : 0), 700, 1) : null;
+  // (bigger, beside the unread pill: never smaller than at 100 %)
+  const nl = nl0 && T[trole] > 1 && f.badge && nl0.size < 13.5 ? nameLines(t, o.fit, 13.5, 100, 700, 1) : nl0;
   // the tab's right end: past the name, at most the folder's edge
   const tw = Math.min(116, nl ? Math.max(40, textWidth(nl.lines[0]!, nl.size, 700) + 22) : 40);
   const tabFill = b.lit ? b.base : !f.online ? P.panel2 : b.off ?? P.line;
@@ -1562,7 +1749,7 @@ function tab(f: Face, o: LookOpts): string {
   s += `<path d="M 8 36 V 18 A 10 10 0 0 1 18 8 H ${n(8 + tw - 6)} Q ${n(8 + tw)} 8 ${n(8 + tw + 4)} 16 L ${n(8 + tw + 12)} 36 Z" fill="${tabFill}"/>`;
   s += rect(8, 30, 128, 106, 14, b.lit ? P.panel2 : P.panel, `stroke="${f.online ? (b.lit ? b.base : greyOr(b, P.line)) : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="6 4"'}`);
   s += rect(9, 31, Math.min(126, tw + 10), 6, 0, tabFill);
-  if (nl) s += text(20, 26, nl.lines[0]!, { size: nl.size, weight: 700, fill: b.lit || b.off ? P.bg : P.dim });
+  if (nl) s += text(20, 26 + dz(S(trole, 13.5, 17), 13.5) * 0.3, nl.lines[0]!, { size: nl.size, weight: 700, fill: b.lit || b.off ? P.bg : P.dim, role: trole });
   const ic = iconInk(f, b, b.base);
   if (b.alone) return doc(s + icon(f.icon, 40, 50, 64, ic, 2) + badges(f, i, DARK, 40, true));
   if (i.icon) s += icon(f.icon, 20, 44, 22, ic, 2.2);
@@ -1589,7 +1776,7 @@ function rise(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 40, 22, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 14, 12, 22, ic, 2.2);
   const cap = caption(f, o, 72, 136, 124, 13.5, b.lit ? P.bg : P.text, "middle", 700);
-  const top = i.icon ? 38 : 14, bottom = Math.min(144 - H, cap ? 118 : 138) - 6;
+  const top = i.icon ? 38 : 14, bottom = Math.min(144 - H, cap ? 118 - capLift(f, o, 13.5) : 138) - 6;
   const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 124, bottom - top, b.tg);
   s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 124).svg;
   s += cap;
@@ -1610,7 +1797,7 @@ function spot(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 14, 12, 22, ic, 2.2);
   const cap = caption(f, o, 72, 136, 124, 13.5, P.dim);
-  const top = i.icon ? 38 : 16, bottom = cap ? 112 : 130;
+  const top = i.icon ? 38 : 16, bottom = cap ? 112 - capLift(f, o, 13.5) : 130;
   const big = fitBig(f, i, [52, 46, 40, 36, 32, 28, 24], 120, bottom - top, b.tg);
   s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b), P.muted, b.lit ? b.base : greyOr(b, P.dim), 120).svg;
   if (b.lv !== null && !b.tg) s += rect(36, 140, 72, 3, 1.5, P.line) + rect(36, 140, Math.max(3, 72 * b.lv), 3, 1.5, b.lit ? b.base : greyOr(b, P.muted));
@@ -1644,7 +1831,7 @@ function button(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 42, 34 + dy, 60, ic, 2.2) + badges(f, i, DARK, 14, true), defs);
   if (i.icon) s += icon(f.icon, 22, 20 + dy, 22, ic, 2.2);
   const cap = caption(f, o, 72, 106 + dy, 104, 13, b.lit ? P.text : P.dim);
-  const top = (i.icon ? 44 : 22) + dy, bottom = (cap ? 92 : 108) + dy;
+  const top = (i.icon ? 44 : 22) + dy, bottom = (cap ? 92 - capLift(f, o, 13) : 108) + dy;
   const big = fitBig(f, i, [46, 42, 38, 34, 30, 28, 24], 104, bottom - top, b.tg);
   s += words(f, big, b.tg, 72, top, bottom, "middle", ink(f, b, X.white), b.lit ? P.text : P.muted, b.lit ? X.white : greyOr(b, P.dim), 104).svg;
   s += cap;
@@ -1668,6 +1855,8 @@ interface NF extends Bits {
   room: string;
   /** How wide the badges at the top right are (0: none). */
   bw: number;
+  /** (1.3) What the title is, for its size: the name, or the room leading in its place. */
+  titleRole: TextRole;
 }
 
 function nf(f: Face, o: LookOpts): NF {
@@ -1675,18 +1864,37 @@ function nf(f: Face, o: LookOpts): NF {
   const title = i.name && f.name ? f.name : i.room && f.room ? f.room : "";
   const room = i.name && f.name && i.room && f.room ? f.room : "";
   const k = (f.allowed ? 0 : 1) + (f.online ? 0 : 1) + (i.battery && f.battery !== null && f.battery <= 20 ? 1 : 0) + (f.hold ? 1 : 0) + (f.taken ? 1 : 0);
-  return { ...b, title, room, bw: k ? k * 26 + 4 : 0 };
+  return { ...b, title, room, bw: k ? k * 26 + 4 : f.badge && bigger() ? 34 : 0, titleRole: i.name && f.name ? "name" : "room" };
 }
 
-interface NameSet { lines: string[]; size: number }
+interface NameSet { lines: string[]; size: number; role?: TextRole }
 
 /** The title laid out as the key's name fit says: two lines by default, smaller before it is cut. */
-function nameOf(b: NF, o: LookOpts, size: number, maxW: number, weight = 750, lines = 2): NameSet | null {
+function nameOf(b: NF, o: LookOpts, size: number, maxW: number, weight = 750, lines = 2, at100 = false): NameSet | null {
   if (!b.title) return null;
   const w = Math.max(40, maxW);
-  const ns = nameLines(b.title, o.fit, size, w, weight, lines);
+  // (1.3) in the title's own size (the layouts round it make room, or make it smaller again)
+  const z = at100 ? size : S(b.titleRole, size);
+  const ns = nameLines(b.title, o.fit, z, w, weight, lines);
   // wrapped, but still cut: smaller rather than cut, as fit does (these looks are for the name)
-  if (o.fit === "wrap" && ns.lines.some((l) => l.endsWith("…"))) return nameLines(b.title, "fit", size, w, weight, lines);
+  if (o.fit === "wrap" && ns.lines.some((l) => l.endsWith("…"))) return { ...nameLines(b.title, "fit", z, w, weight, lines), role: b.titleRole };
+  return { ...ns, role: b.titleRole };
+}
+
+/** (1.3) The title made smaller (from its size at 100 %) until its block is no taller than `avail` - only when some text is drawn bigger. */
+function fitName(b: NF, o: LookOpts, size: number, maxW: number, weight: number, avail: number): NameSet | null {
+  let ns = nameOf(b, o, size, maxW, weight);
+  if (!bigger()) return ns;
+  // (a bigger title gives way down to its size at 100 %, no further; other bigger text may push it smaller)
+  const at1 = T[b.titleRole] > 1 ? nameOf(b, o, size, maxW, weight, 2, true) : null;
+  for (let z = size - 1.5; ns && nameH(ns) > avail && z >= 11; z -= 1.5) {
+    const c = nameOf(b, o, z, maxW, weight);
+    if (at1 && c && c.size < at1.size) {
+      if (nameH(at1) < nameH(ns)) ns = at1;
+      break;
+    }
+    ns = c;
+  }
   return ns;
 }
 
@@ -1698,13 +1906,28 @@ function linesSvg(ns: NameSet | null, x: number, y: number, anchor: "start" | "m
   if (!ns) return "";
   let s = "";
   ns.lines.forEach((l, k) => {
-    const t = text(x, y + k * ns.size * lh, l, { size: ns.size, weight, fill, anchor, family, spacing: -0.2 });
+    const t = text(x, y + k * ns.size * lh, l, { size: ns.size, weight, fill, anchor, family, spacing: -0.2, role: ns.role });
     s += extra ? t.replace("<text ", "<text " + extra + " ") : t;
   });
   return s;
 }
 
-interface St { words: string; unit: string; size: number; sub: string }
+interface St {
+  words: string;
+  unit: string;
+  size: number;
+  sub: string;
+  /** (1.3) The unit's size and words, the sub line's pieces and height, and what the words are. */
+  usize?: number;
+  utext?: string;
+  subParts?: Part[];
+  subH?: number;
+  role?: TextRole;
+  multi?: string;
+}
+
+/** (1.3) The height the sub line takes (18 at 100 %). */
+const subHOf = (parts: Part[]): number => (parts.length ? 18 + dz(partsSize(parts, 12.5), 12.5) * 0.8 : 18);
 
 /**
  * The status: the state with its unit, at the largest of `sizes` that fits `maxW`; with the state
@@ -1713,46 +1936,78 @@ interface St { words: string; unit: string; size: number; sub: string }
  */
 function statOf(f: Face, i: Info, sizes: number[], maxW: number, band = 999, weight = 800): St {
   if (!i.state) {
+    const parts = subParts(f, i);
     const s = subline(f, i);
     if (!s) return { words: "", unit: "", size: 0, sub: "" };
-    const ok = sizes.map((a) => Math.max(14, Math.round(a * 0.72))).filter((a) => a * 0.74 <= band);
+    const role = parts[0]![1];
+    const ok = growAll(sizes.map((a) => Math.max(14, Math.round(a * 0.72))), T[role], (z) => z / 0.72).filter((a) => a * 0.74 <= band);
     const t = fitSize(s, ok.length ? ok : [14], maxW, weight);
-    return { words: t.text, unit: "", size: t.size, sub: "" };
+    return { words: t.text, unit: "", size: t.size, sub: "", role, ...(parts.length > 1 ? { multi: parts.map((p) => p[1]).join(" ") } : {}) };
   }
   const v = stateText(f);
   const unit = f.unit && f.online ? f.unit : "";
-  const sub = f.kind === "thermostat" && f.online ? [i.detail ? f.detail.replace(/\s*°[CF]$/, "°") : "", i.mode ? f.mode : ""].filter(Boolean).join(" · ") : subline(f, i);
+  const subP = f.kind === "thermostat" && f.online ? pairParts(i.detail ? f.detail.replace(/\s*°[CF]$/, "°") : "", i.mode ? f.mode : "") : subParts(f, i);
+  const sub = subP.map((p) => p[0]).join("");
+  const subH = subHOf(subP);
   const fits = sizes.filter((s) => s * 0.74 + (sub ? 18 : 0) <= band);
   const list = fits.length ? fits : [sizes[sizes.length - 1]!];
   const uw = (s: number) => (unit ? textWidth(fit(unit, 14, 44, 650), Math.max(11, s * 0.5), 600) + 4 : 0);
-  for (const s of list) if (textWidth(v, s, weight) + uw(s) <= maxW) return { words: v, unit, size: s, sub };
-  const s = list[list.length - 1]!;
-  return { words: fit(v, s, maxW - uw(s), weight), unit, size: s, sub };
+  const pick = (): { words: string; size: number } => {
+    for (const s of list) if (textWidth(v, s, weight) + uw(s) <= maxW) return { words: v, size: s };
+    const s = list[list.length - 1]!;
+    return { words: fit(v, s, maxW - uw(s), weight), size: s };
+  };
+  const p0 = pick();
+  const extra = { subParts: subP, subH, role: "value" as TextRole };
+  const uk = T.unit === 1 ? 1 : S("unit", 14) / 14;
+  if (T.value === 1 && uk === 1) return { words: p0.words, unit, size: p0.size, sub, ...extra };
+  // (1.3) the value in its own size (as far as the band and the role's limit let it), the unit in its own
+  const uz0 = Math.max(11, p0.size * 0.5);
+  const grown0 = SS("value", sizes, band < 999 ? null : undefined).filter((z) => z * 0.74 + (sub ? subH : 0) <= band);
+  const grown = T.value < 1 && grown0.length ? smallerThan(grown0, p0.size * T.value) : grown0;
+  const utext = unit ? fit(unit, 14 * uk, 44 * uk, 650) : "";
+  const r = fitWithUnit(v, grown.length ? grown : [Math.min(...SS("value", sizes))], utext, uz0, uz0 * uk, maxW, weight, 600, 4);
+  return { words: r.text, unit, size: r.size, sub, ...extra, usize: r.usize, utext };
 }
 
 /** The status's words: the unit a smaller tspan, offline in red. */
 function statSvg(st: St, f: Face, x: number, y: number, fill: string, unitFill: string, anchor: "start" | "middle" | "end", crit: string = P.crit, family?: string, extra = ""): string {
   if (!st.size) return "";
-  const u = st.unit ? `<tspan dx="3" font-size="${n(Math.max(11, st.size * 0.5))}" font-weight="700" fill="${unitFill}">${escText(fit(st.unit, 14, 44, 650))}</tspan>` : "";
-  const t = text(x, y, st.words, { size: st.size, weight: 800, fill: f.online ? fill : crit, anchor, family, spacing: -0.3 });
+  const u = st.unit ? `<tspan dx="3" font-size="${n(unitSize(st))}" font-weight="700" fill="${unitFill}"${roleAttr("unit")}>${escText(st.utext ?? fit(st.unit, 14, 44, 650))}</tspan>` : "";
+  let t = text(x, y, st.words, { size: st.size, weight: 800, fill: f.online ? fill : crit, anchor, family, spacing: -0.3, role: st.role ?? "value" });
+  if (st.multi && roleAttr(st.role)) t = t.replace(roleAttr(st.role), ` data-role="${st.multi}"`);
   return (extra ? t.replace("<text ", "<text " + extra + " ") : t).replace(/<\/text>$/, u + "</text>");
 }
 
+/** (1.3) The unit's size beside the status (half the value's at 100 %). */
+const unitSize = (st: St): number => st.usize ?? Math.max(11, st.size * 0.5);
+/** How wide the status is, its unit with it. */
+const statW = (st: St): number => textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.utext ?? st.unit, unitSize(st), 600) + 4 : 0);
+
 /** The small line under the status, a little smaller before it is cut. */
-function subSvg(t: string, x: number, y: number, maxW: number, fill: string, anchor: "start" | "middle" | "end" = "start", size = 12.5, family?: string): string {
+function subSvg(t: string, x: number, y: number, maxW: number, fill: string, anchor: "start" | "middle" | "end" = "start", size = 12.5, family?: string, parts?: Part[]): string {
   if (!t) return "";
-  const s = fitSize(t, [size, size * 0.9, size * 0.82], maxW, 650);
-  return text(x, y, s.text, { size: s.size, weight: 650, fill, anchor, family });
+  // (1.3) the detail and the mode each in its own size
+  return mixLine(x, y, parts && parts.length ? parts : [[t, "detail"]], [size, size * 0.9, size * 0.82], maxW, { weight: 650, fill, anchor, family }, T, (z) => z * CAPF.detail).svg;
 }
+
+/** (1.3) The room under a name in the name-first looks, in its own size. */
+function roomSvg(room: string, x: number, y: number, maxW: number, fill: string, size = 12.5, anchor: "start" | "middle" | "end" = "start", family?: string): string {
+  const z = S("room", size);
+  return text(x, y, fit(room, z, maxW, 600), { size: z, weight: 600, fill, anchor, family, role: "room" });
+}
+/** How much taller the room line is than at 100 %. */
+const roomD = (size = 12.5): number => dz(S("room", size), size) * 0.8;
 
 /** The status and its small line in the band top..bottom, centred in it. Returns the status's baseline. */
 function statBlock(f: Face, st: St, x: number, anchor: "start" | "middle" | "end", top: number, bottom: number, maxW: number, fill: string, unitFill: string, subFill: string,
   crit: string = P.crit, family?: string): { svg: string; y: number; end: number } {
   if (!st.size) return { svg: "", y: top, end: top };
-  const sub = st.sub && st.size * 0.74 + 18 <= bottom - top + 2 ? st.sub : "";
-  const h = st.size * 0.74 + (sub ? 18 : 0);
+  const sh = st.subH ?? 18;
+  const sub = st.sub && st.size * 0.74 + sh <= bottom - top + 2 ? st.sub : "";
+  const h = st.size * 0.74 + (sub ? sh : 0);
   const y = top + Math.max(0, (bottom - top - h) / 2) + st.size * 0.74;
-  return { svg: statSvg(st, f, x, y, fill, unitFill, anchor, crit, family) + (sub ? subSvg(sub, x, y + 17, maxW, subFill, anchor, 12.5, family) : ""), y, end: y + (sub ? 18 : 0) };
+  return { svg: statSvg(st, f, x, y, fill, unitFill, anchor, crit, family) + (sub ? subSvg(sub, x, y + 17 + (sh - 18), maxW, subFill, anchor, 12.5, family, st.subParts) : ""), y, end: y + (sub ? sh : 0) };
 }
 
 interface Col {
@@ -1775,7 +2030,7 @@ function column(f: Face, o: LookOpts, b: NF, c: Col): ColOut {
   let st = statOf(f, i, sizes, c.maxW, 999);
   let room = b.room && ns && ns.lines.length === 1 ? b.room : "";
   let sub = st.sub;
-  const H = () => nameH(ns) + (room ? 16 : 0) + (st.size ? (ns ? gap : 0) + st.size * 0.74 : 0) + (sub ? 18 : 0);
+  const H = () => nameH(ns) + (room ? 16 + roomD() : 0) + (st.size ? (ns ? gap : 0) + st.size * 0.74 : 0) + (sub ? st.subH ?? 18 : 0);
   const avail = c.bottom - c.top;
   if (H() > avail) room = "";
   for (const s of sizes) {
@@ -1797,8 +2052,8 @@ function column(f: Face, o: LookOpts, b: NF, c: Col): ColOut {
   }
   const nameEnd = y;
   if (room) {
-    s += text(c.x, y + 12, fit(room, 12.5, c.maxW, 600), { size: 12.5, weight: 600, fill: c.roomFill ?? c.subFill, anchor: c.anchor, family: c.family });
-    y += 16;
+    s += roomSvg(room, c.x, y + 12 + roomD(), c.maxW, c.roomFill ?? c.subFill, 12.5, c.anchor, c.family);
+    y += 16 + roomD();
   }
   let statY = y;
   if (st.size) {
@@ -1807,8 +2062,9 @@ function column(f: Face, o: LookOpts, b: NF, c: Col): ColOut {
     y = statY;
   }
   if (sub) {
-    s += subSvg(sub, c.x, y + 17, c.maxW, c.subFill, c.anchor, 12.5, c.family);
-    y += 18;
+    const sh = st.subH ?? 18;
+    s += subSvg(sub, c.x, y + 17 + (sh - 18), c.maxW, c.subFill, c.anchor, 12.5, c.family, st.subParts);
+    y += sh;
   }
   return { svg: s, ns, st, nameTop, nameBase, nameEnd, statY, end: y };
 }
@@ -1839,7 +2095,7 @@ function namebar(f: Face, o: LookOpts): string {
   const iw = Math.max(i.icon ? 30 : 0, b.bw);
   const st = statOf(f, i, [32, 28, 25, 22, 19, 16], 120 - iw, bottom - top - (room ? 15 : 0));
   const sb = statBlock(f, st, 12, "start", top + (room ? 15 : 0), bottom, 120 - iw, ink(f, b, b.base), P.dim, P.dim);
-  if (room) s += text(12, top + 10, fit(room, 12, 120, 600), { size: 12, weight: 600, fill: P.dim });
+  if (room) s += roomSvg(room, 12, top + 10, 120, P.dim, 12);
   s += sb.svg;
   if (i.icon) s += icon(f.icon, 110, b.bw ? bottom - 24 : (top + bottom) / 2 - 12, 24, ic, 2.2);
   if (showLv) s += footBar(b, 12, 134, 120);
@@ -1859,18 +2115,18 @@ function captionLook(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
   if (i.icon) s += icon(f.icon, 12, 11, 20, ic, 2.2);
   const top = i.icon || b.bw ? 34 : 14;
-  const ns = nameOf(b, o, 22, 124, 750);
   const st = statOf(f, i, [21, 19, 17, 15], 104);
   const pillH = st.size ? st.size + 10 : 0;
+  const ns = fitName(b, o, 22, 124, 750, 138 - top - (pillH ? 6 + pillH : 0));
   let sub = st.sub;
   const lv = b.lv !== null;
-  const h = () => nameH(ns) + (pillH ? (ns ? 6 : 0) + pillH : 0) + (sub ? 16 : 0);
+  const h = () => nameH(ns) + (pillH ? (ns ? 6 : 0) + pillH : 0) + (sub ? 16 + ((st.subH ?? 18) - 18) : 0);
   if (h() > 138 - top) sub = "";
   let y = top + Math.max(0, (138 - top - h()) / 2);
   s += linesSvg(ns, 72, y + (ns ? ns.size * 0.74 : 0), "middle", P.text);
   y += nameH(ns) + (ns ? 6 : 0);
   if (pillH) {
-    const tw = textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0);
+    const tw = statW(st);
     const pw = Math.min(128, tw + 26);
     const fill = b.lit ? b.base : P.panel2;
     s += rect(72 - pw / 2, y, pw, pillH, pillH / 2, fill, `${!b.lit && b.off ? 'fill-opacity="1"' : ""} ${edge(f, b, b.base, P.muted)} stroke-width="1.8"`);
@@ -1878,7 +2134,7 @@ function captionLook(f: Face, o: LookOpts): string {
     s += statSvg(st, f, 72, y + pillH / 2 + st.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "middle");
     y += pillH;
   }
-  if (sub) s += subSvg(sub, 72, y + 14, 124, P.dim, "middle");
+  if (sub) s += subSvg(sub, 72, y + 14 + ((st.subH ?? 18) - 18), 124, P.dim, "middle", 12.5, undefined, st.subParts);
   s += badges(f, i, DARK, 11, true);
   return doc(s, defs);
 }
@@ -1894,11 +2150,11 @@ function led(f: Face, o: LookOpts): string {
   const hasSt = st.size > 0;
   const statTop = hasSt ? (st.sub ? 92 : 104) : 136;
   const nameTop = b.bw ? 36 : 14;
-  const ns = nameOf(b, o, 23, 120, 750);
+  const ns = fitName(b, o, 23, 120, 750, statTop - 6 - nameTop);
   const nh = nameH(ns);
   // the name sits at the top; it may take the room's line when it is one line
   s += linesSvg(ns, 14, nameTop + (ns ? ns.size * 0.74 : 0), "start", P.text);
-  if (b.room && ns && ns.lines.length === 1 && nameTop + nh + 16 < statTop) s += text(14, nameTop + nh + 12, fit(b.room, 12.5, 116, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (b.room && ns && ns.lines.length === 1 && nameTop + nh + 16 + roomD() < statTop) s += roomSvg(b.room, 14, nameTop + nh + 12 + roomD(), 116, P.dim);
   if (hasSt) {
     const y = Math.max(statTop, nameTop + nh + 6) + st.size * 0.74;
     const cy = y - st.size * 0.36;
@@ -1906,7 +2162,7 @@ function led(f: Face, o: LookOpts): string {
     s += `<circle cx="22" cy="${n(cy)}" r="6.5" fill="${b.lit || !f.online || b.off ? lamp : P.bg}" stroke="${lamp}" stroke-width="2"/>`;
     if (b.lit) s += `<circle cx="20" cy="${n(cy - 2)}" r="2" fill="${X.white}" fill-opacity="0.6"/>`;
     s += statSvg(st, f, 38, y, ink(f, b, P.text), P.dim, "start");
-    if (st.sub && y + 18 <= 140) s += subSvg(st.sub, 14, y + 18, 120, b.lit ? b.base : P.dim);
+    if (st.sub && y + (st.subH ?? 18) <= 140) s += subSvg(st.sub, 14, y + (st.subH ?? 18), 120, b.lit ? b.base : P.dim, "start", 12.5, undefined, st.subParts);
   }
   if (i.icon) s += icon(f.icon, 110, hasSt ? (st.sub ? 92 : 106) : 112, 20, iconInk(f, b, b.base), 2.2);
   if (b.lv !== null) s += rect(136, 40, 3, 90, 1.5, P.line) + rect(136, 40 + 90 * (1 - b.lv), 3, Math.max(3, 90 * b.lv), 1.5, b.lit ? b.base : greyOr(b, P.muted));
@@ -1920,8 +2176,8 @@ function tworows(f: Face, o: LookOpts): string {
   let s = rect(0, 0, 144, 144, 0, P.bg);
   const ic = iconInk(f, b, b.base);
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true));
-  const ns = nameOf(b, o, 22, 124, 750);
   const st = statOf(f, i, [28, 25, 22, 19, 16], 124, 52);
+  const ns = fitName(b, o, 22, 124, 750, (st.size ? 84 : 120) - 8 - (b.bw ? 32 : 8));
   const mid = ns && st.size ? Math.max(64, Math.min(84, (b.bw ? 30 : 10) + nameH(ns) + 14)) : ns ? 120 : 30;
   // the name centred above the line
   const top = b.bw ? 32 : 8;
@@ -1953,10 +2209,10 @@ function plate(f: Face, o: LookOpts): string {
   const ic = iconInk(f, b, b.base, P.dim);
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true), defs);
   const st = statOf(f, i, [24, 22, 20, 18, 16], i.icon ? 88 : 104, 44);
-  const win = st.size ? st.size * 0.74 + (st.sub ? 18 : 0) + 16 : 0;
+  const win = st.size ? st.size * 0.74 + (st.sub ? st.subH ?? 18 : 0) + 16 : 0;
   const winTop = 132 - win;
-  const ns = nameOf(b, o, 22, 116, 800);
   const top = b.bw ? 34 : 22;
+  const ns = fitName(b, o, 22, 116, 800, winTop - 6 - top);
   const ny = top + Math.max(0, (winTop - 6 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0);
   // engraved: a dark cut under light letters
   s += linesSvg(ns, 72, ny + 1.2, "middle", X.night, 800);
@@ -1993,19 +2249,20 @@ function ticker(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 40, 28, 64, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 12, true));
   if (i.icon) s += icon(f.icon, 110, sy + strip / 2 - 11, 22, ic, 2.2);
   const top = b.bw ? 34 : 10;
-  const ns = nameOf(b, o, 22, 124, 750);
   const sub = st!.sub;
+  const ns = fitName(b, o, 22, 124, 750, sy - 4 - top - (sub ? st!.subH ?? 18 : 0));
   const room = b.room && ns && ns.lines.length === 1 ? b.room : "";
-  const extra = (sub ? 18 : 0) + (room ? 16 : 0);
+  const sh = st!.subH ?? 18;
+  const extra = (sub ? sh : 0) + (room ? 16 + roomD() : 0);
   const nb = sy - 4;
   let y = top + Math.max(0, (nb - top - nameH(ns) - extra) / 2);
   s += linesSvg(ns, 12, y + (ns ? ns.size * 0.74 : 0), "start", P.text);
   y += nameH(ns);
-  if (room && y + 16 <= nb - (sub ? 18 : 0)) {
-    s += text(12, y + 12, fit(room, 12.5, 120, 600), { size: 12.5, weight: 600, fill: P.dim });
-    y += 16;
+  if (room && y + 16 + roomD() <= nb - (sub ? sh : 0)) {
+    s += roomSvg(room, 12, y + 12 + roomD(), 120, P.dim);
+    y += 16 + roomD();
   }
-  if (sub && y + 16 <= nb) s += subSvg(sub, 12, y + 15, 120, b.lit ? b.base : P.dim);
+  if (sub && y + 16 + (sh - 18) <= nb) s += subSvg(sub, 12, y + 15 + (sh - 18), 120, b.lit ? b.base : P.dim, "start", 12.5, undefined, st!.subParts);
   if (st!.size) s += statSvg(st!, f, 12, sy + strip / 2 + 1.5 + st!.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "start");
   s += badges(f, i, DARK, 10, true);
   return doc(s);
@@ -2019,7 +2276,7 @@ function card(f: Face, o: LookOpts): string {
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, iconInk(f, b, b.base), 2) + badges(f, i, DARK, 10, true));
   const x = i.icon ? 52 : 14, w = 132 - x;
   const st = statOf(f, i, [26, 23, 20, 18, 16], w, 44);
-  const rowH = Math.max(i.icon ? 34 : 0, st.size ? st.size * 0.74 + (st.sub ? 18 : 0) : 0);
+  const rowH = Math.max(i.icon ? 34 : 0, st.size ? st.size * 0.74 + (st.sub ? st.subH ?? 18 : 0) : 0);
   const rowTop = 132 - rowH;
   if (i.icon) {
     const ty = rowTop + rowH / 2 - 17;
@@ -2029,12 +2286,12 @@ function card(f: Face, o: LookOpts): string {
   }
   if (st.size) s += statBlock(f, st, x, "start", rowTop, 132, Math.min(126 - x + 6, w + 6), ink(f, b, b.base), P.dim, P.dim).svg;
   const top = b.bw ? 32 : 14;
-  const ns = nameOf(b, o, 22, 118, 800);
+  const ns = fitName(b, o, 22, 118, 800, rowTop - 8 - top);
   const room = b.room && ns && ns.lines.length === 1 ? b.room : "";
-  const H = nameH(ns) + (room ? 16 : 0);
+  const H = nameH(ns) + (room ? 16 + roomD() : 0);
   const y = top + Math.max(0, (rowTop - 8 - top - H) / 2);
   s += linesSvg(ns, 14, y + (ns ? ns.size * 0.74 : 0), "start", P.text, 800);
-  if (room && y + H <= rowTop - 4) s += text(14, y + nameH(ns) + 12, fit(room, 12.5, 116, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (room && y + H <= rowTop - 4) s += roomSvg(room, 14, y + nameH(ns) + 12 + roomD(), 116, P.dim);
   if (ns && rowH) s += `<path d="M 14 ${n(rowTop - 7)} H 130" stroke="${P.line}" stroke-width="1"/>`;
   s += badges(f, i, DARK, 9, true);
   return doc(s);
@@ -2045,8 +2302,8 @@ function halves(f: Face, o: LookOpts): string {
   const b = nf(f, o), i = b.i;
   let s = rect(0, 0, 144, 144, 0, P.bg);
   const ic = iconInk(f, b, b.base);
-  const ns = b.alone ? null : nameOf(b, o, 22, 126, 750);
   const st = b.alone ? null : statOf(f, i, [28, 25, 22, 19, 16], 124, 50);
+  const ns = b.alone ? null : fitName(b, o, 22, 126, 750, (!st?.size ? 120 : 82) - 4 - (b.bw ? 30 : 6));
   const mid = !ns ? 50 : !st?.size ? 120 : Math.max(66, Math.min(82, Math.round((b.bw ? 30 : 8) + nameH(ns) + 10)));
   const fill = b.lit ? b.base : P.panel2;
   s += rect(0, mid, 144, 144 - mid, 0, fill);
@@ -2087,19 +2344,19 @@ function corner(f: Face, o: LookOpts): string {
   const st = b.alone ? null : statOf(f, i, [24, 22, 20, 18, 16], 112, 40);
   let bh = 0, bwid = 0;
   if (st && st.size) {
-    const tw = textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0);
-    const sw = st.sub ? Math.min(118, textWidth(st.sub, 12, 650)) : 0;
+    const tw = statW(st);
+    const sw = st.sub ? Math.min(118, textWidth(st.sub, partsSize(st.subParts ?? [], 12), 650)) : 0;
     bwid = Math.min(130, Math.max(54, tw, sw) + 24);
-    bh = st.size * 0.74 + (st.sub ? 18 : 0) + 20;
+    bh = st.size * 0.74 + (st.sub ? st.subH ?? 18 : 0) + 20;
   }
   if (b.alone) return doc(s + icon(f.icon, 40, 40, 64, ic, 2) + badges(f, i, DARK, 12, true));
   if (i.icon) s += icon(f.icon, 13, 12, 20, ic, 2.2);
   const top = i.icon || b.bw ? 36 : 14;
-  const ns = nameOf(b, o, 24, 120, 800);
   const nb = 144 - bh - 4;
+  const ns = fitName(b, o, 24, 120, 800, nb - top);
   const ny = top + Math.max(0, Math.min((nb - top - nameH(ns)) / 2, 6)) + (ns ? ns.size * 0.74 : 0);
   s += linesSvg(ns, 13, ny, "start", P.text, 800);
-  if (b.room && ns && ns.lines.length === 1 && ny + 20 < nb) s += text(13, ny + 19, fit(b.room, 12.5, 118, 600), { size: 12.5, weight: 600, fill: P.dim });
+  if (b.room && ns && ns.lines.length === 1 && ny + 20 + roomD() < nb) s += roomSvg(b.room, 13, ny + 19 + roomD(), 118, P.dim);
   if (bh) {
     const x0 = 144 - bwid, y0 = 144 - bh;
     s += `<path d="M ${n(x0)} 144 V ${n(y0 + 16)} Q ${n(x0)} ${n(y0)} ${n(x0 + 16)} ${n(y0)} H 144 V 144 Z" fill="${b.lit ? b.base : P.panel2}"/>`;
@@ -2107,7 +2364,7 @@ function corner(f: Face, o: LookOpts): string {
     if (!f.online) s += `<path d="M ${n(x0)} 144 V ${n(y0 + 16)} Q ${n(x0)} ${n(y0)} ${n(x0 + 16)} ${n(y0)} H 144" fill="none" stroke="${P.crit}" stroke-width="2" stroke-dasharray="5 4"/>`;
     const y = y0 + 12 + st!.size * 0.74;
     s += statSvg(st!, f, 132, y, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, "end");
-    if (st!.sub) s += subSvg(st!.sub, 132, y + 17, bwid - 22, b.lit ? P.bg : P.dim, "end", 12);
+    if (st!.sub) s += subSvg(st!.sub, 132, y + 17 + ((st!.subH ?? 18) - 18), bwid - 22, b.lit ? P.bg : P.dim, "end", 12, undefined, st!.subParts);
     if (b.lv !== null) s += rect(x0 + 10, 139, (bwid - 20) * b.lv, 2.5, 1.2, b.lit ? P.bg : greyOr(b, P.muted), b.lit ? 'fill-opacity="0.5"' : "");
   }
   s += badges(f, i, DARK, 11, true);
@@ -2151,18 +2408,18 @@ function terminal(f: Face, o: LookOpts): string {
   const ns = nameOf(b, o, 21, 120 * k, 700);
   const st = statOf(f, i, [22, 20, 18, 16], (120 - 16) * k, 50);
   const sub = st.sub;
-  const H = nameH(ns) + (st.size ? 10 + st.size * 0.74 : 0) + (sub ? 18 : 0);
+  const H = nameH(ns) + (st.size ? 10 + st.size * 0.74 : 0) + (sub ? st.subH ?? 18 : 0);
   let y = 30 + Math.max(0, (138 - 30 - H) / 2);
   s += linesSvg(ns, 12, y + (ns ? ns.size * 0.74 : 0), "start", P.text, 700, MONO, 1.12);
   y += nameH(ns, 1.12);
   if (st.size) {
     y += 10 + st.size * 0.74;
-    s += text(12, y, ">", { size: st.size, weight: 800, fill: green, family: MONO });
+    s += text(12, y, ">", { size: st.size, weight: 800, fill: green, family: MONO, role: st.role ?? "value" });
     s += statSvg(st, f, 12 + st.size * 0.75, y, green, P.dim, "start", P.crit, MONO);
-    const cx = 12 + st.size * 0.75 + (textWidth(st.words, st.size, 800) + (st.unit ? textWidth(st.unit, Math.max(11, st.size * 0.5), 600) + 4 : 0)) / k + 4;
+    const cx = 12 + st.size * 0.75 + statW(st) / k + 4;
     if (b.lit && cx < 128) s += rect(cx, y - st.size * 0.72, st.size * 0.5, st.size * 0.82, 1, green, 'fill-opacity="0.75"');
   }
-  if (sub && y + 18 <= 140) s += subSvg(sub, 12, y + 17, 120 * k, P.dim, "start", 12, MONO);
+  if (sub && y + (st.subH ?? 18) <= 140) s += subSvg(sub, 12, y + 17 + ((st.subH ?? 18) - 18), 120 * k, P.dim, "start", 12, MONO, st.subParts);
   s += badges(f, i, DARK, 3.5, true);
   return doc(s);
 }
@@ -2207,14 +2464,15 @@ function widget(f: Face, o: LookOpts): string {
     y = 44;
   } else if (b.bw) y = 36;
   const st = statOf(f, i, [20, 18, 17, 16, 15], 116, 40);
-  const ns = nameOf(b, o, 23, 120, 800);
+  const ns = fitName(b, o, 23, 120, 800, 134 - 8 - y - st.size * 0.74);
   // the name at the foot, the status over it
   const nameTop = 134 - nameH(ns);
-  const sub = st.sub && nameTop - 6 - (y + st.size * 0.74) >= 17 ? st.sub : "";
+  const sd = (st.subH ?? 18) - 18;
+  const sub = st.sub && nameTop - 6 - (y + st.size * 0.74) >= 17 + sd ? st.sub : "";
   if (st.size) {
-    const sy = Math.min(nameTop - 8 - (sub ? 17 : 0), Math.max(y + st.size * 0.74, nameTop - 8 - (sub ? 17 : 0)));
+    const sy = Math.min(nameTop - 8 - (sub ? 17 + sd : 0), Math.max(y + st.size * 0.74, nameTop - 8 - (sub ? 17 + sd : 0)));
     s += statSvg(st, f, 16, sy, b.lit ? (f.stateColour ?? X.white) : f.stateColour ?? b.off ?? P.dim, b.lit ? P.text : P.muted, "start");
-    if (sub) s += subSvg(sub, 16, sy + 16, 112, b.lit ? P.text : P.dim, "start", 12);
+    if (sub) s += subSvg(sub, 16, sy + 16 + sd, 112, b.lit ? P.text : P.dim, "start", 12, undefined, st.subParts);
   }
   s += linesSvg(ns, 16, nameTop + (ns ? ns.size * 0.74 : 0), "start", b.lit ? X.white : P.text, 800);
   if (b.lv !== null) s += footBar(b, 16, 136, 112, 3);
@@ -2232,12 +2490,12 @@ function sign(f: Face, o: LookOpts): string {
   s += rect(8, 8, 128, 128, 11, "none", f.online ? `stroke="${b.lit ? P.bg : b.off ?? P.dim}" stroke-width="2.5"` : `stroke="${P.crit}" stroke-width="2.5" stroke-dasharray="6 4"`);
   const ic = b.lit ? P.bg : !f.online ? P.crit : b.off ?? P.dim;
   if (b.alone) return doc(s + icon(f.icon, 42, 42, 60, ic, 2.2) + badges(f, i, DARK, 12, true));
-  const ns = nameOf(b, o, 22, 112, 800);
   const st = statOf(f, i, [24, 22, 20, 18, 16], 112, 44);
-  const lower = st.size ? st.size * 0.74 + (st.sub ? 18 : 0) + 16 : 0;
+  const lower = st.size ? st.size * 0.74 + (st.sub ? st.subH ?? 18 : 0) + 16 : 0;
   const rule = 130 - lower;
   if (i.icon) s += icon(f.icon, 62, 14, 20, ic, 2.2);
   const top = i.icon || b.bw ? 36 : 16;
+  const ns = fitName(b, o, 22, 112, 800, rule - 4 - top);
   s += linesSvg(ns, 72, top + Math.max(0, (rule - 4 - top - nameH(ns)) / 2) + (ns ? ns.size * 0.74 : 0), "middle", fg, 800);
   if (lower) {
     s += `<path d="M 16 ${n(rule)} H 128" stroke="${fg}" stroke-opacity="0.45" stroke-width="1.5"/>`;
@@ -2259,7 +2517,7 @@ function note(f: Face, o: LookOpts): string {
   const col = column(f, o, b, { x: 24, anchor: "start", top: b.bw ? 34 : 12, bottom: 136, maxW: 112, size: 22, weight: 750, nameFill: X.ink, statFill: f.stateColour && b.lit ? f.stateColour : b.lit ? X.ink : b.off ?? X.inkDim, unitFill: X.inkDim, subFill: X.inkDim, crit: X.inkCrit, statSizes: [24, 22, 20, 18, 16], gap: 10 });
   // the highlighter behind the status
   if (col.st.size && f.online) {
-    const tw = textWidth(col.st.words, col.st.size, 800) + (col.st.unit ? textWidth(col.st.unit, Math.max(11, col.st.size * 0.5), 600) + 4 : 0);
+    const tw = statW(col.st);
     const hl = b.lit ? b.base : b.off;
     if (hl) s += rect(20, col.statY - col.st.size * 0.62, Math.min(118, tw + 10), col.st.size * 0.72, 3, hl, `fill-opacity="${b.lit ? 0.42 : 0.3}"`);
     if (b.lv !== null) s += rect(20, col.statY + 4, Math.min(118, tw + 10) * b.lv, 2.5, 1.2, b.lit ? b.base : greyOr(b, X.inkMuted));
@@ -2285,20 +2543,21 @@ function pass(f: Face, o: LookOpts): string {
   if (i.icon) s += icon(f.icon, 17, 22 + bandH / 2 - 9, 18, ic, 2.2);
   if (st && st.size) s += statSvg(st, f, i.icon ? 42 : 72, 22 + bandH / 2 + st.size * 0.36, b.lit ? P.bg : f.stateColour ?? b.off ?? P.text, b.lit ? P.panel2 : P.dim, i.icon ? "start" : "middle");
   const top = 22 + bandH + 6;
-  const ns = nameOf(b, o, 22, 116, 800);
+  const ns = fitName(b, o, 22, 116, 800, 134 - top - (st?.sub ? st.subH ?? 18 : 0));
   const sub = st?.sub ?? "";
   const roomOk = b.room && ns && ns.lines.length === 1;
-  const extra = (sub ? 17 : 0) + (roomOk ? 16 : 0);
+  const sd = (st?.subH ?? 18) - 18;
+  const extra = (sub ? 17 + sd : 0) + (roomOk ? 16 + roomD() : 0);
   const avail = 134 - top;
   const H = nameH(ns) + extra;
   let y = top + Math.max(0, (avail - Math.min(H, avail)) / 2);
   s += linesSvg(ns, 72, y + (ns ? ns.size * 0.74 : 0), "middle", P.text, 800);
   y += nameH(ns);
-  if (roomOk && y + 16 <= 134) {
-    s += text(72, y + 12, fit(b.room, 12.5, 112, 600), { size: 12.5, weight: 600, fill: P.dim, anchor: "middle" });
-    y += 16;
+  if (roomOk && y + 16 + roomD() <= 134) {
+    s += roomSvg(b.room, 72, y + 12 + roomD(), 112, P.dim, 12.5, "middle");
+    y += 16 + roomD();
   }
-  if (sub && y + 15 <= 138) s += subSvg(sub, 72, y + 14, 112, b.lit ? b.base : P.dim, "middle", 12);
+  if (sub && y + 15 + sd <= 138) s += subSvg(sub, 72, y + 14 + sd, 112, b.lit ? b.base : P.dim, "middle", 12, undefined, st?.subParts);
   s += badges(f, i, DARK, 2, true);
   return doc(s);
 }
@@ -2315,9 +2574,10 @@ function glow(f: Face, o: LookOpts): string {
   if (i.icon) s += icon(f.icon, 64, b.bw ? 34 : 10, 16, ic, 2.2);
   const halo = b.lit ? `stroke="${b.base}" stroke-opacity="0.3" stroke-width="4" stroke-linejoin="round"` : "";
   const top = i.icon ? (b.bw ? 54 : 30) : b.bw ? 34 : 12;
-  const ns = nameOf(b, o, 22, 124, 750);
   const st = statOf(f, i, [22, 20, 18, 16, 15], 124, 40);
-  const lowerH = st.size ? 8 + st.size * 0.74 + (st.sub ? 18 : 0) : 0;
+  const lowerH = st.size ? 8 + st.size * 0.74 + (st.sub ? st.subH ?? 18 : 0) : 0;
+  // (1.3) bigger text than the key holds: the name smaller first
+  const ns = fitName(b, o, 22, 124, 750, 132 - top - lowerH);
   const H = nameH(ns) + lowerH;
   let y = top + Math.max(0, (132 - top - H) / 2);
   const ny = y + (ns ? ns.size * 0.74 : 0);
@@ -2327,7 +2587,7 @@ function glow(f: Face, o: LookOpts): string {
   if (st.size) {
     const sy = y + 8 + st.size * 0.74;
     s += statSvg(st, f, 72, sy, ink(f, b, b.base), P.dim, "middle");
-    if (st.sub && sy + 18 <= 140) s += subSvg(st.sub, 72, sy + 17, 124, P.dim, "middle", 12);
+    if (st.sub && sy + (st.subH ?? 18) <= 140) s += subSvg(st.sub, 72, sy + 17 + ((st.subH ?? 18) - 18), 124, P.dim, "middle", 12, undefined, st.subParts);
   }
   s += badges(f, i, DARK, 10, true);
   return doc(s, defs);
@@ -2346,19 +2606,27 @@ export function renderLook(theme: string, f: Face, o: LookOpts): string {
   const i = o.info;
   // nothing at all would be a blank key: the icon at least
   const info = i.icon || i.name || i.state || i.room || i.detail || i.mode || i.graph ? i : { ...i, icon: true };
-  const svg = draw(f, { ...o, info });
-  return f.badge ? svg.replace(/<\/svg>$/, unreadPill(f, f.badge) + "</svg>") : svg;
+  const was = T;
+  T = o.ts ?? ONE;
+  try {
+    const svg = draw(f, { ...o, info });
+    return f.badge ? svg.replace(/<\/svg>$/, unreadPill(f, f.badge, 8, T.badge) + "</svg>") : svg;
+  } finally {
+    T = was;
+  }
 }
 
 /** (1.3) The unread pill: the count on the accent, left of any lock or hand badge, ringed in the key's dark. */
-export function unreadPill(f: Pick<Face, "allowed" | "online" | "hold" | "accent">, count: number, top = 8): string {
+export function unreadPill(f: Pick<Face, "allowed" | "online" | "hold" | "accent">, count: number, top = 8, k = 1): string {
   const t = count > 99 ? "99+" : String(Math.max(0, Math.round(count)));
-  const w = Math.max(24, textWidth(t, 13, 800) + 14);
+  // (1.3) the count in the badge's own size, the pill round it
+  const z = grow(13, k, 13 * CAPF.badge), d = z - 13;
+  const w = Math.max(24 + d, textWidth(t, z, 800) + 14);
   const shift = (f.allowed ? 0 : 22) + (f.online ? 0 : 22) + (f.hold ? 22 : 0);
   const x = 136 - shift - w;
-  return rect(x - 2, top - 2, w + 4, 26, 13, P.bg)
-    + rect(x, top, w, 22, 11, f.online ? f.accent : P.crit)
-    + text(x + w / 2, top + 15.5, t, { size: 13, weight: 800, fill: P.bg, anchor: "middle" });
+  return rect(x - 2, top - 2, w + 4, 26 + d, 13 + d / 2, P.bg)
+    + rect(x, top, w, 22 + d, 11 + d / 2, f.online ? f.accent : P.crit)
+    + text(x + w / 2, top + 15.5 + d * 0.75, t, { size: z, weight: 800, fill: P.bg, anchor: "middle", role: "badge" });
 }
 
 /** The short card a press can show on a thermostat: its mode, the target, what it measures and where. */

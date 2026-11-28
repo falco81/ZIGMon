@@ -11,6 +11,8 @@ import { lookFor } from "../core/render.js";
 import { THEMES } from "../core/themes.js";
 import { cleanRecipient, FIXED_ITEM, isNewKind, itemFor, NEEDS_ZIGMON, NEW_TITLES, needs, type NewKind } from "../core/kinds.js";
 import { chosenOf, fold, parseSmsBook, searchBook, SMS_TO_MOST, toggled, typedNumber, type SmsBook } from "../core/smsbook.js";
+import { cleanTextSize, TEXT_KEYS, TEXT_MAX, TEXT_MIN, TEXT_STEP } from "../core/textsizes.js";
+import type { TextRole } from "../core/svg.js";
 import {
   builderView, CALC_NEEDS, CALC_PRESETS, calcEntries, calcLook, choiceOf, fnWord, KIND_WORDS, METRIC_WORDS, NO_CHOICE, parseCalcId, pick, PLACE_WORDS,
   presetId, scopeWords, type CalcChoice, type CalcEntry,
@@ -170,6 +172,11 @@ function onMessage(ev: MessageEvent): void {
         patchPictures();
         return;
       }
+    } else if (p.t === "textDefaults") {
+      // (1.3) this action type's default text sizes, as the plugin keeps them
+      const sz = p.sizes && typeof p.sizes === "object" ? (p.sizes as Record<string, unknown>) : {};
+      textDefaults = Object.fromEntries(Object.values(TEXT_KEYS).flatMap((k) => (cleanTextSize(sz[k]) !== undefined ? [[k, sz[k] as number]] : [])));
+      if (picking()) return;
     } else if (p.t === "connect") {
       busy = false;
       connectError = p.ok ? "" : String(p.error ?? "");
@@ -1359,6 +1366,9 @@ function lookCard(): HTMLElement {
   card.append(h("label", "f", ["Label on the key (empty = the item's name)"]), lab);
   const fitNow = String(settings.nameFit ?? (theme === "classic" ? "cut" : "fit"));
   card.append(...chips("Long names", [["fit", "Shrink to fit", "search"], ["wrap", "Two lines", "layers"], ["cut", "One line", "edit"]], fitNow, "nameFit"));
+  // (1.3) the size of each kind of text
+  card.append(h("div", "sep"));
+  card.append(sizesSection());
   // what is shown
   card.append(h("div", "sep"));
   card.append(h("h2", "", [ic("info", "sm"), "Shown on the key"]));
@@ -1385,6 +1395,158 @@ function lookCard(): HTMLElement {
   return card;
 }
 
+// ------------------------------------------------------------------ (1.3) the text sizes
+
+/** The roles each action draws, and what it calls them (the order is the rows'). */
+const TEXT_ROLES_OF: Record<Kind, [TextRole, string][]> = {
+  control: [["value", "On / off"], ["detail", "Value (W…)"], ["name", "Name"], ["room", "Room"]],
+  reading: [["value", "Value"], ["unit", "Unit"], ["name", "Name"], ["detail", "Note, min / max"]],
+  // (1.3) drawn exactly as a Reading
+  computed: [["value", "Value"], ["unit", "Unit"], ["name", "Name"], ["detail", "Trend, min / max"]],
+  thermostat: [["value", "Measured"], ["detail", "Target"], ["mode", "Mode / preset"], ["name", "Name"]],
+  dimmer: [["value", "Brightness"], ["name", "Name"], ["room", "Room"]],
+  blinds: [["value", "Position"], ["detail", "Moving"], ["name", "Name"], ["room", "Room"]],
+  scene: [["name", "Name"], ["room", "Room"]],
+  status: [["value", "Value"], ["detail", "Detail"], ["name", "Name"]],
+  power: [["value", "Power now"], ["unit", "Unit"], ["detail", "kWh today"], ["mode", "Span"], ["name", "Name"]],
+  security: [["value", "Alerts"], ["detail", "Blocked"], ["mode", "New today"], ["name", "Name"]],
+  heatgroup: [["value", "Rooms heating"], ["mode", "Mode"], ["detail", "Min – max °C"], ["name", "Name"]],
+  away: [["value", "Away / Home"], ["detail", "Lights & heating"], ["mode", "By the dates"], ["name", "Name"]],
+  openings: [["value", "How many open"], ["detail", "Which"], ["mode", "Heat escaping"], ["name", "Name"]],
+  batteries: [["value", "How many low"], ["detail", "The lowest"], ["name", "Name"]],
+  zigbee: [["value", "Online / offline"], ["detail", "Last dropped"], ["name", "Name"]],
+  timer: [["value", "Countdown"], ["unit", "min"], ["detail", "Off at"], ["name", "Name"], ["room", "Room"]],
+  room: [["value", "Temperature"], ["unit", "°C"], ["detail", "Humidity & on"], ["mode", "Heating"], ["name", "Name"]],
+  sms: [["value", "Count / word"], ["detail", "From / to"], ["mode", "Unread"], ["name", "Name"], ["badge", "Unread badge"]],
+};
+/** What a key of each action type is called, for "every … key". */
+const ACTION_WORDS: Record<Kind, string> = {
+  control: "Control", reading: "Reading", thermostat: "Thermostat", dimmer: "Dimmer", blinds: "Blinds", scene: "Scene", status: "ZIGMon status",
+  power: "House power", security: "Security", heatgroup: "Heating", away: "Away / Home", openings: "Windows & doors", batteries: "Batteries",
+  zigbee: "Zigbee", timer: "Timer", room: "Room", sms: "SMS", computed: "Computed",
+};
+
+/** This action type's default sizes (from the plugin's global settings), by their keys. */
+let textDefaults: Record<string, number> = {};
+/** A size slider is being dragged: the page is not rebuilt meanwhile. */
+let sizing = false;
+let sizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** A role's size now: the key's own, else the type's default, else 100; and where it comes from. */
+function sizeOf(role: TextRole): { v: number; from: "key" | "type" | "" } {
+  const own = cleanTextSize(settings[TEXT_KEYS[role]]);
+  if (own !== undefined) return { v: own, from: "key" };
+  const d = cleanTextSize(textDefaults[TEXT_KEYS[role]]);
+  return d !== undefined ? { v: d, from: "type" } : { v: 100, from: "" };
+}
+
+/** The key's own sizes, as they are stored. */
+function ownSizes(): Record<string, number> {
+  return Object.fromEntries(Object.values(TEXT_KEYS).flatMap((k) => (cleanTextSize(settings[k]) !== undefined ? [[k, settings[k] as number]] : [])));
+}
+
+/** A size set: 100 (or the type's default) is "not set", the setting goes; sent at most every SEND_EVERY_MS while dragging. */
+function setSize(role: TextRole, v: number, live: boolean): void {
+  const c = Math.max(TEXT_MIN, Math.min(TEXT_MAX, Math.round(v / TEXT_STEP) * TEXT_STEP));
+  // 100 is not stored: the key then follows its type's default, if there is one
+  settings = { ...settings, [TEXT_KEYS[role]]: cleanTextSize(c) };
+  for (const k of Object.keys(settings)) if (settings[k] === undefined) delete settings[k];
+  paintSizes();
+  if (!live) {
+    if (sizeTimer) clearTimeout(sizeTimer);
+    sizeTimer = null;
+    lastSend = Date.now();
+    sd({ event: "setSettings", context: ctx, payload: settings });
+    return;
+  }
+  if (!sizeTimer) {
+    sizeTimer = setTimeout(() => {
+      sizeTimer = null;
+      lastSend = Date.now();
+      sd({ event: "setSettings", context: ctx, payload: settings });
+    }, Math.max(0, SEND_EVERY_MS - (Date.now() - lastSend)));
+  }
+}
+
+/** The rows brought up to date with the sizes now, without rebuilding them (a drag goes on). */
+function paintSizes(): void {
+  document.querySelectorAll<HTMLElement>(".tsz-row").forEach((row) => {
+    const role = row.dataset.role as TextRole;
+    const { v, from } = sizeOf(role);
+    const r = row.querySelector<HTMLInputElement>("input[type=range]");
+    if (r && Number(r.value) !== v) r.value = String(v);
+    row.style.setProperty("--p", String(((v - TEXT_MIN) / (TEXT_MAX - TEXT_MIN)) * 100));
+    const pc = row.querySelector(".pc");
+    if (pc) pc.textContent = v + " %";
+    row.classList.toggle("set", from === "key");
+    row.classList.toggle("dflt", from === "type");
+    row.querySelector<HTMLButtonElement>(".rs")?.classList.toggle("hidden", from !== "key");
+    row.querySelector<HTMLButtonElement>(".minus")?.toggleAttribute("disabled", v <= TEXT_MIN);
+    row.querySelector<HTMLButtonElement>(".plus")?.toggleAttribute("disabled", v >= TEXT_MAX);
+  });
+  const any = Object.keys(ownSizes()).length > 0;
+  document.querySelector(".tsz .rsall")?.classList.toggle("hidden", !any);
+}
+
+/** One role's row: its name, − / slider / +, the percentage and a Reset. */
+function sizeRow(role: TextRole, word: string): HTMLElement {
+  const { v } = sizeOf(role);
+  const range = h("input", "") as HTMLInputElement;
+  range.type = "range";
+  range.min = String(TEXT_MIN);
+  range.max = String(TEXT_MAX);
+  range.step = String(TEXT_STEP);
+  range.value = String(v);
+  range.dataset.key = "tsz-" + role;
+  range.setAttribute("aria-label", word + " text size");
+  range.addEventListener("pointerdown", () => (sizing = true));
+  range.addEventListener("input", () => setSize(role, Number(range.value), true));
+  range.addEventListener("change", () => {
+    sizing = false;
+    setSize(role, Number(range.value), false);
+    patchPictures();
+  });
+  const step = (d: number) => setSize(role, sizeOf(role).v + d, false);
+  const minus = btn("−", "ghost step minus", null, () => step(-TEXT_STEP), "tsz-m-" + role);
+  minus.setAttribute("aria-label", "Smaller");
+  const plus = btn("+", "ghost step plus", null, () => step(TEXT_STEP), "tsz-p-" + role);
+  plus.setAttribute("aria-label", "Bigger");
+  const reset = h("button", "lnk rs", ["Reset"]) as HTMLButtonElement;
+  reset.type = "button";
+  reset.title = "Back to " + (cleanTextSize(textDefaults[TEXT_KEYS[role]]) ?? 100) + " %";
+  reset.addEventListener("click", () => saveSettings({ [TEXT_KEYS[role]]: undefined }));
+  const row = h("div", "tsz-row", [h("span", "tl", [word]), minus, range, plus, h("span", "pc mono", [v + " %"]), reset]);
+  row.dataset.role = role;
+  return row;
+}
+
+/** (1.3) The Look section's text sizes: a row per kind of text this action draws, the key live beside them, and the type's default. */
+function sizesSection(): HTMLElement {
+  const roles = TEXT_ROLES_OF[KIND];
+  const wrap = h("div", "tsz");
+  const all = h("button", "lnk rsall", ["Reset all"]) as HTMLButtonElement;
+  all.type = "button";
+  all.addEventListener("click", () => saveSettings(Object.fromEntries(Object.values(TEXT_KEYS).map((k) => [k, undefined]))));
+  wrap.append(h("h2", "", [ic("edit", "sm"), "Text sizes", all]));
+  // the key, live, beside what the sizes do and the type's default (what every key of this type draws with, unless it sets its own)
+  const has = Object.keys(textDefaults).length > 0;
+  const word = ACTION_WORDS[KIND];
+  const pic = preview ? picture(preview, "", "tpreview") : h("div", "ph", [ic("hourglass", "sm")]);
+  const def = h("div", "tsz-def", [
+    h("span", "muted small", [has
+      ? "Default of every " + word + " key: " + roles.filter(([r]) => textDefaults[TEXT_KEYS[r]]).map(([r, w]) => w + " " + textDefaults[TEXT_KEYS[r]] + " %").join(", ") + ". A size of this key's own wins."
+      : "Each kind of text, 50 – 200 %. Too big for its place, it shrinks to fit."]),
+    h("div", "tsz-btns", [
+      btn("Use for every " + word + " key", "ghost", "layers", () => toPlugin({ t: "textDefaults", sizes: Object.fromEntries(roles.map(([r]) => [TEXT_KEYS[r], sizeOf(r).v])) }), "tsz-def"),
+      has ? btn("Clear the default", "ghost", "close", () => toPlugin({ t: "textDefaults", sizes: {} }), "tsz-undef") : null,
+    ]),
+  ]);
+  wrap.append(h("div", "tsz-head", [h("div", "tsz-key", [pic]), def]));
+  wrap.append(h("div", "tsz-rows", roles.map(([r, w]) => sizeRow(r, w))));
+  queueMicrotask(paintSizes);
+  return wrap;
+}
+
 // ------------------------------------------------------------------ (1.3) the colours
 
 type ColourTab = "on" | "off";
@@ -1407,7 +1569,7 @@ const SWATCH_ORDER = ["red", "coral", "orange", "peach", "amber", "gold", "yello
 /** Dragging, or working in the picker with the keys: the plugin's new pictures are patched in, the page left as it is. */
 function picking(): boolean {
   const a = document.activeElement;
-  return dragging || (a instanceof HTMLElement && a.closest(".picker") !== null);
+  return dragging || sizing || (a instanceof HTMLElement && a.closest(".picker") !== null);
 }
 
 function colourSetting(tab: ColourTab): string | undefined {
@@ -1485,6 +1647,7 @@ function patchPictures(): void {
     if (img && img.src !== src) img.src = src;
   };
   set("preview", preview);
+  set("tpreview", preview);
   set("on", looks?.on);
   set("off", looks?.off);
   for (const t of looks?.themes ?? []) set("look:" + t.id, t.image);
