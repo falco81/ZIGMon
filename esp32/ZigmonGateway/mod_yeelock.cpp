@@ -447,11 +447,6 @@ class Yeelock : public Module {
   void runAction(const char* lockId, Act act, const char* job);
   void runScan(uint32_t seconds);
   void scanDone(const Found* f, size_t n);
-  void jobDropped(const char* lockId) {
-    Guard g;
-    Lock* l = byId(lockId);
-    if (l && l->pending) l->pending--;
-  }
 
  private:
   Lock locks_[MAX_LOCKS];
@@ -667,7 +662,7 @@ class ActionJob : public ble::Job {
     copyStr(job_, sizeof job_, job);
   }
   void run() override { g_self->runAction(lock_, act_, job_); }
-  void dropped() override { g_self->jobDropped(lock_); }
+  // dropped(): nothing to undo, `pending` is only counted once the queue took the job.
 
  private:
   char lock_[24];

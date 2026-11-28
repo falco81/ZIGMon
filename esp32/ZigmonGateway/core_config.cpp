@@ -185,8 +185,19 @@ void factoryReset() {
   // takes the Wi-Fi driver's saved credentials and anything a future module forgot.
   registry::factoryResetAll();
   clearPairing();
+  {
+    // Clear our own namespace explicitly too, in case the partition erase below is refused.
+    Preferences p;
+    if (open(p, false)) {
+      p.clear();
+      p.end();
+    }
+  }
   WiFi.disconnect(true, true);  // (wifioff, eraseap)
-  nvs_flash_erase();            // deinitialises the default partition first
+  WiFi.mode(WIFI_OFF);          // the driver lets go of its NVS handle
+  delay(100);
+  esp_err_t e = nvs_flash_erase();  // deinitialises the default partition first
+  if (e != ESP_OK) LOGE("config", "NVS erase: %s (namespaces were cleared one by one)", esp_err_to_name(e));
   nvs_flash_init();
   secureZero(&g_net, sizeof g_net);
   delay(200);
