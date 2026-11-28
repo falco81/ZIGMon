@@ -6405,7 +6405,7 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   @media (max-width:720px){.esp-mod-sec .esp-mod-sub{display:none}}
   @media (max-width:720px){
     .esp-ent{flex-wrap:wrap}
-    .esp-ent-tools{width:100%;justify-content:flex-end}
+    .esp-ent-tools{margin-left:auto}
     .esp-acts .btn.esp-mini span{display:inline}
   }
   @media (max-width:720px){
@@ -41055,7 +41055,7 @@ function renderEspDash(st) {
    from what the gateway described: its TYPE, its attrs, its actions and which of them are
    sensitive. Nothing here knows a module: a relay, a reed contact or a sensor a future module
    brings is drawn by its type, and a type nobody knows yet is shown read only. */
-var ESP_DONE_WORD = {open: 'opened', unlock: 'unlocked', lock: 'locked', refresh: 'asked', press: 'pressed',
+var ESP_DONE_WORD = {open: 'opened', unlock: 'unlocked', lock: 'locked', refresh: 'checked', press: 'pressed',
                      on: 'switched on', off: 'switched off', toggle: 'switched over', close: 'closed', stop: 'stopped', set: 'set'};
 function espIndex(st) {
   var esp = (st && st.esp) || {};
