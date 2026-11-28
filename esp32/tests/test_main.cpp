@@ -12,6 +12,7 @@
 #include "../ZigmonGateway/core_eventring.h"
 #include "../ZigmonGateway/core_proto.h"
 #include "../ZigmonGateway/core_util.h"
+#include "../ZigmonGateway/yeelock_codes.h"
 #include "../ZigmonGateway/yeelock_proto.h"
 
 using namespace gw;
@@ -222,6 +223,99 @@ static void testYeelock() {
   uint8_t n9[] = {0x09, 0x01};
   CHECK(yeelock::isTimeRequest(n9, 2));
   CHECK(!yeelock::isTimeRequest(n9 + 1, 1));
+}
+
+// ---- Yeelock notifications and the cloud request ---------------------------------------------
+static void testYeelockCodes() {
+  printf("Yeelock notification decoder and cloud form encoding\n");
+  using yeelock::Notif;
+  const uint8_t n09[] = {0x09}, n02[] = {0x02, 0x00}, n03[] = {0x03}, n04[] = {0x04}, n05[] = {0x05, 0x01},
+                nFF[] = {0xFF, 0x00}, n2540[] = {0x25, 0x40}, n2541[] = {0x25, 0x41}, nX[] = {0x77};
+  CHECK(yeelock::decodeNotif(n09, 1) == Notif::TimeRequest);
+  CHECK(yeelock::decodeNotif(n02, 2) == Notif::UnlockStart);
+  CHECK(yeelock::decodeNotif(n03, 1) == Notif::UnlockDone);
+  CHECK(yeelock::decodeNotif(n04, 1) == Notif::LockStart);
+  CHECK(yeelock::decodeNotif(n05, 2) == Notif::LockDone);
+  CHECK(yeelock::decodeNotif(nFF, 2) == Notif::SignInvalid);
+  CHECK(yeelock::decodeNotif(n2540, 2) == Notif::InvalidOpcode);
+  CHECK(yeelock::decodeNotif(n2541, 2) == Notif::Unknown);
+  CHECK(yeelock::decodeNotif(n2540, 1) == Notif::Unknown);   // 0x25 alone
+  CHECK(yeelock::decodeNotif(nX, 1) == Notif::Unknown);
+  CHECK(yeelock::decodeNotif(nX, 0) == Notif::None);
+  CHECK_STR(yeelock::notifName(Notif::SignInvalid), "TX_SIGN_INVALID");
+
+  // unlock: UNLOCK_START, UNLOCK_CMP -> done, unlocked
+  {
+    yeelock::Outcome o;
+    CHECK(!o.feed(Notif::TimeRequest, 1));
+    CHECK(!o.feed(Notif::UnlockStart, 1));
+    CHECK(o.feed(Notif::UnlockDone, 1));
+    CHECK(o.ok() && o.unlocked && !o.locked);
+    CHECK_STR(o.message(1), "unlocked");
+  }
+  // open (temp unlock): ends with LOCK_CMP, so "locked"
+  {
+    yeelock::Outcome o;
+    CHECK(!o.feed(Notif::UnlockStart, 0));
+    CHECK(!o.feed(Notif::UnlockDone, 0));
+    CHECK(!o.feed(Notif::LockStart, 0));
+    CHECK(o.feed(Notif::LockDone, 0));
+    CHECK(o.ok() && o.unlocked && o.locked);
+    CHECK_STR(o.message(0), "opened, locked again");
+  }
+  // lock
+  {
+    yeelock::Outcome o;
+    CHECK(!o.feed(Notif::LockStart, 2));
+    CHECK(o.feed(Notif::LockDone, 2));
+    CHECK_STR(o.message(2), "locked");
+  }
+  // wrong key: finished at once, not ok, clear message
+  {
+    yeelock::Outcome o;
+    CHECK(o.feed(Notif::SignInvalid, 1));
+    CHECK(!o.ok());
+    CHECK(std::string(o.message(1)).find("wrong sign key") == 0);
+  }
+  {
+    yeelock::Outcome o;
+    CHECK(o.feed(Notif::InvalidOpcode, 2));
+    CHECK(!o.ok());
+  }
+  // time check (mode 3): any answer ends it
+  {
+    yeelock::Outcome o;
+    CHECK(o.feed(Notif::Unknown, 3));
+    CHECK(o.ok());
+    CHECK_STR(o.message(3), "reachable, key OK");
+  }
+  // nothing at all
+  {
+    yeelock::Outcome o;
+    CHECK(!o.ok());
+    CHECK_STR(o.message(1), "no answer from the lock");
+  }
+
+  // Form encoding (fake values only).
+  char buf[400];
+  CHECK(yeelock::formEncode("a b&c=d+e/f%~\xc4\x8d", buf, sizeof buf) != (size_t)-1);
+  CHECK_STR(buf, "a+b%26c%3Dd%2Be%2Ff%25%7E%C4%8D");
+  CHECK(yeelock::formEncode("abc", buf, 4) == 3);
+  CHECK(yeelock::formEncode("abcd", buf, 4) == (size_t)-1);
+  size_t n = yeelock::buildTokenBody("420", "123456789", "p@ss w&rd", buf, sizeof buf);
+  CHECK(n != (size_t)-1 && n == strlen(buf));
+  CHECK_STR(buf,
+            "grant_type=password&client_id=yeeloc&client_secret=adb03414981961952ccf40a1b4031d12"
+            "&username=123456789&password=p%40ss+w%26rd&zone=420");
+  char small[60];
+  CHECK(yeelock::buildTokenBody("420", "123456789", "secret", small, sizeof small) == (size_t)-1);
+  bool wiped = true;
+  for (char c : small) wiped = wiped && c == 0;
+  CHECK(wiped);
+  CHECK(yeelock::validZone("420") && yeelock::validZone("1") && !yeelock::validZone("+420") &&
+        !yeelock::validZone("") && !yeelock::validZone("12345"));
+  CHECK(yeelock::validUsername("123456789") && yeelock::validUsername("someone@example.com") &&
+        !yeelock::validUsername("12 3") && !yeelock::validUsername("123"));
 }
 
 // ---- PBKDF2 ---------------------------------------------------------------------------------
@@ -539,6 +633,7 @@ int main() {
   testResponseSig();
   testPairing();
   testYeelock();
+  testYeelockCodes();
   testPbkdf2();
   testReplayRing();
   testEventRing();

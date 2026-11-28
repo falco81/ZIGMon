@@ -27,7 +27,7 @@ echo "== unit tests"
   "$here/test_main.cpp" "$here/shim_crypto.cpp" \
   "$sketch/core_util.cpp" "$sketch/core_crypto_portable.cpp" "$sketch/core_proto.cpp" \
   "$sketch/core_eventring.cpp" "$sketch/core_mem.cpp" "$sketch/core_cliline.cpp" \
-  "$sketch/core_authlogic.cpp" "$sketch/yeelock_proto.cpp" \
+  "$sketch/core_authlogic.cpp" "$sketch/yeelock_proto.cpp" "$sketch/yeelock_codes.cpp" \
   -o "$out/unit"
 "$out/unit"
 
