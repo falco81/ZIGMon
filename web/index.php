@@ -6339,6 +6339,75 @@ $who_js  = json_encode($who, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AM
   .esp-tile-acts .esp-sensitive{border-color:rgba(210,153,34,.45)}
   .esp-tile-acts .esp-act-lock{border-color:rgba(63,185,80,.45)}
   .esp-tile-acts .esp-refresh{flex:0 0 auto;padding:8px 10px}
+  /* (5.59.4) a thing of an ESP32 gateway as a card of the grid: the device card, with its type's art,
+     its state in colour, compact buttons and the gateway's Wi-Fi where a Zigbee card has its LQI */
+  .dev.esp-dev .head{align-items:center}
+  .esp-dev-art{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    background:var(--panel2);color:var(--tx-dim);border:1px solid var(--line);transition:background .2s,color .2s,border-color .2s}
+  .esp-dev-art.ok{background:var(--ok-bg);color:var(--ok);border-color:rgba(63,185,80,.38)}
+  .esp-dev-art.warn{background:var(--warn-bg);color:var(--warn);border-color:rgba(210,153,34,.45)}
+  .esp-dev-art.info{background:var(--info-bg);color:var(--info);border-color:rgba(88,166,255,.38)}
+  .esp-dev-art.crit{background:var(--crit-bg);color:var(--crit);border-color:rgba(248,81,73,.4)}
+  .dev.esp-busy .esp-dev-art{color:var(--info);border-color:var(--info);animation:esp-wave 1.1s infinite}
+  .dev.esp-dev .readings{align-items:flex-end}
+  .dev.esp-dev .reading{min-width:0}
+  .dev .reading.esp-v.ok .v{color:var(--ok)} .dev .reading.esp-v.warn .v{color:var(--warn)}
+  .dev .reading.esp-v.crit .v{color:var(--crit)} .dev .reading.esp-v.info .v,.dev .reading.esp-v.busy .v{color:var(--info)}
+  .dev .reading.esp-v.dim .v,.dev .reading.dim .v{color:var(--tx-mut)}
+  .dev .reading.warn-v .v{color:var(--warn)}
+  .dev .reading.esp-last-r .v{font-size:16px;font-weight:650;letter-spacing:0;white-space:nowrap}
+  .dev .reading.esp-last-r.ok .v{color:var(--tx)} .dev .reading.esp-last-r.bad .v{color:var(--crit)}
+  .dev .reading.esp-text .v{font-size:16px;overflow-wrap:anywhere}
+  .dev.esp-dev.esp-t-lock .reading.esp-v .v{text-transform:none}
+  .esp-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px}
+  .btn.esp-mini{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:5px 10px;font-size:12.5px;font-weight:600;
+    border-radius:9px;line-height:1.2;min-height:30px;position:relative}
+  .btn.esp-mini svg{flex:0 0 auto}
+  .btn.esp-mini.esp-sensitive{border-color:rgba(210,153,34,.45)}
+  .btn.esp-mini.esp-act-lock{border-color:rgba(63,185,80,.45)}
+  .btn.esp-mini.esp-mini-ic{padding:5px 8px;margin-left:auto}
+  .btn.esp-mini.danger{color:var(--crit);border-color:rgba(248,81,73,.45)}
+  .btn.esp-mini.esp-wait,.btn.esp-mini.busy{color:transparent !important;pointer-events:none}
+  .btn.esp-mini.esp-wait::after,.btn.esp-mini.busy::after{content:'';position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+    border-radius:50%;border:2px solid var(--line);border-top-color:var(--info);animation:esp-spin .8s linear infinite}
+  .btn.esp-mini.esp-wait svg,.btn.esp-mini.busy svg{opacity:0}
+  .esp-acts .sw.esp-wait{opacity:.6}
+  .esp-acts-l{font-size:12.5px;color:var(--tx-dim);margin-right:4px}
+  .esp-setbox{display:inline-flex;align-items:center;gap:6px}
+  .esp-setbox input,.esp-setbox select{font:inherit;font-size:13px;background:var(--panel2);color:var(--tx);border:1px solid var(--line);
+    border-radius:9px;padding:5px 9px;min-height:30px;box-sizing:border-box;width:96px}
+  .esp-setbox select{width:auto;min-width:96px}
+  .esp-gw-mods{color:var(--tx-dim);overflow:hidden;text-overflow:ellipsis}
+  .esp-gw-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+  #devices-table tr.esp-kid td:first-child{padding-left:30px;position:relative}
+  .esp-kid-mark{position:absolute;left:12px;color:var(--tx-mut)}
+  .esp-gw-fact{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;border-radius:999px;background:var(--panel2);
+    border:1px solid var(--line);font-size:12.5px}
+  .esp-gw-fact .k{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--tx-mut);font-weight:700}
+  .esp-gw-fact b{font-weight:650}
+  .esp-gw-fact.ok b{color:var(--ok)} .esp-gw-fact.warn b{color:var(--warn)}
+  .esp-gw-err{color:var(--crit)}
+  /* Settings - Devices: a gateway, its modules folded under it, their things under each */
+  .esp-gw-fold{appearance:none;border:0;background:none;color:var(--tx-mut);cursor:pointer;font:inherit;font-size:13px;width:18px;padding:0;flex:0 0 auto}
+  .esp-gw-body{display:flex;flex-direction:column;gap:12px}
+  .esp-gw.folded .esp-gw-body{display:none}
+  .esp-gw .sections{margin-top:0}
+  .esp-gw .section-head{padding-left:12px}
+  .esp-gw .section-body{padding:0 0 4px}
+  .esp-gw .section .esp-ent:first-child{border-top:1px solid var(--line)}
+  .esp-ent-tools{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto}
+  .esp-ent-tools .btn{padding:4px 9px;font-size:12px;min-height:28px}
+  .esp-ent.gone .esp-ent-n b{text-decoration:line-through;text-decoration-color:var(--crit)}
+  .esp-ent.gone > .esp-ic{color:var(--crit)}
+  .esp-sec-ic{color:var(--info);display:inline-flex}
+  .esp-mod-sec .section-name,.esp-mod-sec .section-count{white-space:nowrap}
+  .esp-mod-sec .esp-mod-sub{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:720px){.esp-mod-sec .esp-mod-sub{display:none}}
+  @media (max-width:720px){
+    .esp-ent{flex-wrap:wrap}
+    .esp-ent-tools{width:100%;justify-content:flex-end}
+    .esp-acts .btn.esp-mini span{display:inline}
+  }
   @media (max-width:720px){
     .esp-empty{flex-direction:column;align-items:stretch;padding:16px}
     .esp-empty-art{align-self:center}
@@ -10892,7 +10961,7 @@ function renderTab(name, st) {
   // cards show "x min ago" texts: repaint at least once a minute even if nothing else moved
   var minute = Math.floor(Date.now() / 60000), unlocked = isUnlocked();
   var cardsSig = [st.devices, st.plugs, st.order, st.overview_layout, minute, unlocked, REARRANGE, LINKS, st.thresholds,
-                  st.proxy_tile, PROXY_TILE.sig];
+                  st.proxy_tile, PROXY_TILE.sig, st.esp];
   // The sensor and button grids draw devices and nothing else - no socket
   // appears on either - but they shared the signature above, so the two
   // dozen sockets reporting their wattage several times a second rebuilt all
@@ -10907,7 +10976,7 @@ function renderTab(name, st) {
   var drawnDevices = (st.devices || []).filter(function (d) {
     return d.source !== 'plug' && d.source !== 'wifi';
   });
-  var devCardsSig = [drawnDevices, st.order, st.overview_layout, minute, unlocked, REARRANGE, LINKS, st.thresholds];
+  var devCardsSig = [drawnDevices, st.order, st.overview_layout, minute, unlocked, REARRANGE, LINKS, st.thresholds, st.esp];
   try { renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig); }
   catch (e) {
     // a bad record on one tab must not take the whole page down; say what and where
@@ -10925,7 +10994,7 @@ function renderTabInner(name, st, cardsSig, minute, unlocked, devCardsSig) {
   switch (name) {
     case 'overview':
       if (sigChanged('overview-cards', [cardsSig, OVERVIEW_LAYOUT_LOCAL])) { renderOverviewCustom(st); renderOverviewAddControl(st); }
-      if (sigChanged('esp-dash', [st.esp, mayOperate(), minute])) renderEspDash(st);   // (5.59.4) the locks
+      if (sigChanged('esp-dash', [st.esp, mayOperate(), minute, st.overview_layout, OVERVIEW_LAYOUT_LOCAL])) renderEspDash(st);   // (5.59.4) the locks
       renderPower(st);                      // it keeps its own signature
       if (sigChanged('money', [st.money])) renderMoney(st);
       renderEnergy(st); break;
@@ -11280,6 +11349,9 @@ function watchDeviceFeet(host) {
 // One device (sensor, button, router - anything that isn't a plug) as a card.
 // Shared by the Sensors tab, the Buttons tab, and a curated Overview.
 function buildDeviceCard(d, st) {
+    // (5.59.4) a thing of an ESP32 gateway, or the gateway: a card by its type, in this card's style
+    var espCard = d.source === 'esp' ? buildEspDeviceCard(d, st) : null;
+    if (espCard) return espCard;
     var stale = !d.online;
     var card = el('div', 'card dev ' + d.level + (stale ? ' stale' : ''));
     // (5.53) the band on top: the state and the object mark, the chart button
@@ -11499,7 +11571,7 @@ function renderDeviceGrid(hostId, emptyId, list, kind, st) {
   var common = JSON.stringify([step, unlocked, st.thresholds, REARRANGE, LINKS], SIG_QUIET);
   sortByOrder(list, kind, function (d) { return d.id; }).forEach(function (d) {
     var sig;
-    try { sig = common + JSON.stringify(d, SIG_QUIET); } catch (e) { sig = String(Math.random()); }
+    try { sig = common + JSON.stringify([d, espSigFor(d, st), d.source === 'esp' ? mayOperate() : 0], SIG_QUIET); } catch (e) { sig = String(Math.random()); }
     var had = kept[d.id], card;
     if (had && had.sig === sig && had.node.parentNode === host) card = had.node;
     else { card = buildDeviceCard(d, st); makeReorderable(card, host, kind, d.id); }
@@ -11584,8 +11656,8 @@ function plugRoleKind(nameOrPlug) {
 // The order every mixed list follows: what a person reaches for first, then
 // the rest by kind. Inside a kind the sort is by name.
 var KIND_ORDER = ['agroup', 'sgroup', 'person', 'plug', 'all', 'light', 'valve', 'zb', 'heat', 'scene', 'seq', 'seqreset',
-                  'bell', 'autoswitch', 'thermo', 'motion', 'contact', 'knob', 'button', 'sensor',
-                  'modem', 'ap', 'router', 'coordinator', 'gateway', 'sslproxy'];
+                  'bell', 'autoswitch', 'lock', 'relay', 'cover', 'thermo', 'motion', 'contact', 'knob', 'button', 'sensor',
+                  'modem', 'ap', 'router', 'coordinator', 'gateway', 'espgw', 'sslproxy'];
 function kindRankOfLabel(label) {
   label = String(label || '');
   for (var i = 0; i < KIND_ORDER.length; i++) { var ic = ICON[KIND_ORDER[i]]; if (ic && label.indexOf(ic) === 0) return i; }
@@ -11673,6 +11745,7 @@ function devicesSorted(list) {
 // this and sort by name inside the group.
 function deviceCategory(d) {
   if (!d) return 'sensor';
+  if (d.source === 'esp') return espCategory(d);
   if (d.source === 'sms') return 'modem';
   if (d.source === 'proxy') return 'sslproxy';
   if (d.source === 'group') return 'sgroup';
@@ -11691,6 +11764,20 @@ function deviceCategory(d) {
   return 'sensor';
 }
 function deviceIcon(d) { return ICON[deviceCategory(d)] || ICON.sensor; }
+// (5.59.4) an ESP32 gateway and its things, by the type each was described with
+ICON.lock = '\ud83d\udd12'; ICON.espgw = '\ud83d\udcdf'; ICON.relay = '\ud83c\udf9a\ufe0f'; ICON.cover = '\ud83e\ude9f';
+function espCategory(d) {
+  var k = String(d.kind || '').toLowerCase();
+  if (/^esp:[0-9a-f]{12}$/.test(String(d.id || '')) || k === 'esp32 gateway') return 'espgw';
+  if (k === 'lock') return 'lock';
+  if (k === 'switch') return 'relay';
+  if (k === 'cover') return 'cover';
+  if (k === 'binary sensor') return 'contact';
+  if (k === 'button') return 'button';
+  var unit = (((d.values || {}).state) || {}).unit || '';
+  if (k === 'sensor' && /\u00b0|^c$|^f$/i.test(unit)) return 'thermo';
+  return 'sensor';
+}
 ICON.enabled = '\u2705'; ICON.monitor = '\ud83d\udc41'; ICON.disabled = '\u23f8';
 ICON.clock = '\ud83d\udd50'; ICON.sunrise = '\ud83c\udf05'; ICON.sunset = '\ud83c\udf07'; ICON.always = '\ud83d\udd01'; ICON.window = '\u23f2'; ICON.leave = '\u2796';
 ICON.abs = '\ud83d\udcc8'; ICON.delta = '\ud83d\udcca';
@@ -12150,7 +12237,7 @@ function renderOverviewCustom(st) {
     } else {
       d = deviceById(id);
       if (!d) return;                  // gone (removed, disabled) - skip quietly
-      sig = JSON.stringify([0, d, minute, unlocked, REARRANGE, LINKS, d.via && d.via.name], function (k, v) { return k === 'age_s' ? undefined : v; });
+      sig = JSON.stringify([0, d, minute, unlocked, REARRANGE, LINKS, d.via && d.via.name, espSigFor(d, st), d.source === 'esp' ? mayOperate() : 0], function (k, v) { return k === 'age_s' ? undefined : v; });
     }
     if (keep[id] && keep[id].sig === sig) { fresh[id] = keep[id]; order.push(keep[id].node); return; }
     if (isPlug) {
@@ -12414,7 +12501,11 @@ function cssId(id) { return id.replace(/[^A-Za-z0-9_-]/g, '_'); }
 // landing in that window waited behind it.
 function deviceRow(d) {
     var tr = el('tr');
-    tr.innerHTML = '<td id="name-' + cssId(d.id) + '"><b>' + esc(d.name) + '</b>' + objMarkHtml(devRef(d), d.name)
+    var espKid = /^esp:[0-9a-f]{12}:/.test(String(d.id || ''));
+    if (espKid) tr.className = 'esp-kid';
+    var rssi = d.source === 'esp' ? espRowRssi(d, STATE.status || {}) : null;
+    tr.innerHTML = '<td id="name-' + cssId(d.id) + '">' + (espKid ? '<span class="esp-kid-mark" aria-hidden="true">\u2514</span>' : '')
+      + '<b>' + esc(d.name) + '</b>' + objMarkHtml(devRef(d), d.name)
       + (d.alias ? '<br><span class="muted small">topic: ' + esc(d.topic_name) + '</span>' : '')
       + (function () { var sub = [d.description, gatewayFirmware(d)].filter(Boolean).join(' · ');
                        return sub ? '<br><span class="muted small">' + esc(sub) + '</span>' : ''; })() + '</td>'
@@ -12423,7 +12514,7 @@ function deviceRow(d) {
       + '<td class="mono small">' + esc(d.id) + '</td>'
       + '<td><span class="tag ' + d.level + '">' + esc(d.level) + '</span>' + (d.reasons.length ? '<br><span class="muted small">' + esc(d.reasons.join('; ')) + '</span>' : '') + '</td>'
       + '<td class="num">' + (isNum(d.battery) ? fmt(d.battery, 0) + ' %' : '–') + '</td>'
-      + '<td class="num">' + (isNum(d.linkquality) ? fmt(d.linkquality, 0) : '–') + '</td>'
+      + '<td class="num">' + (isNum(d.linkquality) ? fmt(d.linkquality, 0) : isNum(rssi) ? '<span title="Wi-Fi at the gateway" style="white-space:nowrap">' + fmt(rssi, 0) + ' dBm</span>' : '–') + '</td>'
       + '<td>' + esc(ago(d.last_seen)) + '<br><span class="muted small">' + esc(stamp(d.last_seen)) + '</span></td>'
       + '<td class="small">' + esc(stamp(d.first_seen)) + '</td>';
     var actions = el('td');
@@ -12436,17 +12527,39 @@ function deviceRow(d) {
     tr.appendChild(actions);
     return tr;
 }
+// (5.59.4) the things of an ESP32 gateway listed under the gateway, in the table's order otherwise
+function espGroupedDevices(list) {
+  var kids = {}, out = [];
+  list.forEach(function (d) {
+    var m = /^esp:([0-9a-f]{12}):/.exec(String(d.id || ''));
+    if (m) (kids[m[1]] = kids[m[1]] || []).push(d);
+  });
+  list.forEach(function (d) {
+    var id = String(d.id || '');
+    if (/^esp:[0-9a-f]{12}:/.test(id)) return;
+    out.push(d);
+    var g = /^esp:([0-9a-f]{12})$/.exec(id);
+    if (g && kids[g[1]]) { out = out.concat(kids[g[1]]); delete kids[g[1]]; }
+  });
+  Object.keys(kids).forEach(function (k) { out = out.concat(kids[k]); });   // a gateway with no row of its own
+  return out;
+}
+function espRowRssi(d, st) {
+  if (d.source !== 'esp') return null;
+  var ix = espIndex(st), e = ix.ent[d.id], g = e ? ix.gw[e.gw] : ix.gwByDev[d.id];
+  return g && isNum(g.rssi) ? g.rssi : null;
+}
 function renderDevices(st) {
   if (RENAME.active) return;         // an inline rename is open; leave the table alone
   var tb = $('devices-table').querySelector('tbody');
   var unlocked = isUnlocked();
   var kept = tb._rows || {}, next = {}, order = [];
-  (st.devices || []).forEach(function (d) {
+  espGroupedDevices(st.devices || []).forEach(function (d) {
     // everything the row draws, and nothing else: the watts a socket reports
     // are not on this table at all
     var sig = JSON.stringify([d.name, d.alias, d.topic_name, d.description, gatewayFirmware(d),
                               d.vendor, d.model, d.source, d.kind, d.id, d.level, d.reasons,
-                              d.battery, d.linkquality, d.last_seen, d.first_seen, unlocked]);
+                              d.battery, d.linkquality, d.last_seen, d.first_seen, unlocked, espRowRssi(d, st)]);
     var had = kept[d.id];
     var row = (had && had.sig === sig) ? had.node : deviceRow(d);
     next[d.id] = {sig: sig, node: row};
@@ -22255,6 +22368,7 @@ function optionGroup(value, label) {
   if (v.indexOf('grp:') === 0) return 'Sensor groups';
   if (v.indexOf('act:') === 0) return 'Action groups';
   if (v.indexOf('zb:') === 0) return 'Zigbee switches';
+  if (/^esp:[0-9a-f]{12}(:|$)/.test(v)) return espGroupName(v.slice(4, 16));   // (5.59.4) under its gateway
   if (v.indexOf('heat:') === 0) return 'Heating';
   if (v.indexOf('scene:') === 0) return 'Scenes';
   if (v.indexOf('seq') === 0) return 'Sequences';
@@ -22280,6 +22394,10 @@ function optionGroup(value, label) {
   if (head.indexOf(ICON.modem) === 0) return 'The SMS gateway';
   if (head.indexOf(ICON.router) === 0 || head.indexOf(ICON.coordinator) === 0 || head.indexOf(ICON.gateway) === 0) return 'Gateways';
   return 'Sockets';
+}
+function espGroupName(gwid) {
+  var g = ((((typeof STATE !== 'undefined' && STATE.status) || {}).esp || {}).gateways || []).filter(function (x) { return x.id === gwid; })[0];
+  return 'ESP32 gateway ' + (g ? g.name : gwid);
 }
 function optionsMarkup(options) {
   if (OPTION_HTML && OPTION_HTML.has(options)) return OPTION_HTML.get(options);
@@ -40905,7 +41023,10 @@ function espTile(e) {
 function renderEspDash(st) {
   var host = $('esp-dash');
   if (!host) return;
-  var es = ((st.esp || {}).entities || []);
+  // (5.59.4) a thing that has its own card on the Overview grid is not drawn twice
+  var onGrid = {};
+  overviewLayoutIds(st).forEach(function (id) { onGrid[id] = true; });
+  var es = ((st.esp || {}).entities || []).filter(function (e) { return !onGrid[e.id] && !e.gone; });
   var locks = es.filter(function (e) { return e.type === 'lock'; });
   var others = es.filter(function (e) { return e.type !== 'lock' && (e.actions || []).length; });
   host.hidden = !locks.length && !others.length;
@@ -40926,6 +41047,345 @@ function renderEspDash(st) {
   var grid = el('div', 'esp-tiles');
   locks.concat(others).forEach(function (e) { grid.appendChild(espTile(e)); });
   host.appendChild(grid);
+}
+
+/* ---- (5.59.4) a thing of an ESP32 gateway, and the gateway itself, as a card of the grid ------
+   The same card as every other device - the band with its state and its mark, the name, the
+   model line, the big readings, the footer with the battery, the way in and the age - drawn
+   from what the gateway described: its TYPE, its attrs, its actions and which of them are
+   sensitive. Nothing here knows a module: a relay, a reed contact or a sensor a future module
+   brings is drawn by its type, and a type nobody knows yet is shown read only. */
+var ESP_DONE_WORD = {open: 'opened', unlock: 'unlocked', lock: 'locked', refresh: 'asked', press: 'pressed',
+                     on: 'switched on', off: 'switched off', toggle: 'switched over', close: 'closed', stop: 'stopped', set: 'set'};
+function espIndex(st) {
+  var esp = (st && st.esp) || {};
+  if (espIndex.memo && espIndex.memo.esp === esp) return espIndex.memo;
+  var m = {esp: esp, ent: {}, gw: {}, gwByDev: {}};
+  (esp.entities || []).forEach(function (e) { m.ent[e.id] = e; });
+  (esp.gateways || []).forEach(function (g) { m.gw[g.id] = g; m.gwByDev[g.device || ('esp:' + g.id)] = g; });
+  espIndex.memo = m;
+  return m;
+}
+/* what a card of an esp device shows that the device row does not carry: its entity, its gateway */
+function espSigFor(d, st) {
+  if (!d || d.source !== 'esp') return 0;
+  var ix = espIndex(st), e = ix.ent[d.id], g = e ? ix.gw[e.gw] : ix.gwByDev[d.id];
+  return [e || null, g || null];
+}
+function espModelName(m) {
+  var s = String(m || '').toLowerCase();
+  var x = /^esp32[-_ ]?([a-z][0-9]+)?$/.exec(s);
+  return x ? 'ESP32' + (x[1] ? '-' + x[1].toUpperCase() : '') : (m || 'ESP32');
+}
+function espTypeWord(t) { return (ESP_TYPE[t] || ESP_TYPE.unknown)[0]; }
+function espReading(value, unit, label, cls, small, title) {
+  var r = el('div', 'reading' + (small ? ' small' : '') + (cls ? ' ' + cls : ''));
+  var v = el('div', 'v');
+  v.innerHTML = esc(value) + (unit ? '<span class="unit">' + esc(unit) + '</span>' : '');
+  r.appendChild(v);
+  r.appendChild(el('div', 'l', label));
+  if (title) r.title = title;
+  return r;
+}
+/* one compact button of a tile: the confirm step and the busy spinner are espDo's */
+function espMiniBtn(e, a, label, icon) {
+  var meta = ESP_ACT[a] || [a.charAt(0).toUpperCase() + a.slice(1), 'chip'];
+  var b = el('button', 'btn esp-mini esp-act-' + a + ((e.confirm || []).indexOf(a) >= 0 ? ' esp-sensitive' : ''));
+  b.type = 'button';
+  b.innerHTML = espSvg(icon || meta[1], 15) + (label === '' ? '' : '<span>' + esc(label || meta[0]) + '</span>');
+  b.title = (meta[2] ? meta[0] + ': ' + meta[2] : meta[0]) + ((e.confirm || []).indexOf(a) >= 0 ? ' - asks first' : '');
+  b.setAttribute('aria-label', meta[0] + ' ' + e.name);
+  var waiting = (e.asked || {})[a];
+  if (e.busy || waiting) b.classList.add('esp-wait');
+  b.disabled = !e.available || !!e.busy || !mayOperate();
+  if (!mayOperate()) b.title = 'Sign in as an operator to use it';
+  b.onclick = function (ev) { ev.stopPropagation(); espDo(e, a, b); };
+  return b;
+}
+function espSetBox(e) {
+  // a number or a choice, set from the tile: the box, then Set
+  var w = el('div', 'esp-setbox');
+  var box;
+  if (e.type === 'select' && (e.options || []).length) {
+    box = el('select');
+    (e.options || []).forEach(function (o) { var op = el('option', '', o); op.value = o; box.appendChild(op); });
+    box.value = e.value === null || e.value === undefined ? '' : String(e.value);
+  } else {
+    box = el('input'); box.type = 'number'; box.inputMode = 'decimal';
+    var a0 = (e.attrs || [])[0] || {};
+    if (isNum(e.min)) box.min = e.min; if (isNum(e.max)) box.max = e.max; if (isNum(e.step)) box.step = e.step;
+    box.value = isNum(e.value) ? e.value : '';
+    void a0;
+  }
+  box.disabled = !e.available || !!e.busy || !mayOperate();
+  box.setAttribute('aria-label', 'New value for ' + e.name);
+  w.appendChild(box);
+  var b = el('button', 'btn esp-mini');
+  b.type = 'button';
+  b.innerHTML = espSvg('check', 15) + '<span>Set</span>';
+  b.disabled = box.disabled;
+  if (e.busy || (e.asked || {}).set) b.classList.add('esp-wait');
+  b.onclick = function (ev) {
+    ev.stopPropagation();
+    var v = String(box.value || '').trim();
+    if (!v) { box.focus(); return; }
+    withPin('Set ' + e.name + ' to ' + v, '', function () {
+      zbusy(b, true);
+      return post('esp-command', {id: e.id, action: 'set:' + v, confirmed: true}).then(function (r) {
+        zbusy(b, false); return r.message || (e.name + ': ' + v);
+      }, function (x) { zbusy(b, false); throw x; });
+    });
+  };
+  box.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') b.onclick(ev); });
+  w.appendChild(b);
+  return w;
+}
+/* the last thing done, as the second reading: "opened 2 min ago ✓", "wrong key ✗" */
+function espLastReading(e) {
+  var last = e.last;
+  if (!last || !last.action) return espReading('–', '', 'last action', 'esp-last-r dim', true, 'Nothing done from here yet');
+  var meta = ESP_ACT[last.action] || [last.action];
+  if (last.ok) {
+    var r = espReading((ESP_DONE_WORD[last.action] || last.action) + ' ✓', '', last.at ? ago(last.at) : 'last action',
+                       'esp-last-r ok', true);
+    r.title = meta[0] + ' worked' + (last.at ? ' · ' + stamp(last.at) : '');
+    return r;
+  }
+  var bad = espReading((last.msg || 'failed') + ' ✗', '', 'could not ' + String(meta[0]).toLowerCase()
+                       + (last.at ? ' · ' + ago(last.at) : ''), 'esp-last-r bad', true);
+  bad.title = 'Could not ' + String(meta[0]).toLowerCase() + (last.msg ? ': ' + last.msg : '') + (last.at ? ' · ' + stamp(last.at) : '');
+  return bad;
+}
+/* the big reading of a thing, by its type */
+function espMainReading(e) {
+  var v = e.value, t = e.type;
+  if (e.gone) return espReading('gone', '', 'not on the gateway any more', 'esp-v crit');
+  if (t === 'lock') {
+    var word = v === 'locked' ? 'locked' : v === 'unlocked' ? 'unlocked' : 'unknown';
+    var r = espReading(e.busy ? 'working…' : word, '', 'lock', 'esp-v ' + (e.busy ? 'busy' : v === 'locked' ? 'ok' : v === 'unlocked' ? 'warn' : 'dim'));
+    if (word === 'unknown' && !e.busy) r.title = 'The lock does not say; it is known from the last thing it did';
+    return r;
+  }
+  if (e.busy) return espReading('working…', '', espTypeWord(t).toLowerCase(), 'esp-v busy');
+  if (t === 'switch' || t === 'binary_sensor') {
+    var on = v === true || /^(on|true|1|open|yes|detected)$/i.test(String(v));
+    var known = v !== null && v !== undefined && v !== '';
+    var words = t === 'switch' ? (on ? 'on' : 'off') : (on ? 'yes' : 'no');
+    return espReading(known ? words : '–', '', t === 'switch' ? 'switch' : 'state', 'esp-v ' + (known ? (on ? (t === 'switch' ? 'ok' : 'info') : 'dim') : 'dim'));
+  }
+  if (t === 'button') {
+    var lp = e.last && e.last.action === 'press' ? e.last : null;
+    return espReading(lp && lp.at ? ago(lp.at) : '–', '', lp ? 'last press' : 'not pressed from here yet', 'esp-v' + (lp ? '' : ' dim'), true);
+  }
+  if (t === 'cover') {
+    if (isNum(v)) return espReading(fmt(v, 0), '%', 'open', 'esp-v');
+    return espReading(v === null || v === undefined || v === '' ? '–' : String(v), '', 'blind', 'esp-v');
+  }
+  if (t === 'sensor' || t === 'number') {
+    return espReading(isNum(v) ? fmt(v) : (v === null || v === undefined || v === '' ? '–' : String(v)), e.unit || '',
+                      t === 'number' ? 'value' : 'reading', 'esp-v' + (isNum(v) ? '' : ' dim'));
+  }
+  if (t === 'select') return espReading(v === null || v === undefined || v === '' ? '–' : String(v), '', 'choice', 'esp-v');
+  // text, and a type nobody knows yet: read only, the value as it came
+  return espReading(v === null || v === undefined || v === '' ? '–' : String(v), e.unit || '',
+                    t === 'text' ? 'text' : 'read only', 'esp-v esp-text', true);
+}
+function espEntityCard(d, st, e, g) {
+  var off = e.gone || !e.available;
+  var card = el('div', 'card dev esp-dev esp-t-' + (ESP_TYPE[e.type] ? e.type : 'unknown') + ' ' + d.level
+                + (off ? ' stale' : '') + (e.busy ? ' esp-busy' : ''));
+  card.dataset.esp = e.id;
+  var band = deviceBand(card);
+  var offline = e.gone || d.availability === 'offline' || !e.gw_online;
+  var pill = e.gone ? ['crit', 'gone'] : offline ? ['crit', 'offline'] : !e.available ? ['warn', 'out of reach']
+    : (d.level === 'ok' ? ['ok', 'online'] : [d.level, d.level]);
+  band.left.appendChild(el('span', 'tag ' + pill[0], pill[1]));
+  band.left.appendChild(objMark(devRef(d), d.name));
+  if (linkAllowed(d)) {
+    var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
+    hist.title = 'History and charts of ' + d.name;
+    hist.onclick = function (ev) { ev.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return; STATE.hDevice = d.id; showTab('history'); };
+    band.right.appendChild(hist);
+  }
+  var head = el('div', 'head');
+  var icon = e.type === 'lock' ? (e.value === 'unlocked' ? 'unlock' : 'lock') : (ESP_TYPE[e.type] || ESP_TYPE.unknown)[1];
+  var art = el('span', 'esp-dev-art ' + (e.type === 'lock' && !e.gone ? (e.value === 'locked' ? 'ok' : e.value === 'unlocked' ? 'warn' : '') : ''));
+  art.innerHTML = espSvg(icon, 22);
+  head.appendChild(art);
+  var nm = el('div', 'nm');
+  var nmName = el('div', 'name');
+  nmName.appendChild(document.createTextNode(d.name));
+  nm.appendChild(nmName);
+  nm.appendChild(el('div', 'model mdl', 'ESP32 Gateway · ' + (e.module_name || e.module || espTypeWord(e.type))));
+  nm.appendChild(el('div', 'desc', espTypeWord(e.type) + ' on ' + e.gw_name));
+  head.appendChild(nm);
+  card.appendChild(head);
+  var readings = el('div', 'readings');
+  readings.appendChild(espMainReading(e));
+  if (e.type === 'lock' && !e.gone) readings.appendChild(espLastReading(e));
+  // what else it reports: its attrs beside the battery (that is in the footer), two at most
+  (e.attrs || []).filter(function (a) { return a.key !== 'battery'; }).slice(0, e.type === 'lock' ? 1 : 2).forEach(function (a) {
+    var av = (e.values || {})[a.key];
+    if (av === undefined || av === null) return;
+    readings.appendChild(espReading(isNum(av) ? fmt(av) : typeof av === 'boolean' ? (av ? 'yes' : 'no') : String(av),
+                                    a.unit || '', a.label || a.key, '', true));
+  });
+  if (e.type !== 'lock' && !e.gone && e.last && e.last.ok === false) readings.appendChild(espLastReading(e));
+  card.appendChild(readings);
+  // what it can be told: compact, the confirm step and the spinner are the tile's own
+  var acts = el('div', 'esp-acts');
+  var list = e.gone ? [] : (e.actions || []);
+  if (e.type === 'switch' && (list.indexOf('toggle') >= 0 || (list.indexOf('on') >= 0 && list.indexOf('off') >= 0))) {
+    var isOn = e.value === true || /^(on|true|1)$/i.test(String(e.value));
+    var sw = makeSwitch(isOn, function (want, box) {
+      box.checked = isOn;                       // it moves when the gateway says so
+      espDo(e, list.indexOf(want ? 'on' : 'off') >= 0 ? (want ? 'on' : 'off') : 'toggle', sw);
+    }, {disabled: !e.available || !!e.busy || !mayOperate(), title: isOn ? 'Switch it off' : 'Switch it on'});
+    if (e.busy || Object.keys(e.asked || {}).length) sw.classList.add('esp-wait');
+    acts.appendChild(sw);
+    acts.appendChild(el('span', 'esp-acts-l', isOn ? 'on' : 'off'));
+    list = list.filter(function (a) { return a !== 'on' && a !== 'off' && a !== 'toggle'; });
+  }
+  if ((e.type === 'number' || e.type === 'select') && list.indexOf('set') >= 0) acts.appendChild(espSetBox(e));
+  list.filter(function (a) { return a !== 'refresh' && a !== 'set'; }).forEach(function (a) {
+    acts.appendChild(espMiniBtn(e, a));
+  });
+  if (list.indexOf('refresh') >= 0) {
+    var rb = espMiniBtn(e, 'refresh', '');
+    rb.classList.add('esp-mini-ic');
+    acts.appendChild(rb);
+  }
+  if (e.gone && isAdmin()) {
+    var rm = el('button', 'btn esp-mini danger');
+    rm.type = 'button';
+    rm.innerHTML = iconMarkup('trash', 14) + '<span>Remove</span>';
+    rm.title = 'It is not on ' + e.gw_name + ' any more: take its device away (its history stays)';
+    rm.onclick = function (ev) { ev.stopPropagation(); espForgetEntity(e.gw, e.entity, e.name, rm); };
+    acts.appendChild(rm);
+  }
+  if (acts.children.length) card.appendChild(acts);
+  // the footer: the battery, the gateway's Wi-Fi in place of a link quality, the way in, the age
+  var foot = el('div', 'foot dfoot');
+  var batt = (e.values || {}).battery;
+  if (!isNum(batt)) batt = d.battery;
+  if (isNum(batt)) {
+    var bw = el('span', 'batt f-batt');
+    var bar = el('span', 'bar'); var fill = el('span');
+    var bl = batt <= st.thresholds.battery_crit ? 'var(--crit)' : (batt <= st.thresholds.battery_warn ? 'var(--warn)' : 'var(--ok)');
+    fill.style.width = Math.max(0, Math.min(100, batt)) + '%'; fill.style.background = bl;
+    bar.appendChild(fill);
+    bw.appendChild(el('span', '', 'Battery ' + fmt(batt, 0) + '%'));
+    bw.appendChild(bar);
+    foot.appendChild(bw);
+  }
+  var rssi = g ? g.rssi : e.gw_rssi;
+  if (isNum(rssi)) {
+    var lw = el('span', 'sigwrap f-lqi');
+    lw.appendChild(signalBars('rssi', rssi, st.thresholds));
+    lw.appendChild(el('span', '', fmt(rssi, 0) + ' dBm'));
+    lw.title = 'Wi-Fi at the gateway ' + e.gw_name + ': ' + fmt(rssi, 0) + ' dBm';
+    foot.appendChild(lw);
+  }
+  var via = el('span', 'via f-via', 'via ' + e.gw_name);
+  via.title = 'On the ESP32 gateway ' + e.gw_name + (g && g.online === false ? ' - offline' : '');
+  foot.appendChild(via);
+  var notes = (d.reasons || []).slice(), level = d.reasons && d.reasons.length ? (d.level === 'crit' ? 'crit' : 'warn') : '';
+  if (e.gone) { notes.push(e.gw_name + ' no longer has it' + (e.gone_at ? ' (since ' + stamp(e.gone_at) + ')' : '') + '. Its history is kept; Remove takes the device away.'); level = 'crit'; }
+  else if (!e.gw_online) { notes.push('The gateway ' + e.gw_name + ' is not answering.'); level = 'crit'; }
+  else if (!e.available) { notes.push(d.name + ' is out of the gateway’s reach.'); level = level || 'warn'; }
+  footEnd(foot, ago(d.last_seen), notes, level);
+  card.appendChild(foot);
+  attachCardMenu(card, {head: d.name, rows: [
+    ['📈 History for this one', function () { showTab('history'); setTimeout(function () { pickHistoryDevice(d.id); }, 80); }],
+    ['📋 Copy its name', function () { copyToClipboard(d.name, 'Name'); }],
+    ['⚡ A rule from this device', function () { showTab('control'); setTimeout(function () { showControlSection('automation'); newRuleFor(d.id); }, 120); }],
+    ['⚙️ Its gateway in Settings', function () { showTab('control'); setTimeout(function () { showControlSection('dev-devices'); }, 120); }]
+  ]});
+  return card;
+}
+function espGatewayCard(d, st, g) {
+  var on = g.online && g.enabled;
+  var card = el('div', 'card dev esp-dev esp-gwtile ' + (on ? d.level : 'crit') + (on ? '' : ' stale'));
+  var band = deviceBand(card);
+  band.left.appendChild(el('span', 'tag ' + (on ? (d.level === 'ok' ? 'ok' : d.level) : 'crit'),
+                           !g.enabled ? 'switched off' : g.cert_bad ? 'certificate' : on ? 'online' : 'offline'));
+  band.left.appendChild(objMark(devRef(d), d.name));
+  if (linkAllowed(d)) {
+    var hist = el('button', 'dev-hist'); hist.type = 'button'; hist.innerHTML = iconMarkup('chart', 15);
+    hist.title = 'History and charts of ' + d.name;
+    hist.onclick = function (ev) { ev.stopPropagation(); if (Date.now() - ORDER.justDropped < 500) return; STATE.hDevice = d.id; showTab('history'); };
+    band.right.appendChild(hist);
+  }
+  var head = el('div', 'head');
+  var art = el('span', 'esp-dev-art ' + (on ? 'info' : 'crit'));
+  art.innerHTML = espSvg('chip', 22);
+  head.appendChild(art);
+  var nm = el('div', 'nm');
+  nm.appendChild(el('div', 'name', d.name));
+  nm.appendChild(el('div', 'model mdl', 'ESP32 Gateway · ' + espModelName(g.model)));
+  var mods = (g.module_list || []).map(function (m) { return m.name + (m.version ? ' ' + m.version : ''); });
+  nm.appendChild(el('div', 'desc', mods.length ? mods.join(' · ') : 'no module detected yet'));
+  head.appendChild(nm);
+  card.appendChild(head);
+  var readings = el('div', 'readings');
+  readings.appendChild(espReading(on ? 'online' : !g.enabled ? 'off' : 'offline', '', 'gateway', 'esp-v ' + (on ? 'ok' : 'crit')));
+  readings.appendChild(espReading(String(g.entities || 0), '', (g.entities === 1 ? 'device' : 'devices') + ' · '
+    + (g.module_list || []).length + ' module' + ((g.module_list || []).length === 1 ? '' : 's'), '', false));
+  card.appendChild(readings);
+  // its firmware, how long it has been up and its clock: a line of facts under the readings
+  var facts = el('div', 'esp-gw-facts');
+  var fact = function (k, v, cls, title) {
+    var f = el('span', 'esp-gw-fact' + (cls ? ' ' + cls : ''));
+    f.appendChild(el('span', 'k', k)); f.appendChild(el('b', '', v));
+    if (title) f.title = title;
+    facts.appendChild(f);
+  };
+  fact('firmware', g.fw ? 'v' + g.fw : '–');
+  fact('up', isNum(g.uptime) ? runtimeText(g.uptime) : '–');
+  fact('clock', g.time_set === true ? 'synced' : g.time_set === false ? 'not set' : '–', g.time_set === false ? 'warn' : g.time_set ? 'ok' : '',
+       g.time_set === false ? 'Its clock is not set: it takes ZIGMon’s time from each signed request' : 'Its clock is set');
+  card.appendChild(facts);
+  if (!on && g.error) card.appendChild(el('div', 'muted small esp-gw-err', g.error));
+  var foot = el('div', 'foot dfoot');
+  var used = el('span', 'f-batt esp-gw-mods', (g.module_list || []).map(function (m) { return m.name + ' ' + m.used; }).join(' · ') || 'nothing detected');
+  used.title = 'Its modules and how many of their things are devices here';
+  foot.appendChild(used);
+  if (isNum(g.rssi)) {
+    var lw = el('span', 'sigwrap f-lqi');
+    lw.appendChild(signalBars('rssi', g.rssi, st.thresholds));
+    lw.appendChild(el('span', '', fmt(g.rssi, 0) + ' dBm'));
+    lw.title = 'Its Wi-Fi signal: ' + fmt(g.rssi, 0) + ' dBm';
+    foot.appendChild(lw);
+  }
+  foot.appendChild(el('span', 'via f-via', 'Wi-Fi · ' + (g.since ? (on ? 'online since ' : 'offline since ') + ago(g.since).replace(/ ago$/, '') : 'HTTPS, signed')));
+  var notes = (d.reasons || []).slice();
+  if (g.gone) notes.push(g.gone + ' of its things are gone from it: remove them under Settings → Devices.');
+  footEnd(foot, ago(d.last_seen), notes, !on ? 'crit' : (notes.length ? 'warn' : ''));
+  card.appendChild(foot);
+  attachCardMenu(card, {head: d.name, rows: [
+    ['📈 History for this one', function () { showTab('history'); setTimeout(function () { pickHistoryDevice(d.id); }, 80); }],
+    ['⚙️ The gateway in Settings', function () { showTab('control'); setTimeout(function () { showControlSection('dev-devices'); }, 120); }]
+  ]});
+  return card;
+}
+/* the card of an esp device, or null for buildDeviceCard's own */
+function buildEspDeviceCard(d, st) {
+  if (!d || d.source !== 'esp') return null;
+  var ix = espIndex(st);
+  var e = ix.ent[d.id];
+  if (e) return espEntityCard(d, st, e, ix.gw[e.gw]);
+  var g = ix.gwByDev[d.id];
+  if (g) return espGatewayCard(d, st, g);
+  return null;
+}
+function espForgetEntity(gwid, eid, name, b) {
+  withDangerConfirm('Remove ' + name, name + ' is not on its gateway any more. Its device goes from the dashboard; '
+    + 'its history is kept. If the gateway has it again later, it comes back by itself.', function () {
+    zbusy(b, true);
+    return post('esp-admin', {action: 'forget_entity', id: gwid, entity: eid}).then(function (r) {
+      zbusy(b, false); if (ESP.d) loadEsp(true); return r.message || (name + ' removed');
+    }, function (x) { zbusy(b, false); throw x; });
+  });
 }
 
 /* ---- Settings - Devices - ESP32 gateways ---------------------------------------------- */
@@ -41037,30 +41497,64 @@ function espGwCard(g) {
   fact('In use', g.used + ' of ' + g.entities);
   fact('Paired', g.paired_at ? stamp(g.paired_at) + (g.paired_by ? ' by ' + g.paired_by : '') : '–');
   fact('Key', g.key_set ? 'set ••' + g.key_hint : 'none', g.key_set ? 'ok' : 'warn');
-  card.appendChild(facts);
-  (g.modules || []).forEach(function (m) {
-    var mod = el('div', 'esp-mod');
-    var mh = el('div', 'esp-mod-h');
-    mh.appendChild(el('b', '', m.name));
-    if (m.version) mh.appendChild(el('span', 'esp-tag', 'v' + m.version));
-    mh.appendChild(el('span', 'esp-mod-sub', ESP_MOD[m.id] || ''));
-    mod.appendChild(mh);
-    (m.entities || []).forEach(function (e) {
-      var row = el('div', 'esp-ent' + (e.used ? '' : ' unused'));
-      var tp = ESP_TYPE[e.type] || ESP_TYPE.unknown;
-      row.appendChild(espIcon(tp[1], 16));
-      var en = el('span', 'esp-ent-n');
-      en.appendChild(el('b', '', e.shown || e.name));
-      en.appendChild(el('span', '', tp[0] + (e.used ? '' : ' · not used')));
-      row.appendChild(en);
-      var sv = e.state ? espState({type: e.type, value: e.state.value, busy: e.state.busy, available: e.state.available,
-                                   gw_online: g.enabled && g.online !== false && !g.cert_bad, unit: e.unit}) : null;
-      row.appendChild(el('span', 'esp-ent-v ' + (sv ? sv.cls : 'dim'), sv ? sv.word : '–'));
-      if (e.state && e.state.attrs && isNum(e.state.attrs.battery)) row.appendChild(espBattery(e.state.attrs.battery));
-      mod.appendChild(row);
-    });
-    card.appendChild(mod);
+  // (5.59.4) the gateway is the parent: its facts, then each module folded under it, and each
+  // module's things under the module - the way a plug's channels sit under the plug
+  var fold = el('button', 'esp-gw-fold');
+  fold.type = 'button';
+  var folded = ESP.folded && ESP.folded[g.id];
+  fold.textContent = folded ? '▸' : '▾';
+  fold.title = folded ? 'Show its modules and devices' : 'Fold it away';
+  fold.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  fold.onclick = function () {
+    ESP.folded = ESP.folded || {};
+    ESP.folded[g.id] = !ESP.folded[g.id];
+    card.classList.toggle('folded', ESP.folded[g.id]);
+    fold.textContent = ESP.folded[g.id] ? '▸' : '▾';
+    fold.setAttribute('aria-expanded', ESP.folded[g.id] ? 'false' : 'true');
+  };
+  h.insertBefore(fold, h.firstChild);
+  if (folded) card.classList.add('folded');
+  var body = el('div', 'esp-gw-body');
+  body.appendChild(facts);
+  var secs = el('div', 'sections esp-mods');
+  var gwOn = g.enabled && g.online !== false && !g.cert_bad;
+  var mods = (g.modules || []).slice();
+  (g.gone || []).forEach(function (x) {
+    if (!mods.some(function (m) { return m.id === x.module; })) mods.push({id: x.module, name: x.module || 'Gone', version: '', entities: []});
   });
+  mods.forEach(function (m) {
+    var key = g.id + ':' + m.id;
+    ESP.open = ESP.open || {};
+    var open = ESP.open[key] !== false;
+    var box = el('div', 'section esp-mod-sec' + (open ? ' open' : ''));
+    box.dataset.module = m.id;
+    var head = el('div', 'section-head');
+    var mfold = el('span', 'fold', open ? '▾' : '▸');
+    head.appendChild(mfold);
+    var mic = el('span', 'esp-sec-ic'); mic.innerHTML = espSvg('chip', 15); head.appendChild(mic);
+    head.appendChild(el('span', 'section-name', m.name || m.id));
+    if (m.version) head.appendChild(el('span', 'esp-tag', 'v' + m.version));
+    var ents = m.entities || [];
+    var gone = (g.gone || []).filter(function (x) { return x.module === m.id; });
+    var usedN = ents.filter(function (e) { return e.used; }).length;
+    head.appendChild(el('span', 'section-count', ents.length + (ents.length === 1 ? ' device' : ' devices')
+      + (usedN < ents.length ? ' · ' + usedN + ' used' : '') + (gone.length ? ' · ' + gone.length + ' gone' : '')));
+    if (ESP_MOD[m.id]) head.appendChild(el('span', 'esp-mod-sub', ESP_MOD[m.id]));
+    head.onclick = function () {
+      ESP.open[key] = !box.classList.contains('open');
+      box.classList.toggle('open', ESP.open[key]);
+      mfold.textContent = ESP.open[key] ? '▾' : '▸';
+    };
+    box.appendChild(head);
+    var sb = el('div', 'section-body');
+    ents.forEach(function (e) { sb.appendChild(espEntRow(g, e, gwOn)); });
+    gone.forEach(function (x) { sb.appendChild(espEntRow(g, {id: x.id, name: x.name, shown: x.name, type: x.type, gone: true, at: x.at}, gwOn)); });
+    if (!ents.length && !gone.length) sb.appendChild(el('div', 'muted small', 'It carries nothing yet.'));
+    box.appendChild(sb);
+    secs.appendChild(box);
+  });
+  if (mods.length) body.appendChild(secs);
+  else body.appendChild(el('div', 'muted small', 'No module detected yet - Detect again asks it.'));
   var acts = el('div', 'esp-gw-acts');
   var det = espBtn('Detect again', 'refresh');
   det.disabled = !g.enabled || g.cert_bad;
@@ -41079,7 +41573,66 @@ function espGwCard(g) {
   un.onclick = function () { espUnpair(g); };
   acts.appendChild(un);
   card.appendChild(acts);
+  card.appendChild(body);
   return card;
+}
+/* one thing of a module, under the module: its type's icon, its name and type, its state and
+   battery, whether it is used (a device of the house), Test (a harmless action: refresh), and
+   Remove for one the gateway does not have any more */
+function espEntRow(g, e, gwOn) {
+  var row = el('div', 'esp-ent' + (e.gone ? ' gone' : e.used ? '' : ' unused'));
+  row.dataset.entity = e.id;
+  var tp = ESP_TYPE[e.type] || ESP_TYPE.unknown;
+  var ic = e.type === 'lock' && e.state && e.state.value === 'unlocked' ? 'unlock' : tp[1];
+  row.appendChild(espIcon(ic, 16));
+  var en = el('span', 'esp-ent-n');
+  en.appendChild(el('b', '', e.shown || e.name));
+  en.appendChild(el('span', '', tp[0] + (e.gone ? ' · gone from the gateway' + (e.at ? ' ' + ago(e.at) : '')
+    : e.used ? '' : ' · not used - no device, no card')));
+  row.appendChild(en);
+  if (e.gone) {
+    row.appendChild(el('span', 'esp-ent-v off', 'Gone'));
+  } else {
+    var sv = e.state ? espState({type: e.type, value: e.state.value, busy: e.state.busy, available: e.state.available,
+                                 gw_online: gwOn, unit: e.unit}) : null;
+    row.appendChild(el('span', 'esp-ent-v ' + (sv ? sv.cls : 'dim'), sv ? sv.word : '–'));
+    if (e.state && e.state.attrs && isNum(e.state.attrs.battery)) row.appendChild(espBattery(e.state.attrs.battery));
+  }
+  var tools = el('span', 'esp-ent-tools');
+  if (e.gone) {
+    var rm = el('button', 'btn small danger');
+    rm.type = 'button';
+    rm.innerHTML = iconMarkup('trash', 13) + ' Remove';
+    rm.title = 'Take its device away (its history stays)';
+    rm.onclick = function () { espForgetEntity(g.id, e.id, e.shown || e.name, rm); };
+    tools.appendChild(rm);
+  } else {
+    if (e.used && (e.actions || []).indexOf('refresh') >= 0) {
+      var test = el('button', 'btn small');
+      test.type = 'button';
+      test.innerHTML = espSvg('refresh', 13) + ' Test';
+      test.title = 'Ask it where it stands - harmless, it changes nothing';
+      test.disabled = !gwOn;
+      test.onclick = function () {
+        zbusy(test, true);
+        post('esp-command', {id: e.device || ('esp:' + g.id + ':' + e.id), action: 'refresh', confirmed: true}).then(function (r) {
+          zbusy(test, false); toast(r.message || ((e.shown || e.name) + ': asked'), true); setTimeout(function () { loadEsp(true); }, 1500);
+        }, function (x) { zbusy(test, false); zoops(x); });
+      };
+      tools.appendChild(test);
+    }
+    var used = makeSwitch(!!e.used, function (on, box) {
+      box.disabled = true;
+      var u = {}; u[e.id] = on;
+      espAsk({action: 'use', id: g.id, use: u}, null).then(function () {
+        toast((e.shown || e.name) + (on ? ' is used: a device with its card' : ' is not used: no device, no card'), true);
+        loadEsp(true);
+      }, function (x) { box.disabled = false; box.checked = !on; zoops(x); });
+    }, {small: true, title: e.used ? 'Used: a device of the house, with its card. Off hides it.' : 'Not used: switch on to make it a device'});
+    tools.appendChild(used);
+  }
+  row.appendChild(tools);
+  return row;
 }
 function espRename(g) {
   var name = zText(g.name, 'Hall, Garage, Bedroom drawer…');
