@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { cleanHex } from "./colour.js";
 import { normalizePin, type Pins } from "./tls.js";
 
 /**
@@ -59,8 +60,11 @@ export interface ActionSettings {
   showRoom?: boolean;
   /** (1.1) The look (themes.ts THEMES); none = Classic, as 1.0 drew. */
   theme?: string;
-  /** (1.1) An accent colour by name (palette.ts ACCENTS); none = Auto, the item's own. */
+  /** (1.1) An accent colour by name (palette.ts ACCENTS); none = Auto, the item's own.
+   * (1.3) Also the user's own colour, "#RRGGBB" (kept uppercased). It is the On colour. */
   accent?: string;
+  /** (1.3) The Off colour: what an off key is drawn in, the same values as accent; none = the look's own off style. */
+  accentOff?: string;
   /** (1.1) Long names: cut (one line, as 1.0), fit (smaller, then two lines) or wrap (two lines). */
   nameFit?: string;
   /** (1.1) What the key shows - each on unless switched off (room: showRoom above). */
@@ -88,7 +92,15 @@ const PRESS = ["toggle", "on", "off", "run", "open", "close", "stop", "cycle", "
   ...ROOM_MODES.map((m) => "set:" + m)];
 export const THEME_IDS = ["classic", "minimal", "bigvalue", "fill", "neon", "ring", "split", "glass", "label", "dot", "light", "contrast",
   "huge", "pill", "orb", "tile", "gauge", "bars", "wave", "aurora", "outline", "mono"] as const;
-export const ACCENT_IDS = ["blue", "green", "amber", "red", "purple", "orange", "teal", "pink", "yellow", "silver"] as const;
+export const ACCENT_IDS = ["blue", "green", "amber", "red", "purple", "orange", "teal", "pink", "yellow", "silver",
+  "indigo", "sky", "cyan", "mint", "lime", "gold", "peach", "coral", "rose", "magenta", "lavender", "brown", "slate", "white"] as const;
+
+/** (1.3) A colour setting: one of ACCENT_IDS, or exactly "#RRGGBB" (uppercased); anything else is dropped. */
+export function cleanColourSetting(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  if ((ACCENT_IDS as readonly string[]).includes(v)) return v;
+  return cleanHex(v) ?? undefined;
+}
 export const NAME_FITS = ["cut", "fit", "wrap"] as const;
 export const SPANS = [3600, 6 * 3600, 24 * 3600, 7 * 86400] as const;
 export const LABEL_MOST = 40;
@@ -124,7 +136,10 @@ export function normalizeAction(raw: unknown): ActionSettings {
   if (d !== null && d >= -1 && d <= 3) s.decimals = Math.round(d);
   if (typeof o.showRoom === "boolean") s.showRoom = o.showRoom;
   if (typeof o.theme === "string" && (THEME_IDS as readonly string[]).includes(o.theme) && o.theme !== "classic") s.theme = o.theme;
-  if (typeof o.accent === "string" && (ACCENT_IDS as readonly string[]).includes(o.accent)) s.accent = o.accent;
+  const accent = cleanColourSetting(o.accent);
+  if (accent) s.accent = accent;
+  const accentOff = cleanColourSetting(o.accentOff);
+  if (accentOff) s.accentOff = accentOff;
   if (typeof o.nameFit === "string" && (NAME_FITS as readonly string[]).includes(o.nameFit)) s.nameFit = o.nameFit;
   for (const k of SHOW) if (typeof o[k] === "boolean") s[k] = o[k] as boolean;
   const span = finiteOrNull(o.span);

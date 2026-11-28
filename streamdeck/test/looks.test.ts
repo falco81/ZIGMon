@@ -186,7 +186,9 @@ describe("looks", () => {
       assert.ok(key("control", variant("Lampa", "on"), { theme: "fill", accent: name }).s.svg.includes(a.colour), name);
       assert.ok(key("control", variant("Lampa", "on"), { accent: name }).s.svg.includes(a.colour), "classic " + name);
     }
-    assert.ok(!key("control", variant("Lampa", "on"), { accent: "#123456" }).s.svg.includes("#123456"));
+    // (1.3) a colour of the user's own is "#RRGGBB" exactly; anything else is dropped
+    assert.ok(!key("control", variant("Lampa", "on"), { accent: "#12345G" }).s.svg.includes("#12345"));
+    assert.ok(!key("control", variant("Lampa", "on"), { accent: "123456" }).s.svg.includes("123456"));
   });
 
   it("long names: shrunk or wrapped, not cut", () => {
@@ -346,7 +348,7 @@ describe("settings 1.1", () => {
     });
     assert.deepEqual(s, { theme: "neon", accent: "teal", nameFit: "wrap", label: "Lamp in hall", showName: false, span: 21600, hold: true });
     assert.deepEqual(normalizeAction({ theme: "classic" }), {}, "classic is the default, not stored");
-    assert.deepEqual(normalizeAction({ theme: "matrix", accent: "#FF0000", nameFit: "tiny", span: 1234, hold: "yes" }), {});
+    assert.deepEqual(normalizeAction({ theme: "matrix", accent: "#FF00000", nameFit: "tiny", span: 1234, hold: "yes" }), {});
     assert.deepEqual(normalizeAction({ accent: "url(#x)" }), {});
     assert.equal(normalizeAction({ label: "x".repeat(200) }).label, "x".repeat(LABEL_MOST));
     assert.equal(normalizeAction({ label: "\u0007‏ " }).label, undefined);

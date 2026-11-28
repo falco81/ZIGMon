@@ -9,7 +9,7 @@ import { boolAttr, decimalsOf, dialAttr, DialAccumulator, enumAttr, fraction } f
 import { HoldPress } from "./hold.js";
 import type { CommandResult, Hub, HubView } from "./hub.js";
 import { LAYOUTS } from "./layouts.js";
-import { ACCENTS, P, X } from "./palette.js";
+import { colourOf, P, X } from "./palette.js";
 import type { Attr, Item, ItemAction, ItemState } from "./protocol.js";
 import {
   fmtTemp, lookFor, readingAccent, renderBlinds, renderControl, renderDimmer, renderHold, renderNotice, renderPair, renderReading, renderScene,
@@ -221,18 +221,24 @@ export class ActionView implements HubView {
   /** Nothing chosen beyond 1.0's settings: Classic draws exactly as 1.0 did. */
   private plain(): boolean {
     const s = this.settings;
-    if (this.theme !== "classic" || s.accent || s.nameFit || s.span) return false;
+    if (this.theme !== "classic" || s.accent || s.accentOff || s.nameFit || s.span) return false;
     for (const k of ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget"]) if (s[k] !== undefined) return false;
     return !(s.label && this.kind !== "reading");
   }
 
   private classicOpts(): ClassicOpts {
     if (this.plain()) return {};
-    return { info: this.info(), accent: this.accentOverride(), fit: (this.settings.nameFit as NameFit | undefined) ?? "cut" };
+    return { info: this.info(), accent: this.accentOverride(), fit: (this.settings.nameFit as NameFit | undefined) ?? "cut", offAccent: this.offOverride() };
   }
 
+  /** The On colour the user chose (by name, or their own #RRGGBB); none = the item's own. */
   private accentOverride(): string | undefined {
-    return this.settings.accent ? ACCENTS[this.settings.accent]?.colour : undefined;
+    return colourOf(this.settings.accent);
+  }
+
+  /** (1.3) The Off colour the user chose; none = the look's own off style. */
+  private offOverride(): string | undefined {
+    return colourOf(this.settings.accentOff);
   }
 
   private nameFit(): NameFit {
@@ -579,7 +585,7 @@ export class ActionView implements HubView {
     const base = {
       kind: this.kind as string, room: it.room, unit: "", stateColour: null as string | null, detail: "", mode: "", level: null as number | null,
       series: [] as number[], target: null as number | null, battery: st.battery, allowed: it.allowed, hold: this.needsHold(it),
-      taken: st.held === true,
+      taken: st.held === true, offAccent: this.offOverride() ?? null,
     };
     const acc = this.accentOverride();
     switch (this.kind) {
@@ -691,6 +697,7 @@ export class ActionView implements HubView {
     this.styledStrip = true;
     const lit = f.active && f.online;
     const c = f.online ? f.accent : P.crit;
+    const off = !lit && f.online && f.offAccent ? f.offAccent : undefined;
     const paperInk = t === "light" || (t === "contrast" && lit) || (t === "fill" && lit);
     const inkOf = (col: string) => {
       if (t === "light") return col === P.text ? X.ink : col === P.dim ? X.inkDim : col === P.crit ? X.inkCrit : col === P.muted ? X.inkMuted : col;
@@ -704,8 +711,8 @@ export class ActionView implements HubView {
       const size = layout === "dimmer" ? 36 : layout === "reading" ? 22 : 40;
       out.icon = paperInk || t === "light"
         ? iconPix(f.icon, t === "light" ? (lit ? c : X.inkDim) : P.bg, size, t === "light" && lit ? c : undefined)
-        : t === "contrast" ? iconPix(f.icon, X.white, size) : t === "minimal" || t === "mono" ? iconPix(f.icon, lit ? c : P.muted, size)
-        : t === "aurora" && lit ? iconPix(f.icon, X.white, size) : iconPix(f.icon, lit ? c : P.dim, size, lit ? c : undefined);
+        : t === "contrast" ? iconPix(f.icon, off ?? X.white, size) : t === "minimal" || t === "mono" ? iconPix(f.icon, lit ? c : off ?? P.muted, size)
+        : t === "aurora" && lit ? iconPix(f.icon, X.white, size) : iconPix(f.icon, lit ? c : off ?? P.dim, size, lit ? c : off);
     }
     return out;
   }
@@ -738,19 +745,19 @@ export class ActionView implements HubView {
         const txt = a && raw !== null ? formatNumber(raw, decimalsOf(a.step ?? 1)) + (a.unit ? " " + a.unit : "") : "";
         const pa = this.pressAction();
         const hint = !m.allowed ? "Not allowed" : !m.online ? "Offline" : pa === "toggle" ? (m.on ? "Push to turn off" : "Push to turn on") : pa ? "Push: " + pressWord(pa).toLowerCase() : "";
-        return controlFeedback(m, f, txt, hint, this.accentOverride());
+        return controlFeedback(m, f, txt, hint, this.accentOverride(), this.offOverride());
       }
       case "reading":
         return readingFeedback(this.readingModel(), this.plain() ? undefined : this.info());
       case "thermostat": {
         const m = this.thermoModel();
         if (this.dial.shown !== null) m.target = this.dial.shown;
-        return thermoFeedback(m, this.accentOverride(), this.plain() ? undefined : this.info());
+        return thermoFeedback(m, this.accentOverride(), this.plain() ? undefined : this.info(), this.offOverride());
       }
       case "dimmer":
-        return dimmerFeedback(this.dimmerModel(), this.accentOverride());
+        return dimmerFeedback(this.dimmerModel(), this.accentOverride(), this.offOverride());
       case "blinds":
-        return blindsFeedback(this.blindsModel(), this.accentOverride());
+        return blindsFeedback(this.blindsModel(), this.accentOverride(), this.offOverride());
       case "scene": {
         const it = this.item!;
         const fb = controlFeedback({ ...this.controlModel(), on: null, valueText: this.flash === "ok" ? "Done" : this.flash === "fail" ? "Failed" : "Push to run" }, null, "", "", this.accentOverride());

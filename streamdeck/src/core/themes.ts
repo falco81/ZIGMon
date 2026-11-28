@@ -5,7 +5,7 @@
  * how long names are laid out, and keeps offline, locked and hold readable.
  * Colours come only from palette.ts; every piece of text goes through esc() (svg.ts text()).
  */
-import { ACCENTS, P, X } from "./palette.js";
+import { colourOf, P, X } from "./palette.js";
 import { arcPath, fit, fitSize, icon, n, nameLines, rect, svgDoc, text, textWidth, type NameFit } from "./svg.js";
 
 export const THEMES: readonly { id: string; name: string; hint: string }[] = [
@@ -79,6 +79,8 @@ export interface Face {
   battery: number | null;
   /** (1.2) Taken over by hand: rules and schedules leave it alone. */
   taken?: boolean;
+  /** (1.3) The colour an off key is drawn in, when the user chose one; none = the look's own off style. */
+  offAccent?: string | null;
 }
 
 export interface LookOpts {
@@ -103,8 +105,16 @@ const PAPER: Ink = { bg: X.paper, bg2: X.white, line: X.paperLine, text: X.ink, 
 const HC: Ink = { bg: X.black, bg2: X.black, line: X.white, text: X.white, dim: X.white, muted: X.hcGrey, crit: X.hcRed, warn: X.hcYellow, badge: X.black };
 
 export function accentColour(name: string | undefined, auto: string): string {
-  return (name && ACCENTS[name]?.colour) || auto;
+  return colourOf(name) || auto;
 }
+
+/** (1.3) Where a look draws an unlit key in its grey (`grey`): the user's Off colour instead, if one is set. */
+function offInk(f: Face, grey: string): string {
+  return f.offAccent && f.online && !f.active ? f.offAccent : grey;
+}
+
+/** (1.3) An Off colour applies to this key now (it is online, unlit, and one is set). */
+const offLit = (f: Face): boolean => !!f.offAccent && f.online && !f.active;
 
 // ------------------------------------------------------------------ shared pieces
 
@@ -257,7 +267,7 @@ function minimal(f: Face, o: LookOpts): string {
       bottom -= 14;
     }
     const fs = fitSize(w, big ? [40, 32, 26, 20] : [17, 15, 13], 124, 700);
-    body += text(72, bottom - 3, fs.text, { size: fs.size, weight: 700, fill: !f.online ? ink.crit : f.stateColour ?? (lit ? c : ink.dim), anchor: "middle" });
+    body += text(72, bottom - 3, fs.text, { size: fs.size, weight: 700, fill: !f.online ? ink.crit : f.stateColour ?? (lit ? c : offInk(f, ink.dim)), anchor: "middle" });
     bottom -= fs.size + 6;
     if (big && i.state && subline(f, i)) {
       body += text(72, bottom - 2, fit(subline(f, i), 12.5, 124, 500), { size: 12.5, weight: 500, fill: ink.dim, anchor: "middle" });
@@ -268,7 +278,8 @@ function minimal(f: Face, o: LookOpts): string {
     const sz = Math.max(26, Math.min(78, bottom - 22));
     const cy = (8 + bottom) / 2;
     if (lit) body += `<circle cx="72" cy="${n(cy)}" r="${n(sz * 0.74)}" fill="${c}" fill-opacity="0.16"/>`;
-    body += icon(f.icon, 72 - sz / 2, cy - sz / 2, sz, lit ? c : !f.online ? ink.crit : ink.muted, 1.8);
+    if (offLit(f)) body += `<circle cx="72" cy="${n(cy)}" r="${n(sz * 0.74)}" fill="${f.offAccent}" fill-opacity="0.1"/>`;
+    body += icon(f.icon, 72 - sz / 2, cy - sz / 2, sz, lit ? c : !f.online ? ink.crit : offInk(f, ink.muted), 1.8);
   }
   body += badges(f, i, ink);
   return doc(body, defs);
@@ -277,10 +288,10 @@ function minimal(f: Face, o: LookOpts): string {
 /** Big value: the state as large as it fits, the name small on top, the detail and the graph under it. */
 function bigvalue(f: Face, o: LookOpts): string {
   const ink = DARK, i = o.info, c = f.accent;
-  let b = rect(0, 0, 144, 144, 0, "url(#bg)") + frame(ink, f.active ? c : ink.line, f.active ? 0.7 : 1);
+  let b = rect(0, 0, 144, 144, 0, "url(#bg)") + frame(ink, f.active ? c : offInk(f, ink.line), f.active || offLit(f) ? 0.7 : 1);
   let x0 = 14;
   if (i.icon) {
-    b += icon(f.icon, 13, 13, 20, f.active ? c : ink.dim, 2);
+    b += icon(f.icon, 13, 13, 20, f.active ? c : offInk(f, ink.dim), 2);
     x0 = 39;
   }
   if (i.name && f.name) {
@@ -290,7 +301,7 @@ function bigvalue(f: Face, o: LookOpts): string {
   const hasGraph = i.graph && (f.series.length >= 2 || f.level !== null || f.kind === "reading");
   const sub = subline(f, i);
   const vy = hasGraph ? (sub ? 76 : 84) : sub ? 88 : 96;
-  if (i.state) b += value(f, 72, vy, 124, [54, 46, 38, 30, 24, 19], f.stateColour ?? (f.active ? c : ink.text), ink, "middle", 800);
+  if (i.state) b += value(f, 72, vy, 124, [54, 46, 38, 30, 24, 19], f.stateColour ?? (f.active ? c : offInk(f, ink.text)), ink, "middle", 800);
   if (sub) b += text(72, vy + 20, fit(sub, 13.5, 126, 600), { size: 13.5, weight: 600, fill: f.active ? c : ink.dim, anchor: "middle" });
   let defs = grad("bg", P.panel2, 1, P.bg, 1);
   if (hasGraph) {
@@ -309,15 +320,15 @@ function solid(f: Face, o: LookOpts): string {
   const ink: Ink = lit ? { ...DARK, text: P.bg, dim: P.panel2, muted: P.panel2, line: P.bg, badge: P.bg } : DARK;
   let defs = lit ? grad("fill", c, 1, c, 0.72, 1, 1) : grad("fill", P.panel2, 1, P.bg, 1);
   let b = `<rect width="144" height="144" rx="0" fill="url(#fill)"/>`;
-  b += lit ? `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${X.white}" stroke-opacity="0.35" stroke-width="2"/>` : frame(DARK, P.line);
+  b += lit ? `<rect x="3" y="3" width="138" height="138" rx="20" fill="none" stroke="${X.white}" stroke-opacity="0.35" stroke-width="2"/>` : frame(DARK, offInk(f, P.line));
   if (i.icon) {
-    b += `<circle cx="36" cy="36" r="23" fill="${lit ? P.bg : P.panel}" fill-opacity="${lit ? 0.16 : 1}" stroke="${lit ? P.bg : P.line}" stroke-opacity="${lit ? 0.25 : 1}" stroke-width="1.5"/>`;
-    b += icon(f.icon, 22, 22, 28, lit ? P.bg : f.online ? P.dim : P.crit, 2);
+    b += `<circle cx="36" cy="36" r="23" fill="${lit ? P.bg : P.panel}" fill-opacity="${lit ? 0.16 : 1}" stroke="${lit ? P.bg : offInk(f, P.line)}" stroke-opacity="${lit ? 0.25 : 1}" stroke-width="1.5"/>`;
+    b += icon(f.icon, 22, 22, 28, lit ? P.bg : f.online ? offInk(f, P.dim) : P.crit, 2);
   }
   const sub = subline(f, i);
   let y = 86;
   if (i.state) {
-    b += value(f, 14, sub ? 82 : 88, 120, [30, 26, 22, 18], lit ? P.bg : f.stateColour ?? P.dim, ink, "start", 800);
+    b += value(f, 14, sub ? 82 : 88, 120, [30, 26, 22, 18], lit ? P.bg : f.stateColour ?? offInk(f, P.dim), ink, "start", 800);
     y = sub ? 82 : 88;
   }
   if (sub) b += text(14, y + 17, fit(sub, 13, 120, 650), { size: 13, weight: 650, fill: lit ? P.panel2 : f.active ? c : P.muted });
@@ -344,18 +355,18 @@ function neon(f: Face, o: LookOpts): string {
     b += `<rect x="7" y="7" width="130" height="130" rx="22" fill="none" stroke="${c}" stroke-opacity="0.10" stroke-width="12"/>`;
     b += `<rect x="7" y="7" width="130" height="130" rx="22" fill="none" stroke="${c}" stroke-opacity="0.22" stroke-width="6"/>`;
     b += `<rect x="7" y="7" width="130" height="130" rx="22" fill="none" stroke="${c}" stroke-width="2.4"/>`;
-  } else b += `<rect x="7" y="7" width="130" height="130" rx="22" fill="none" stroke="${f.online ? P.muted : P.crit}" stroke-opacity="${f.online ? 0.55 : 0.8}" stroke-width="1.6" stroke-dasharray="${f.online ? "0" : "6 5"}"/>`;
+  } else b += `<rect x="7" y="7" width="130" height="130" rx="22" fill="none" stroke="${f.online ? offInk(f, P.muted) : P.crit}" stroke-opacity="${f.online ? 0.55 : 0.8}" stroke-width="1.6" stroke-dasharray="${f.online ? "0" : "6 5"}"/>`;
   const texts = (i.state ? 1 : 0) + (i.name ? 1 : 0);
   const sz = texts ? 34 : 56;
   const cy = texts ? 42 : 72;
   if (i.icon) {
     if (lit) b += icon(f.icon, 72 - sz / 2, cy - sz / 2, sz, c, 5.5).replace('stroke-width="5.5"', 'stroke-width="5.5" stroke-opacity="0.18"');
-    b += icon(f.icon, 72 - sz / 2, cy - sz / 2, sz, lit ? c : P.muted, 1.9);
+    b += icon(f.icon, 72 - sz / 2, cy - sz / 2, sz, lit ? c : offInk(f, P.muted), 1.9);
   }
   let y = i.icon ? 84 : 66;
   if (i.state) {
     if (lit) b += value(f, 72, y, 116, [26, 22, 18, 15], c, ink, "middle").replace(/fill="([^"]+)"/, 'fill="$1" fill-opacity="0.25" stroke="' + c + '" stroke-opacity="0.25" stroke-width="3"');
-    b += value(f, 72, y, 116, [26, 22, 18, 15], f.stateColour ?? (lit ? c : P.dim), ink, "middle");
+    b += value(f, 72, y, 116, [26, 22, 18, 15], f.stateColour ?? (lit ? c : offInk(f, P.dim)), ink, "middle");
     y += 18;
   }
   const sub = subline(f, i);
@@ -382,7 +393,7 @@ function ring(f: Face, o: LookOpts): string {
   const named = (i.name && f.name) || (i.room && f.room);
   const cx = 72, cy = named ? 60 : 72, r = named ? 40 : 52;
   let b = rect(0, 0, 144, 144, 0, "url(#bg)") + frame(ink, P.line);
-  b += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${P.line}" stroke-width="8"/>`;
+  b += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${offInk(f, P.line)}"${offLit(f) ? ' stroke-opacity="0.45"' : ""} stroke-width="8"/>`;
   const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : lit ? 1 : 0;
   if (f.online && lv > 0) b += lv >= 1 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${c}" stroke-width="8"/>`
     : `<path d="${arcPath(cx, cy, r, 0, 360 * lv)}" fill="none" stroke="${c}" stroke-width="8" stroke-linecap="round"/>`;
@@ -390,10 +401,10 @@ function ring(f: Face, o: LookOpts): string {
   const st = i.state;
   if (i.icon) {
     const s = st ? 22 : 38;
-    b += icon(f.icon, cx - s / 2, st ? cy - 30 : cy - s / 2, s, lit ? c : P.dim, 2);
+    b += icon(f.icon, cx - s / 2, st ? cy - 30 : cy - s / 2, s, lit ? c : offInk(f, P.dim), 2);
   }
   if (st) {
-    b += value(f, cx, i.icon ? cy + 10 : cy + 7, r * 1.55, named ? [24, 20, 16, 13] : [30, 26, 20, 16], f.stateColour ?? (lit ? P.text : P.dim), ink, "middle");
+    b += value(f, cx, i.icon ? cy + 10 : cy + 7, r * 1.55, named ? [24, 20, 16, 13] : [30, 26, 20, 16], f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), ink, "middle");
     const sub = i.detail && f.online ? f.detail : "";
     if (sub) b += text(cx, cy + (i.icon ? 25 : 24), fit(sub, 10.5, r * 1.45, 600), { size: 10.5, weight: 600, fill: lit ? c : P.muted, anchor: "middle" });
   }
@@ -412,9 +423,10 @@ function split(f: Face, o: LookOpts): string {
   const band = i.name || i.room ? 66 : 144;
   let b = rect(0, 0, 144, 144, 0, P.bg);
   b += band >= 144 ? rect(0, 0, 144, 144, 0, lit ? "url(#band)" : P.panel2)
-    : `<path d="M 0 0 H 144 V ${band} H 0 Z" fill="${lit ? "url(#band)" : P.panel2}"/>` + `<path d="M 0 ${band} H 144" stroke="${lit ? c : P.line}" stroke-width="2"/>`;
-  const on = lit ? P.bg : P.dim;
-  if (i.icon) b += icon(f.icon, 13, band >= 144 ? 14 : 14, band >= 144 ? 34 : 30, lit ? P.bg : f.online ? P.dim : P.crit, 2);
+    : `<path d="M 0 0 H 144 V ${band} H 0 Z" fill="${lit ? "url(#band)" : P.panel2}"/>` + `<path d="M 0 ${band} H 144" stroke="${lit ? c : offInk(f, P.line)}" stroke-width="2"/>`;
+  if (offLit(f)) b += band >= 144 ? rect(0, 0, 144, 144, 0, f.offAccent!, 'fill-opacity="0.14"') : `<path d="M 0 0 H 144 V ${band} H 0 Z" fill="${f.offAccent}" fill-opacity="0.14"/>`;
+  const on = lit ? P.bg : offInk(f, P.dim);
+  if (i.icon) b += icon(f.icon, 13, band >= 144 ? 14 : 14, band >= 144 ? 34 : 30, lit ? P.bg : f.online ? offInk(f, P.dim) : P.crit, 2);
   if (i.state) {
     const ink: Ink = lit ? { ...DARK, dim: P.panel2, crit: P.bg } : DARK;
     b += value(f, 131, band >= 144 ? 96 : 56, i.icon ? 80 : 118, band >= 144 ? [40, 32, 26, 20] : [24, 20, 16, 13], f.stateColour && !lit ? f.stateColour : on, ink, "end", 800);
@@ -432,7 +444,7 @@ function split(f: Face, o: LookOpts): string {
       defs += g.defs;
     }
   } else if (sub) b += text(131, 118, fit(sub, 13, 118, 600), { size: 13, weight: 600, fill: lit ? P.panel2 : P.muted, anchor: "end" });
-  b += frame(ink, lit ? c : P.line, lit ? 0.5 : 1);
+  b += frame(ink, lit ? c : offInk(f, P.line), lit || offLit(f) ? 0.5 : 1);
   b += badges(f, i, lit && band >= 144 ? { ...DARK, badge: P.bg } : DARK, band >= 144 ? 13 : 13, lit);
   return doc(b, defs);
 }
@@ -441,15 +453,16 @@ function split(f: Face, o: LookOpts): string {
 function glass(f: Face, o: LookOpts): string {
   const i = o.info, ink = DARK, c = f.online ? f.accent : P.crit;
   const lit = f.active && f.online;
-  let defs = `<radialGradient id="orb" cx="0.3" cy="0.3" r="0.8"><stop offset="0" stop-color="${c}" stop-opacity="${lit ? 0.75 : 0.18}"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></radialGradient>`
+  const oc = lit ? c : offInk(f, c);
+  let defs = `<radialGradient id="orb" cx="0.3" cy="0.3" r="0.8"><stop offset="0" stop-color="${oc}" stop-opacity="${lit ? 0.75 : offLit(f) ? 0.4 : 0.18}"/><stop offset="1" stop-color="${oc}" stop-opacity="0"/></radialGradient>`
     + grad("sheen", X.white, 0.16, X.white, 0) + grad("bg", P.panel2, 1, X.night, 1, 1, 1);
   let b = rect(0, 0, 144, 144, 0, "url(#bg)");
   b += `<circle cx="40" cy="40" r="70" fill="url(#orb)"/>`;
   b += rect(8, 8, 128, 128, 22, X.white, `fill-opacity="${lit ? 0.07 : 0.04}" stroke="${X.white}" stroke-opacity="${lit ? 0.3 : 0.14}" stroke-width="1.4"`);
   b += `<path d="M 30 8 H 114 A 22 22 0 0 1 136 30 V 52 C 96 40 52 44 8 60 V 30 A 22 22 0 0 1 30 8 Z" fill="url(#sheen)"/>`;
-  if (i.icon) b += icon(f.icon, 20, 20, 30, lit ? X.white : f.online ? P.dim : P.crit, 2);
+  if (i.icon) b += icon(f.icon, 20, 20, 30, lit ? X.white : f.online ? offInk(f, P.dim) : P.crit, 2);
   const sub = subline(f, i);
-  if (i.state) b += value(f, 128, 58, i.icon ? 70 : 110, [26, 22, 18, 14], f.stateColour ?? (lit ? X.white : P.dim), ink, "end", 750);
+  if (i.state) b += value(f, 128, 58, i.icon ? 70 : 110, [26, 22, 18, 14], f.stateColour ?? (lit ? X.white : offInk(f, P.dim)), ink, "end", 750);
   if (sub) b += text(128, 74, fit(sub, 12, 108, 600), { size: 12, weight: 600, fill: lit ? c : P.muted, anchor: "end" });
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
     const g = graph(f, i, 20, 80, 104, 14, lit ? c : P.muted, ink, "g");
@@ -465,8 +478,8 @@ function glass(f: Face, o: LookOpts): string {
 function label(f: Face, o: LookOpts): string {
   const i = o.info, ink = DARK, c = f.online ? f.accent : P.crit;
   const lit = f.active && f.online;
-  let b = rect(0, 0, 144, 144, 0, P.bg) + frame(ink, lit ? c : P.line, lit ? 0.6 : 1);
-  if (i.icon) b += icon(f.icon, 14, 14, 20, lit ? c : P.dim, 2.1);
+  let b = rect(0, 0, 144, 144, 0, P.bg) + frame(ink, lit ? c : offInk(f, P.line), lit || offLit(f) ? 0.6 : 1);
+  if (i.icon) b += icon(f.icon, 14, 14, 20, lit ? c : offInk(f, P.dim), 2.1);
   const words = i.name && f.name ? f.name : i.room && f.room ? f.room : i.state ? stateText(f) : "";
   const nl = nameLines(words, o.fit === "cut" ? "cut" : "fit", 25, 124, 800, 3);
   const lines = nl.lines.length > 2 ? nl.lines.slice(0, 2) : nl.lines;
@@ -476,12 +489,12 @@ function label(f: Face, o: LookOpts): string {
     y += nl.size * 1.08;
   }
   const lv = i.graph && f.level !== null ? Math.max(0, Math.min(1, f.level)) : lit ? 1 : 0;
-  b += rect(36, 102, 72, 5, 2.5, P.line);
+  b += rect(36, 102, 72, 5, 2.5, offInk(f, P.line), offLit(f) ? 'fill-opacity="0.5"' : "");
   if (lv > 0 && f.online) b += rect(36, 102, Math.max(5, 72 * lv), 5, 2.5, c);
   const sub = subline(f, i);
   if (i.state) {
     const st = stateText(f) + (f.unit && f.online ? " " + f.unit : "");
-    b += text(72, sub ? 122 : 127, fit(st, 13, 124, 700), { size: 13, weight: 700, fill: !f.online ? P.crit : f.stateColour ?? (lit ? c : P.muted), anchor: "middle" });
+    b += text(72, sub ? 122 : 127, fit(st, 13, 124, 700), { size: 13, weight: 700, fill: !f.online ? P.crit : f.stateColour ?? (lit ? c : offInk(f, P.muted)), anchor: "middle" });
     if (sub) b += text(72, 137, fit(sub, 11, 124, 600), { size: 11, weight: 600, fill: P.muted, anchor: "middle" });
   } else if (sub) b += text(72, 127, fit(sub, 12.5, 124, 600), { size: 12.5, weight: 600, fill: P.muted, anchor: "middle" });
   b += badges(f, i, ink);
@@ -492,7 +505,7 @@ function label(f: Face, o: LookOpts): string {
 function dot(f: Face, o: LookOpts): string {
   const i = o.info, ink = DARK, c = f.accent;
   const lit = f.active && f.online;
-  const lamp = !f.online ? P.crit : f.stateColour ?? (lit ? c : P.muted);
+  const lamp = !f.online ? P.crit : f.stateColour ?? (lit ? c : offInk(f, P.muted));
   let b = rect(0, 0, 144, 144, 0, P.panel) + frame(ink, P.line, 1, 1.5, 18);
   if (lit || !f.online) b += `<circle cx="25" cy="27" r="14" fill="${lamp}" fill-opacity="0.18"/>`;
   b += lit || !f.online || f.stateColour ? `<circle cx="25" cy="27" r="8" fill="${lamp}"/>` : `<circle cx="25" cy="27" r="7" fill="none" stroke="${lamp}" stroke-width="2.4"/>`;
@@ -501,7 +514,7 @@ function dot(f: Face, o: LookOpts): string {
   const det = i.detail && f.online ? f.detail : "", md = i.mode && f.online ? f.mode : "";
   if (det) b += text(42, 53, fit(det, 12.5, i.icon ? 56 : 88, 600), { size: 12.5, weight: 600, fill: lit ? c : P.muted });
   if (md) b += text(42, det ? 68 : 53, fit(md, 11.5, i.icon ? 56 : 88, 700), { size: 11.5, weight: 700, fill: P.dim });
-  if (i.icon) b += icon(f.icon, 100, 44, 30, lit ? c : P.muted, 1.9);
+  if (i.icon) b += icon(f.icon, 100, 44, 30, lit ? c : offInk(f, P.muted), 1.9);
   let defs = "";
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
     const g = graph(f, i, 14, md && det ? 74 : 70, 76, md && det ? 12 : 14, lamp, ink, "g");
@@ -519,10 +532,10 @@ function light(f: Face, o: LookOpts): string {
   const lit = f.active && f.online;
   let defs = grad("bg", X.white, 1, X.paper2, 1) + (lit ? grad("glow", c, 0.3, c, 0) : "");
   let b = rect(0, 0, 144, 144, 0, "url(#bg)") + (lit ? `<rect width="144" height="72" fill="url(#glow)"/>` : "");
-  b += frame(ink, lit ? c : X.paperLine, 1, 2);
+  b += frame(ink, lit ? c : offInk(f, X.paperLine), 1, 2);
   if (i.icon) {
-    b += rect(14, 14, 44, 44, 13, lit ? c : X.white, `fill-opacity="${lit ? 0.2 : 1}" stroke="${lit ? c : X.paperLine}" stroke-width="1.5"`);
-    b += icon(f.icon, 22, 22, 28, lit ? X.ink : f.online ? X.inkDim : X.inkCrit, 2);
+    b += rect(14, 14, 44, 44, 13, lit ? c : offInk(f, X.white), `fill-opacity="${lit ? 0.2 : offLit(f) ? 0.12 : 1}" stroke="${lit ? c : offInk(f, X.paperLine)}" stroke-width="1.5"`);
+    b += icon(f.icon, 22, 22, 28, lit ? X.ink : f.online ? offInk(f, X.inkDim) : X.inkCrit, 2);
   }
   const sub = subline(f, i);
   if (i.state) b += value(f, 14, sub ? 82 : 88, 118, [28, 24, 20, 16], f.stateColour ? f.stateColour : lit ? X.ink : X.inkDim, ink, "start", 800);
@@ -543,13 +556,13 @@ function contrast(f: Face, o: LookOpts): string {
   const lit = f.active && f.online;
   const ink: Ink = lit ? { ...HC, bg: X.white, text: X.black, dim: X.black, muted: X.black, line: X.black, badge: X.white, crit: P.bg } : HC;
   let b = rect(0, 0, 144, 144, 0, lit ? X.white : X.black);
-  b += `<rect x="4" y="4" width="136" height="136" rx="16" fill="none" stroke="${!f.online ? X.hcRed : lit ? X.black : X.white}" stroke-width="5"${f.online ? "" : ' stroke-dasharray="10 6"'}/>`;
-  if (i.icon) b += icon(f.icon, 16, 16, 34, lit ? X.black : X.white, 2.8);
+  b += `<rect x="4" y="4" width="136" height="136" rx="16" fill="none" stroke="${!f.online ? X.hcRed : lit ? X.black : offInk(f, X.white)}" stroke-width="5"${f.online ? "" : ' stroke-dasharray="10 6"'}/>`;
+  if (i.icon) b += icon(f.icon, 16, 16, 34, lit ? X.black : offInk(f, X.white), 2.8);
   const sub = subline(f, i);
   if (i.state) {
     const t = stateText(f).toUpperCase();
     const vf = fitSize(t + (f.unit && f.online ? " " + f.unit : ""), [30, 26, 22, 18, 15], 116, 900);
-    b += text(16, sub ? 86 : 92, vf.text, { size: vf.size, weight: 900, fill: !f.online ? X.hcRed : lit ? X.black : f.stateColour ? X.hcYellow : X.white });
+    b += text(16, sub ? 86 : 92, vf.text, { size: vf.size, weight: 900, fill: !f.online ? X.hcRed : lit ? X.black : f.stateColour ? X.hcYellow : offInk(f, X.white) });
   }
   if (sub) b += text(16, 104, fit(sub, 13.5, 114, 800), { size: 13.5, weight: 800, fill: lit ? X.black : X.hcYellow });
   if (i.graph && (f.series.length >= 2 || f.level !== null)) {
@@ -658,19 +671,19 @@ function huge(f: Face, o: LookOpts): string {
   if (lit) b += `<rect width="144" height="144" fill="url(#glow)"/>`;
   const cap = caption(f, o, 72, 134, 124, 14, lit ? P.text : P.dim);
   const tg = tag(f, i);
-  if (iconAlone(f, o)) b += icon(f.icon, 32, 32, 80, lit ? c : P.muted, 2);
-  else if (i.icon) b += icon(f.icon, 14, 14, 22, lit ? c : f.online ? P.muted : P.crit, 2.2);
+  if (iconAlone(f, o)) b += icon(f.icon, 32, 32, 80, lit ? c : offInk(f, P.muted), 2);
+  else if (i.icon) b += icon(f.icon, 14, 14, 22, lit ? c : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const lv = levelOf(f, i);
   if (i.graph && f.online && f.series.length >= 2) {
     const g = graph(f, { ...i, scale: false }, -2, 58, 148, 56, glow, ink, "g");
     b += `<g opacity="${lit ? 0.5 : 0.32}">${g.body}</g>`;
     defs += g.defs;
-  } else if (lv !== null) b += rect(0, 140, 144, 4, 0, P.line) + rect(0, 140, Math.max(4, 144 * lv), 4, 0, lit ? c : P.muted);
+  } else if (lv !== null) b += rect(0, 140, 144, 4, 0, P.line) + rect(0, 140, Math.max(4, 144 * lv), 4, 0, lit ? c : offInk(f, P.muted));
   const bottom = (cap ? 114 : 136) - (tg ? 18 : 0);
   const big = bigWords(f, i, [80, 72, 64, 56, 48, 42, 36, 30, 26], 130);
   const top = i.icon ? 40 : 12;
   const vy = (top + bottom) / 2 + big.size * 0.36;
-  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? c : P.dim), lit ? P.text : P.muted, "middle");
+  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? c : offInk(f, P.dim)), lit ? P.text : P.muted, "middle");
   if (tg) b += tagText(72, bottom + 14, tg, 128, 14, lit ? c : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink);
@@ -684,7 +697,7 @@ function pill(f: Face, o: LookOpts): string {
   const base = lit && f.stateColour ? f.stateColour : c;
   const defs = grad("bg", P.panel2, 1, P.bg, 1) + grad("pill", base, 1, base, 0.8, 1, 1) + grad("sheen", X.white, 0.34, X.white, 0);
   let b = rect(0, 0, 144, 144, 0, "url(#bg)");
-  if (iconAlone(f, o)) return doc(b + icon(f.icon, 36, 36, 72, lit ? c : P.muted, 2) + badges(f, i, ink, 12, true), defs);
+  if (iconAlone(f, o)) return doc(b + icon(f.icon, 36, 36, 72, lit ? c : offInk(f, P.muted), 2) + badges(f, i, ink, 12, true), defs);
   const cap = caption(f, o, 72, 134, 124, 14, P.dim);
   const tg = tag(f, i);
   const lv = levelOf(f, i);
@@ -698,14 +711,14 @@ function pill(f: Face, o: LookOpts): string {
   const is = big.size ? (tight ? 24 : 30) : 44;
   const top = 10 + Math.max(0, (room - iconH - pillH - below) / 2);
   const py = top + iconH;
-  if (i.icon) b += icon(f.icon, 72 - is / 2, big.size ? py - is - 6 : top + 4, is, lit ? c : f.online ? P.dim : P.crit, 2.2);
+  if (i.icon) b += icon(f.icon, 72 - is / 2, big.size ? py - is - 6 : top + 4, is, lit ? c : f.online ? offInk(f, P.dim) : P.crit, 2.2);
   if (big.size) {
     if (lit) {
       b += `<rect x="10" y="${n(py + 4)}" width="124" height="${ph}" rx="${ph / 2}" fill="${base}" fill-opacity="0.25"/>`;
       b += `<rect x="10" y="${n(py)}" width="124" height="${ph}" rx="${ph / 2}" fill="url(#pill)"/>`;
       b += `<rect x="20" y="${n(py + 3)}" width="104" height="${ph / 2 - 4}" rx="${(ph / 2 - 4) / 2}" fill="url(#sheen)"/>`;
-    } else b += `<rect x="11" y="${n(py + 1)}" width="122" height="${ph - 2}" rx="${(ph - 2) / 2}" fill="${P.panel}" stroke="${f.online ? P.line : P.crit}" stroke-width="2.5"${f.online ? "" : ' stroke-dasharray="7 5"'}/>`;
-    b += drawBig(big, f, 72, py + ph / 2 + big.size * 0.35, lit ? P.bg : f.stateColour ?? P.dim, lit ? P.panel2 : P.muted, "middle", "", -0.4);
+    } else b += `<rect x="11" y="${n(py + 1)}" width="122" height="${ph - 2}" rx="${(ph - 2) / 2}" fill="${P.panel}" stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="2.5"${f.online ? "" : ' stroke-dasharray="7 5"'}/>`;
+    b += drawBig(big, f, 72, py + ph / 2 + big.size * 0.35, lit ? P.bg : f.stateColour ?? offInk(f, P.dim), lit ? P.panel2 : P.muted, "middle", "", -0.4);
   }
   const y = py + pillH;
   if (tg) b += tagText(72, y + 19, tg, 124, 13, lit ? c : P.dim, "middle");
@@ -735,7 +748,7 @@ function orb(f: Face, o: LookOpts): string {
     + grad("spec", X.white, 0.55, X.white, 0);
   let b = rect(0, 0, 144, 144, 0, X.night);
   if (lit) b += `<circle cx="72" cy="${n(cy)}" r="${n(r * 1.75)}" fill="url(#halo)"/>`;
-  b += `<circle cx="72" cy="${n(cy)}" r="${n(r)}" fill="url(#ball)"${lit ? "" : ` stroke="${f.online ? P.line : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="5 4"'}`}/>`;
+  b += `<circle cx="72" cy="${n(cy)}" r="${n(r)}" fill="url(#ball)"${lit ? "" : ` stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="2"${f.online ? "" : ' stroke-dasharray="5 4"'}`}/>`;
   b += `<ellipse cx="${n(72 - r * 0.22)}" cy="${n(cy - r * 0.55)}" rx="${n(r * 0.5)}" ry="${n(r * 0.26)}" fill="url(#spec)"${lit ? "" : ' opacity="0.35"'}/>`;
   if (lv !== null) {
     b += `<circle cx="72" cy="${n(cy)}" r="${n(r + ringR)}" fill="none" stroke="${P.line}" stroke-width="3.5"/>`;
@@ -743,7 +756,7 @@ function orb(f: Face, o: LookOpts): string {
   }
   if (i.icon) {
     const s = r * 1.05;
-    b += icon(f.icon, 72 - s / 2, cy - s / 2, s, lit ? P.bg : f.online ? P.muted : P.crit, 2.3);
+    b += icon(f.icon, 72 - s / 2, cy - s / 2, s, lit ? P.bg : f.online ? offInk(f, P.muted) : P.crit, 2.3);
   }
   let y = cy + r + ringR;
   if (big.size) {
@@ -765,8 +778,8 @@ function tile(f: Face, o: LookOpts): string {
   let b = rect(0, 0, 144, 144, 0, P.bg);
   const dash = f.online ? "" : ' stroke-dasharray="6 4"';
   if (iconAlone(f, o)) {
-    b += lit ? rect(28, 28, 88, 88, 26, "url(#tile)") : rect(28, 28, 88, 88, 26, P.panel2, `stroke="${f.online ? P.line : P.crit}" stroke-width="2"${dash}`);
-    b += icon(f.icon, 44, 44, 56, lit ? P.bg : f.online ? P.dim : P.crit, 2.2);
+    b += lit ? rect(28, 28, 88, 88, 26, "url(#tile)") : rect(28, 28, 88, 88, 26, P.panel2, `stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="2"${dash}`);
+    b += icon(f.icon, 44, 44, 56, lit ? P.bg : f.online ? offInk(f, P.dim) : P.crit, 2.2);
     return doc(b + badges(f, i, ink, 12, true), defs);
   }
   const cap = caption(f, o, 14, 134, 118, 14, P.dim, "start");
@@ -776,9 +789,9 @@ function tile(f: Face, o: LookOpts): string {
   const t = cap && tg ? 54 : cap || tg ? 62 : 68;
   if (i.icon) {
     b += lit ? rect(14, 12, t, t, t * 0.29, "url(#tile)") + rect(19, 14, t - 10, t * 0.4, t * 0.2, "url(#sheen)")
-      : rect(14, 12, t, t, t * 0.29, P.panel2, `stroke="${f.online ? P.line : P.crit}" stroke-width="2"${dash}`);
+      : rect(14, 12, t, t, t * 0.29, P.panel2, `stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="2"${dash}`);
     const s = t * 0.58;
-    b += icon(f.icon, 14 + (t - s) / 2, 12 + (t - s) / 2, s, lit ? P.bg : f.online ? P.dim : P.crit, 2.3);
+    b += icon(f.icon, 14 + (t - s) / 2, 12 + (t - s) / 2, s, lit ? P.bg : f.online ? offInk(f, P.dim) : P.crit, 2.3);
   }
   if (lv !== null) {
     // the level: a slim upright bar beside the tile, or a bar across the top without one
@@ -808,16 +821,16 @@ function gauge(f: Face, o: LookOpts): string {
   const lv = levelOf(f, i) ?? (lit ? 1 : 0);
   if (f.online && lv > 0.005) {
     const end = a0 + (a1 - a0) * lv;
-    b += `<path d="${arcPath(cx, cy, r, a0, end)}" fill="none" stroke="${lit ? "url(#arc)" : P.muted}" stroke-width="12" stroke-linecap="round"/>`;
+    b += `<path d="${arcPath(cx, cy, r, a0, end)}" fill="none" stroke="${lit ? "url(#arc)" : offInk(f, P.muted)}" stroke-width="12" stroke-linecap="round"/>`;
     const rad = ((end - 90) * Math.PI) / 180;
     b += `<circle cx="${n(cx + r * Math.cos(rad))}" cy="${n(cy + r * Math.sin(rad))}" r="3.6" fill="${X.white}" fill-opacity="${lit ? 0.95 : 0.5}"/>`;
   }
   const tg = tag(f, i);
   const big = bigWords(f, i, [40, 36, 32, 28, 24, 20], 86);
-  if (!big.size && i.icon) b += icon(f.icon, cx - 22, cy - 22, 44, lit ? base : f.online ? P.muted : P.crit, 2.1);
+  if (!big.size && i.icon) b += icon(f.icon, cx - 22, cy - 22, 44, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.1);
   else {
-    if (i.icon) b += icon(f.icon, cx - 11, 36, 22, lit ? base : f.online ? P.muted : P.crit, 2.2);
-    b += drawBig(big, f, cx, i.icon ? 88 : 82, f.stateColour ?? (lit ? P.text : P.dim), P.muted, "middle");
+    if (i.icon) b += icon(f.icon, cx - 11, 36, 22, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.2);
+    b += drawBig(big, f, cx, i.icon ? 88 : 82, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
   }
   // the target and the mode in the gap under the arc, the name below them
   if (tg) b += tagText(cx, 125, tg, 120, 13, lit ? base : P.dim, "middle");
@@ -834,8 +847,8 @@ function bars(f: Face, o: LookOpts): string {
   const defs = grad("glow", base, 0, base, 0.18);
   let b = rect(0, 0, 144, 144, 0, P.bg);
   if (lit) b += `<rect width="144" height="144" fill="url(#glow)"/>`;
-  if (iconAlone(f, o)) return doc(b + icon(f.icon, 36, 36, 72, lit ? c : P.muted, 2) + badges(f, i, ink), defs);
-  if (i.icon) b += icon(f.icon, 13, 12, 22, lit ? c : f.online ? P.muted : P.crit, 2.2);
+  if (iconAlone(f, o)) return doc(b + icon(f.icon, 36, 36, 72, lit ? c : offInk(f, P.muted), 2) + badges(f, i, ink), defs);
+  if (i.icon) b += icon(f.icon, 13, 12, 22, lit ? c : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const cap = caption(f, o, 72, 136, 124, 13.5, P.dim);
   const foot = cap ? 118 : 132;
   // the bars: the recent values, else the level, else none
@@ -854,7 +867,7 @@ function bars(f: Face, o: LookOpts): string {
   const big = bigWords(f, i, has ? [48, 44, 38, 32, 26, 22] : [60, 54, 48, 42, 36, 30, 24], 124);
   const barH = has ? (tg ? 24 : 30) : 0;
   const vy = has ? foot - barH - (tg ? 30 : 12) : foot - (tg ? 30 : 22) + (cap ? 0 : -6);
-  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : P.dim), P.muted, "middle");
+  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
   if (tg) b += tagText(72, vy + 18, tg, 124, 13, lit ? c : P.dim, "middle");
   if (has) {
     const top = foot - barH, gap = cols.length > 6 ? 4 : 6;
@@ -863,11 +876,11 @@ function bars(f: Face, o: LookOpts): string {
       const h = 5 + (barH - 5) * col.h;
       const x = 14 + k * (w + gap);
       b += rect(x, top, w, barH, Math.min(4, w / 3), P.panel2);
-      if (col.on) b += rect(x, foot - h, w, h, Math.min(4, w / 3), lit || col.last ? base : P.muted, col.last || lv !== null || v.length < 2 ? "" : 'fill-opacity="0.55"');
+      if (col.on) b += rect(x, foot - h, w, h, Math.min(4, w / 3), lit || col.last ? base : offInk(f, P.muted), col.last || lv !== null || v.length < 2 ? "" : 'fill-opacity="0.55"');
     });
   } else if (!tg && big.size && f.online && i.graph) {
     // nothing to measure: one fat bar says on or off
-    b += rect(52, vy + 12, 40, 7, 3.5, lit ? base : P.line);
+    b += rect(52, vy + 12, 40, 7, 3.5, lit ? base : offInk(f, P.line));
   }
   b += cap;
   b += badges(f, i, ink, 11);
@@ -895,16 +908,16 @@ function wave(f: Face, o: LookOpts): string {
     // unlit, grey water - but a reading keeps its colour, dimmed: its value is never "off"
     const calm = f.kind === "reading" && f.stateColour ? f.stateColour : null;
     b += `<path d="${w(-4, 1)}" fill="${lit ? "url(#back)" : calm ?? P.panel2}"${!lit && calm ? ' fill-opacity="0.1"' : ""}/>`;
-    b += `<path d="${w(0, 0)}" fill="${lit ? "url(#water)" : calm ?? P.line}"${!lit && calm ? ' fill-opacity="0.2"' : ""}/>`;
+    b += `<path d="${w(0, 0)}" fill="${lit ? "url(#water)" : calm ?? offInk(f, P.line)}"${!lit && calm ? ' fill-opacity="0.2"' : !calm && offLit(f) ? ' fill-opacity="0.35"' : ""}/>`;
   }
   const cap = caption(f, o, 72, 134, 124, 14, lit ? X.white : P.dim, "middle", 700, lit ? 0.92 : undefined);
   const tg = tag(f, i);
-  if (iconAlone(f, o)) b += icon(f.icon, 36, 22, 72, lit ? X.white : P.muted, 2);
-  else if (i.icon) b += icon(f.icon, 14, 14, 24, lit && lv > 0.82 ? X.white : lit ? c : f.online ? P.muted : P.crit, 2.2);
+  if (iconAlone(f, o)) b += icon(f.icon, 36, 22, 72, lit ? X.white : offInk(f, P.muted), 2);
+  else if (i.icon) b += icon(f.icon, 14, 14, 24, lit && lv > 0.82 ? X.white : lit ? c : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 124);
   const vy = (tg ? 76 : 84) + (cap ? 0 : 6);
   if (big.size && lit) b += drawBig(big, f, 73.5, vy + 2, X.night, X.night, "middle", 'fill-opacity="0.3"');
-  b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? P.dim, lit ? X.white : P.muted, "middle");
+  b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? offInk(f, P.dim), lit ? X.white : P.muted, "middle");
   if (tg) b += tagText(72, vy + 21, tg, 124, 13.5, lit ? X.white : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink, 12, true);
@@ -917,18 +930,18 @@ function aurora(f: Face, o: LookOpts): string {
   const lit = f.active && f.online;
   const base = f.stateColour && lit ? f.stateColour : c;
   let defs = lit ? grad("sky", base, 1, companion(base), 1, 1, 1) : grad("sky", P.panel2, 1, X.night, 1, 1, 1);
-  defs += radial("a1", [[0, X.white, lit ? 0.4 : 0.06], [1, X.white, 0]]) + radial("a2", [[0, lit ? X.night : base, lit ? 0.42 : 0.24], [1, lit ? X.night : base, 0]]);
+  defs += radial("a1", [[0, X.white, lit ? 0.4 : 0.06], [1, X.white, 0]]) + radial("a2", [[0, lit ? X.night : offInk(f, base), lit ? 0.42 : 0.24], [1, lit ? X.night : offInk(f, base), 0]]);
   let b = rect(0, 0, 144, 144, 0, "url(#sky)");
   b += `<ellipse cx="26" cy="16" rx="92" ry="56" fill="url(#a1)"/><ellipse cx="130" cy="140" rx="96" ry="72" fill="url(#a2)"/>`;
   const cap = caption(f, o, 72, 132, 124, 14.5, lit ? X.white : P.dim, "middle", 700, lit ? 0.92 : undefined);
   const tg = tag(f, i);
-  if (iconAlone(f, o)) b += icon(f.icon, 36, 36, 72, lit ? X.white : P.muted, 2);
-  else if (i.icon) b += icon(f.icon, 14, 14, 26, lit ? X.white : f.online ? P.muted : P.crit, 2.2);
+  if (iconAlone(f, o)) b += icon(f.icon, 36, 36, 72, lit ? X.white : offInk(f, P.muted), 2);
+  else if (i.icon) b += icon(f.icon, 14, 14, 26, lit ? X.white : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const lv = levelOf(f, i);
   const spark = i.graph && f.online && f.series.length >= 2 && !tg;
   const big = bigWords(f, i, [54, 48, 42, 36, 30, 24], 126);
   const vy = (tg || spark ? 80 : 88) + (cap ? 0 : 8);
-  b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? P.dim, lit ? X.white : P.muted, "middle");
+  b += drawBig(big, f, 72, vy, lit ? X.white : f.stateColour ?? offInk(f, P.dim), lit ? X.white : P.muted, "middle");
   if (tg) b += tagText(72, vy + 20, tg, 124, 13.5, lit ? X.white : P.dim, "middle", lit ? 0.92 : undefined);
   if (spark) {
     const g = graph(f, { ...i, scale: false, target: false }, 24, 92, 96, 18, lit ? X.white : P.muted, lit ? { ...ink, bg: base } : ink, "g");
@@ -956,17 +969,17 @@ function outline(f: Face, o: LookOpts): string {
       b += `<rect ${box} fill="none" stroke="${base}" stroke-width="9" stroke-dasharray="${n(Math.max(1, per * lv))} ${n(per)}"/>`;
     } else b += `<rect ${box} fill="none" stroke="${base}" stroke-width="9"/>`;
   } else {
-    b += `<rect ${box} fill="none" stroke="${f.online ? P.line : P.crit}" stroke-width="3"${f.online ? "" : ' stroke-dasharray="8 6"'}/>`;
-    if (lv !== null && lv > 0) b += `<rect ${box} fill="none" stroke="${P.muted}" stroke-width="3" stroke-dasharray="${n(Math.max(1, per * lv))} ${n(per)}"/>`;
+    b += `<rect ${box} fill="none" stroke="${f.online ? offInk(f, P.line) : P.crit}" stroke-width="3"${f.online ? "" : ' stroke-dasharray="8 6"'}/>`;
+    if (lv !== null && lv > 0) b += `<rect ${box} fill="none" stroke="${offInk(f, P.muted)}" stroke-width="3" stroke-dasharray="${n(Math.max(1, per * lv))} ${n(per)}"/>`;
   }
   const cap = caption(f, o, 72, 118, 104, 14, lit ? P.text : P.dim);
   const tg = tag(f, i);
-  if (iconAlone(f, o)) b += icon(f.icon, 38, 38, 68, lit ? base : P.muted, 2);
-  else if (i.icon) b += icon(f.icon, 60, 22, 24, lit ? base : f.online ? P.muted : P.crit, 2.2);
+  if (iconAlone(f, o)) b += icon(f.icon, 38, 38, 68, lit ? base : offInk(f, P.muted), 2);
+  else if (i.icon) b += icon(f.icon, 60, 22, 24, lit ? base : f.online ? offInk(f, P.muted) : P.crit, 2.2);
   const big = bigWords(f, i, [46, 40, 34, 28, 24, 20], 106);
   const top = i.icon ? 48 : 20, bottom = (cap ? 100 : 124) - (tg ? 16 : 0);
   const vy = (top + bottom) / 2 + big.size * 0.36;
-  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : P.dim), P.muted, "middle");
+  b += drawBig(big, f, 72, vy, f.stateColour ?? (lit ? P.text : offInk(f, P.dim)), P.muted, "middle");
   if (tg) b += tagText(72, bottom + 12, tg, 104, 12.5, lit ? base : P.dim, "middle");
   b += cap;
   b += badges(f, i, ink, 13, true);
@@ -977,7 +990,7 @@ function outline(f: Face, o: LookOpts): string {
 function mono(f: Face, o: LookOpts): string {
   const i = o.info, ink = DARK;
   const lit = f.active && f.online;
-  const m = !f.online ? P.crit : f.stateColour ?? (lit ? f.accent : P.muted);
+  const m = !f.online ? P.crit : f.stateColour ?? (lit ? f.accent : offInk(f, P.muted));
   const defs = radial("tint", [[0, m, 0.3], [1, m, 0]], 0.5, 0.36, 0.6);
   let b = rect(0, 0, 144, 144, 0, X.night);
   if (lit) b += rect(0, 0, 144, 144, 0, m, 'fill-opacity="0.1"') + `<rect width="144" height="144" fill="url(#tint)"/>`;

@@ -5,7 +5,8 @@
  * that came from the server is put in with textContent, never as HTML.
  */
 import { ICONS, iconMarkup } from "../core/icons.js";
-import { ACCENTS, P } from "../core/palette.js";
+import { cleanHex, hexToHsv, hsvToHex, type Hsv } from "../core/colour.js";
+import { ACCENTS, colourOf, P } from "../core/palette.js";
 import { lookFor } from "../core/render.js";
 import { THEMES } from "../core/themes.js";
 
@@ -118,6 +119,8 @@ function onMessage(ev: MessageEvent): void {
     return;
   }
   if (m.event === "didReceiveSettings") {
+    // (1.3) while a colour is being dragged, this page's own settings are the newer ones
+    if (dragging) return;
     settings = ((m.payload?.settings as Settings) ?? {});
     render();
   } else if (m.event === "sendToPropertyInspector") {
@@ -135,6 +138,11 @@ function onMessage(ev: MessageEvent): void {
     } else if (p.t === "preview") {
       preview = typeof p.image === "string" && p.image.startsWith("data:image/svg+xml") ? p.image : "";
       looks = cleanLooks(p.looks);
+      // (1.3) mid-pick the page is not rebuilt (it would drop the pointer, or what is half typed): only the pictures change
+      if (picking()) {
+        patchPictures();
+        return;
+      }
     } else if (p.t === "connect") {
       busy = false;
       connectError = p.ok ? "" : String(p.error ?? "");
@@ -519,6 +527,7 @@ function picker(): HTMLElement {
       const img = h("img") as HTMLImageElement;
       img.src = preview;
       img.alt = "";
+      img.dataset.pic = "preview";
       card.append(h("div", "sep"), h("div", "preview", [img, h("div", "muted small", [lede])]));
     }
     return card;
@@ -693,10 +702,11 @@ function shown(key: string): boolean {
   return key === "showGraph" ? KIND !== "thermostat" : key !== "showScale";
 }
 
-function picture(src: string, cls: string): HTMLImageElement {
+function picture(src: string, cls: string, pic?: string): HTMLImageElement {
   const img = h("img", cls) as HTMLImageElement;
   img.src = src;
   img.alt = "";
+  if (pic) img.dataset.pic = pic;
   return img;
 }
 
@@ -708,37 +718,23 @@ function lookCard(): HTMLElement {
   // lit and unlit, side by side
   if (looks && looks.on && looks.off) {
     card.append(h("div", "pair", [
-      h("figure", "", [picture(looks.on, "big"), h("figcaption", "", [h("span", "dot ok"), looks.words[0]])]),
-      h("figure", "", [picture(looks.off, "big"), h("figcaption", "", [h("span", "dot"), looks.words[1]])]),
+      h("figure", "", [picture(looks.on, "big", "on"), h("figcaption", "", [h("span", "dot ok"), looks.words[0]])]),
+      h("figure", "", [picture(looks.off, "big", "off"), h("figcaption", "", [h("span", "dot"), looks.words[1]])]),
     ]));
   }
   // every look, drawn with the item as it is now
   const grid = h("div", "looks");
   for (const t of THEMES) {
     const pic = looks?.themes.find((x) => x.id === t.id)?.image;
-    const b = h("button", "look" + (t.id === theme ? " sel" : ""), [pic ? picture(pic, "") : h("div", "ph", [ic("hourglass", "sm")]), h("span", "", [t.name])]);
+    const b = h("button", "look" + (t.id === theme ? " sel" : ""), [pic ? picture(pic, "", "look:" + t.id) : h("div", "ph", [ic("hourglass", "sm")]), h("span", "", [t.name])]);
     b.type = "button";
     b.title = t.name + " - " + t.hint;
     b.addEventListener("click", () => saveSettings({ theme: t.id === "classic" ? undefined : t.id }));
     grid.append(b);
   }
   card.append(grid);
-  // the accent
-  const sw = h("div", "swatches");
-  const auto = h("button", "sw auto" + (!settings.accent ? " sel" : ""), [h("span", "", ["Auto"])]);
-  auto.type = "button";
-  auto.title = "Auto - the item's own colour";
-  auto.addEventListener("click", () => saveSettings({ accent: undefined }));
-  sw.append(auto);
-  for (const [id, a] of Object.entries(ACCENTS)) {
-    const b = h("button", "sw" + (settings.accent === id ? " sel" : ""));
-    b.type = "button";
-    b.title = a.name;
-    b.style.setProperty("--c", a.colour);
-    b.addEventListener("click", () => saveSettings({ accent: id }));
-    sw.append(b);
-  }
-  card.append(h("label", "f", ["Accent colour"]), sw);
+  // (1.3) the colours: On and Off, by name or the user's own
+  card.append(colourSection(it));
   // the label
   const lab = h("input", "in") as HTMLInputElement;
   lab.placeholder = it?.name ?? "The item's name";
@@ -773,6 +769,397 @@ function lookCard(): HTMLElement {
     card.append(h("p", "muted small", ["ZIGMon sends the graph ready from its own history and the key adds the live values; it is fetched again every few minutes."]));
   }
   return card;
+}
+
+// ------------------------------------------------------------------ (1.3) the colours
+
+type ColourTab = "on" | "off";
+const COLOUR_KEY: Record<ColourTab, "accent" | "accentOff"> = { on: "accent", off: "accentOff" };
+/** Which of the two colours is being chosen, and whether the picker of the user's own colour is open. */
+let colourTab: ColourTab = "on";
+let customOpen = false;
+/** The own-colour picker's colour (its hue kept through greys), and the colour it was taken from. */
+let hsv: Hsv = { h: 210, s: 0.62, v: 1 };
+let hsvFrom = "";
+/** A pointer is dragging in the picker: the page is not rebuilt meanwhile. */
+let dragging = false;
+let sendTimer: ReturnType<typeof setTimeout> | null = null;
+let lastSend = 0;
+const SEND_EVERY_MS = 120;
+/** The named colours as the grid shows them: round the colour wheel, the quiet ones last. */
+const SWATCH_ORDER = ["red", "coral", "orange", "peach", "amber", "gold", "yellow", "lime", "green", "mint", "teal", "cyan", "sky", "blue",
+  "indigo", "lavender", "purple", "magenta", "pink", "rose", "brown", "slate", "silver", "white"];
+
+/** Dragging, or working in the picker with the keys: the plugin's new pictures are patched in, the page left as it is. */
+function picking(): boolean {
+  const a = document.activeElement;
+  return dragging || (a instanceof HTMLElement && a.closest(".picker") !== null);
+}
+
+function colourSetting(tab: ColourTab): string | undefined {
+  const v = settings[COLOUR_KEY[tab]];
+  return typeof v === "string" ? v : undefined;
+}
+
+/** The colour Auto stands for: the item's own when on, the look's grey when off. */
+function autoColour(tab: ColourTab, it: PiItem | undefined): string {
+  if (tab === "off") return P.muted;
+  if (KIND === "dimmer") return P.warn;
+  if (KIND === "thermostat") return P.orange;
+  if (KIND === "blinds") return P.purple;
+  if (KIND === "reading") return P.water;
+  if (KIND === "status") return P.ok;
+  return it ? itemColour(it) : P.info;
+}
+
+/** What a setting is called: Auto, a colour's name, or the hex of the user's own. */
+function colourWords(v: string | undefined): [string, string] {
+  if (!v) return ["Auto", ""];
+  const named = Object.prototype.hasOwnProperty.call(ACCENTS, v) ? ACCENTS[v] : undefined;
+  if (named) return [named.name, named.colour];
+  const hex = cleanHex(v);
+  return hex ? ["Custom", hex] : ["Auto", ""];
+}
+
+/** A colour chosen: saved at once (a click), the page drawn again. */
+function chooseColour(tab: ColourTab, v: string | undefined): void {
+  if (v !== undefined && !colourOf(v)) return; // never send what the plugin would drop
+  if (sendTimer) {
+    clearTimeout(sendTimer);
+    sendTimer = null;
+  }
+  saveSettings({ [COLOUR_KEY[tab]]: v });
+}
+
+/** A colour being picked (dragged, typed, nudged): sent at most every SEND_EVERY_MS, the page patched in place. */
+function pickLive(tab: ColourTab, hex: string, from: "sv" | "hue" | "hex"): void {
+  const c = cleanHex(hex);
+  if (!c) return;
+  settings = { ...settings, [COLOUR_KEY[tab]]: c };
+  hsvFrom = c;
+  if (!sendTimer) {
+    sendTimer = setTimeout(() => {
+      sendTimer = null;
+      lastSend = Date.now();
+      sd({ event: "setSettings", context: ctx, payload: settings });
+    }, Math.max(0, SEND_EVERY_MS - (Date.now() - lastSend)));
+  }
+  paintColour(tab, from);
+}
+
+/** Sends what is waiting now (the drag ended). */
+function flushColour(): void {
+  if (!sendTimer) return;
+  clearTimeout(sendTimer);
+  sendTimer = null;
+  lastSend = Date.now();
+  sd({ event: "setSettings", context: ctx, payload: settings });
+}
+
+/** The pictures the plugin sent, put into the page as it is (no rebuild). */
+function patchPictures(): void {
+  const set = (k: string, src: string | undefined) => {
+    if (!src) return;
+    const img = document.querySelector<HTMLImageElement>(`img[data-pic="${k}"]`);
+    if (img && img.src !== src) img.src = src;
+  };
+  set("preview", preview);
+  set("on", looks?.on);
+  set("off", looks?.off);
+  for (const t of looks?.themes ?? []) set("look:" + t.id, t.image);
+}
+
+/** Brings the chip, the tab's dot, the swatches and the picker up to date with the colour now set. */
+function paintColour(tab: ColourTab, from?: "sv" | "hue" | "hex"): void {
+  const root = document.querySelector<HTMLElement>(".colours");
+  if (!root) return;
+  const it = items.find((i) => i.id === settings.item);
+  const v = colourSetting(tab);
+  const [word, hex] = colourWords(v);
+  const c = hex || autoColour(tab, it);
+  root.querySelector<HTMLElement>(`.seg [data-tab="${tab}"] .cdot`)?.style.setProperty("--c", c);
+  const chip = root.querySelector<HTMLElement>(".cchip");
+  if (chip) {
+    chip.style.setProperty("--c", c);
+    chip.classList.toggle("auto", !v);
+    const n = chip.querySelector(".cn"), x = chip.querySelector(".cx");
+    if (n) n.textContent = word;
+    if (x) x.textContent = v ? hex : tab === "on" ? "the item's own" : "the look's own";
+  }
+  const own = !!v && !!cleanHex(v);
+  root.querySelectorAll<HTMLElement>(".sw").forEach((b) => {
+    const sel = b.dataset.v === (v ?? "") || (b.dataset.v === "custom" && own);
+    b.classList.toggle("sel", sel);
+    b.setAttribute("aria-checked", String(sel));
+  });
+  const cust = root.querySelector<HTMLElement>(".sw.custom");
+  if (cust) {
+    cust.classList.toggle("set", own);
+    if (own) cust.style.setProperty("--c", hex);
+  }
+  const pk = root.querySelector<HTMLElement>(".picker");
+  if (!pk) return;
+  pk.style.setProperty("--hue", String(Math.round(hsv.h)));
+  pk.style.setProperty("--c", hsvToHex(hsv));
+  const svk = pk.querySelector<HTMLElement>(".sv .knob"), huek = pk.querySelector<HTMLElement>(".hue .knob");
+  if (svk) {
+    svk.style.left = (hsv.s * 100).toFixed(2) + "%";
+    svk.style.top = ((1 - hsv.v) * 100).toFixed(2) + "%";
+  }
+  if (huek) huek.style.left = ((hsv.h / 360) * 100).toFixed(2) + "%";
+  const sv = pk.querySelector<HTMLElement>(".sv"), hue = pk.querySelector<HTMLElement>(".hue");
+  sv?.setAttribute("aria-valuetext", `saturation ${Math.round(hsv.s * 100)} %, brightness ${Math.round(hsv.v * 100)} %`);
+  hue?.setAttribute("aria-valuenow", String(Math.round(hsv.h)));
+  const input = pk.querySelector<HTMLInputElement>("input.hex");
+  if (input && from !== "hex") {
+    input.value = hsvToHex(hsv);
+    input.classList.remove("bad");
+    pk.querySelector(".hexerr")?.classList.add("hidden");
+  }
+}
+
+/** Takes the picker's colour from the one set (or shown) now, unless it is already that colour. */
+function syncHsv(tab: ColourTab, it: PiItem | undefined): void {
+  const c = colourOf(colourSetting(tab)) ?? autoColour(tab, it);
+  if (c.toUpperCase() !== hsvFrom) {
+    hsv = hexToHsv(c, hsv.h);
+    hsvFrom = c.toUpperCase();
+  }
+}
+
+/** Arrow keys move between the swatches as in a grid; Home / End to the first and the last. */
+function swatchKeys(grid: HTMLElement, e: KeyboardEvent): void {
+  const all = Array.from(grid.querySelectorAll<HTMLElement>(".sw"));
+  const me = document.activeElement as HTMLElement;
+  const i = all.indexOf(me);
+  if (i < 0) return;
+  let to = -1;
+  if (e.key === "ArrowLeft") to = i - 1;
+  else if (e.key === "ArrowRight") to = i + 1;
+  else if (e.key === "Home") to = 0;
+  else if (e.key === "End") to = all.length - 1;
+  else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    // the nearest swatch in the row above / below
+    const mid = (b: HTMLElement) => b.offsetLeft + b.offsetWidth / 2;
+    const rows = [...new Set(all.map((b) => b.offsetTop))].sort((a, b) => a - b);
+    const r = rows.indexOf(me.offsetTop) + (e.key === "ArrowUp" ? -1 : 1);
+    if (r < 0 || r >= rows.length) return;
+    const row = all.filter((b) => b.offsetTop === rows[r]);
+    const best = row.reduce((a, b) => (Math.abs(mid(b) - mid(me)) < Math.abs(mid(a) - mid(me)) ? b : a));
+    to = all.indexOf(best);
+  } else return;
+  e.preventDefault();
+  all[Math.max(0, Math.min(all.length - 1, to))]!.focus();
+}
+
+/** A pointer-driven area: calls `at` with the pointer's place in it (0..1 across, 0..1 down) while pressed. */
+function dragArea(el: HTMLElement, at: (x: number, y: number) => void): void {
+  const place = (e: PointerEvent) => {
+    const r = el.getBoundingClientRect();
+    at(Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width))), Math.max(0, Math.min(1, (e.clientY - r.top) / Math.max(1, r.height))));
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.focus();
+    dragging = true;
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* not a real pointer (a test) */
+    }
+    place(e);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (dragging) place(e);
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    flushColour();
+    patchPictures();
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  el.addEventListener("lostpointercapture", end);
+}
+
+/** The picker of the user's own colour: a saturation / brightness square, a hue bar and the hex, all live. */
+function ownPicker(tab: ColourTab): HTMLElement {
+  const sv = h("div", "sv", [h("div", "knob")]);
+  sv.tabIndex = 0;
+  sv.dataset.key = "sv-" + tab;
+  sv.setAttribute("role", "slider");
+  sv.setAttribute("aria-label", "Saturation (left to right) and brightness (bottom to top) - arrow keys");
+  dragArea(sv, (x, y) => {
+    hsv = { ...hsv, s: x, v: 1 - y };
+    pickLive(tab, hsvToHex(hsv), "sv");
+  });
+  sv.addEventListener("keydown", (e) => {
+    const d = e.shiftKey ? 0.1 : 0.02;
+    const k: Record<string, [number, number]> = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, d], ArrowDown: [0, -d] };
+    const m = k[e.key];
+    if (!m) return;
+    e.preventDefault();
+    hsv = { ...hsv, s: Math.max(0, Math.min(1, hsv.s + m[0])), v: Math.max(0, Math.min(1, hsv.v + m[1])) };
+    pickLive(tab, hsvToHex(hsv), "sv");
+  });
+  const hue = h("div", "hue", [h("div", "knob")]);
+  hue.tabIndex = 0;
+  hue.dataset.key = "hue-" + tab;
+  hue.setAttribute("role", "slider");
+  hue.setAttribute("aria-label", "Hue");
+  hue.setAttribute("aria-valuemin", "0");
+  hue.setAttribute("aria-valuemax", "360");
+  dragArea(hue, (x) => {
+    hsv = { ...hsv, h: Math.min(359.9, x * 360) };
+    pickLive(tab, hsvToHex(hsv), "hue");
+  });
+  hue.addEventListener("keydown", (e) => {
+    const d = e.shiftKey ? 15 : 2;
+    const m = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -d : e.key === "ArrowRight" || e.key === "ArrowUp" ? d : 0;
+    if (!m) return;
+    e.preventDefault();
+    hsv = { ...hsv, h: (hsv.h + m + 360) % 360 };
+    pickLive(tab, hsvToHex(hsv), "hue");
+  });
+  const input = h("input", "in hex mono") as HTMLInputElement;
+  input.dataset.key = "hex-" + tab;
+  input.maxLength = 7;
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", "Colour as #RRGGBB");
+  input.value = hsvToHex(hsv);
+  const err = h("div", "hexerr err hidden", ["Six hex digits, like #3FB950"]);
+  input.addEventListener("input", () => {
+    const t = input.value.trim();
+    const c = cleanHex(t.startsWith("#") ? t : "#" + t);
+    // wrong as typed so far (a letter past F, too long), or complete and still not a colour
+    const bad = !c && (!/^#?[0-9a-fA-F]{0,6}$/.test(t) || t.replace("#", "").length >= 6);
+    input.classList.toggle("bad", bad);
+    input.classList.toggle("good", !!c);
+    err.classList.toggle("hidden", !bad);
+    if (!c) return;
+    hsv = hexToHsv(c, hsv.h);
+    pickLive(tab, c, "hex");
+  });
+  input.addEventListener("change", () => {
+    const t = input.value.trim();
+    const c = cleanHex(t.startsWith("#") ? t : "#" + t);
+    if (!c) {
+      input.classList.add("bad");
+      err.classList.remove("hidden");
+      return;
+    }
+    input.value = c;
+    flushColour();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.dispatchEvent(new Event("change"));
+  });
+  const done = btn("Done", "ghost", "check", () => {
+    customOpen = false;
+    flushColour();
+    render();
+  }, "done-" + tab);
+  const p = h("div", "picker", [sv, hue, h("div", "hexrow", [h("span", "now"), input, done]), err]);
+  return p;
+}
+
+function colourSection(it: PiItem | undefined): HTMLElement {
+  const tab = colourTab;
+  const v = colourSetting(tab);
+  const wrap = h("div", "colours");
+  // the two tabs, each with its colour now
+  const seg = h("div", "seg");
+  seg.setAttribute("role", "tablist");
+  seg.setAttribute("aria-label", "Which colour");
+  for (const [t, word] of [["on", "On colour"], ["off", "Off colour"]] as [ColourTab, string][]) {
+    const cv = colourSetting(t);
+    const b = h("button", t === tab ? "on" : "", [h("span", "cdot" + (cv ? "" : " auto")), word]);
+    b.type = "button";
+    b.dataset.tab = t;
+    b.dataset.key = "tab-" + t;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(t === tab));
+    (b.firstChild as HTMLElement).style.setProperty("--c", colourOf(cv) ?? autoColour(t, it));
+    b.addEventListener("click", () => {
+      if (colourTab === t) return;
+      colourTab = t;
+      customOpen = false;
+      render();
+    });
+    b.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      colourTab = colourTab === "on" ? "off" : "on";
+      customOpen = false;
+      render();
+    });
+    seg.append(b);
+  }
+  wrap.append(h("div", "chead", [h("label", "f", ["Colours"]), seg]));
+  // what is set now
+  const [word, hex] = colourWords(v);
+  const chip = h("div", "cchip" + (v ? "" : " auto"), [h("span", "sq"), h("span", "cn", [word]), h("span", "cx mono", [v ? hex : tab === "on" ? "the item's own" : "the look's own"])]);
+  chip.style.setProperty("--c", hex || autoColour(tab, it));
+  chip.setAttribute("aria-live", "polite");
+  // Auto, the named colours, the user's own
+  const grid = h("div", "sws");
+  grid.setAttribute("role", "radiogroup");
+  grid.setAttribute("aria-label", tab === "on" ? "On colour" : "Off colour");
+  const own = !!v && !!cleanHex(v);
+  const sw = (cls: string, val: string, title: string, colour: string | null, kids: (Node | string)[] = []) => {
+    const sel = val === "custom" ? own : (v ?? "") === val;
+    const b = h("button", "sw " + cls + (sel ? " sel" : ""), kids);
+    b.type = "button";
+    b.title = title;
+    b.dataset.v = val;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(sel));
+    b.setAttribute("aria-label", title);
+    if (colour) b.style.setProperty("--c", colour);
+    return b;
+  };
+  const auto = sw("auto", "", tab === "on" ? "Auto - the item's own colour" : "Auto - the look's own off style", autoColour(tab, it), [h("span", "", ["Auto"])]);
+  auto.addEventListener("click", () => {
+    customOpen = false;
+    chooseColour(tab, undefined);
+  });
+  grid.append(auto);
+  for (const id of [...SWATCH_ORDER.filter((x) => x in ACCENTS), ...Object.keys(ACCENTS).filter((x) => !SWATCH_ORDER.includes(x))]) {
+    const a = ACCENTS[id]!;
+    const b = sw("", id, a.name, a.colour);
+    b.addEventListener("click", () => {
+      customOpen = false;
+      chooseColour(tab, id);
+    });
+    grid.append(b);
+  }
+  const custom = sw("custom" + (own ? " set" : "") + (customOpen ? " open" : ""), "custom", own ? "Your own colour - " + hex : "Your own colour…", own ? hex : null, [ic("edit", "sm")]);
+  custom.setAttribute("aria-expanded", String(customOpen));
+  custom.addEventListener("click", () => {
+    customOpen = !customOpen;
+    if (customOpen) syncHsv(tab, it);
+    render();
+  });
+  grid.append(custom);
+  grid.addEventListener("keydown", (e) => swatchKeys(grid, e));
+  const panel = h("div", "cpanel", [chip, grid]);
+  panel.setAttribute("role", "tabpanel");
+  if (customOpen) {
+    syncHsv(tab, it);
+    panel.append(ownPicker(tab));
+  }
+  const noOnOff = KIND === "reading" || KIND === "scene" || KIND === "status";
+  panel.append(h("p", "muted small chint", [tab === "on"
+    ? "Lit, on, heating, open: the key in this colour."
+    : noOnOff
+      ? "This item is not on or off: the On colour is its colour, the Off colour tints what is drawn grey while it is idle."
+      : "Off: the border, icon and state in this colour, as each look draws them. Auto keeps the look's own grey."]));
+  wrap.append(panel);
+  queueMicrotask(() => paintColour(tab));
+  return wrap;
 }
 
 /** Hold to confirm, per key - on and locked where ZIGMon asks for it. */
