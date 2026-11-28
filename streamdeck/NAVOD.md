@@ -93,7 +93,9 @@ ukazuje dashboard:
   Comfort, Eco, Night, Max, Off, Plan, By hand - a když je teplota nastavená ručně,
   **By hand until 14:30** (do dalšího kroku plánu, nebo po dobu `manual_hold_s`);
 - **stisk** může nastavit jeden konkrétní režim (Comfort, Eco, Night, Max, Off, Plan nebo
-  By hand), nebo **Next mode** - dokola všemi režimy včetně Plan a By hand;
+  By hand), nebo **Next mode** - dokola všemi režimy včetně Plan a By hand; od 1.3 volbou
+  **Go round only these** jen vybranými (např. Comfort, Max, Off) v obvyklém pořadí - totéž
+  umí Next preset i klávesa Topení všude (i její ovladač);
 - **otočení ovladačem** nastaví místnost ručně přesně jako posuvník *Set … by hand* v
   dashboardu (stejnou cestou v ZIGMonu, platí i oprávnění *climate* a podržení);
 - volba **Show details (3 s)**: stisk na 3 sekundy ukáže kartu s režimem, cílovou a naměřenou

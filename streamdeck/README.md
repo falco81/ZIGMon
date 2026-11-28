@@ -104,6 +104,10 @@ you stop on, 1.2 s after the last press. Before, every mode on the way was set, 
 to Max passed through Off and shut the room's valves on the way. A key that needs a hold to
 confirm still sends each confirmed press.
 
+Since 1.3, **Go round only these** lets Next mode (and Next preset, and the heating-everywhere key)
+go round a chosen few - say Comfort, Max and Off - in their usual order; with none ticked it goes
+round all of them as before. The dial of the heating-everywhere key steps through the same few.
+
 ### Graphs (1.1)
 
 **Reading** and **Thermostat** draw a graph of **ZIGMon's own history** (what its History tab

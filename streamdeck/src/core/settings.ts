@@ -82,6 +82,8 @@ export interface ActionSettings {
   showTarget?: boolean;
   /** (1.1) Hold the key / dial 1.5 s before it acts, even where ZIGMon does not ask for it. */
   hold?: boolean;
+  /** (1.3) Next mode / Next preset goes round only these (a comma list of the item's own values); none = all. */
+  cycleOnly?: string;
   /** (1.2) "By hand", as ZIGMon's buttons have it: a press that leaves it on takes it over - rules and
    * schedules leave it alone - and one that leaves it off gives it back. */
   byHand?: boolean;
@@ -131,6 +133,17 @@ export const SPANS = [3600, 6 * 3600, 24 * 3600, 7 * 86400] as const;
 export const LABEL_MOST = 40;
 const SHOW = ["showIcon", "showName", "showState", "showDetail", "showMode", "showGraph", "showBattery", "showScale", "showTarget", "hold", "byHand"] as const;
 
+/** (1.3) The values Next mode / Next preset goes round: at most 16 distinct words of the item's own values. */
+export function cleanCycleOnly(v: unknown): string {
+  if (typeof v !== "string" || v.length > 400) return "";
+  const out: string[] = [];
+  for (const t of v.split(",")) {
+    const w = t.trim();
+    if (/^[A-Za-z0-9_+-]{1,24}$/.test(w) && !out.includes(w) && out.length < 16) out.push(w);
+  }
+  return out.join(",");
+}
+
 /** A label as the user typed it: no control or direction characters, spaces folded, at most LABEL_MOST characters. */
 export function cleanLabel(v: unknown): string {
   if (typeof v !== "string") return "";
@@ -151,6 +164,8 @@ export function normalizeAction(raw: unknown): ActionSettings {
   if (typeof o.press === "string" && PRESS.includes(o.press)) s.press = o.press;
   const step = finiteOrNull(o.step);
   if (step !== null && step > 0 && step <= 1000) s.step = step;
+  const only = cleanCycleOnly(o.cycleOnly);
+  if (only) s.cycleOnly = only;
   const label = cleanLabel(o.label);
   if (label) s.label = label;
   for (const k of ["warnBelow", "warnAbove", "critBelow", "critAbove"] as const) {

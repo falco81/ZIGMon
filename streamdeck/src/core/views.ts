@@ -147,6 +147,19 @@ export function formatNumber(v: number, decimals: number): string {
 /** (1.2) How long after the last "Next mode" press the mode it reached is sent. */
 export const CYCLE_SETTLE_MS = 1200;
 
+/** (1.3) The value after `cur` among `values`, going round only the chosen ones (a comma list) when some
+ * of them are the item's; all of them otherwise, as before. */
+export function nextInRing(values: readonly string[], cur: string, only?: string): string {
+  const chosen = (only ?? "").split(",").filter((w) => w && values.includes(w));
+  const i = values.indexOf(cur);
+  if (chosen.length === 0) return values[(i + 1) % values.length]!;
+  for (let k = 1; k <= values.length; k++) {
+    const v = values[(Math.max(i, -1) + k + values.length) % values.length]!;
+    if (chosen.includes(v) && (v !== cur || chosen.length === 1)) return v;
+  }
+  return chosen[0]!;
+}
+
 export class ActionView implements HubView {
   settings: ActionSettings;
   private press: HoldPress | null = null;
@@ -817,7 +830,7 @@ export class ActionView implements HubView {
         }
         const values = e?.values.length ? e.values : [...ROOM_MODES];
         const cur = strOf(st.attrs[e?.key ?? "mode"]);
-        return { id: it.id, action: "set", attr: e?.key ?? "mode", value: values[(values.indexOf(cur) + 1) % values.length]! };
+        return { id: it.id, action: "set", attr: e?.key ?? "mode", value: nextInRing(values, cur, this.settings.cycleOnly) };
       }
       case "away":
         return it.actions.includes("toggle") ? { id: it.id, action: "toggle" } : null;
@@ -1420,8 +1433,7 @@ export class ActionView implements HubView {
     const e = what === "preset" ? enumAttr(it, /preset/i) ?? enumAttr(it, /mode/i) : enumAttr(it, /mode/i) ?? enumAttr(it, /preset/i);
     if (!e) return it.actions.includes("toggle") ? { id: it.id, action: "toggle" } : null;
     const cur = strOf(st.attrs[e.key]);
-    const i = e.values.indexOf(cur);
-    return { id: it.id, action: "set", attr: e.key, value: e.values[(i + 1) % e.values.length]! };
+    return { id: it.id, action: "set", attr: e.key, value: nextInRing(e.values, cur, this.settings.cycleOnly) };
   }
 
   // ------------------------------------------------------------------ SDK events
@@ -1524,7 +1536,10 @@ export class ActionView implements HubView {
         if (!it.actions.includes("set")) return this.showToast("Cannot adjust", "nothing to turn here", "warn");
         if (!it.allowed) return this.showToast("Not allowed", "grant it in ZIGMon", "crit");
         if (this.needsHold(it)) return this.showToast("Hold to confirm", "use the key / push", "warn");
-        const values = e?.values.length ? e.values : [...ROOM_MODES];
+        const all = e?.values.length ? e.values : [...ROOM_MODES];
+        // (1.3) the dial too goes round only the chosen ones, when some are chosen
+        const only = (this.settings.cycleOnly ?? "").split(",").filter((w) => all.includes(w));
+        const values = only.length ? all.filter((w) => only.includes(w)) : all;
         const st = this.st ?? it.state;
         const cur = strOf(st.attrs[e?.key ?? "mode"]);
         const i = values.indexOf(cur);

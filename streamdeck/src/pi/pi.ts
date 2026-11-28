@@ -732,6 +732,29 @@ function chips(label: string, options: [string, string, string?][], current: str
   return [h("label", "f", [label]), wrap];
 }
 
+/** (1.3) Which values Next mode / Next preset goes round: every one (none ticked) or only those ticked. */
+function ringChooser(values: readonly string[], words: Record<string, [string, string]>): HTMLElement[] {
+  if (values.length < 3) return [];
+  const chosen = (settings.cycleOnly as string | undefined ?? "").split(",").filter((w) => values.includes(w));
+  const wrap = h("div", "chips");
+  for (const v of values) {
+    const on = chosen.includes(v);
+    const c = h("button", "chip" + (on ? " on" : ""), [ic(on ? "check" : words[v]?.[1] ?? "refresh", "sm"), words[v]?.[0] ?? v]);
+    c.type = "button";
+    c.setAttribute("aria-pressed", on ? "true" : "false");
+    c.addEventListener("click", () => {
+      const next = on ? chosen.filter((w) => w !== v) : values.filter((w) => w === v || chosen.includes(w));
+      saveSettings({ cycleOnly: next.length ? next.join(",") : undefined });
+    });
+    wrap.append(c);
+  }
+  const all = h("button", "chip" + (chosen.length === 0 ? " on" : ""), [ic("refresh", "sm"), "All of them"]);
+  (all as HTMLButtonElement).type = "button";
+  all.addEventListener("click", () => saveSettings({ cycleOnly: undefined }));
+  wrap.prepend(all);
+  return [h("label", "f", ["Go round only these"]), wrap];
+}
+
 function numberField(label: string, key: string, placeholder: string, step = "any"): HTMLElement {
   const i = h("input", "in") as HTMLInputElement;
   i.type = "number";
@@ -784,7 +807,12 @@ function optionsCard(): HTMLElement | null {
       };
       const set = modes.filter((m) => m in words);
       if (set.length) card.append(...chips("…or set one mode", set.map((m) => ["set:" + m, words[m]![0], words[m]![1]] as [string, string, string]), press, "press"));
-      if (set.length) card.append(h("div", "note", [ic("info", "sm"), "Next mode goes round all of them, Plan and By hand included. Turning the dial sets the room by hand, as the dashboard's slider does."]));
+      // (1.3) Next mode / Next preset may go round a chosen few only
+      const ringOf = (press ?? "mode") === "preset"
+        ? it?.attrs.find((a) => a.type === "enum" && /preset/i.test(a.key))?.values ?? modes
+        : modes.length ? modes : it?.attrs.find((a) => a.type === "enum" && /preset/i.test(a.key))?.values ?? [];
+      if ((press ?? "mode") === "mode" || press === "preset") card.append(...ringChooser(ringOf, words));
+      if (set.length) card.append(h("div", "note", [ic("info", "sm"), settings.cycleOnly ? "Next mode goes round only the ones ticked above, in this order. Turning the dial sets the room by hand, as the dashboard's slider does." : "Next mode goes round all of them, Plan and By hand included - or tick a few above to go round only those. Turning the dial sets the room by hand, as the dashboard's slider does."]));
       card.append(...chips("Setpoint per click", [["0.1", "0.1°"], ["0.5", "0.5°"], ["1", "1°"]], String(settings.step ?? "0.5"), "step"));
       card.append(h("div", "note", [ic("info", "sm"), "Touch the strip for boost (when the thermostat has one)."]));
       break;
@@ -815,6 +843,7 @@ function optionsCard(): HTMLElement | null {
       const modes = it?.attrs.find((a) => a.type === "enum" && /mode/i.test(a.key))?.values ?? ["plan", "comfort", "eco", "night", "max", "off", "manual"];
       const set = modes.filter((m) => m in MODE_CHIPS);
       card.append(...chips("A press of the key / dial", [["mode", "Next mode", "refresh"], ...set.map((m) => ["set:" + m, MODE_CHIPS[m]![0], MODE_CHIPS[m]![1]] as [string, string, string])], press ?? "mode", "press"));
+      if ((press ?? "mode") === "mode") card.append(...ringChooser(modes, MODE_CHIPS));
       card.append(h("div", "note", [ic("info", "sm"), "Every heated room gets the mode, one after another. Next mode is sent once the presses stop (from Mixed it starts at Plan); turning the dial steps it too."]));
       break;
     }

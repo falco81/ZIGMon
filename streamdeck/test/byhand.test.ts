@@ -224,3 +224,33 @@ describe("(1.3) a lock of an ESP32 gateway", () => {
     assert.equal(sent[0]!.action, "unlock");
   });
 });
+
+describe("(1.3) Next mode goes round only the chosen ones", () => {
+  it("the ring", async () => {
+    const { nextInRing } = await import("../src/core/views.js");
+    const all = ["plan", "comfort", "eco", "night", "max", "off", "manual"];
+    assert.equal(nextInRing(all, "comfort"), "eco", "with nothing chosen it is as before");
+    assert.equal(nextInRing(all, "comfort", "comfort,max,off"), "max");
+    assert.equal(nextInRing(all, "max", "comfort,max,off"), "off");
+    assert.equal(nextInRing(all, "off", "comfort,max,off"), "comfort");
+    assert.equal(nextInRing(all, "eco", "comfort,max,off"), "max", "from one not chosen: the next chosen after it");
+    assert.equal(nextInRing(all, "", "comfort,max"), "comfort");
+    assert.equal(nextInRing(all, "plan", "nonsense"), "comfort", "nothing of the item's chosen: all of them");
+    assert.equal(nextInRing(all, "max", "max"), "max");
+  });
+  it("is kept clean", () => {
+    assert.equal(normalizeAction({ cycleOnly: "comfort, max,off,max" }).cycleOnly, "comfort,max,off");
+    assert.equal(normalizeAction({ cycleOnly: "a b,<x>" }).cycleOnly, undefined);
+    assert.equal(normalizeAction({ cycleOnly: 3 }).cycleOnly, undefined);
+  });
+  it("a room key presses round the chosen modes, sent once it stops", async () => {
+    const sent: Sent[] = [];
+    const k = key("thermostat", room("comfort"), { press: "mode", cycleOnly: "comfort,max,off" }, sent);
+    for (let n = 0; n < 2; n++) {
+      k.v.keyDown();
+      k.v.keyUp();
+    }
+    await sleep(CYCLE_SETTLE_MS + 400);
+    assert.equal(sent.at(-1)?.value, "off", "comfort -> max -> off");
+  });
+});
