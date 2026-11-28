@@ -315,6 +315,7 @@ try:
     code, out = add({'device': THERMO, 'attr': 'battery', 'op': 'between', 'value': 0, 'value2': 15}, kid=KID2)
     R_B = out.get('rule') or {}
     check(code == 200 and R_B.get('text') == 'battery between 0 and 15 %', 'the second key\'s rule: %s %r' % (code, out))
+    d.store.flush(10)                      # the events are written by the store's own thread
     with d.store.lock:
         ev = [r[0] for r in d.store.db.execute('SELECT detail FROM events').fetchall()]
     check(any("owner added the desktop alert condition 'Obyvak-Teplomer: temperature ≥ 25 °C' to key 'Office PC'" in e
@@ -428,6 +429,7 @@ try:
     check(code == 400, 'an update made bad: %s %r' % (code, out))
     code, out = call('/api/notifier/keys', {'action': 'rule_delete', 'id': KID, 'rule_id': R_H['id']}, session=S)
     check(code == 200 and R_H['id'] not in json.dumps(out.get('keys')), 'the delete: %s %r' % (code, out))
+    d.store.flush(10)                      # the events are written by the store's own thread
     with d.store.lock:
         ev = [r[0] for r in d.store.db.execute('SELECT detail FROM events').fetchall()]
     check(any("owner changed the desktop alert condition 'Obyvak-Teplomer: temperature < 18 °C' on key 'Office PC'" in e

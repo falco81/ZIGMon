@@ -136,6 +136,7 @@ try:
     check(d.notifier_boot != boot0, 'no new boot on switching on')
     code, out = call('/api/notifier/hello', key=KEY)
     check(code == 200 and out.get('ok'), 'hello once on: %s %r' % (code, out))
+    d.store.flush(10)
     evs = json.dumps(d.store.events(limit=50), default=str)
     check('owner switched on the desktop app' in evs, 'not in the events: ' + evs[:300])
 
