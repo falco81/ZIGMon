@@ -86,6 +86,10 @@ Pravé tlačítko → **Alert settings…** (vše se ukládá hned a aplikace si
 * Upozornění: **Open ZIGMon**, **Mute 1 h** (jen toto čidlo na hodinu),
   **Dismiss** (nebo Esc). Najednou nejvýš čtyři; opakované spuštění téhož čidla
   jen zvýší počítadlo (×2, ×3 …).
+* **Zkušební upozornění ze ZIGMonu** (od verze 1.3.0): v ZIGMonu Settings →
+  Messages → Desktop app má každý klíč tlačítko **Test alert**. Počítač s tímto
+  klíčem hned ukáže upozornění „Test alert“ – i když nesleduje žádné čidlo, je
+  pozastavený nebo ztlumený. Starší verze aplikace se nejdřív sama aktualizuje.
 
 ## Bezpečnost
 

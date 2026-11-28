@@ -64,7 +64,7 @@ public class ClientTests
         foreach (var r in fake.Requests)
         {
             Assert.Equal(FakeZigmon.GoodKey, r.Headers[AppInfo.KeyHeader]);
-            Assert.Equal("ZigmonNotifier/1.2.0 (Windows)", r.Headers["User-Agent"]);
+            Assert.Equal("ZigmonNotifier/1.3.0 (Windows)", r.Headers["User-Agent"]);
             Assert.DoesNotContain(FakeZigmon.GoodKey[4..], r.Uri.ToString());
             foreach (var (name, value) in r.Headers)
                 if (!name.Equals(AppInfo.KeyHeader, StringComparison.OrdinalIgnoreCase))

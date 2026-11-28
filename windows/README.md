@@ -99,6 +99,10 @@ Right-click -> **Alert settings...** (everything is saved at once and remembered
   taskbar button flashes; with "Bring to front and take focus" they also take
   the focus.
 * Starting the exe a second time just opens the running one.
+* **Test alert from ZIGMon** (1.3.0): Settings → Messages → Desktop app has a
+  **Test alert** button on each key. The computer holding that key shows a
+  "Test alert" at once, whatever it watches, pauses or mutes (an event of kind
+  `test`, device `zigmon-test`, sent to that key only).
 
 ## Security
 

@@ -59,10 +59,12 @@ public static class SensorKinds
     public const string Button = "button";
     /// <summary>A condition an administrator set in ZIGMon on any attribute of any device (5.58).</summary>
     public const string Rule = "rule";
+    /// <summary>A test alert sent from ZIGMon's dashboard (Settings - Desktop app - Test alert, 5.59.2).</summary>
+    public const string Test = "test";
     public const string Other = "other";
 
     public static readonly IReadOnlyList<string> All =
-        new[] { Motion, Contact, Leak, Smoke, Gas, Co, Tamper, Vibration, Button, Rule };
+        new[] { Motion, Contact, Leak, Smoke, Gas, Co, Tamper, Vibration, Button, Rule, Test };
 
     public static string Normalize(string? kind)
     {

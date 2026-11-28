@@ -19,6 +19,8 @@ public static class AlertFilter
 {
     public static AlertDecision Decide(NotifierSettings settings, TriggerEvent e, DateTimeOffset now)
     {
+        // a test sent from the dashboard on purpose: always shown, whatever is watched, paused or muted
+        if (e.Kind == SensorKinds.Test) return AlertDecision.Alert;
         var watched = settings.FindWatched(e.Device);
         if (watched is null) return AlertDecision.NotWatched;
         if (settings.IsPaused(now)) return AlertDecision.Paused;
