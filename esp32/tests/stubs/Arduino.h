@@ -25,6 +25,13 @@ typedef uint8_t byte;
 unsigned long millis();
 unsigned long micros();
 void delay(uint32_t ms);
+#define INPUT 0x01
+#define OUTPUT 0x03
+#define HIGH 0x1
+#define LOW 0x0
+void pinMode(uint8_t pin, uint8_t mode);
+void digitalWrite(uint8_t pin, uint8_t val);
+int digitalRead(uint8_t pin);
 void configTime(long gmtOffset_sec, int daylightOffset_sec, const char* server1,
                 const char* server2 = nullptr, const char* server3 = nullptr);
 

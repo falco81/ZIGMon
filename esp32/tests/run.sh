@@ -54,6 +54,18 @@ done
 # The optional builds: no async long poll (IDF < 5.1), no cloud import.
 check "ESP32S3, GW_HTTPD_ASYNC=0" $base -DCONFIG_IDF_TARGET_ESP32S3=1 -DGW_HTTPD_ASYNC=0
 check "ESP32S3, GW_YEELOCK_CLOUD=0" $base -DCONFIG_IDF_TARGET_ESP32S3=1 -DGW_YEELOCK_CLOUD=0
+# The module example in README.md ("Writing a new module") must compile too.
+python3 - "$here/../README.md" "$out/mod_example.cpp" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+open(sys.argv[2], 'w').write(re.search(r'```cpp\n(.*?)```', s, re.S).group(1))
+PY
+if ! "$CXX" -std=gnu++17 -fsyntax-only $WARN -Werror $base -DCONFIG_IDF_TARGET_ESP32S3=1 \
+    -I"$here/stubs" -I"$sketch" -x c++ -include Arduino.h "$out/mod_example.cpp" 2>"$out/syntax.log"; then
+  echo "FAIL README module example"; cat "$out/syntax.log"; fails=$((fails + 1))
+else
+  echo "  README.md module example compiles"
+fi
 if [ "$fails" -ne 0 ]; then
   echo "$fails syntax failure(s)"
   exit 1
